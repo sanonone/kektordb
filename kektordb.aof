@@ -1,0 +1,3 @@
+set nome KektorDB
+vcreate test
+vadd test vec1 1 2 3
