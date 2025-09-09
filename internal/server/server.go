@@ -60,6 +60,7 @@ func (s *Server) registerCommands(){
 	s.commands["VCREATE"] = s.handleVCreate 
 	s.commands["VADD"] = s.handleVAdd       
 	s.commands["VSEARCH"] = s.handleVSearch
+	s.commands["VDEL"] = s.handleVDelete
 }
 
 // avvia il server e lo mette in ascolto sulla porta specificata
@@ -231,7 +232,7 @@ func (s *Server) dispatchCommand(conn net.Conn, line string) {
 // Funzione helper per identificare i comandi di scrittura.
 func (s *Server) isWriteCommand(name string) bool {
 	switch name {
-	case "SET", "DEL", "VCREATE", "VADD":
+	case "SET", "DEL", "VCREATE", "VADD", "VDEL":
 		return true
 	default:
 		return false
@@ -392,6 +393,33 @@ func (s *Server) handleVSearch(conn net.Conn, args [][]byte) {
 	// Dobbiamo formattare la risposta. Una Bulk String con gli ID separati da spazi.
 	responseStr := strings.Join(results, " ")
 	s.writeBulkString(conn, []byte(responseStr))
+}
+
+// gestisce l'eliminazione di un vettore da un indice
+func (s *Server) handleVDelete(conn net.Conn, args [][]byte) {
+	// VDEL <index_name> <id>
+	if len(args) != 2 {
+		if conn != nil {
+			s.writeError(conn, "numero di argomenti errato per 'VDEL'")
+		}
+		return
+	}
+	indexName := string(args[0])
+	vectorID := string(args[1])
+
+	idx, found := s.store.GetVectorIndex(indexName)
+	if !found {
+		if conn != nil {
+			s.writeError(conn, fmt.Sprintf("indice '%s' non trovato", indexName))
+		}
+		return
+	}
+
+	idx.Delete(vectorID)
+
+	if conn != nil {
+		s.writeSimpleString(conn, "OK")
+	}
 }
 
 // Nuova funzione helper per parsare da una slice di [][]byte

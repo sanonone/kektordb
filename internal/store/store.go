@@ -25,9 +25,19 @@ func (s *Store) GetKVStore() *KVStore {
 func (s *Store) CreateVectorIndex(name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// parametri che dovrebbero essere configurabili ma al 
+	// momento uso come valori di default 
+	const (
+		defaultM = 16
+		defaultEfConst = 200
+	)
+
+	s.vectorIndexes[name] = NewHNSWIndex(defaultM, defaultEfConst)
+
 	// al momento crea sempre un brute force index 
 	// in futuro si potrà passare un argomento per scegliere il tipo di indice 
-	s.vectorIndexes[name] = NewBruteForceIndex()
+	// s.vectorIndexes[name] = NewBruteForceIndex()
 }
 
 // recupera un indice vettoriale per nome 

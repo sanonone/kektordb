@@ -13,6 +13,7 @@ import (
 type VectorIndex interface {
 	Add(id string, vector []float32)
 	Search(query []float32, k int) []string 
+	Delete(id string)
 }
 
 // --- implementazione Brute Force Index ---
@@ -74,6 +75,12 @@ func (idx *BruteForceIndex) Search(query []float32, k int) []string{
 	
 	return finalIDs
 
+}
+
+func (idx *BruteForceIndex) Delete(id string) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	delete(idx.vectors, id)
 }
 
 

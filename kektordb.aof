@@ -1,3 +1,8 @@
 set nome KektorDB
 vcreate test
 vadd test vec1 1 2 3
+vcreate test-del
+vadd test-del vec1 1.0 1.0
+vadd test-del vec2 1.1 1.1
+vadd test-del vec3 5.0 5.0
+vdel test-del vec1
