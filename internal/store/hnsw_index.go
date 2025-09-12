@@ -55,7 +55,7 @@ func NewHNSWIndex(m int, efConstruction int) *HNSWIndex {
 		internalCounter: 0,
 		maxLevel: -1, // all'inizio nessun livello 
 		entrypointID: 0, // inizializzato al primo inserito 
-		distanceFunc: squaredEuclideanDistance, // la funz ottimizzata 
+		distanceFunc: defaultDistanceFunc, // usa la funzione del dispatcher in /store/distance.go
 		levelRand: rand.New(rand.NewSource(time.Now().UnixNano())),	
 	}
 }

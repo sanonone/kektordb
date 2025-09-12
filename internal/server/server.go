@@ -2,16 +2,20 @@ package server
 
 import (
 	"bufio"
+	"context" // per gestire graceful shutdown (ctrl + c)
+	"errors"
 	"fmt"
+	"github.com/sanonone/kektordb/internal/protocol"
+	"github.com/sanonone/kektordb/internal/store"
 	"io"
 	"log"
 	"net"
-	"strings"
-	"strconv"
+	"net/http" // per il web server
 	"os"
+	"strconv"
+	"strings"
 	"sync"
-	"github.com/sanonone/kektordb/internal/store"
-	"github.com/sanonone/kektordb/internal/protocol"
+	"time"
 )
 
 // crea un nuovo tipo commandHandler, questo tipo rappresenta
@@ -20,19 +24,20 @@ import (
 type commandHandler func(conn net.Conn, args [][]byte)
 
 // struct server con informazioni necessarie
-type Server struct{
-	listener net.Listener 
+type Server struct {
+	listener net.Listener
 	commands map[string]commandHandler
-	store *store.Store // puntatore allo store 
+	store    *store.Store // puntatore allo store
 
-	aofFile *os.File // file aof per persistenza
-	aofMutex sync.Mutex // mutex per gestire la scrittura sul file 
+	aofFile    *os.File     // file aof per persistenza
+	aofMutex   sync.Mutex   // mutex per gestire la scrittura sul file
+	httpServer *http.Server // il server http
 }
 
-// crea una nuova istanza del server 
-func NewServer() *Server{
-	// aprie o crea il file AOF 
-	//0666 sono i permessi del file 
+// crea una nuova istanza del server
+func NewServer() *Server {
+	// aprie o crea il file AOF
+	//0666 sono i permessi del file
 	file, err := os.OpenFile("kektordb.aof", os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		log.Fatalf("Impossibile aprire il file AOF: %v", err)
@@ -43,73 +48,90 @@ func NewServer() *Server{
 		// la chiave è il nome del comando in maiuscolo
 		// il valore è la funzione che lo gestisce
 		commands: make(map[string]commandHandler),
-		store: store.NewStore(), // inizializzo store 
-		aofFile: file,
+		store:    store.NewStore(), // inizializzo store
+		aofFile:  file,
 	}
-	// registrazione dei comandi. Per ora solo PING
+	// registrazione dei comandi
 	s.registerCommands()
 	return s
 }
 
-func (s *Server) registerCommands(){
-	// i nuovi comandi si aggiungeranno tutti qui 
+func (s *Server) registerCommands() {
+	// i nuovi comandi si aggiungeranno tutti qui
 	s.commands["PING"] = s.handlePing
 	s.commands["SET"] = s.handleSet
 	s.commands["GET"] = s.handleGet
 	s.commands["DELETE"] = s.handleDelete
-	s.commands["VCREATE"] = s.handleVCreate 
-	s.commands["VADD"] = s.handleVAdd       
+	s.commands["VCREATE"] = s.handleVCreate
+	s.commands["VADD"] = s.handleVAdd
 	s.commands["VSEARCH"] = s.handleVSearch
 	s.commands["VDEL"] = s.handleVDelete
 }
 
-// avvia il server e lo mette in ascolto sulla porta specificata
-func (s *Server) Start(address string) error{
-	// prima di tutto carica i dati dall'AOF 
+// avvia i server TCP e HTTP e li mette in ascolto sulle porte specificate
+func (s *Server) Run(tcpAddr string, httpAddr string) error {
+	// prima di tutto carica i dati dall'AOF
 	if err := s.loadFromAOF(); err != nil {
 		return fmt.Errorf("impossibile caricare da AOF: %w", err)
 	}
 
-	// crea listener sulla porta ricevuta come parametro
-	listener, err := net.Listen("tcp", address)
+	// crea tcpListener sulla porta ricevuta come parametro
+	tcpListener, err := net.Listen("tcp", tcpAddr)
 	if err != nil {
 		return err
 	}
-	defer s.Close() // metodo per chiusura listener e file 
+	defer s.Close() // metodo per chiusura tcpListener e file
 
-	// se ci sono errori durante la funzione chiude il listener 
-	// defer listener.Close()
+	// se ci sono errori durante la funzione chiude il tcpListener
+	// defer tcpListener.Close()
 
-	s.listener = listener
+	s.listener = tcpListener
 
-	log.Printf("Server in ascolto su %s", address)
+	log.Printf("Server TCP in ascolto su %s", tcpAddr)
+	go s.acceptTCPLoop() // funzione che gestisce il loop infinito per accettare richieste TCP
 
-	// loop infinito del server per accettare nuove connessioni 
+	// --- configurazione ed avvio server HTTP ---
+	mux := http.NewServeMux()
+	s.registerHTTPHandlers(mux) // registra endpoint
+
+	s.httpServer = &http.Server{
+		Addr:    httpAddr,
+		Handler: mux,
+	}
+
+	log.Printf("Server HTTP in ascolto su %s", httpAddr)
+	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		return fmt.Errorf("fallimento avvio server HTTP: %w", err)
+	}
+
+	return nil
+
+}
+
+// funzione per gestire le richieste TCP
+func (s *Server) acceptTCPLoop() {
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
-			// Se il listener è stato chiuso, è un'uscita pulita.
-			if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "use of closed network connection" {
-				break
+			// Se il listener è chiuso, usciamo dal loop
+			if errors.Is(err, net.ErrClosed) {
+				log.Println("Server TCP fermato.")
+				return
 			}
-			log.Printf("Errore nell'accettare la connessione: %v", err)
+			log.Printf("Errore nell'accettare la connessione TCP: %v", err)
 			continue
-				}
-
-		// gestisce la connessione accettata con una nuova goroutine
+		}
 		go s.handleConnection(conn)
-
 	}
-	return nil
 }
 
 func (s *Server) loadFromAOF() error {
 	log.Println("Caricamento di dati dal file AOF...")
 
-	// sposta il cursore all'inizio del file per la lettura 
+	// sposta il cursore all'inizio del file per la lettura
 	s.aofFile.Seek(0, 0)
 
-	// lo scanner per leggere il file riga per riga 
+	// lo scanner per leggere il file riga per riga
 	scanner := bufio.NewScanner(s.aofFile)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -117,7 +139,7 @@ func (s *Server) loadFromAOF() error {
 			continue
 		}
 
-		// fa il parsing e riesegue tutti i comandi nel file 
+		// fa il parsing e riesegue tutti i comandi nel file
 		cmd, err := protocol.Parse(line)
 		if err != nil {
 			log.Printf("Errore AOF: impossibile parsare la riga '%s': %v", line, err)
@@ -131,7 +153,7 @@ func (s *Server) loadFromAOF() error {
 		}
 
 		// eseguo l'handler ma senza passare la vera connessione di rete
-		// ma nil visto che non deve rispondere a nessuno 
+		// ma nil visto che non deve rispondere a nessuno
 		handler(nil, cmd.Args)
 	}
 
@@ -140,38 +162,38 @@ func (s *Server) loadFromAOF() error {
 	}
 
 	log.Println("Caricamento AOF completato")
-	return nil 
+	return nil
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
 	log.Printf("Nuovo client connesso: %s", conn.RemoteAddr())
 
-	// un reader con buffer per efficientare riducendo il numero di chiamate di sistema per leggere i dati dalla rete 
+	// un reader con buffer per efficientare riducendo il numero di chiamate di sistema per leggere i dati dalla rete
 	reader := bufio.NewReader(conn)
 
 	for {
 		// legge fino al nuova riga '\n'
 		line, err := reader.ReadString('\n')
-		if err != nil{
+		if err != nil {
 			// gestione caso End Of File io.EOF che si riceve se il client chiude la connessione
-			if err == io.EOF{
+			if err == io.EOF {
 				log.Printf("Client disconnesso: %s", conn.RemoteAddr())
 			} else {
 				log.Printf("Errore di lettura: %v", err)
 			}
-			return // esce e chiude la connessione 
+			return // esce e chiude la connessione
 		}
 
 		// non esegue direttamente ma chiama un metodo che si occuperà
 		// anche della persistenza
 		s.dispatchCommand(conn, line)
-		
+
 		/* [vecchia versione senza persistenza]
 		// 1) pasring della riga di testo in un comando strutturato
 		cmd, err := protocol.Parse(line)
 		if err != nil {
-			// se il comando non è valido invia un errore al client 
+			// se il comando non è valido invia un errore al client
 			s.writeError(conn, fmt.Sprintf("Protocol error: %v", err))
 			continue
 		}
@@ -183,14 +205,39 @@ func (s *Server) handleConnection(conn net.Conn) {
 			continue
 		}
 
-		// 3) esegue la funzione trovata 
+		// 3) esegue la funzione trovata
 		handler(conn, cmd.Args)
 
-		// per il momento risponde al client con la stessa riga 
+		// per il momento risponde al client con la stessa riga
 		// fmt.Printf("Ricevuto: %s", line)
 		// conn.Write([]byte(line))
 		*/
 	}
+}
+
+// per comando ctrl + c
+func (s *Server) Shutdown() {
+	log.Println("Avvio graceful shutdown...")
+
+	// Ferma il server HTTP
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.httpServer.Shutdown(ctx); err != nil {
+		log.Printf("Errore shutdown server HTTP: %v", err)
+	} else {
+		log.Println("Server HTTP fermato.")
+	}
+
+	// Ferma il server TCP
+	if s.listener != nil {
+		s.listener.Close()
+	}
+
+	// Chiude il file AOF
+	if s.aofFile != nil {
+		s.aofFile.Close()
+	}
+	log.Println("Shutdown completato.")
 }
 
 // dispatchCommand è il nuovo punto centrale
@@ -256,11 +303,11 @@ func (s *Server) handlePing(conn net.Conn, args [][]byte) {
 }
 
 func (s *Server) handleSet(conn net.Conn, args [][]byte) {
-	if len(args) != 2{
+	if len(args) != 2 {
 		if conn != nil {
 			s.writeError(conn, "numero di argomenti errato per il comando 'SET'")
 		}
-		return	
+		return
 	}
 
 	key := string(args[0])
@@ -297,7 +344,7 @@ func (s *Server) handleGet(conn net.Conn, args [][]byte) {
 }
 
 func (s *Server) handleDelete(conn net.Conn, args [][]byte) {
-    // DEL key
+	// DEL key
 	if len(args) != 1 {
 		if conn != nil {
 			s.writeError(conn, "numero di argomenti errato per il comando 'DEL'")
@@ -369,7 +416,7 @@ func (s *Server) handleVSearch(conn net.Conn, args [][]byte) {
 	kStr := string(args[1])
 	// vectorStr := string(args[2])
 	vectorStr := args[2:]
-	
+
 	k, err := strconv.Atoi(kStr)
 	if err != nil || k <= 0 {
 		s.writeError(conn, "k deve essere un intero positivo")
@@ -436,7 +483,6 @@ func parseVectorFromParts(parts [][]byte) ([]float32, error) {
 	return vector, nil
 }
 
-
 /*
 // Funzione helper per parsare una stringa di numeri float separati da spazi.
 func parseVector(s string) ([]float32, error) {
@@ -451,9 +497,9 @@ func parseVector(s string) ([]float32, error) {
 	}
 	return vector, nil
 }
-*/ 
+*/
 
-// --- Helper per le Risposte 
+// --- Helper per le Risposte
 
 // writeSimpleString scrive una stringa semplice (es. +OK)
 func (s *Server) writeSimpleString(conn net.Conn, msg string) {
@@ -478,4 +524,3 @@ func (s *Server) writeBulkString(conn net.Conn, data []byte) {
 func (s *Server) writeNullBulkString(conn net.Conn) {
 	conn.Write([]byte("$-1\r\n"))
 }
-
