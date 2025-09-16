@@ -4,6 +4,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/sanonone/kektordb/internal/store"
 	"io"
 	"net/http"
 	"strconv"
@@ -84,6 +85,9 @@ func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, key stri
 // --- Handler per Vettori (VCREATE, VADD, VSEARCH) ---
 type VectorCreateRequest struct {
 	IndexName string `json:"index_name"`
+	// omitempty per il campo metric così se il client non lo invia non sarà
+	// presente nel json permettendo l'uso di un default
+	Metric string `json:"metric,omitempty"`
 }
 
 func (s *Server) handleVectorCreate(w http.ResponseWriter, r *http.Request) {
@@ -98,20 +102,36 @@ func (s *Server) handleVectorCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.IndexName == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, "index_name è obbligatorio")
+		return
+	}
+
+	// Se la metrica non è specificata, usiamo Euclidean come default.
+	metric := store.DistanceMetric(req.Metric)
+	if metric == "" {
+		metric = store.Euclidean
+	}
+
 	// scrittura AOF per persistenza
-	aofCommand := fmt.Sprintf("VCREATE %s\n", req.IndexName)
+	aofCommand := fmt.Sprintf("VCREATE %s METRIC %s\n", req.IndexName, metric)
 	s.aofMutex.Lock()
 	s.aofFile.WriteString(aofCommand) // gestire l'errore qui in un sistema di produzione
 	s.aofMutex.Unlock()
 
-	s.store.CreateVectorIndex(req.IndexName)
+	err := s.store.CreateVectorIndex(req.IndexName, metric)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Indice creato"})
 }
 
 type VectorAddRequest struct {
-	IndexName string    `json:"index_name"`
-	Id        string    `json:"id"`
-	Vector    []float32 `json:"vector"`
+	IndexName string         `json:"index_name"`
+	Id        string         `json:"id"`
+	Vector    []float32      `json:"vector"`
+	Metadata  map[string]any `json:"metadata,omitempty"` // omitempty = se il campo è nullo non apparirà nel json
 }
 
 func (s *Server) handleVectorAdd(w http.ResponseWriter, r *http.Request) {
@@ -126,21 +146,62 @@ func (s *Server) handleVectorAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validazione base dell'input
+	if req.IndexName == "" || req.Id == "" || len(req.Vector) == 0 {
+		s.writeHTTPError(w, http.StatusBadRequest, "index_name, id, e vector sono campi obbligatori")
+		return
+	}
+
 	idx, found := s.store.GetVectorIndex(req.IndexName)
 	if !found {
 		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Indice '%s' non trovato", req.IndexName))
 		return
 	}
 
-	// scrittura AOF per persistenza
-	// ricostruisce la stringa del vettore separata da spazi
-	vectorStr := float32SliceToString(req.Vector)
-	aofCommand := fmt.Sprintf("VADD %s %s %s\n", req.IndexName, req.Id, vectorStr)
+	/*
+		// scrittura AOF per persistenza
+		// ricostruisce la stringa del vettore separata da spazi
+		vectorStr := float32SliceToString(req.Vector)
+		aofCommand := fmt.Sprintf("VADD %s %s %s\n", req.IndexName, req.Id, vectorStr)
+		s.aofMutex.Lock()
+		s.aofFile.WriteString(aofCommand)
+		s.aofMutex.Unlock()
+	*/
+
+	internalID, err := idx.Add(req.Id, req.Vector)
+	if err != nil {
+		// Controlla se l'errore è "ID già esistente"
+		// In un'API REST, questo corrisponde a un errore 409 Conflict
+		if strings.Contains(err.Error(), "già esistente") {
+			s.writeHTTPError(w, http.StatusConflict, err.Error())
+		} else {
+			s.writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("errore nell'aggiungere il vettore: %v", err))
+		}
+		return
+	}
+
+	// se ci sono metadati li indicizza
+	if req.Metadata != nil {
+		if err := s.store.AddMetadata(req.IndexName, internalID, req.Metadata); err != nil {
+			// operazione critica, se fallisce dovremmo disfare l'aggiunta del vettore (rollback)
+			s.writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("errore nell'indicizzare i metadati: %v", err))
+			return
+		}
+	}
+
+	// --- LOGICA AOF ---
+	// Costruisci il comando AOF solo dopo che tutte le validazioni sono passate.
+	aofCommand, err := buildVAddAOFCommand(req.IndexName, req.Id, req.Vector, req.Metadata)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, "errore nella creazione del comando AOF")
+		return
+	}
+
 	s.aofMutex.Lock()
 	s.aofFile.WriteString(aofCommand)
 	s.aofMutex.Unlock()
+	// --- FINE LOGICA AOF ---
 
-	idx.Add(req.Id, req.Vector)
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Vettore aggiunto"})
 }
 
@@ -148,6 +209,7 @@ type VectorSearchRequest struct {
 	IndexName   string    `json:"index_name"`
 	K           int       `json:"k"`
 	QueryVector []float32 `json:"query_vector"`
+	Filter      string    `json:"filter,omitempty"` // filtro opzionale
 }
 
 func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
@@ -168,7 +230,24 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results := idx.Search(req.QueryVector, req.K)
+	// --- NUOVA LOGICA DI FILTRAGGIO ---
+	var allowList map[uint32]struct{}
+	var err error
+
+	if req.Filter != "" {
+		allowList, err = s.store.FindIDsByFilter(req.IndexName, req.Filter)
+		if err != nil {
+			s.writeHTTPError(w, http.StatusBadRequest, fmt.Sprintf("filtro invalido: %v", err))
+			return
+		}
+		// Se il filtro non produce risultati, può terminare subito
+		if len(allowList) == 0 {
+			s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": []string{}})
+			return
+		}
+	}
+
+	results := idx.Search(req.QueryVector, req.K, allowList)
 	s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": results})
 }
 
@@ -195,4 +274,22 @@ func float32SliceToString(slice []float32) string {
 		b.WriteString(strconv.FormatFloat(float64(v), 'f', -1, 32))
 	}
 	return b.String()
+}
+
+// Funzione helper per costruire la stringa del comando AOF
+func buildVAddAOFCommand(indexName, id string, vector []float32, metadata map[string]any) (string, error) {
+	vectorStr := float32SliceToString(vector) // Usiamo la funzione che avevamo già
+
+	if len(metadata) == 0 {
+		return fmt.Sprintf("VADD %s %s %s\n", indexName, id, vectorStr), nil
+	}
+
+	metadataBytes, err := json.Marshal(metadata)
+	if err != nil {
+		return "", err
+	}
+
+	// Racchiudiamo il JSON tra virgolette singole per sicurezza, anche se il nostro
+	// parser TCP attuale non le gestisce (è una buona pratica per il futuro).
+	return fmt.Sprintf("VADD %s %s %s %s\n", indexName, id, vectorStr, string(metadataBytes)), nil
 }

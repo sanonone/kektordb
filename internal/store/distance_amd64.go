@@ -5,7 +5,7 @@
 // escludendo l'assembly se è disabilitato (noasm) o per architetture tipo App Engine o javascript/WASM
 package store
 
-// è la dichiarazione della funzione assembly, il corpo della funzione non verrà mai eseguito 
+// è la dichiarazione della funzione assembly, il corpo della funzione non verrà mai eseguito
 // e serve solo al compilatore. La vera implementzione sarà nel file .s corrispondente
-// per funzionare la firma deve corrispondere esattamente a ciò che si aspetta l'assembly 
+// per funzionare la firma deve corrispondere esattamente a ciò che si aspetta l'assembly
 func squaredEuclideanDistanceAVX2(x, y []float32) (float64, error)

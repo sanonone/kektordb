@@ -57,7 +57,7 @@ func TestDistanceFunctions(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Calcola il risultato con la funzione Go 
+			// Calcola il risultato con la funzione Go
 			goResult, errGo := squaredEuclideanDistanceGo(tc.v1, tc.v2)
 			if errGo != nil {
 				t.Fatalf("La funzione Go ha restituito un errore inaspettato: %v", errGo)
@@ -74,7 +74,6 @@ func TestDistanceFunctions(t *testing.T) {
 			if errAvxFma != nil {
 				t.Fatalf("La funzione AVX2FMA ha restituito un errore inaspettato: %v", errAvxFma)
 			}
-	
 
 			// Confronta i risultati go vs avx
 			if !floatsAreEqual(goResult, avxResult) {
@@ -86,6 +85,66 @@ func TestDistanceFunctions(t *testing.T) {
 				t.Errorf("I risultati non corrispondono! Go: %.15f, AVX2FMA: %.15f", goResult, avxfmaResult)
 			}
 
+		})
+	}
+}
+
+// TestDotProductFunctions confronta l'output della funzione Go e di quella AVX2 per il prodotto scalare.
+func TestDotProductFunctions(t *testing.T) {
+	if !cpuid.CPU.Has(cpuid.AVX2) {
+		t.Skip("Skipping AVX2 test: CPU does not support this feature")
+	}
+
+	testCases := []struct {
+		name string
+		v1   []float32
+		v2   []float32
+	}{
+		{
+			name: "Vettori ortogonali",
+			v1:   []float32{1, 0, 1, 0, 1, 0, 1, 0},
+			v2:   []float32{0, 1, 0, 1, 0, 1, 0, 1},
+		},
+		{
+			name: "Vettori collineari",
+			v1:   []float32{1, 2, 3, 4, 5, 6, 7, 8},
+			v2:   []float32{2, 4, 6, 8, 10, 12, 14, 16},
+		},
+		{
+			name: "Vettori con resto (lunghezza 10)",
+			v1:   []float32{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+			v2:   []float32{10, 9, 8, 7, 6, 5, 4, 3, 2, 1},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// calcola con Go
+			goResult, errGo := dotProductGo(tc.v1, tc.v2)
+			if errGo != nil {
+				t.Fatalf("La funzione Go ha restituito un errore inaspettato: %v", errGo)
+			}
+
+			// calcola con AVX2
+			avxResult, errAvx := dotProductAVX2(tc.v1, tc.v2)
+			if errAvx != nil {
+				t.Fatalf("La funzione AVX2 ha restituito un errore inaspettato: %v", errAvx)
+			}
+
+			// calcola con AVX2 + FMA
+			avxfmaResult, errAvxFma := dotProductAVX2FMA(tc.v1, tc.v2)
+			if errAvxFma != nil {
+				t.Fatalf("La funzione AVX2 ha restituito un errore inaspettato: %v", errAvx)
+			}
+
+			// confronto Go con AVX2
+			if !floatsAreEqual(goResult, avxResult) {
+				t.Errorf("I risultati del prodotto scalare non corrispondono!\nGo:   %.15f\nAVX2: %.15f", goResult, avxResult)
+			}
+
+			if !floatsAreEqual(goResult, avxfmaResult) {
+				t.Errorf("I risultati del prodotto scalare non corrispondono!\nGo:   %.15f\nAVX2FMA: %.15f", goResult, avxfmaResult)
+			}
 		})
 	}
 }
@@ -124,12 +183,45 @@ func BenchmarkDistanceAVX2(b *testing.B) {
 
 // Benchmark per la versione AVX2FMA
 func BenchmarkDistanceAVX2FMA(b *testing.B) {
-	if !cpuid.CPU.Has(cpuid.AVX2) && !cpuid.CPU.Has(cpuid.FMA3)  {
+	if !cpuid.CPU.Has(cpuid.AVX2) && !cpuid.CPU.Has(cpuid.FMA3) {
 		b.Skip("Skipping AVX2FMA benchmark: CPU does not support this feature")
 	}
 	v1, v2 := generateVectors(128)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		squaredEuclideanDistanceAVX2FMA(v1, v2)
+	}
+}
+
+// Benchmark per la versione Go pura
+func BenchmarkDotProductGo(b *testing.B) {
+	v1, v2 := generateVectors(128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		dotProductGo(v1, v2)
+	}
+}
+
+// Benchmark per la versione AVX2
+func BenchmarkDotProductAVX2(b *testing.B) {
+	if !cpuid.CPU.Has(cpuid.AVX2) {
+		b.Skip("Skipping AVX2 benchmark: CPU does not support this feature")
+	}
+	v1, v2 := generateVectors(128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		dotProductAVX2(v1, v2)
+	}
+}
+
+// Benchmark per la versione AVX2 + FMA
+func BenchmarkDotProductAVX2FMA(b *testing.B) {
+	if !cpuid.CPU.Has(cpuid.AVX2) && !cpuid.CPU.Has(cpuid.FMA3) {
+		b.Skip("Skipping AVX2FMA benchmark: CPU does not support this feature")
+	}
+	v1, v2 := generateVectors(128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		dotProductAVX2FMA(v1, v2)
 	}
 }

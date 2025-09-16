@@ -1,50 +1,425 @@
-package store 
+package store
 
-import "sync"
+import (
+	"fmt"
+	"github.com/tidwall/btree"
+	"math"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+)
+
+// è una struttura dati che userà il b tree per associare a un valore (metadato) un ID di nodo
+type BTreeItem struct {
+	Value  float64
+	NodeID uint32
+}
 
 // store è il contenitore principale che contiene tutti i tipi di dato di kektorDB
 type Store struct {
-	mu sync.RWMutex
-	kvStore *KVStore 
-	vectorIndexes map[string]VectorIndex 
+	mu            sync.RWMutex
+	kvStore       *KVStore
+	vectorIndexes map[string]VectorIndex
+
+	// indice invertito per i metadata
+	// struttura = map[nome indice vettoriale] -> map[chiave metadato] -> map[valore meta] -> set[ID interni nodi]
+	// es. invertedIndex["my_images"]["tags"]["gatto"]={1: {}, 5: {}, 34:{}}
+	// cioè nell'indice my_images i nodi con ID 1,5 e 34 hanno il metadato "tags" con valore "gatto"
+	invertedIndex map[string]map[string]map[string]map[uint32]struct{}
+
+	// indice B-Tree per i metadati numerici
+	// strutture: map[nome indice vettoriale]->map[chiave metadato]->BTree
+	// B-Tree memorizzerà BTreeItem, permettendo ricerche di range veloci
+	bTreeIndex map[string]map[string]*btree.BTreeG[BTreeItem]
 }
 
 func NewStore() *Store {
 	return &Store{
-		kvStore: NewKVStore(),
+		kvStore:       NewKVStore(),
 		vectorIndexes: make(map[string]VectorIndex),
+
+		// iniziizza la mappa principale dell'indice, le mappe interne
+		// saranno create on demand quando necessario
+		invertedIndex: make(map[string]map[string]map[string]map[uint32]struct{}),
+		bTreeIndex:    make(map[string]map[string]*btree.BTreeG[BTreeItem]),
 	}
 }
 
-// restituisce lo store KVStore 
+// restituisce lo store KVStore
 func (s *Store) GetKVStore() *KVStore {
-	return s.kvStore 
+	return s.kvStore
 }
 
-// crea un nuovo indice vettoriale 
-func (s *Store) CreateVectorIndex(name string) {
+// crea un nuovo indice vettoriale
+func (s *Store) CreateVectorIndex(name string, metric DistanceMetric) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// parametri che dovrebbero essere configurabili ma al 
-	// momento uso come valori di default 
+	if _, ok := s.vectorIndexes[name]; ok {
+		return fmt.Errorf("indice '%s' già esistente", name)
+	}
+
+	// parametri che dovrebbero essere configurabili ma al
+	// momento uso come valori di default
 	const (
-		defaultM = 16
+		defaultM       = 16
 		defaultEfConst = 200
 	)
+	idx, err := NewHNSWIndex(defaultM, defaultEfConst, metric)
+	if err != nil {
+		return err
+	}
 
-	s.vectorIndexes[name] = NewHNSWIndex(defaultM, defaultEfConst)
+	s.vectorIndexes[name] = idx
 
-	// al momento crea sempre un brute force index 
-	// in futuro si potrà passare un argomento per scegliere il tipo di indice 
-	// s.vectorIndexes[name] = NewBruteForceIndex()
+	// Inizializziamo lo spazio per i metadati di questo nuovo indice.
+	s.invertedIndex[name] = make(map[string]map[string]map[uint32]struct{})
+	s.bTreeIndex[name] = make(map[string]*btree.BTreeG[BTreeItem])
+
+	return nil
 }
 
-// recupera un indice vettoriale per nome 
+// recupera un indice vettoriale per nome
 func (s *Store) GetVectorIndex(name string) (VectorIndex, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	idx, found := s.vectorIndexes[name]
 	return idx, found
+}
+
+// AddMetadata associa i metadati a un ID di nodo e aggiorna gli indici secondari.
+func (s *Store) AddMetadata(indexName string, nodeID uint32, metadata map[string]any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for key, value := range metadata {
+		switch v := value.(type) { // controlla il tipo della variabile any
+		case string:
+			// --- LOGICA INDICE INVERTITO (invariata) ---
+			indexMetadata, ok := s.invertedIndex[indexName]
+			if !ok {
+				return fmt.Errorf("indice di metadati per '%s' non trovato", indexName)
+			}
+			if _, ok := indexMetadata[key]; !ok {
+				indexMetadata[key] = make(map[string]map[uint32]struct{})
+			}
+			if _, ok := indexMetadata[key][v]; !ok {
+				indexMetadata[key][v] = make(map[uint32]struct{})
+			}
+			indexMetadata[key][v][nodeID] = struct{}{}
+
+		case float64:
+			// --- NUOVA LOGICA B-TREE ---
+			indexBTree, ok := s.bTreeIndex[indexName]
+			if !ok {
+				return fmt.Errorf("indice b-tree per '%s' non trovato", indexName)
+			}
+
+			// Controlla se un B-Tree per questa chiave esiste già, altrimenti crealo.
+			if _, ok := indexBTree[key]; !ok {
+				indexBTree[key] = btree.NewBTreeG[BTreeItem](btreeItemLess)
+			}
+
+			// Inserisci l'item nel B-Tree.
+			indexBTree[key].Set(BTreeItem{Value: v, NodeID: nodeID})
+
+		default:
+			// Per ora ignoriamo altri tipi (bool, etc.)
+			continue
+		}
+	}
+
+	return nil
+}
+
+// FindIDsByFilter funge da query planner per i filtri.
+// Supporta OR e AND. OR ha precedenza più bassa (prima si scompone sugli OR,
+// ogni blocco OR è valutato come AND di sottofiltri).
+func (s *Store) FindIDsByFilter(indexName string, filter string) (map[uint32]struct{}, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	filter = strings.TrimSpace(filter)
+	if filter == "" {
+		return nil, fmt.Errorf("filtro vuoto")
+	}
+
+	// Split case-insensitive per "OR" senza alterare il resto della stringa
+	reOr := regexp.MustCompile(`(?i)\s+OR\s+`)
+	orBlocks := reOr.Split(filter, -1)
+
+	finalIDSet := make(map[uint32]struct{})
+
+	// regex per AND (case-insensitive)
+	reAnd := regexp.MustCompile(`(?i)\s+AND\s+`)
+
+	for _, orBlock := range orBlocks {
+		orBlock = strings.TrimSpace(orBlock)
+		if orBlock == "" {
+			continue
+		}
+
+		// ogni orBlock può contenere più sottofiltri separati da AND
+		andFilters := reAnd.Split(orBlock, -1)
+
+		var blockIDSet map[uint32]struct{}
+		isFirst := true
+
+		for _, subFilter := range andFilters {
+			subFilter = strings.TrimSpace(subFilter)
+			if subFilter == "" {
+				continue
+			}
+
+			currentIDSet, err := s.evaluateSingleFilter(indexName, subFilter)
+			if err != nil {
+				return nil, fmt.Errorf("errore nel filtro '%s': %w", subFilter, err)
+			}
+
+			if isFirst {
+				// copia per sicurezza (in modo che non si aliasi)
+				blockIDSet = make(map[uint32]struct{}, len(currentIDSet))
+				for id := range currentIDSet {
+					blockIDSet[id] = struct{}{}
+				}
+				isFirst = false
+			} else {
+				blockIDSet = intersectSets(blockIDSet, currentIDSet)
+			}
+
+			// ottimizzazione
+			if len(blockIDSet) == 0 {
+				break
+			}
+		}
+
+		// unione (OR) col risultato finale
+		finalIDSet = unionSets(finalIDSet, blockIDSet)
+	}
+
+	// se non ci sono risultati, ritorniamo empty map (coerente).
+	if len(finalIDSet) == 0 {
+		return make(map[uint32]struct{}), nil
+	}
+
+	return finalIDSet, nil
+}
+
+// evaluateSingleFilter valuta una singola espressione come "price>=10" o "name=Alice".
+// Restituisce un set di ID (map[uint32]struct{}) e un errore.
+func (s *Store) evaluateSingleFilter(indexName string, filter string) (map[uint32]struct{}, error) {
+	// Trova operatore (ordinale per lunghezza per gestire <= e >=)
+	var op string
+	opIndex := -1
+	for _, operator := range []string{"<=", ">=", "=", "<", ">"} {
+		if idx := strings.Index(filter, operator); idx != -1 {
+			op = operator
+			opIndex = idx
+			break
+		}
+	}
+	if opIndex == -1 {
+		return nil, fmt.Errorf("formato filtro invalido, operatore non trovato (usare =, <, >, <=, >=)")
+	}
+
+	key := strings.TrimSpace(filter[:opIndex])
+	valueStr := strings.TrimSpace(filter[opIndex+len(op):])
+
+	// set risultato
+	idSet := make(map[uint32]struct{})
+
+	// Preleva il mapping dei B-Tree (se esiste) e l'indice invertito se necessario.
+	indexBTree, hasBTree := s.bTreeIndex[indexName]
+	indexInv, hasInv := s.invertedIndex[indexName]
+
+	// Dispatch sugli operatori
+	switch op {
+	case "=":
+		// Provo a trattare valueStr come numero
+		numValue, err := strconv.ParseFloat(valueStr, 64)
+		if err == nil && hasBTree {
+			// è un numero -> uso BTree per la chiave
+			tree, ok := indexBTree[key]
+			if !ok {
+				// chiave non indicizzata: risultato vuoto
+				return make(map[uint32]struct{}), nil
+			}
+
+			// cerchiamo gli elementi esattamente uguali a numValue
+			pivot := BTreeItem{Value: numValue}
+			tree.Ascend(pivot, func(item BTreeItem) bool {
+				if item.Value != numValue {
+					return false
+				}
+				idSet[item.NodeID] = struct{}{}
+				return true
+			})
+			return idSet, nil
+		}
+
+		// altrimenti trattiamo come stringa -> inverted index
+		if !hasInv {
+			return nil, fmt.Errorf("indice invertito '%s' non trovato", indexName)
+		}
+		keyMetadata, ok := indexInv[key]
+		if !ok {
+			return make(map[uint32]struct{}), nil
+		}
+		valSet, ok := keyMetadata[valueStr]
+		if !ok {
+			return make(map[uint32]struct{}), nil
+		}
+		// copia difensiva
+		for id := range valSet {
+			idSet[id] = struct{}{}
+		}
+		return idSet, nil
+
+	case "<", "<=", ">", ">=":
+		// Questi operatori sono numeric-only
+		numValue, err := strconv.ParseFloat(valueStr, 64)
+		if err != nil {
+			return nil, fmt.Errorf("il valore per l'operatore '%s' deve essere numerico: '%s'", op, valueStr)
+		}
+		if !hasBTree {
+			return nil, fmt.Errorf("indice numerico '%s' non trovato", indexName)
+		}
+
+		tree, ok := indexBTree[key]
+		if !ok {
+			// chiave non indicizzata: risultato vuoto
+			return make(map[uint32]struct{}), nil
+		}
+
+		switch op {
+		case "<":
+			// ascend dagli -inf e prendi fino a < numValue
+			tree.Ascend(BTreeItem{Value: math.Inf(-1)}, func(item BTreeItem) bool {
+				if item.Value >= numValue {
+					return false
+				}
+				idSet[item.NodeID] = struct{}{}
+				return true
+			})
+		case "<=":
+			tree.Ascend(BTreeItem{Value: math.Inf(-1)}, func(item BTreeItem) bool {
+				if item.Value > numValue {
+					return false
+				}
+				idSet[item.NodeID] = struct{}{}
+				return true
+			})
+		case ">":
+			// descend dal +inf e prendi > numValue
+			tree.Descend(BTreeItem{Value: math.Inf(+1)}, func(item BTreeItem) bool {
+				if item.Value <= numValue {
+					return false
+				}
+				idSet[item.NodeID] = struct{}{}
+				return true
+			})
+		case ">=":
+			tree.Descend(BTreeItem{Value: math.Inf(+1)}, func(item BTreeItem) bool {
+				if item.Value < numValue {
+					return false
+				}
+				idSet[item.NodeID] = struct{}{}
+				return true
+			})
+		}
+
+		return idSet, nil
+
+	default:
+		return nil, fmt.Errorf("operatore '%s' non supportato", op)
+	}
+}
+
+// intersectSets calcola l'intersezione dei due set (a ∩ b).
+func intersectSets(a, b map[uint32]struct{}) map[uint32]struct{} {
+	if a == nil || b == nil {
+		return make(map[uint32]struct{})
+	}
+	// itera sul più piccolo per efficienza
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	res := make(map[uint32]struct{})
+	for id := range a {
+		if _, ok := b[id]; ok {
+			res[id] = struct{}{}
+		}
+	}
+	return res
+}
+
+// unionSets calcola l'unione dei due set (a ∪ b).
+func unionSets(a, b map[uint32]struct{}) map[uint32]struct{} {
+	res := make(map[uint32]struct{}, len(a)+len(b))
+	for id := range a {
+		res[id] = struct{}{}
+	}
+	for id := range b {
+		res[id] = struct{}{}
+	}
+	return res
+}
+
+/*
+// interroga l'indice invertito e restituisce un set di ID dei nodi che corrispondono al filtro.
+// al momento supporta solo il singolo filtro '=', poi si aggiungeranno altri
+func (s *Store) FindIDsByFilter(indexName string, filter string) (map[uint32]struct{}, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// 1) parsa il filtro '='
+	parts := strings.SplitN(filter, "=", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("formato filtro invalido, usare 'chiave=valore'")
+	}
+	key := strings.TrimSpace(parts[0])
+	value := strings.TrimSpace(parts[1])
+
+	// 2) controlla l'esistenza dell'indice
+	indexMetadata, ok := s.invertedIndex[indexName]
+	if !ok {
+		return nil, fmt.Errorf("indice '%s' non trovato", indexName)
+	}
+
+	// 3) cerca nell'indice invertito
+	keyMetadata, ok := indexMetadata[key]
+	if !ok {
+		// se non trova la chiave allora nessun risultato
+		return make(map[uint32]struct{}), nil
+	}
+
+	idSet, ok := keyMetadata[value]
+	if !ok {
+		// se non trova il risultato allora nessun risultato
+		return make(map[uint32]struct{}), nil
+	}
+
+	// 4) restituisce una copia del set per sicurezza
+	idSetCopy := make(map[uint32]struct{}, len(idSet))
+	for id := range idSet {
+		idSetCopy[id] = struct{}{}
+	}
+
+	return idSetCopy, nil
+
+}
+*/
+
+// funzione Less per BTree items. Ordinerà gli item sul value float64
+func btreeItemLess(a, b BTreeItem) bool {
+	if a.Value < b.Value {
+		return true
+	}
+	if a.Value > b.Value {
+		return false
+	}
+	// se il valore è uguale, ordina tramite NodeID per mantenere gli items distinti
+	return a.NodeID < b.NodeID
 }

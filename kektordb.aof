@@ -1,12 +1,22 @@
-set nome KektorDB
-vcreate test
-vadd test vec1 1 2 3
-vcreate test-del
-vadd test-del vec1 1.0 1.0
-vadd test-del vec2 1.1 1.1
-vadd test-del vec3 5.0 5.0
-vdel test-del vec1
-SET mia_chiave ciao mondo
-VCREATE api_test
-VADD api_test v1 1 2 3
-VADD api_test v2 1.1 2.1 3.1
+
+VCREATE prodotti
+VADD prodotti scarpa-01 0.1 0.2 0.9 {"colore":"rosso","tipo":"sportivo"}
+VADD prodotti scarpa-02 0.1 0.2 0.9 {"colore":"nero","tipo":"sportivo"}
+VADD prodotti scarpa-03 0.1 0.5 0.7 {"colore":"bianco","tipo":"elegante"}
+VADD prodotti scarpa-04 0.1 0.5 0.7 {"colore":"bianco","prezzo":99.99,"tipo":"elegante"}
+VADD prodotti stivale-01 0.1 0.5 0.7 {"colore":"nero","prezzo":150,"tipo":"elegante"}
+SET nome dash
+SET cognome sanone
+VCREATE test
+VADD test v1 1.0 1.0
+VADD test v2 2.0 2.0
+SET nome kektor
+VDEL test v1
+
+VCREATE articoli METRIC cosine
+VCREATE articoli METRIC cosine
+VCREATE articoli METRIC cosine
+VADD articoli gatto 0.1 0.8 0.3 0.5
+VADD articoli cane 0.9 0.2 0.1 0.4
+VADD articoli felino 0.15 0.75 0.35 0.55
+VCREATE articoliEucli METRIC euclidean

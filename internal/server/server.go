@@ -2,11 +2,11 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"context" // per gestire graceful shutdown (ctrl + c)
+	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/sanonone/kektordb/internal/protocol"
-	"github.com/sanonone/kektordb/internal/store"
 	"io"
 	"log"
 	"net"
@@ -16,6 +16,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sanonone/kektordb/internal/protocol"
+	"github.com/sanonone/kektordb/internal/store"
 )
 
 // crea un nuovo tipo commandHandler, questo tipo rappresenta
@@ -125,6 +128,240 @@ func (s *Server) acceptTCPLoop() {
 	}
 }
 
+// vectorIndexState contiene lo stato di un singolo indice vettoriale.
+type vectorIndexState struct {
+	metric  store.DistanceMetric
+	entries map[string]vectorEntry // map[vectorID] -> entry
+}
+
+// rappresenta lo stato finale aggregato dopo aver letto l'aof
+type aofState struct {
+	kvData        map[string][]byte
+	vectorIndexes map[string]vectorIndexState // map[indexName] -> state
+}
+
+// contiene le informazioni di un singolo vettore
+type vectorEntry struct {
+	vector   []float32
+	metadata map[string]any
+}
+
+// loadFromAOF è la versione che compatta lo stato prima di caricarlo,
+// supporta soft-delete e separa correttamente vector / metadata.
+func (s *Server) loadFromAOF() error {
+	log.Println("Caricamento e compattazione dati dal file AOF...")
+
+	// Spostiamo il cursore all'inizio del file per la lettura.
+	if _, err := s.aofFile.Seek(0, 0); err != nil {
+		return fmt.Errorf("seek aof: %w", err)
+	}
+
+	// --- FASE 1 & 2: Lettura e Aggregazione dello Stato ---
+	state := &aofState{
+		kvData:        make(map[string][]byte),
+		vectorIndexes: make(map[string]vectorIndexState), // Usa la nuova struct
+	}
+
+	scanner := bufio.NewScanner(s.aofFile)
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := scanner.Text()
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		cmd, err := protocol.Parse(line)
+		if err != nil {
+			log.Printf("[AOF] riga %d: impossibile parsare '%s' -> salto. err=%v", lineNo, line, err)
+			continue
+		}
+
+		switch cmd.Name {
+		case "SET":
+			if len(cmd.Args) == 2 {
+				state.kvData[string(cmd.Args[0])] = cmd.Args[1]
+			} else {
+				log.Printf("[AOF] riga %d: SET con argomenti inattesi (%d)", lineNo, len(cmd.Args))
+			}
+
+		case "DEL":
+			if len(cmd.Args) == 1 {
+				delete(state.kvData, string(cmd.Args[0]))
+			} else {
+				log.Printf("[AOF] riga %d: DEL con argomenti inattesi (%d)", lineNo, len(cmd.Args))
+			}
+
+		case "VCREATE":
+			// Formato: VCREATE <index_name> [METRIC <metric_name>]
+			if len(cmd.Args) >= 1 {
+				indexName := string(cmd.Args[0])
+				metric := store.Euclidean // Default
+				if len(cmd.Args) == 3 && strings.ToUpper(string(cmd.Args[1])) == "METRIC" {
+					metric = store.DistanceMetric(cmd.Args[2])
+				}
+
+				// Crea lo spazio per questo indice nello stato
+				if _, ok := state.vectorIndexes[indexName]; !ok {
+					state.vectorIndexes[indexName] = vectorIndexState{
+						metric:  metric,
+						entries: make(map[string]vectorEntry),
+					}
+				}
+			}
+
+		case "VADD":
+			// Supportiamo: VADD indexName vectorID <vectorParts...> [metadataJSON]
+			if len(cmd.Args) >= 3 {
+				indexName := string(cmd.Args[0])
+				vectorID := string(cmd.Args[1])
+
+				if _, ok := state.vectorIndexes[indexName]; !ok {
+					continue // Ignora se l'indice non è stato creato
+				}
+
+				vectorParts := cmd.Args[2:]
+				var metadataJSON []byte
+
+				// Separa i metadati se presenti
+				if len(vectorParts) > 0 {
+					lastArg := vectorParts[len(vectorParts)-1]
+					if len(lastArg) > 1 && lastArg[0] == '{' && lastArg[len(lastArg)-1] == '}' {
+						metadataJSON = lastArg
+						vectorParts = vectorParts[:len(vectorParts)-1]
+					}
+				}
+
+				if len(vectorParts) == 0 {
+					continue
+				} // Vettore mancante
+
+				vector, err := parseVectorFromByteParts(vectorParts)
+				if err == nil {
+					entry := vectorEntry{vector: vector}
+					if len(metadataJSON) > 0 {
+						var metadata map[string]interface{}
+						if json.Unmarshal(metadataJSON, &metadata) == nil {
+							entry.metadata = metadata
+						}
+					}
+					state.vectorIndexes[indexName].entries[vectorID] = entry
+				} else {
+					log.Printf("Avviso AOF: impossibile parsare il vettore per '%s', saltato. Errore: %v", vectorID, err)
+				}
+			}
+
+		case "VDEL":
+			// Soft-delete: marca l'entry come deleted (non rimuovere l'entry dallo state)
+			// Se vuoi hard-delete, usa delete(index, vectorID)
+			if len(cmd.Args) == 2 {
+				indexName := string(cmd.Args[0])
+				vectorID := string(cmd.Args[1])
+				if index, ok := state.vectorIndexes[indexName]; ok {
+					delete(index.entries, vectorID)
+				}
+			}
+
+		default:
+			// ignora altri comandi o loggali se servono
+			// log.Printf("[AOF] riga %d: comando ignorato: %s", lineNo, cmd.Name)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scanner aof: %w", err)
+	}
+
+	// --- FASE 3: Ricostruzione dello Stato nello Store ---
+	log.Println("Ricostruzione dello stato compattato in memoria...")
+
+	// Ricostruisci il KV store
+	for key, value := range state.kvData {
+		s.store.GetKVStore().Set(key, value)
+	}
+
+	// Ricostruisci gli indici vettoriali
+	totalVectors := 0
+	addedVectors := 0
+	skippedDeleted := 0
+	for indexName, indexState := range state.vectorIndexes {
+		log.Printf("[AOF] Ricostruzione indice '%s' (Metrica: %s) - Vettori: %d", indexName, indexState.metric, len(indexState.entries))
+		// --- CHIAMATA CORRETTA ---
+		// Ora passiamo la metrica che abbiamo salvato nello stato
+		err := s.store.CreateVectorIndex(indexName, indexState.metric)
+		if err != nil {
+			log.Printf("[AOF] ERRORE: impossibile creare l'indice '%s': %v", indexName, err)
+			continue
+		}
+		idx, found := s.store.GetVectorIndex(indexName)
+		if !found {
+			log.Printf("[AOF] impossibile ottenere indice '%s'", indexName)
+			continue
+		}
+
+		for vectorID, entry := range indexState.entries {
+			totalVectors++
+
+			// Se è marcata come soft-deleted, salta l'aggiunta al grafo
+			if entry.metadata != nil {
+				if vdel, ok := entry.metadata["__deleted"]; ok {
+					if b, ok := vdel.(bool); ok && b {
+						skippedDeleted++
+						continue
+					}
+				}
+			}
+
+			// Se non c'è il vettore (placeholder) non possiamo aggiungerlo
+			if entry.vector == nil || len(entry.vector) == 0 {
+				log.Printf("[AOF] indice '%s' id '%s': vettore mancante -> skip", indexName, vectorID)
+				continue
+			}
+
+			internalID, err := idx.Add(vectorID, entry.vector)
+			if err != nil {
+				log.Printf("[AOF] Errore durante la ricostruzione HNSW per '%s' (indice '%s'): %v", vectorID, indexName, err)
+				continue
+			}
+			addedVectors++
+
+			// aggiungi metadata (se presenti)
+			if len(entry.metadata) > 0 {
+				// rimuoviamo il flag interno prima di salvare i metadata, se presente
+				if _, ok := entry.metadata["__deleted"]; ok {
+					delete(entry.metadata, "__deleted")
+				}
+				if len(entry.metadata) > 0 {
+					s.store.AddMetadata(indexName, internalID, entry.metadata)
+				}
+			}
+		}
+
+		log.Printf("[AOF] indice '%s' ricostruito: aggiunti=%d, skippati_deleted=%d", indexName, addedVectors, skippedDeleted)
+	}
+
+	log.Printf("Caricamento AOF completato. vettori_totali=%d aggiunti=%d skippati_deleted=%d", totalVectors, addedVectors, skippedDeleted)
+	return nil
+}
+
+// looksLikeJSON rileva se un []byte inizia con '{' o '[' (semplice heuristic).
+func looksLikeJSON(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	first := b[0]
+	// Ignora spazi iniziali
+	i := 0
+	for i < len(b) && (b[i] == ' ' || b[i] == '\t' || b[i] == '\n' || b[i] == '\r') {
+		i++
+	}
+	if i >= len(b) {
+		return false
+	}
+	first = b[i]
+	return first == '{' || first == '['
+}
+
+/*
 func (s *Server) loadFromAOF() error {
 	log.Println("Caricamento di dati dal file AOF...")
 
@@ -164,6 +401,7 @@ func (s *Server) loadFromAOF() error {
 	log.Println("Caricamento AOF completato")
 	return nil
 }
+*/
 
 func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
@@ -248,6 +486,13 @@ func (s *Server) dispatchCommand(conn net.Conn, line string) {
 		return
 	}
 
+	// --- LOG DI DEBUG ---
+	log.Printf("[DEBUG] Comando Parsato: Nome='%s', NumArgs=%d", cmd.Name, len(cmd.Args))
+	for i, arg := range cmd.Args {
+		log.Printf("[DEBUG] Arg %d: '%s'", i, string(arg))
+	}
+	// --- FINE LOG DI DEBUG ---
+
 	handler, ok := s.commands[cmd.Name]
 	if !ok {
 		s.writeError(conn, fmt.Sprintf("comando sconosciuto '%s'", cmd.Name))
@@ -303,7 +548,7 @@ func (s *Server) handlePing(conn net.Conn, args [][]byte) {
 }
 
 func (s *Server) handleSet(conn net.Conn, args [][]byte) {
-	if len(args) != 2 {
+	if len(args) < 2 {
 		if conn != nil {
 			s.writeError(conn, "numero di argomenti errato per il comando 'SET'")
 		}
@@ -311,7 +556,7 @@ func (s *Server) handleSet(conn net.Conn, args [][]byte) {
 	}
 
 	key := string(args[0])
-	value := args[1]
+	value := bytes.Join(args[1:], []byte(" "))
 
 	s.store.GetKVStore().Set(key, value)
 
@@ -362,21 +607,139 @@ func (s *Server) handleDelete(conn net.Conn, args [][]byte) {
 }
 
 func (s *Server) handleVCreate(conn net.Conn, args [][]byte) {
-	if len(args) != 1 {
+	// Formato: VCREATE <index_name> [METRIC <metric_name>]
+	if len(args) != 1 && len(args) != 3 {
 		if conn != nil {
 			s.writeError(conn, "numero di argomenti errato per 'VCREATE'")
 		}
 		return
 	}
+
 	indexName := string(args[0])
-	s.store.CreateVectorIndex(indexName)
+	metric := store.Euclidean // Default
+
+	if len(args) == 3 {
+		if strings.ToUpper(string(args[1])) != "METRIC" {
+			if conn != nil {
+				s.writeError(conn, "sintassi errata, atteso 'METRIC'")
+			}
+			return
+		}
+		metric = store.DistanceMetric(args[2])
+	}
+
+	// La logica AOF è gestita da dispatchCommand, non dobbiamo fare nulla qui.
+
+	err := s.store.CreateVectorIndex(indexName, metric)
+	if err != nil {
+		if conn != nil {
+			s.writeError(conn, err.Error())
+		}
+		return
+	}
+
 	if conn != nil {
 		s.writeSimpleString(conn, "OK")
 	}
 }
 
 // handleVAdd gestisce l'aggiunta di un vettore a un indice.
+
 func (s *Server) handleVAdd(conn net.Conn, args [][]byte) {
+
+	// --- LOG DI DEBUG ---
+	log.Printf("[DEBUG] handleVAdd ricevuto: NumArgs=%d", len(args))
+	for i, arg := range args {
+		log.Printf("[DEBUG] handleVAdd Arg %d: '%s'", i, string(arg))
+	}
+	// --- FINE LOG DI DEBUG ---
+
+	if len(args) < 3 { // Accettiamo anche 4 argomenti, quindi il check è un po' più complesso
+		if conn != nil { // <-- AGGIUNGI QUESTO CONTROLLO
+			s.writeError(conn, "numero di argomenti errato per 'VADD'")
+		}
+		return // Esci silenziosamente se stiamo caricando da AOF
+	}
+
+	indexName := string(args[0])
+	vectorID := string(args[1])
+	vectorParts := args[2:]
+
+	var metadataJSON []byte
+
+	// --- LOGICA DI SEPARAZIONE METADATI ---
+	// Controlla se l'ULTIMO argomento è un JSON.
+	if len(vectorParts) > 0 {
+		lastArg := vectorParts[len(vectorParts)-1]
+		// Un check semplice ma efficace: un JSON valido inizia con { e finisce con }
+		if len(lastArg) > 1 && lastArg[0] == '{' && lastArg[len(lastArg)-1] == '}' {
+			metadataJSON = lastArg
+			vectorParts = vectorParts[:len(vectorParts)-1] // Rimuovi il JSON dalle parti del vettore
+		}
+	}
+	// --- FINE LOGICA DI SEPARAZIONE ---
+
+	if len(vectorParts) == 0 {
+		if conn != nil {
+			s.writeError(conn, "il comando VADD non contiene un vettore")
+		}
+		return
+	}
+
+	vector, err := parseVectorFromByteParts(vectorParts)
+	if err != nil {
+		if conn != nil { // <-- AGGIUNGI QUESTO CONTROLLO
+			s.writeError(conn, fmt.Sprintf("formato vettore invalido: %v", err))
+		}
+		return
+	}
+
+	idx, found := s.store.GetVectorIndex(indexName)
+	if !found {
+		if conn != nil { // <-- AGGIUNGI QUESTO CONTROLLO
+			s.writeError(conn, fmt.Sprintf("indice '%s' non trovato", indexName))
+		}
+		return
+	}
+
+	// Ora la logica di inserimento...
+	internalID, err := idx.Add(vectorID, vector)
+	if err != nil {
+		if conn != nil { // <-- AGGIUNGI QUESTO CONTROLLO
+			s.writeError(conn, fmt.Sprintf("errore nell'aggiungere il vettore: %v", err))
+		}
+		return
+	}
+
+	// Gestione Metadati (ora usiamo la nostra variabile `metadataJSON`)
+	if len(metadataJSON) > 0 {
+		var metadata map[string]any
+		if err := json.Unmarshal(metadataJSON, &metadata); err != nil {
+			if conn != nil {
+				s.writeError(conn, "formato JSON dei metadati invalido")
+			}
+			return
+		}
+
+		if err := s.store.AddMetadata(indexName, internalID, metadata); err != nil {
+			if conn != nil {
+				s.writeError(conn, fmt.Sprintf("errore nell'indicizzare i metadati: %v", err))
+			}
+			return
+		}
+	}
+
+	// aggiungere logica AOF
+
+	// Infine, scrivi la risposta di successo solo se c'è una connessione
+	if conn != nil {
+		s.writeSimpleString(conn, "OK")
+	}
+}
+
+/*
+func (s *Server) handleVAdd(conn net.Conn, args [][]byte) {
+	// VADD <index> <id> <vector> [metadata_json]
 	if len(args) < 3 {
 		if conn != nil {
 			s.writeError(conn, "numero di argomenti insufficiente per 'VADD'")
@@ -400,11 +763,29 @@ func (s *Server) handleVAdd(conn net.Conn, args [][]byte) {
 		return
 	}
 
-	idx.Add(vectorID, vector)
-	if conn != nil {
-		s.writeSimpleString(conn, "OK")
+	internalID, err := idx.Add(vectorID, vector)
+	if err != nil {
+		s.writeError(conn, fmt.Sprintf("errore nell'aggiungere il vettore: %v", err))
+		return
 	}
+
+	// Se ci sono metadati, parsali e indicizzali.
+	if len(args) == 4 && len(args[3]) > 0 {
+		var metadata map[string]any
+		if err := json.Unmarshal(args[3], &metadata); err != nil {
+			s.writeError(conn, "formato JSON dei metadati invalido")
+			return // Potremmo voler "disfare" l'aggiunta del vettore, ma per ora è ok.
+		}
+
+		if err := s.store.AddMetadata(indexName, internalID, metadata); err != nil {
+			s.writeError(conn, fmt.Sprintf("errore nell'indicizzare i metadati: %v", err))
+			return
+		}
+	}
+
+	s.writeSimpleString(conn, "OK")
 }
+*/
 
 // handleVSearch gestisce la ricerca in un indice.
 func (s *Server) handleVSearch(conn net.Conn, args [][]byte) {
@@ -415,7 +796,7 @@ func (s *Server) handleVSearch(conn net.Conn, args [][]byte) {
 	indexName := string(args[0])
 	kStr := string(args[1])
 	// vectorStr := string(args[2])
-	vectorStr := args[2:]
+	vectorParts := args[2:]
 
 	k, err := strconv.Atoi(kStr)
 	if err != nil || k <= 0 {
@@ -429,13 +810,13 @@ func (s *Server) handleVSearch(conn net.Conn, args [][]byte) {
 		return
 	}
 
-	queryVector, err := parseVectorFromParts(vectorStr)
+	queryVector, err := parseVectorFromByteParts(vectorParts)
 	if err != nil {
 		s.writeError(conn, fmt.Sprintf("formato vettore di query invalido: %v", err))
 		return
 	}
 
-	results := idx.Search(queryVector, k)
+	results := idx.Search(queryVector, k, nil)
 
 	// Dobbiamo formattare la risposta. Una Bulk String con gli ID separati da spazi.
 	responseStr := strings.Join(results, " ")
@@ -469,6 +850,37 @@ func (s *Server) handleVDelete(conn net.Conn, args [][]byte) {
 	}
 }
 
+// Nuova funzione helper super-efficiente
+func parseVectorFromByteParts(parts [][]byte) ([]float32, error) {
+	vector := make([]float32, len(parts))
+	for i, part := range parts {
+		val, err := strconv.ParseFloat(string(part), 32)
+		if err != nil {
+			return nil, err
+		}
+		vector[i] = float32(val)
+	}
+	return vector, nil
+}
+
+// Nuova funzione helper per parsare una stringa, da non confondere con parseVectorFromParts
+func parseVectorFromString(s string) ([]float32, error) {
+	parts := strings.Fields(s) // Dividi la stringa per gli spazi
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("la stringa del vettore è vuota")
+	}
+	vector := make([]float32, len(parts))
+	for i, part := range parts {
+		val, err := strconv.ParseFloat(part, 32)
+		if err != nil {
+			return nil, err
+		}
+		vector[i] = float32(val)
+	}
+	return vector, nil
+}
+
+/*
 // Nuova funzione helper per parsare da una slice di [][]byte
 func parseVectorFromParts(parts [][]byte) ([]float32, error) {
 	vector := make([]float32, len(parts))
@@ -482,6 +894,7 @@ func parseVectorFromParts(parts [][]byte) ([]float32, error) {
 	}
 	return vector, nil
 }
+*/
 
 /*
 // Funzione helper per parsare una stringa di numeri float separati da spazi.
