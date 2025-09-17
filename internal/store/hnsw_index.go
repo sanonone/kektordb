@@ -49,6 +49,13 @@ type HNSWIndex struct {
 
 // crea ed inizializza un nuovo indice HNSW
 func NewHNSWIndex(m int, efConstruction int, metric DistanceMetric) (*HNSWIndex, error) {
+	// imposto valori di default se non sono stati passati come parametri dall'utente
+	if m <= 0 {
+		m = 16 // default
+	}
+	if efConstruction <= 0 {
+		efConstruction = 200 // default
+	}
 	distFunc, err := GetDistanceFunc(metric)
 	if err != nil {
 		return nil, err

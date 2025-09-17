@@ -52,7 +52,7 @@ func (s *Store) GetKVStore() *KVStore {
 }
 
 // crea un nuovo indice vettoriale
-func (s *Store) CreateVectorIndex(name string, metric DistanceMetric) error {
+func (s *Store) CreateVectorIndex(name string, metric DistanceMetric, m, efConstruction int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -66,7 +66,7 @@ func (s *Store) CreateVectorIndex(name string, metric DistanceMetric) error {
 		defaultM       = 16
 		defaultEfConst = 200
 	)
-	idx, err := NewHNSWIndex(defaultM, defaultEfConst, metric)
+	idx, err := NewHNSWIndex(m, efConstruction, metric)
 	if err != nil {
 		return err
 	}

@@ -27,6 +27,7 @@ import (
 type commandHandler func(conn net.Conn, args [][]byte)
 
 // struct server con informazioni necessarie
+
 type Server struct {
 	listener net.Listener
 	commands map[string]commandHandler
@@ -38,10 +39,10 @@ type Server struct {
 }
 
 // crea una nuova istanza del server
-func NewServer() *Server {
+func NewServer(aofPath string) (*Server, error) {
 	// aprie o crea il file AOF
 	//0666 sono i permessi del file
-	file, err := os.OpenFile("kektordb.aof", os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	file, err := os.OpenFile(aofPath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		log.Fatalf("Impossibile aprire il file AOF: %v", err)
 	}
@@ -56,7 +57,7 @@ func NewServer() *Server {
 	}
 	// registrazione dei comandi
 	s.registerCommands()
-	return s
+	return s, nil
 }
 
 func (s *Server) registerCommands() {
@@ -130,8 +131,10 @@ func (s *Server) acceptTCPLoop() {
 
 // vectorIndexState contiene lo stato di un singolo indice vettoriale.
 type vectorIndexState struct {
-	metric  store.DistanceMetric
-	entries map[string]vectorEntry // map[vectorID] -> entry
+	metric         store.DistanceMetric
+	m              int
+	efConstruction int
+	entries        map[string]vectorEntry // map[vectorID] -> entry
 }
 
 // rappresenta lo stato finale aggregato dopo aver letto l'aof
@@ -193,19 +196,52 @@ func (s *Server) loadFromAOF() error {
 			}
 
 		case "VCREATE":
-			// Formato: VCREATE <index_name> [METRIC <metric_name>]
+			// Formato AOF ora atteso: VCREATE <index_name> [METRIC <metric>] [M <m_val>] [EF_CONSTRUCTION <ef_val>]
 			if len(cmd.Args) >= 1 {
 				indexName := string(cmd.Args[0])
-				metric := store.Euclidean // Default
-				if len(cmd.Args) == 3 && strings.ToUpper(string(cmd.Args[1])) == "METRIC" {
-					metric = store.DistanceMetric(cmd.Args[2])
+
+				// Valori di default
+				metric := store.Euclidean
+				m := 0 // 0 per usare il default in NewHNSWIndex
+				efConstruction := 0
+
+				// Parsing degli argomenti opzionali
+				i := 1 // Inizia dall'indice del primo argomento possibile
+				for i < len(cmd.Args) {
+					if i+1 >= len(cmd.Args) { // Parametro incompleto
+						log.Printf("[AOF] Ignorato VCREATE invalido '%s': parametro incompleto", cmd.Name)
+						break // Esci dal loop di parsing degli argomenti
+					}
+
+					key := strings.ToUpper(string(cmd.Args[i]))
+					value := string(cmd.Args[i+1])
+
+					switch key {
+					case "METRIC":
+						metric = store.DistanceMetric(value)
+					case "M":
+						val, err := strconv.Atoi(value)
+						if err == nil {
+							m = val
+						} // Ignora se non è un numero valido
+					case "EF_CONSTRUCTION":
+						val, err := strconv.Atoi(value)
+						if err == nil {
+							efConstruction = val
+						} // Ignora se non è un numero valido
+					default:
+						// Ignora parametri sconosciuti
+					}
+					i += 2 // Avanza di 2 per la prossima coppia chiave-valore
 				}
 
-				// Crea lo spazio per questo indice nello stato
+				// Crea lo spazio per questo indice nello stato (se non esiste già)
 				if _, ok := state.vectorIndexes[indexName]; !ok {
 					state.vectorIndexes[indexName] = vectorIndexState{
-						metric:  metric,
-						entries: make(map[string]vectorEntry),
+						metric:         metric,
+						m:              m,
+						efConstruction: efConstruction,
+						entries:        make(map[string]vectorEntry),
 					}
 				}
 			}
@@ -287,9 +323,10 @@ func (s *Server) loadFromAOF() error {
 		log.Printf("[AOF] Ricostruzione indice '%s' (Metrica: %s) - Vettori: %d", indexName, indexState.metric, len(indexState.entries))
 		// --- CHIAMATA CORRETTA ---
 		// Ora passiamo la metrica che abbiamo salvato nello stato
-		err := s.store.CreateVectorIndex(indexName, indexState.metric)
+		err := s.store.CreateVectorIndex(indexName, indexState.metric, indexState.m, indexState.efConstruction)
 		if err != nil {
-			log.Printf("[AOF] ERRORE: impossibile creare l'indice '%s': %v", indexName, err)
+			log.Printf("[AOF] ERRORE: impossibile creare l'indice '%s' con metrica %s, M=%d, EF=%d: %v",
+				indexName, indexState.metric, indexState.m, indexState.efConstruction, err)
 			continue
 		}
 		idx, found := s.store.GetVectorIndex(indexName)
@@ -607,8 +644,8 @@ func (s *Server) handleDelete(conn net.Conn, args [][]byte) {
 }
 
 func (s *Server) handleVCreate(conn net.Conn, args [][]byte) {
-	// Formato: VCREATE <index_name> [METRIC <metric_name>]
-	if len(args) != 1 && len(args) != 3 {
+	// Formato: VCREATE <index_name> [METRIC <metric>] [M <m_val>] [EF_CONSTRUCTION <ef_val>]
+	if len(args) < 1 {
 		if conn != nil {
 			s.writeError(conn, "numero di argomenti errato per 'VCREATE'")
 		}
@@ -616,21 +653,57 @@ func (s *Server) handleVCreate(conn net.Conn, args [][]byte) {
 	}
 
 	indexName := string(args[0])
+	// valori di default
 	metric := store.Euclidean // Default
+	m := 0                    //  0 così sarà usato il valore di default in NewHNSWIndex
+	efConstruction := 0       // 0 per motivo sopra
 
-	if len(args) == 3 {
-		if strings.ToUpper(string(args[1])) != "METRIC" {
+	// Parsing degli argomenti opzionali
+	// Iteriamo sulla slice di argomenti a coppie
+	for i := 1; i < len(args); i += 2 {
+		// Controlla che ci sia un valore dopo la chiave
+		if i+1 >= len(args) {
 			if conn != nil {
-				s.writeError(conn, "sintassi errata, atteso 'METRIC'")
+				s.writeError(conn, "parametro opzionale incompleto per 'VCREATE'")
 			}
 			return
 		}
-		metric = store.DistanceMetric(args[2])
+
+		key := strings.ToUpper(string(args[i]))
+		value := string(args[i+1])
+
+		switch key {
+		case "METRIC":
+			metric = store.DistanceMetric(value)
+		case "M":
+			val, err := strconv.Atoi(value)
+			if err != nil {
+				if conn != nil {
+					s.writeError(conn, "il valore per 'M' deve essere un intero")
+				}
+				return
+			}
+			m = val
+		case "EF_CONSTRUCTION":
+			val, err := strconv.Atoi(value)
+			if err != nil {
+				if conn != nil {
+					s.writeError(conn, "il valore per 'EF_CONSTRUCTION' deve essere un intero")
+				}
+				return
+			}
+			efConstruction = val
+		default:
+			if conn != nil {
+				s.writeError(conn, fmt.Sprintf("parametro sconosciuto '%s' per 'VCREATE'", key))
+			}
+			return
+		}
 	}
 
 	// La logica AOF è gestita da dispatchCommand, non dobbiamo fare nulla qui.
 
-	err := s.store.CreateVectorIndex(indexName, metric)
+	err := s.store.CreateVectorIndex(indexName, metric, m, efConstruction)
 	if err != nil {
 		if conn != nil {
 			s.writeError(conn, err.Error())

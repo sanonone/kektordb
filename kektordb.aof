@@ -20,3 +20,10 @@ VADD articoli gatto 0.1 0.8 0.3 0.5
 VADD articoli cane 0.9 0.2 0.1 0.4
 VADD articoli felino 0.15 0.75 0.35 0.55
 VCREATE articoliEucli METRIC euclidean
+vcreate test_euclidean METRIC euclidean M 16 EF_construction 200
+vcreate testAcaso
+VCREATE test_cosine METRIC cosine M 16 EF_CONSTRUCTION 200
+VCREATE test_custom METRIC cosine M 32 EF_CONSTRUCTION 400
+VCREATE test_default M 16 EF_CONSTRUCTION 200
+VADD test_euclidean v1 1.0 2.0
+VADD test_cosine v2 0.5 0.8

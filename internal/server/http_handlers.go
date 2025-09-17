@@ -87,7 +87,9 @@ type VectorCreateRequest struct {
 	IndexName string `json:"index_name"`
 	// omitempty per il campo metric così se il client non lo invia non sarà
 	// presente nel json permettendo l'uso di un default
-	Metric string `json:"metric,omitempty"`
+	Metric         string `json:"metric,omitempty"`
+	M              int    `json:"m,omitempty"`
+	EfConstruction int    `json:"ef_construction,omitempty"`
 }
 
 func (s *Server) handleVectorCreate(w http.ResponseWriter, r *http.Request) {
@@ -114,12 +116,12 @@ func (s *Server) handleVectorCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// scrittura AOF per persistenza
-	aofCommand := fmt.Sprintf("VCREATE %s METRIC %s\n", req.IndexName, metric)
+	aofCommand := fmt.Sprintf("VCREATE %s METRIC %s M %d EF_CONSTRUCTION %d\n", req.IndexName, metric, req.M, req.EfConstruction)
 	s.aofMutex.Lock()
 	s.aofFile.WriteString(aofCommand) // gestire l'errore qui in un sistema di produzione
 	s.aofMutex.Unlock()
 
-	err := s.store.CreateVectorIndex(req.IndexName, metric)
+	err := s.store.CreateVectorIndex(req.IndexName, metric, req.M, req.EfConstruction)
 	if err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
 		return
