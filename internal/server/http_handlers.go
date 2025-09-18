@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/sanonone/kektordb/internal/store/distance"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -20,7 +21,9 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/vector/create", s.handleVectorCreate)
 	mux.HandleFunc("/vector/add", s.handleVectorAdd)
 	mux.HandleFunc("/vector/search", s.handleVectorSearch)
-	// (Potremmo aggiungere /vector/delete in futuro)
+	// (aggiungere /vector/delete in futuro)
+
+	mux.HandleFunc("/system/aof-rewrite", s.handleAOFRewriteHTTP)
 }
 
 // --- Handler per KV ---
@@ -251,6 +254,24 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 
 	results := idx.Search(req.QueryVector, req.K, allowList)
 	s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": results})
+}
+
+// funzione handler per l'endpoint per compattazione AOF
+func (s *Server) handleAOFRewriteHTTP(w http.ResponseWriter, r *http.Request) {
+	// Accettiamo solo richieste POST per azioni che modificano lo stato del server.
+	if r.Method != http.MethodPost {
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST per avviare la riscrittura AOF")
+		return
+	}
+
+	err := s.RewriteAOF()
+	if err != nil {
+		log.Printf("ERRORE CRITICO durante la riscrittura AOF via HTTP: %v", err)
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("fallimento riscrittura AOF: %v", err))
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Riscrittura AOF completata con successo"})
 }
 
 // --- Helper per le Risposte HTTP ---

@@ -467,3 +467,26 @@ func squaredEuclideanDistance(v1, v2 []float32) (float64, error) {
 	return sum, nil
 }
 */
+
+// --- Helper ---
+func (h *Index) Iterate(callback func(id string, vector []float32)) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	for _, node := range h.nodes {
+		if !node.deleted {
+			callback(node.id, node.vector)
+		}
+	}
+}
+
+func (h *Index) GetInternalID(externalID string) uint32 {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.externalToInternalID[externalID]
+}
+
+// GetParameters restituisce i parametri di configurazione dell'indice.
+func (h *Index) GetParameters() (distance.DistanceMetric, int, int) {
+	return h.metric, h.m, h.efConstruction
+}

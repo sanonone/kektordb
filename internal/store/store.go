@@ -2,15 +2,188 @@ package store
 
 import (
 	"fmt"
-	"github.com/sanonone/kektordb/internal/store/distance" // Importa distance
-	"github.com/sanonone/kektordb/internal/store/hnsw"     // Importa hnsw
-	"github.com/tidwall/btree"
 	"math"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/sanonone/kektordb/internal/store/distance" // Importa distance
+	"github.com/sanonone/kektordb/internal/store/hnsw"     // Importa hnsw
+	"github.com/tidwall/btree"
 )
+
+// --- Gestione compattazione AOF ---
+
+// una struct per restituire coppie chiave-valore
+type KVPair struct {
+	Key   string
+	Value []byte
+}
+
+// struct per restituire i dati completi di un vettore
+type VectorData struct {
+	ID       string
+	Vector   []float32
+	Metadata map[string]any
+}
+
+// VectorIndexInfo è una struct per trasportare i metadati di un indice.
+type VectorIndexInfo struct {
+	Name           string
+	Metric         distance.DistanceMetric
+	M              int
+	EfConstruction int
+}
+
+// itera su tutte le coppie chiave-valore nello store e le passa a una funzione
+// di callback. L'iterazione avviene in un read lock
+func (s *Store) IterateKV(callback func(pair KVPair)) {
+	s.kvStore.mu.RLock()
+	defer s.kvStore.mu.RUnlock()
+
+	for key, value := range s.kvStore.data {
+		callback(KVPair{Key: key, Value: value})
+	}
+}
+
+// iterateKVUnlocked esegue l'iterazione senza acquisire lock
+func (s *Store) IterateKVUnlocked(callback func(pair KVPair)) {
+	for key, value := range s.kvStore.data {
+		callback(KVPair{Key: key, Value: value})
+	}
+}
+
+// itera su tutti gli indici vettoriali e i loro contenuti
+func (s *Store) IterateVectorIndexes(callback func(indexName string, index *hnsw.Index, data VectorData)) {
+	s.mu.RUnlock()
+	defer s.mu.RUnlock()
+
+	for name, idx := range s.vectorIndexes {
+		// deve accedere ai dati interni di HNSW
+		if hnswIndex, ok := idx.(*hnsw.Index); ok {
+			hnswIndex.Iterate(func(id string, vector []float32) {
+				// recupera i dati dallo store principale
+				internalID := hnswIndex.GetInternalID(id)
+				metadata := s.getMetadataForNode(name, internalID)
+
+				callback(name, hnswIndex, VectorData{
+					ID:       id,
+					Vector:   vector,
+					Metadata: metadata,
+				})
+			})
+		}
+	}
+}
+
+// iterateVectorIndexesUnlocked esegue l'iterazione senza acquisire lock.
+func (s *Store) IterateVectorIndexesUnlocked(callback func(indexName string, index *hnsw.Index, data VectorData)) {
+	for name, idx := range s.vectorIndexes {
+		if hnswIndex, ok := idx.(*hnsw.Index); ok {
+			hnswIndex.Iterate(func(id string, vector []float32) {
+				// ... (logica per recuperare i metadati, che a sua volta non deve lockare!)
+				// Per ora, la lasciamo così, ma in un refactoring più profondo
+				// anche getMetadataForNode avrebbe una versione unlocked.
+				internalID := hnswIndex.GetInternalID(id)
+				metadata := s.getMetadataForNodeUnlocked(name, internalID)
+
+				callback(name, hnswIndex, VectorData{
+					ID:       id,
+					Vector:   vector,
+					Metadata: metadata,
+				})
+			})
+		}
+	}
+}
+
+// GetVectorIndexInfo restituisce una slice con le informazioni di configurazione
+// di tutti gli indici vettoriali presenti.
+func (s *Store) GetVectorIndexInfo() ([]VectorIndexInfo, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	infoList := make([]VectorIndexInfo, 0, len(s.vectorIndexes))
+
+	for name, idx := range s.vectorIndexes {
+		if hnswIndex, ok := idx.(*hnsw.Index); ok {
+			metric, m, efConst := hnswIndex.GetParameters()
+			infoList = append(infoList, VectorIndexInfo{
+				Name:           name,
+				Metric:         metric,
+				M:              m,
+				EfConstruction: efConst,
+			})
+		}
+		// Potremmo gestire altri tipi di indici qui in futuro.
+	}
+
+	return infoList, nil
+}
+
+func (s *Store) GetVectorIndexInfoUnlocked() ([]VectorIndexInfo, error) {
+	infoList := make([]VectorIndexInfo, 0, len(s.vectorIndexes))
+	for name, idx := range s.vectorIndexes {
+		if hnswIndex, ok := idx.(*hnsw.Index); ok {
+			metric, m, efConst := hnswIndex.GetParameters()
+			infoList = append(infoList, VectorIndexInfo{
+				Name:           name,
+				Metric:         metric,
+				M:              m,
+				EfConstruction: efConst,
+			})
+		}
+	}
+	return infoList, nil
+}
+
+// --- Fine compattazione AOF ---
+
+// funzione helper per IterateVectorIndexes
+// nota: logica inefficiente, in futuro si dovranno legare i metadata più strettamente ai nodi HNSW
+func (s *Store) getMetadataForNode(indexName string, nodeID uint32) map[string]any {
+	metadata := make(map[string]any)
+
+	// fa la scansione dell'indice invertito
+	if invIdx, ok := s.invertedIndex[indexName]; ok {
+		for key, valueMap := range invIdx {
+			for value, idSet := range valueMap {
+				if _, exists := idSet[nodeID]; exists {
+					metadata[key] = value
+				}
+
+			}
+
+		}
+	}
+
+	// fare scansione b tree simile a sopra
+
+	return metadata
+}
+
+// versione senza lock
+func (s *Store) getMetadataForNodeUnlocked(indexName string, nodeID uint32) map[string]any {
+	metadata := make(map[string]any)
+
+	// fa la scansione dell'indice invertito
+	if invIdx, ok := s.invertedIndex[indexName]; ok {
+		for key, valueMap := range invIdx {
+			for value, idSet := range valueMap {
+				if _, exists := idSet[nodeID]; exists {
+					metadata[key] = value
+				}
+
+			}
+
+		}
+	}
+
+	// fare scansione b tree simile a sopra
+
+	return metadata
+}
 
 // è una struttura dati che userà il b tree per associare a un valore (metadato) un ID di nodo
 type BTreeItem struct {
@@ -424,4 +597,24 @@ func btreeItemLess(a, b BTreeItem) bool {
 	}
 	// se il valore è uguale, ordina tramite NodeID per mantenere gli items distinti
 	return a.NodeID < b.NodeID
+}
+
+// RLock acquisisce un read lock sullo store.
+func (s *Store) RLock() {
+	s.mu.RLock()
+}
+
+// RUnlock rilascia il read lock.
+func (s *Store) RUnlock() {
+	s.mu.RUnlock()
+}
+
+// Lock acquisisce un write lock sullo store.
+func (s *Store) Lock() {
+	s.mu.Lock()
+}
+
+// Unlock rilascia il write lock.
+func (s *Store) Unlock() {
+	s.mu.Unlock()
 }

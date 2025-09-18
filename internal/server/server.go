@@ -10,11 +10,13 @@ import (
 	"github.com/sanonone/kektordb/internal/protocol"
 	"github.com/sanonone/kektordb/internal/store"
 	"github.com/sanonone/kektordb/internal/store/distance"
+	"github.com/sanonone/kektordb/internal/store/hnsw"
 	"io"
 	"log"
 	"net"
 	"net/http" // per il web server
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -70,6 +72,7 @@ func (s *Server) registerCommands() {
 	s.commands["VADD"] = s.handleVAdd
 	s.commands["VSEARCH"] = s.handleVSearch
 	s.commands["VDEL"] = s.handleVDelete
+	s.commands["AOF REWRITE"] = s.handleAOFRewrite
 }
 
 // avvia i server TCP e HTTP e li mette in ascolto sulle porte specificate
@@ -377,6 +380,91 @@ func (s *Server) loadFromAOF() error {
 	}
 
 	log.Printf("Caricamento AOF completato. vettori_totali=%d aggiunti=%d skippati_deleted=%d", totalVectors, addedVectors, skippedDeleted)
+	return nil
+}
+
+// RewriteAOF compatta il file AOF riscrivendolo con lo stato attuale.
+func (s *Server) RewriteAOF() error {
+	log.Println("Avvio riscrittura AOF...")
+
+	// Usa i metodi di lock pubblici dello Store.
+	s.store.Lock()
+	defer s.store.Unlock()
+
+	// il percorso della directory del file AOF originale
+	aofDir := filepath.Dir(s.aofFile.Name())
+
+	// Usa os.CreateTemp invece del deprecato ioutil.TempFile
+	tempFile, err := os.CreateTemp(aofDir, "kektordb-aof-rewrite-*.aof")
+	if err != nil {
+		return fmt.Errorf("impossibile creare il file AOF temporaneo in '%s': %w", aofDir, err)
+	}
+	defer os.Remove(tempFile.Name()) // Assicura la pulizia in caso di errore
+
+	// --- FASE 1: Scrittura dei Comandi di Creazione Stato ---
+
+	// 1a. Scrivi i comandi SET per il KV Store
+	s.store.IterateKVUnlocked(func(pair store.KVPair) {
+		// Dobbiamo gestire correttamente valori che potrebbero contenere spazi.
+		// Per ora il nostro protocollo è semplice, ma in futuro potremmo
+		// dover "quotare" il valore.
+		cmd := fmt.Sprintf("SET %s %s\n", pair.Key, string(pair.Value))
+		tempFile.WriteString(cmd)
+	})
+
+	// 1b. Scrivi i comandi VCREATE per ogni indice vettoriale
+	// Otteniamo prima le informazioni su tutti gli indici.
+	vectorIndexInfo, err := s.store.GetVectorIndexInfoUnlocked()
+	if err != nil {
+		return fmt.Errorf("impossibile ottenere informazioni sugli indici vettoriali: %w", err)
+	}
+
+	for _, info := range vectorIndexInfo {
+		cmd := fmt.Sprintf("VCREATE %s METRIC %s M %d EF_CONSTRUCTION %d\n",
+			info.Name, info.Metric, info.M, info.EfConstruction)
+		tempFile.WriteString(cmd)
+	}
+
+	// 1c. Scrivi i comandi VADD per ogni vettore in ogni indice
+	s.store.IterateVectorIndexesUnlocked(func(indexName string, index *hnsw.Index, data store.VectorData) {
+		cmd, err := buildVAddAOFCommand(indexName, data.ID, data.Vector, data.Metadata)
+		if err == nil {
+			tempFile.WriteString(cmd)
+		}
+	})
+
+	// --- FASE 2: Sostituzione Atomica del File ---
+
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("impossibile chiudere il file AOF temporaneo: %w", err)
+	}
+
+	s.aofMutex.Lock()
+	defer s.aofMutex.Unlock()
+
+	// Il percorso del file AOF originale
+	aofPath := s.aofFile.Name()
+
+	// Chiudi il file AOF corrente prima di sostituirlo.
+	if err := s.aofFile.Close(); err != nil {
+		// Cerchiamo di riaprirlo per non lasciare il server in uno stato inconsistente.
+		s.aofFile, _ = os.OpenFile(aofPath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+		return fmt.Errorf("impossibile chiudere il file AOF originale prima della riscrittura: %w", err)
+	}
+
+	if err := os.Rename(tempFile.Name(), aofPath); err != nil {
+		s.aofFile, _ = os.OpenFile(aofPath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+		return fmt.Errorf("fallimento nella sostituzione del file AOF: %w", err)
+	}
+
+	newAOFFile, err := os.OpenFile(aofPath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	if err != nil {
+		// Questo è un errore grave, il server potrebbe non poter più persistere i dati.
+		return fmt.Errorf("impossibile riaprire il nuovo file AOF dopo la riscrittura: %w", err)
+	}
+	s.aofFile = newAOFFile
+
+	log.Println("Riscrittura AOF completata con successo.")
 	return nil
 }
 
@@ -917,6 +1005,30 @@ func (s *Server) handleVDelete(conn net.Conn, args [][]byte) {
 	}
 
 	idx.Delete(vectorID)
+
+	if conn != nil {
+		s.writeSimpleString(conn, "OK")
+	}
+}
+
+// funzione handler per il comando di compattazione AOF
+func (s *Server) handleAOFRewrite(conn net.Conn, args [][]byte) {
+	// Questo comando non accetta argomenti
+	if len(args) != 0 {
+		if conn != nil {
+			s.writeError(conn, "il comando 'AOF REWRITE' non accetta argomenti")
+		}
+		return
+	}
+
+	err := s.RewriteAOF()
+	if err != nil {
+		log.Printf("ERRORE CRITICO durante la riscrittura AOF: %v", err)
+		if conn != nil {
+			s.writeError(conn, fmt.Sprintf("fallimento riscrittura AOF: %v", err))
+		}
+		return
+	}
 
 	if conn != nil {
 		s.writeSimpleString(conn, "OK")
