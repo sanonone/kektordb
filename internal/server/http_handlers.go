@@ -4,7 +4,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/sanonone/kektordb/internal/store"
+	"github.com/sanonone/kektordb/internal/store/distance"
 	"io"
 	"net/http"
 	"strconv"
@@ -110,9 +110,9 @@ func (s *Server) handleVectorCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Se la metrica non è specificata, usiamo Euclidean come default.
-	metric := store.DistanceMetric(req.Metric)
+	metric := distance.DistanceMetric(req.Metric)
 	if metric == "" {
-		metric = store.Euclidean
+		metric = distance.Euclidean
 	}
 
 	// scrittura AOF per persistenza

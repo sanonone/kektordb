@@ -27,3 +27,8 @@ VCREATE test_custom METRIC cosine M 32 EF_CONSTRUCTION 400
 VCREATE test_default M 16 EF_CONSTRUCTION 200
 VADD test_euclidean v1 1.0 2.0
 VADD test_cosine v2 0.5 0.8
+VCREATE prodotti2 METRIC euclidean M 0 EF_CONSTRUCTION 0
+VCREATE prodotti2 METRIC euclidean M 0 EF_CONSTRUCTION 0
+VADD articoli felino2 0.15 0.75 0.35 0.55
+VCREATE articoli2 METRIC cosine M 0 EF_CONSTRUCTION 0
+VCREATE articoli2 METRIC cosine M 0 EF_CONSTRUCTION 0

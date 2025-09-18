@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/sanonone/kektordb/internal/protocol"
+	"github.com/sanonone/kektordb/internal/store"
+	"github.com/sanonone/kektordb/internal/store/distance"
 	"io"
 	"log"
 	"net"
@@ -16,9 +19,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/sanonone/kektordb/internal/protocol"
-	"github.com/sanonone/kektordb/internal/store"
 )
 
 // crea un nuovo tipo commandHandler, questo tipo rappresenta
@@ -131,7 +131,7 @@ func (s *Server) acceptTCPLoop() {
 
 // vectorIndexState contiene lo stato di un singolo indice vettoriale.
 type vectorIndexState struct {
-	metric         store.DistanceMetric
+	metric         distance.DistanceMetric
 	m              int
 	efConstruction int
 	entries        map[string]vectorEntry // map[vectorID] -> entry
@@ -201,7 +201,7 @@ func (s *Server) loadFromAOF() error {
 				indexName := string(cmd.Args[0])
 
 				// Valori di default
-				metric := store.Euclidean
+				metric := distance.Euclidean
 				m := 0 // 0 per usare il default in NewHNSWIndex
 				efConstruction := 0
 
@@ -218,7 +218,7 @@ func (s *Server) loadFromAOF() error {
 
 					switch key {
 					case "METRIC":
-						metric = store.DistanceMetric(value)
+						metric = distance.DistanceMetric(value)
 					case "M":
 						val, err := strconv.Atoi(value)
 						if err == nil {
@@ -654,9 +654,9 @@ func (s *Server) handleVCreate(conn net.Conn, args [][]byte) {
 
 	indexName := string(args[0])
 	// valori di default
-	metric := store.Euclidean // Default
-	m := 0                    //  0 così sarà usato il valore di default in NewHNSWIndex
-	efConstruction := 0       // 0 per motivo sopra
+	metric := distance.Euclidean // Default
+	m := 0                       //  0 così sarà usato il valore di default in NewHNSWIndex
+	efConstruction := 0          // 0 per motivo sopra
 
 	// Parsing degli argomenti opzionali
 	// Iteriamo sulla slice di argomenti a coppie
@@ -674,7 +674,7 @@ func (s *Server) handleVCreate(conn net.Conn, args [][]byte) {
 
 		switch key {
 		case "METRIC":
-			metric = store.DistanceMetric(value)
+			metric = distance.DistanceMetric(value)
 		case "M":
 			val, err := strconv.Atoi(value)
 			if err != nil {

@@ -2,6 +2,8 @@ package store
 
 import (
 	"fmt"
+	"github.com/sanonone/kektordb/internal/store/distance" // Importa distance
+	"github.com/sanonone/kektordb/internal/store/hnsw"     // Importa hnsw
 	"github.com/tidwall/btree"
 	"math"
 	"regexp"
@@ -52,7 +54,7 @@ func (s *Store) GetKVStore() *KVStore {
 }
 
 // crea un nuovo indice vettoriale
-func (s *Store) CreateVectorIndex(name string, metric DistanceMetric, m, efConstruction int) error {
+func (s *Store) CreateVectorIndex(name string, metric distance.DistanceMetric, m, efConstruction int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -66,7 +68,7 @@ func (s *Store) CreateVectorIndex(name string, metric DistanceMetric, m, efConst
 		defaultM       = 16
 		defaultEfConst = 200
 	)
-	idx, err := NewHNSWIndex(m, efConstruction, metric)
+	idx, err := hnsw.New(m, efConstruction, metric)
 	if err != nil {
 		return err
 	}

@@ -1,4 +1,4 @@
-package store
+package hnsw
 
 // rappresenta un singolo nodo nel grafo HNSW
 type Node struct {

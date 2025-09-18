@@ -1,8 +1,9 @@
-package store
+package hnsw
 
 import (
 	"container/heap"
 	"fmt"
+	"github.com/sanonone/kektordb/internal/store/distance"
 	"log"
 	"math"
 	"math/rand"
@@ -11,7 +12,7 @@ import (
 )
 
 // rappresenta l'indice del grafo gerarchico
-type HNSWIndex struct {
+type Index struct {
 	// mutex per la concorrenza. Al momento lock globale poi forse gestirò più nel dettaglio
 	mu sync.RWMutex
 
@@ -38,17 +39,17 @@ type HNSWIndex struct {
 
 	// funzione di distanza
 	// distanceFunc func([]float32, []float32) (float64, error)// vecchio
-	distanceFunc DistanceFunc
+	distanceFunc distance.DistanceFunc
 
 	// generatore num casuali per la selezione del livello
 	levelRand *rand.Rand
 
 	// per memorizzare il tipo  di metrica
-	metric DistanceMetric
+	metric distance.DistanceMetric
 }
 
 // crea ed inizializza un nuovo indice HNSW
-func NewHNSWIndex(m int, efConstruction int, metric DistanceMetric) (*HNSWIndex, error) {
+func New(m int, efConstruction int, metric distance.DistanceMetric) (*Index, error) {
 	// imposto valori di default se non sono stati passati come parametri dall'utente
 	if m <= 0 {
 		m = 16 // default
@@ -56,12 +57,12 @@ func NewHNSWIndex(m int, efConstruction int, metric DistanceMetric) (*HNSWIndex,
 	if efConstruction <= 0 {
 		efConstruction = 200 // default
 	}
-	distFunc, err := GetDistanceFunc(metric)
+	distFunc, err := distance.GetDistanceFunc(metric)
 	if err != nil {
 		return nil, err
 	}
 
-	h := &HNSWIndex{
+	h := &Index{
 		m:                    m,
 		mMax0:                m * 2, // è una regola comune raddoppiare m per il livello 0
 		efConstruction:       efConstruction,
@@ -79,7 +80,7 @@ func NewHNSWIndex(m int, efConstruction int, metric DistanceMetric) (*HNSWIndex,
 }
 
 // implementa il metodo dell'interfaccia VectorIndex
-func (h *HNSWIndex) Search(query []float32, k int, allowList map[uint32]struct{}) []string {
+func (h *Index) Search(query []float32, k int, allowList map[uint32]struct{}) []string {
 	// la logica interna è la vecchia Search, ma deve restituire
 	// solo []string, non ([]string, error).
 
@@ -95,7 +96,7 @@ func (h *HNSWIndex) Search(query []float32, k int, allowList map[uint32]struct{}
 }
 
 // la funzione pubblica per trovare i K vicini più prossimi a un vettore di query
-func (h *HNSWIndex) searchInternal(query []float32, k int, allowList map[uint32]struct{}) ([]string, error) {
+func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]struct{}) ([]string, error) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
@@ -164,7 +165,7 @@ func (h *HNSWIndex) searchInternal(query []float32, k int, allowList map[uint32]
 }
 
 // inserisce un nuovo vettore nel grafo
-func (h *HNSWIndex) Add(id string, vector []float32) (uint32, error) {
+func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -307,7 +308,7 @@ func (h *HNSWIndex) Add(id string, vector []float32) (uint32, error) {
 // marca un nodo come eliminato (soft delete)
 // [per il momento] non rimuove il nodo dal grafo per mantenere la stabilità
 // della struttura
-func (h *HNSWIndex) Delete(id string) {
+func (h *Index) Delete(id string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -331,7 +332,7 @@ func (h *HNSWIndex) Delete(id string) {
 }
 
 // fa la ricerca dei vicini più prossimi in un singolo livello del grafo
-func (h *HNSWIndex) searchLayer(query []float32, entrypointID uint32, k int, level int, allowList map[uint32]struct{}) ([]candidate, error) {
+func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level int, allowList map[uint32]struct{}) ([]candidate, error) {
 	log.Printf("DEBUG: Inizio searchLayer a livello %d con entrypoint %d\n", level, entrypointID)
 	// si tracciano i nodi già visitati per non entrare in loop
 	visited := make(map[uint32]bool)
@@ -425,7 +426,7 @@ func (h *HNSWIndex) searchLayer(query []float32, entrypointID uint32, k int, lev
 }
 
 // sceglie un livello casuale per un nuovo nodo
-func (h *HNSWIndex) randomLevel() int {
+func (h *Index) randomLevel() int {
 	// Questo si basa su una distribuzione esponenziale decrescente
 	level := 0
 	for h.levelRand.Float64() < 0.5 && level < h.maxLevel+1 { // Aggiungiamo un limite per sicurezza
@@ -436,7 +437,7 @@ func (h *HNSWIndex) randomLevel() int {
 
 // sceglie i migliori vicini da una lista di candidati
 // per ora, implementa l'euristica semplice: prende i più vicini
-func (h *HNSWIndex) selectNeighbors(candidates []candidate, m int) []candidate {
+func (h *Index) selectNeighbors(candidates []candidate, m int) []candidate {
 	if len(candidates) <= m {
 		return candidates
 	}
