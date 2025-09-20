@@ -57,7 +57,16 @@ class KektorDBClient:
         :param key: La chiave da impostare.
         :param value: Il valore (stringa o bytes).
         """
-        self._request("POST", f"/kv/{key}", data=value)
+        # Se il valore è in bytes, decodificalo in stringa per il JSON
+        if isinstance(value, bytes):
+            value_str = value.decode('utf-8')
+        else:
+            value_str = value
+            
+        payload = {"value": value_str}
+        # Sostituisci la vecchia chiamata con questa:
+        self._request("POST", f"/kv/{key}", json=payload)
+        
 
     def get(self, key: str) -> str:
         """
@@ -79,36 +88,74 @@ class KektorDBClient:
         
     # --- Metodi per Indici Vettoriali ---
 
-    def vcreate(self, index_name: str) -> None:
+    def vcreate(
+        self,
+        index_name: str,
+        metric: str = "euclidean",
+        m: int = 0, # 0 significa che il server userà il suo default
+        ef_construction: int = 0
+    ) -> None:
         """
         Crea un nuovo indice vettoriale.
 
         :param index_name: Il nome dell'indice da creare.
+        :param metric: La metrica di distanza ('euclidean' o 'cosine'). Default: 'euclidean'.
+        :param m: Il numero massimo di connessioni per nodo. Default: server-side.
+        :param ef_construction: La dimensione della lista candidati durante la costruzione. Default: server-side.
         """
-        self._request("POST", "/vector/create", json={"index_name": index_name})
+        payload = {
+            "index_name": index_name,
+            "metric": metric,
+            # Includiamo i parametri solo se specificati dall'utente
+            # per mantenere il payload pulito.
+        }
+        if m > 0:
+            payload["m"] = m
+        if ef_construction > 0:
+            payload["ef_construction"] = ef_construction
+            
+        self._request("POST", "/vector/create", json=payload)
 
-    def vadd(self, index_name: str, item_id: str, vector: List[float]) -> None:
+    def vadd(
+        self, 
+        index_name: str, 
+        item_id: str, 
+        vector: List[float], 
+        metadata: Dict[str, Any] = None
+    ) -> None:
         """
-        Aggiunge un vettore a un indice.
+        Aggiunge un vettore a un indice, con metadati opzionali.
 
         :param index_name: Il nome dell'indice.
         :param item_id: L'ID univoco dell'elemento.
         :param vector: L'embedding vettoriale.
+        :param metadata: Un dizionario di metadati (es. {"tag": "gatto", "prezzo": 99.99}).
         """
         payload = {
             "index_name": index_name,
             "id": item_id,
             "vector": vector
         }
-        self._request("POST", "/vector/add", json=payload)
+        if metadata:
+            payload["metadata"] = metadata
+        
+        self._request("POST", "/vector/add", json=payload) 
 
-    def vsearch(self, index_name: str, query_vector: List[float], k: int) -> List[str]:
+
+    def vsearch(
+        self, 
+        index_name: str, 
+        query_vector: List[float], 
+        k: int, 
+        filter_str: str = ""
+    ) -> List[str]:
         """
-        Esegue una ricerca di similarità in un indice.
+        Esegue una ricerca di similarità in un indice, con un filtro opzionale.
 
         :param index_name: Il nome dell'indice in cui cercare.
         :param query_vector: Il vettore di query.
         :param k: Il numero di vicini da restituire.
+        :param filter_str: Una stringa di filtro (es. "tag=gatto AND prezzo<100").
         :return: Una lista di ID degli elementi più simili.
         """
         payload = {
@@ -116,5 +163,30 @@ class KektorDBClient:
             "k": k,
             "query_vector": query_vector
         }
+        if filter_str:
+            payload["filter"] = filter_str
+            
         data = self._request("POST", "/vector/search", json=payload)
         return data.get("results", [])
+
+    def vdelete(self, index_name: str, item_id: str) -> None:
+        """
+        Elimina un vettore da un indice (soft delete).
+
+        :param index_name: Il nome dell'indice.
+        :param item_id: L'ID dell'elemento da eliminare.
+        """
+        payload = {
+            "index_name": index_name,
+            "id": item_id
+        }
+        self._request("POST", "/vector/delete", json=payload)
+
+     # --- Metodi di Amministrazione ---
+
+    def aof_rewrite(self) -> None:
+        """
+        Richiede al server KektorDB di eseguire una compattazione del file AOF.
+        Questa è un'operazione bloccante che può richiedere tempo.
+        """
+        self._request("POST", "/system/aof-rewrite")

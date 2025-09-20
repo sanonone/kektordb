@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/sanonone/kektordb/internal/store/distance"
-	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -21,7 +20,7 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/vector/create", s.handleVectorCreate)
 	mux.HandleFunc("/vector/add", s.handleVectorAdd)
 	mux.HandleFunc("/vector/search", s.handleVectorSearch)
-	// (aggiungere /vector/delete in futuro)
+	mux.HandleFunc("/vector/delete", s.handleVectorDelete)
 
 	mux.HandleFunc("/system/aof-rewrite", s.handleAOFRewriteHTTP)
 }
@@ -57,21 +56,29 @@ func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, key string)
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"key": key, "value": string(value)})
 }
 
+// 1. Definiamo una struct per la richiesta di SET
+type KVSetRequest struct {
+	Value string `json:"value"`
+}
+
 func (s *Server) handleKVSet(w http.ResponseWriter, r *http.Request, key string) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		s.writeHTTPError(w, http.StatusBadRequest, "Impossibile leggere il corpo della richiesta")
+	// 2. Leggiamo e decodifichiamo il corpo JSON
+	var req KVSetRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, "JSON invalido, atteso un oggetto con la chiave 'value'")
 		return
 	}
 
-	// Logga il comando sull'AOF
-	// costruisce la stringa del comando come se arrivasse dal TCP
-	aofCommand := fmt.Sprintf("SET %s %s\n", key, string(body))
+	// Ora il valore è req.Value
+	valueBytes := []byte(req.Value)
+
+	// 3. La logica AOF e di store rimane la stessa
+	aofCommand := fmt.Sprintf("SET %s %s\n", key, req.Value) // Usiamo req.Value
 	s.aofMutex.Lock()
 	s.aofFile.WriteString(aofCommand)
 	s.aofMutex.Unlock()
 
-	s.store.GetKVStore().Set(key, body)
+	s.store.GetKVStore().Set(key, valueBytes)
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK"})
 }
 
@@ -85,7 +92,7 @@ func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, key stri
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK"})
 }
 
-// --- Handler per Vettori (VCREATE, VADD, VSEARCH) ---
+// --- Handler per Vettori (VCREATE, VADD, VSEARCH, VDEL) ---
 type VectorCreateRequest struct {
 	IndexName string `json:"index_name"`
 	// omitempty per il campo metric così se il client non lo invia non sarà
@@ -254,6 +261,39 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 
 	results := idx.Search(req.QueryVector, req.K, allowList)
 	s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": results})
+}
+
+type VectorDeleteRequest struct {
+	IndexName string `json:"index_name"`
+	Id        string `json:"id"`
+}
+
+func (s *Server) handleVectorDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost { // Usiamo POST per coerenza con le altre azioni di modifica
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST")
+		return
+	}
+
+	var req VectorDeleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, "JSON invalido")
+		return
+	}
+
+	idx, found := s.store.GetVectorIndex(req.IndexName)
+	if !found {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Indice '%s' non trovato", req.IndexName))
+		return
+	}
+
+	// Logica AOF
+	aofCommand := fmt.Sprintf("VDEL %s %s\n", req.IndexName, req.Id)
+	s.aofMutex.Lock()
+	s.aofFile.WriteString(aofCommand)
+	s.aofMutex.Unlock()
+
+	idx.Delete(req.Id)
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Vettore eliminato"})
 }
 
 // funzione handler per l'endpoint per compattazione AOF
