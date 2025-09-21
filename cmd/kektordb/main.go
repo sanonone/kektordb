@@ -14,7 +14,7 @@ func main() {
 	// flag.String e flag.Int per definire parametri
 	// la funzione restituisce un puntatore alle variabili che conterrà il valore
 	// flag.String(nome, val_default, descrizione per help)
-	tcpAddr := flag.String("tcp-addr", ":9090", "Indirizzo e porta per il server TCP (es. :9090 o 127.0.0.1:9090)")
+	// tcpAddr := flag.String("tcp-addr", ":9090", "Indirizzo e porta per il server TCP (es. :9090 o 127.0.0.1:9090)")
 	httpAddr := flag.String("http-addr", ":9091", "Indirizzo e porta per il server API REST (es. :9091)")
 	aofPath := flag.String("aof-path", "kektordb.aof", "Percorso del file di persistenza AOF")
 
@@ -32,7 +32,8 @@ func main() {
 
 	// avvia il server TCP e HTTP in una goroutine per non bloccare il main
 	go func() {
-		log.Fatal(srv.Run(*tcpAddr, *httpAddr)) // avvia il server con i parametri dell'utente
+		log.Printf("Avvio server KektorDB: API REST su %s, AOF in %s", *httpAddr, *aofPath)
+		log.Fatal(srv.Run(*httpAddr)) // avvia il server con i parametri dell'utente
 	}()
 
 	// blocca il main in attesa del segnale di shutdown
