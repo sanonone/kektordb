@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/klauspost/cpuid/v2"
+	"github.com/x448/float16"
 	"math"
 )
 
@@ -41,6 +42,22 @@ func squaredEuclideanDistanceGo(v1, v2 []float32) (float64, error) {
 	var sum float32
 	for i := range v1 {
 		diff := v1[i] - v2[i]
+		sum += diff * diff
+	}
+	return float64(sum), nil
+}
+
+// funzione di distanza euclidea con float16 per minor carico sulla memoria
+func squaredEuclideanDistanceGoFloat16(v1, v2 []uint16) (float64, error) {
+	if len(v1) != len(v2) {
+		return 0, errors.New("i vettori float16 devono avere la stessa lunghezza")
+	}
+	var sum float32
+	for i := range v1 {
+		// Converti f16 in f32 per il calcolo
+		f1 := float16.Frombits(v1[i]).Float32()
+		f2 := float16.Frombits(v2[i]).Float32()
+		diff := f1 - f2
 		sum += diff * diff
 	}
 	return float64(sum), nil
@@ -87,6 +104,18 @@ func dotProductGo(v1, v2 []float32) (float64, error) {
 // nuovo tipo per gestire le diverse funzioni di distanza in modo comune
 type DistanceFunc func([]float32, []float32) (float64, error)
 
+// --- NUOVO TIPO PER GESTIRE LE DIVERSE FUNZIONI ---
+// tipo per le nostre funzioni di distanza float16
+type DistanceFuncFloat16 func([]uint16) (float64, error)
+
+var (
+	// Funzioni di default per float32
+	defaultDistanceFunc = squaredEuclideanDistanceGo
+
+	// --- NUOVO: Funzioni di default per float16 ---
+	defaultDistanceFuncFloat16 = squaredEuclideanDistanceGoFloat16
+)
+
 /*
 var (
 	// funzione di distanza predefinita, verrà sovrascritta se la CPU supporta ottimizzazioni
@@ -101,14 +130,23 @@ func init() {
 	// se la CPU supporta AVX2 + FMA, scegli la versione più veloce
 	if cpuid.CPU.Has(cpuid.AVX2) && cpuid.CPU.Has(cpuid.FMA3) {
 		distanceFuncs[Euclidean] = squaredEuclideanDistanceAVX2FMA
-		// distanceFuncs[Cosine] = dotProductAVX2FMA
+		distanceFuncs[Cosine] = dotProductAVX2FMA
 		return
-	}
-	// controlla se la CPU ha il set di istruzioni AVX2
-	if cpuid.CPU.Has(cpuid.AVX2) {
+	} else if cpuid.CPU.Has(cpuid.AVX2) {
 		// se si sovrascrile la funzione di default con quella ottimizzata
 		distanceFuncs[Euclidean] = squaredEuclideanDistanceAVX2
-		// distanceFuncs[Cosine] = dotProductAVX2
+		distanceFuncs[Cosine] = dotProductAVX2
+	}
+
+	// --- NUOVO: Dispatch per float16 ---
+	if cpuid.CPU.Has(cpuid.AVX2) && cpuid.CPU.Has(cpuid.F16C) {
+		// La versione base AVX2 è il nostro punto di partenza
+		defaultDistanceFuncFloat16 = squaredEuclideanDistanceAVX2Float16
+
+		// Se abbiamo anche FMA, usiamo la versione ancora più veloce
+		if cpuid.CPU.Has(cpuid.FMA3) {
+			defaultDistanceFuncFloat16 = squaredEuclideanDistanceAVX2Float16FMA
+		}
 	}
 	// qui in futuro andranno altri check per altre ottimizzazioni
 
