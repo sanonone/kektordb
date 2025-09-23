@@ -2,15 +2,15 @@ package store
 
 import (
 	"fmt"
+	"github.com/sanonone/kektordb/internal/store/distance" // Importa distance
+	"github.com/sanonone/kektordb/internal/store/hnsw"     // Importa hnsw
+	"github.com/tidwall/btree"
+	"log"
 	"math"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
-
-	"github.com/sanonone/kektordb/internal/store/distance" // Importa distance
-	"github.com/sanonone/kektordb/internal/store/hnsw"     // Importa hnsw
-	"github.com/tidwall/btree"
 )
 
 // --- Gestione compattazione AOF ---
@@ -227,7 +227,7 @@ func (s *Store) GetKVStore() *KVStore {
 }
 
 // crea un nuovo indice vettoriale
-func (s *Store) CreateVectorIndex(name string, metric distance.DistanceMetric, m, efConstruction int) error {
+func (s *Store) CreateVectorIndex(name string, metric distance.DistanceMetric, m, efConstruction int, precision distance.PrecisionType) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -241,7 +241,7 @@ func (s *Store) CreateVectorIndex(name string, metric distance.DistanceMetric, m
 		defaultM       = 16
 		defaultEfConst = 200
 	)
-	idx, err := hnsw.New(m, efConstruction, metric)
+	idx, err := hnsw.New(m, efConstruction, metric, precision)
 	if err != nil {
 		return err
 	}
@@ -264,11 +264,123 @@ func (s *Store) GetVectorIndex(name string) (VectorIndex, bool) {
 	return idx, found
 }
 
+// Compress converte un indice esistente in una nuova precisione.
+func (s *Store) Compress(indexName string, newPrecision distance.PrecisionType) error {
+	s.mu.Lock() // Usiamo un Lock() esclusivo perché modifichiamo la struttura dello store
+	defer s.mu.Unlock()
+
+	// 1. Controlla che l'indice esista
+	oldIndex, ok := s.vectorIndexes[indexName]
+	if !ok {
+		return fmt.Errorf("indice '%s' non trovato", indexName)
+	}
+
+	// Controlla che sia un indice HNSW
+	oldHNSWIndex, ok := oldIndex.(*hnsw.Index)
+	if !ok {
+		return fmt.Errorf("la compressione è supportata solo per indici HNSW")
+	}
+
+	// 2. Raccogli tutti i dati "vivi" dall'indice esistente
+	var allVectors []hnsw.NodeData // Creiamo una nuova struct per trasportare i dati
+	oldHNSWIndex.Iterate(func(id string, vector []float32) {
+		internalID := oldHNSWIndex.GetInternalID(id)
+		metadata := s.getMetadataForNodeUnlocked(indexName, internalID)
+		allVectors = append(allVectors, hnsw.NodeData{
+			ID:       id,
+			Vector:   vector,
+			Metadata: metadata,
+		})
+	})
+
+	if len(allVectors) == 0 {
+		return fmt.Errorf("impossibile comprimere un indice vuoto")
+	}
+
+	// 3. Crea e "addestra" il nuovo indice
+	metric, m, efConst := oldHNSWIndex.GetParameters()
+
+	newIndex, err := hnsw.New(m, efConst, metric, newPrecision)
+	if err != nil {
+		return fmt.Errorf("impossibile creare il nuovo indice compresso: %w", err)
+	}
+
+	// Se la nuova precisione è int8, dobbiamo addestrare il quantizzatore
+	if newPrecision == distance.Int8 {
+		// Estrai solo i vettori per il training
+		floatVectors := make([][]float32, len(allVectors))
+		for i, data := range allVectors {
+			floatVectors[i] = data.Vector
+		}
+		newIndex.TrainQuantizer(floatVectors) // Dobbiamo creare questo metodo
+	}
+
+	// 4. Popola il nuovo indice con i dati
+	for _, data := range allVectors {
+		internalID, err := newIndex.Add(data.ID, data.Vector)
+		if err != nil {
+			log.Printf("ATTENZIONE: Fallimento nell'aggiungere il vettore %s durante la compressione: %v", data.ID, err)
+			continue
+		}
+		// Ri-associa i metadati
+		if len(data.Metadata) > 0 {
+			s.AddMetadataUnlocked(indexName, internalID, data.Metadata)
+		}
+	}
+
+	// 5. Sostituisci atomicamente il vecchio indice con quello nuovo
+	s.vectorIndexes[indexName] = newIndex
+
+	log.Printf("Indice '%s' compresso con successo a precisione '%s'", indexName, newPrecision)
+	return nil
+}
+
 // AddMetadata associa i metadati a un ID di nodo e aggiorna gli indici secondari.
 func (s *Store) AddMetadata(indexName string, nodeID uint32, metadata map[string]any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	for key, value := range metadata {
+		switch v := value.(type) { // controlla il tipo della variabile any
+		case string:
+			// --- LOGICA INDICE INVERTITO (invariata) ---
+			indexMetadata, ok := s.invertedIndex[indexName]
+			if !ok {
+				return fmt.Errorf("indice di metadati per '%s' non trovato", indexName)
+			}
+			if _, ok := indexMetadata[key]; !ok {
+				indexMetadata[key] = make(map[string]map[uint32]struct{})
+			}
+			if _, ok := indexMetadata[key][v]; !ok {
+				indexMetadata[key][v] = make(map[uint32]struct{})
+			}
+			indexMetadata[key][v][nodeID] = struct{}{}
+
+		case float64:
+			// --- NUOVA LOGICA B-TREE ---
+			indexBTree, ok := s.bTreeIndex[indexName]
+			if !ok {
+				return fmt.Errorf("indice b-tree per '%s' non trovato", indexName)
+			}
+
+			// Controlla se un B-Tree per questa chiave esiste già, altrimenti crealo.
+			if _, ok := indexBTree[key]; !ok {
+				indexBTree[key] = btree.NewBTreeG[BTreeItem](btreeItemLess)
+			}
+
+			// Inserisci l'item nel B-Tree.
+			indexBTree[key].Set(BTreeItem{Value: v, NodeID: nodeID})
+
+		default:
+			// Per ora ignoriamo altri tipi (bool, etc.)
+			continue
+		}
+	}
+
+	return nil
+}
+
+func (s *Store) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[string]any) error {
 	for key, value := range metadata {
 		switch v := value.(type) { // controlla il tipo della variabile any
 		case string:

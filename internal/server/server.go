@@ -74,6 +74,7 @@ type vectorIndexState struct {
 	metric         distance.DistanceMetric
 	m              int
 	efConstruction int
+	precision      distance.PrecisionType
 	entries        map[string]vectorEntry // map[vectorID] -> entry
 }
 
@@ -136,13 +137,14 @@ func (s *Server) loadFromAOF() error {
 			}
 
 		case "VCREATE":
-			// Formato AOF ora atteso: VCREATE <index_name> [METRIC <metric>] [M <m_val>] [EF_CONSTRUCTION <ef_val>]
+			// Formato AOF ora atteso: VCREATE <index_name> [METRIC <metric>] [M <m_val>] [EF_CONSTRUCTION <ef_val>] [PRECISION <p>]
 			if len(cmd.Args) >= 1 {
 				indexName := string(cmd.Args[0])
 
 				// Valori di default
 				metric := distance.Euclidean
-				m := 0 // 0 per usare il default in NewHNSWIndex
+				precision := distance.Float32 // Default a float32
+				m := 0                        // 0 per usare il default in NewHNSWIndex
 				efConstruction := 0
 
 				// Parsing degli argomenti opzionali
@@ -169,6 +171,8 @@ func (s *Server) loadFromAOF() error {
 						if err == nil {
 							efConstruction = val
 						} // Ignora se non è un numero valido
+					case "PRECISION":
+						precision = distance.PrecisionType(value)
 					default:
 						// Ignora parametri sconosciuti
 					}
@@ -181,6 +185,7 @@ func (s *Server) loadFromAOF() error {
 						metric:         metric,
 						m:              m,
 						efConstruction: efConstruction,
+						precision:      precision,
 						entries:        make(map[string]vectorEntry),
 					}
 				}
@@ -260,10 +265,11 @@ func (s *Server) loadFromAOF() error {
 	addedVectors := 0
 	skippedDeleted := 0
 	for indexName, indexState := range state.vectorIndexes {
-		log.Printf("[AOF] Ricostruzione indice '%s' (Metrica: %s) - Vettori: %d", indexName, indexState.metric, len(indexState.entries))
+		log.Printf("[AOF] Ricostruzione indice '%s' (Metrica: %s, Precisione: %s) - Vettori: %d",
+			indexName, indexState.metric, indexState.precision, len(indexState.entries))
 		// --- CHIAMATA CORRETTA ---
 		// Ora passiamo la metrica che abbiamo salvato nello stato
-		err := s.store.CreateVectorIndex(indexName, indexState.metric, indexState.m, indexState.efConstruction)
+		err := s.store.CreateVectorIndex(indexName, indexState.metric, indexState.m, indexState.efConstruction, indexState.precision)
 		if err != nil {
 			log.Printf("[AOF] ERRORE: impossibile creare l'indice '%s' con metrica %s, M=%d, EF=%d: %v",
 				indexName, indexState.metric, indexState.m, indexState.efConstruction, err)

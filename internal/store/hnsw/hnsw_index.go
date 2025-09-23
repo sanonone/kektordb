@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"fmt"
 	"github.com/sanonone/kektordb/internal/store/distance"
+	"github.com/x448/float16"
 	"log"
 	"math"
 	"math/rand"
@@ -37,9 +38,15 @@ type Index struct {
 	externalToInternalID map[string]uint32
 	internalCounter      uint32
 
-	// funzione di distanza
-	// distanceFunc func([]float32, []float32) (float64, error)// vecchio
-	distanceFunc distance.DistanceFunc
+	// memorizza se siamo in precisione f32 o f16
+	precision distance.PrecisionType
+
+	// campo per la quantizzaziojne, sarà nil per indici non quantizzati
+	quantizer *distance.Quantizer // puntatore perchè ci serve lo stato condiviso e modificabile da più parti del sistema
+
+	// memorizza la funzione che ci serve per il dato indice
+	// any per flessibilità nell'usare le diverse funzioni
+	distanceFunc any
 
 	// generatore num casuali per la selezione del livello
 	levelRand *rand.Rand
@@ -49,17 +56,13 @@ type Index struct {
 }
 
 // crea ed inizializza un nuovo indice HNSW
-func New(m int, efConstruction int, metric distance.DistanceMetric) (*Index, error) {
+func New(m int, efConstruction int, metric distance.DistanceMetric, precision distance.PrecisionType) (*Index, error) {
 	// imposto valori di default se non sono stati passati come parametri dall'utente
 	if m <= 0 {
 		m = 16 // default
 	}
 	if efConstruction <= 0 {
 		efConstruction = 200 // default
-	}
-	distFunc, err := distance.GetDistanceFunc(metric)
-	if err != nil {
-		return nil, err
 	}
 
 	h := &Index{
@@ -70,13 +73,135 @@ func New(m int, efConstruction int, metric distance.DistanceMetric) (*Index, err
 		nodes:                make(map[uint32]*Node),
 		externalToInternalID: make(map[string]uint32),
 		internalCounter:      0,
-		maxLevel:             -1,       // all'inizio nessun livello
-		entrypointID:         0,        // inizializzato al primo inserito
-		distanceFunc:         distFunc, // usa la funzione del dispatcher in /store/distance.go
+		maxLevel:             -1, // all'inizio nessun livello
+		entrypointID:         0,  // inizializzato al primo inserito
 		levelRand:            rand.New(rand.NewSource(time.Now().UnixNano())),
 		metric:               metric,
+		precision:            precision,
 	}
+
+	// --- LOGICA DI SELEZIONE E VALIDAZIONE ---
+	// Seleziona la funzione di distanza corretta in base alla precisione e alla metrica.
+	var err error
+	switch precision {
+	case distance.Float32:
+		h.distanceFunc, err = distance.GetFloat32Func(metric)
+		if err != nil {
+			return nil, err
+		}
+	case distance.Float16:
+		// Per ora, float16 supporta solo Euclidean
+		if metric != distance.Euclidean {
+			return nil, fmt.Errorf("la precisione '%s' supporta solo la metrica '%s'", precision, distance.Euclidean)
+		}
+		h.distanceFunc, err = distance.GetFloat16Func(metric)
+		if err != nil {
+			return nil, err
+		}
+	case distance.Int8:
+		// La quantizzazione int8 ha senso solo per Coseno (prodotto scalare)
+		if metric != distance.Cosine {
+			return nil, fmt.Errorf("la precisione '%s' supporta solo la metrica '%s'", precision, distance.Cosine)
+		}
+		h.distanceFunc, err = distance.GetInt8Func(metric)
+		// Per un indice quantizzato, abbiamo bisogno di un quantizzatore.
+		// Verrà "addestrato" e impostato in un secondo momento.
+		h.quantizer = &distance.Quantizer{}
+	default:
+		return nil, fmt.Errorf("precisione non supportata: %s", precision)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
 	return h, nil
+}
+
+// --- METODI DI CALCOLO AGGIORNATI ---
+
+// distance calcola la distanza tra due vettori memorizzati dello stesso tipo.
+func (h *Index) distance(v1, v2 any) (float64, error) {
+	// Usiamo un type switch per chiamare la funzione corretta.
+	switch fn := h.distanceFunc.(type) {
+	case distance.DistanceFuncF32:
+		vec1, ok1 := v1.([]float32)
+		vec2, ok2 := v2.([]float32)
+		if !ok1 || !ok2 {
+			return 0, fmt.Errorf("tipi di vettore non corrispondenti (atteso float32)")
+		}
+		return fn(vec1, vec2)
+	case distance.DistanceFuncF16:
+		vec1, ok1 := v1.([]uint16)
+		vec2, ok2 := v2.([]uint16)
+		if !ok1 || !ok2 {
+			return 0, fmt.Errorf("tipi di vettore non corrispondenti (atteso uint16)")
+		}
+		return fn(vec1, vec2)
+	case distance.DistanceFuncI8:
+		vec1, ok1 := v1.([]int8)
+		vec2, ok2 := v2.([]int8)
+		if !ok1 || !ok2 {
+			return 0, fmt.Errorf("tipi di vettore non corrispondenti (atteso int8)")
+		}
+		dot, err := fn(vec1, vec2)
+		return -float64(dot), err
+	default:
+		return 0, fmt.Errorf("funzione di distanza non valida o non inizializzata")
+	}
+}
+
+// distanceToQuery calcola la distanza tra un vettore di query (sempre float32) e un vettore memorizzato.
+func (h *Index) distanceToQuery(query []float32, storedVector any) (float64, error) {
+	queryToUse := query // Usa la query originale di default
+	// Se la metrica dell'indice è Coseno, la query DEVE essere normalizzata
+	// prima del confronto per usare la formula 1 - dotProduct.
+	if h.metric == distance.Cosine {
+		// Crea una COPIA della query prima di normalizzarla,
+		// per non modificare la slice originale.
+		queryCopy := make([]float32, len(query))
+		copy(queryCopy, query)
+		normalize(queryCopy)
+		queryToUse = queryCopy // Usa la copia normalizzata per i calcoli
+	}
+	// Usiamo un type switch per determinare come gestire la query.
+	switch fn := h.distanceFunc.(type) {
+	case distance.DistanceFuncF32:
+		stored, ok := storedVector.([]float32)
+		if !ok {
+			return 0, fmt.Errorf("tipo di vettore memorizzato non corrispondente (atteso float32)")
+		}
+		return fn(queryToUse, stored)
+	case distance.DistanceFuncF16:
+		// Converti la query float32 in float16 al volo
+		queryF16 := make([]uint16, len(queryToUse))
+		for i, v := range query {
+			queryF16[i] = float16.Fromfloat32(v).Bits()
+		}
+		stored, ok := storedVector.([]uint16)
+		if !ok {
+			return 0, fmt.Errorf("tipo di vettore memorizzato non corrispondente (atteso uint16)")
+		}
+		return fn(queryF16, stored)
+	case distance.DistanceFuncI8:
+		// quantizzare la query al volo
+		if h.quantizer == nil {
+			return 0, fmt.Errorf("l'indice è quantizzato ma manca il quantizzatore")
+		}
+		queryI8 := h.quantizer.Quantize(query)
+		stored, ok := storedVector.([]int8)
+		if !ok {
+			return 0, fmt.Errorf("tipo di vettore memorizzato non corrispondente (atteso int8)")
+		}
+
+		// La funzione di distanza int8 restituisce un prodotto scalare.
+		// Va convertirlo in una "distanza" dove un valore più piccolo è migliore.
+		// Usa il negativo del prodotto scalare.
+		dot, err := fn(queryI8, stored)
+		return -float64(dot), err // Minimizzare -dot è come massimizzare dot.
+	default:
+		return 0, fmt.Errorf("funzione di distanza non valida o non inizializzata")
+	}
 }
 
 // implementa il metodo dell'interfaccia VectorIndex
@@ -175,6 +300,32 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 		return 0, fmt.Errorf("ID '%s' già esistente", id)
 	}
 
+	// Se l'indice usa la metrica Coseno, normalizza il vettore in ingresso.
+	// Questo garantisce che tutti i vettori memorizzati siano a lunghezza unitaria.
+	if h.metric == distance.Cosine {
+		normalize(vector)
+	}
+
+	var storedVector interface{}
+	// --- NUOVA LOGICA DI CONVERSIONE/QUANTIZZAZIONE ---
+	switch h.precision {
+	case distance.Float32:
+		storedVector = vector
+	case distance.Float16:
+		f16Vec := make([]uint16, len(vector))
+		for i, v := range vector {
+			f16Vec[i] = float16.Fromfloat32(v).Bits()
+		}
+		storedVector = f16Vec
+	case distance.Int8:
+		if h.quantizer == nil || h.quantizer.AbsMax == 0 {
+			// Questo è un errore di stato. L'indice quantizzato deve essere
+			// "addestrato" prima di poter aggiungere vettori.
+			return 0, fmt.Errorf("l'indice è in modalità int8 ma il quantizzatore non è addestrato")
+		}
+		storedVector = h.quantizer.Quantize(vector)
+	}
+
 	// assegnamento ID interno
 	h.internalCounter++
 	internalID := h.internalCounter
@@ -182,7 +333,7 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	// creazione nuovo nodo
 	node := &Node{
 		id:     id,
-		vector: vector,
+		vector: storedVector,
 	}
 
 	// aggiunta nodo all; mappe di tracciamento
@@ -271,7 +422,8 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 				worstNeighborIndex := -1
 
 				for i, currentNeighborOfNeighborID := range neighborConnections {
-					dist, _ := h.distanceFunc(neighborNode.vector, h.nodes[currentNeighborOfNeighborID].vector)
+					// confronto tra due nodi interni, neighborNode e il suo vicino
+					dist, _ := h.distance(neighborNode.vector, h.nodes[currentNeighborOfNeighborID].vector)
 					if dist > maxDist {
 						maxDist = dist
 						//worstNeighborID = currentNeighborOfNeighborID
@@ -280,11 +432,11 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 				}
 
 				// Calcola la distanza tra il vicino e il nostro nuovo nodo.
-				distToNewNode, _ := h.distanceFunc(neighborNode.vector, node.vector)
+				distToNewNode, _ := h.distance(neighborNode.vector, node.vector)
 
 				// Se il nostro nuovo nodo è più vicino del vicino più lontano,
 				// allora lo sostituiamo.
-				if distToNewNode < maxDist {
+				if distToNewNode < maxDist && worstNeighborIndex != -1 {
 					neighborNode.connections[l][worstNeighborIndex] = internalID
 				}
 			}
@@ -342,8 +494,9 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 	// lista risultati trovati (il più lontano in cima, per rimpiazzarlo velocemente con uno migliore)
 	results := newMaxHeap()
 
+	// clacola la distanza tra la query ed il punto di ingresso
 	// inizia con il punto di ingresso
-	dist, err := h.distanceFunc(query, h.nodes[entrypointID].vector)
+	dist, err := h.distanceToQuery(query, h.nodes[entrypointID].vector)
 	if err != nil {
 		return nil, err
 	}
@@ -389,11 +542,17 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 			if !visited[neighborID] {
 				visited[neighborID] = true
 
-				dist, err := h.distanceFunc(query, h.nodes[neighborID].vector)
+				// calcola la distanza tra la query ed il vicino
+				dist, err := h.distanceToQuery(query, h.nodes[neighborID].vector)
 				if err != nil {
 					// ignora e continua in caso di errore di calcolo
 					continue
 				}
+
+				// --- LOG DI DEBUG CHIAVE ---
+				log.Printf("[DEBUG Cosine] Query vs. Nodo %d (%s): Distanza Calcolata = %f",
+					neighborID, h.nodes[neighborID].id, dist)
+				// --- FINE LOG ---
 
 				// se abbiamo ancora spazio nei risultati o se questo vicino
 				// è più vicino del nostro peggior risultato, lo aggiunge
@@ -469,13 +628,35 @@ func squaredEuclideanDistance(v1, v2 []float32) (float64, error) {
 */
 
 // --- Helper ---
+// Iterate itera su tutti i nodi non eliminati e passa l'ID e il vettore
+// (sempre come []float32) a una funzione callback.
 func (h *Index) Iterate(callback func(id string, vector []float32)) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
 	for _, node := range h.nodes {
 		if !node.deleted {
-			callback(node.id, node.vector)
+			// --- LOGICA DI CONVERSIONE ---
+			var vectorF32 []float32
+
+			// Controlla il tipo del vettore memorizzato
+			switch vec := node.vector.(type) {
+			case []float32:
+				vectorF32 = vec
+			case []uint16:
+				// Se è float16, dobbiamo de-comprimerlo in float32
+				vectorF32 = make([]float32, len(vec))
+				for i, v := range vec {
+					vectorF32[i] = float16.Frombits(v).Float32()
+				}
+			// Aggiungeremo il case per []int8 qui in futuro
+			default:
+				// Tipo sconosciuto, saltiamo questo nodo per sicurezza
+				log.Printf("ATTENZIONE: tipo di vettore sconosciuto durante l'iterazione per il nodo %s", node.id)
+				continue
+			}
+
+			callback(node.id, vectorF32)
 		}
 	}
 }
@@ -489,4 +670,52 @@ func (h *Index) GetInternalID(externalID string) uint32 {
 // GetParameters restituisce i parametri di configurazione dell'indice.
 func (h *Index) GetParameters() (distance.DistanceMetric, int, int) {
 	return h.metric, h.m, h.efConstruction
+}
+
+// NodeData è una struct per trasportare i dati di un nodo fuori dal package.
+type NodeData struct {
+	ID       string
+	Vector   []float32
+	Metadata map[string]interface{}
+}
+
+func (h *Index) TrainQuantizer(vectors [][]float32) {
+	if h.quantizer != nil {
+		h.quantizer.Train(vectors)
+	}
+}
+
+// normalize normalizza un vettore a lunghezza unitaria (norma L2).
+// Modifica la slice in-place.
+func normalize(v []float32) {
+	// --- LOG DI DEBUG ---
+	// Stampa i primi elementi del vettore PRIMA della normalizzazione
+	// (stampiamo solo i primi 5 per non inondare il log)
+	limit := 5
+	if len(v) < 5 {
+		limit = len(v)
+	}
+	log.Printf("[DEBUG NORMALIZE] Vettore INGRESSO (primi %d elementi): %v", limit, v[:limit])
+	// --- FINE LOG ---
+	var norm float32
+	for _, val := range v {
+		norm += val * val
+	}
+	if norm > 0 {
+		norm = float32(math.Sqrt(float64(norm)))
+		for i := range v {
+			v[i] /= norm
+		}
+	}
+
+	// --- LOG DI DEBUG ---
+	// Stampa i primi elementi del vettore DOPO la normalizzazione
+	log.Printf("[DEBUG NORMALIZE] Vettore USCITA (primi %d elementi): %v", limit, v[:limit])
+	// Calcoliamo la nuova lunghezza per verifica
+	var finalNorm float32
+	for _, val := range v {
+		finalNorm += val * val
+	}
+	log.Printf("[DEBUG NORMALIZE] Lunghezza (norma L2) calcolata DOPO: %f", math.Sqrt(float64(finalNorm)))
+	// --- FINE LOG ---
 }

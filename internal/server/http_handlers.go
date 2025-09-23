@@ -23,6 +23,7 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/vector/delete", s.handleVectorDelete)
 
 	mux.HandleFunc("/system/aof-rewrite", s.handleAOFRewriteHTTP)
+	mux.HandleFunc("/vector/compress", s.handleVectorCompress)
 }
 
 // --- Handler per KV ---
@@ -100,6 +101,7 @@ type VectorCreateRequest struct {
 	Metric         string `json:"metric,omitempty"`
 	M              int    `json:"m,omitempty"`
 	EfConstruction int    `json:"ef_construction,omitempty"`
+	Precision      string `json:"precision,omitempty"`
 }
 
 func (s *Server) handleVectorCreate(w http.ResponseWriter, r *http.Request) {
@@ -125,13 +127,18 @@ func (s *Server) handleVectorCreate(w http.ResponseWriter, r *http.Request) {
 		metric = distance.Euclidean
 	}
 
+	precision := distance.PrecisionType(req.Precision)
+	if precision == "" {
+		precision = distance.Float32 // Imposta float32 come default se non specificato
+	}
+
 	// scrittura AOF per persistenza
-	aofCommand := fmt.Sprintf("VCREATE %s METRIC %s M %d EF_CONSTRUCTION %d\n", req.IndexName, metric, req.M, req.EfConstruction)
+	aofCommand := fmt.Sprintf("VCREATE %s METRIC %s M %d EF_CONSTRUCTION %d PRECISION %s\n", req.IndexName, metric, req.M, req.EfConstruction, req.Precision)
 	s.aofMutex.Lock()
 	s.aofFile.WriteString(aofCommand) // gestire l'errore qui in un sistema di produzione
 	s.aofMutex.Unlock()
 
-	err := s.store.CreateVectorIndex(req.IndexName, metric, req.M, req.EfConstruction)
+	err := s.store.CreateVectorIndex(req.IndexName, metric, req.M, req.EfConstruction, precision)
 	if err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -312,6 +319,45 @@ func (s *Server) handleAOFRewriteHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Riscrittura AOF completata con successo"})
+}
+
+type VectorCompressRequest struct {
+	IndexName string `json:"index_name"`
+	Precision string `json:"precision"`
+}
+
+// compressione di un indice ad una determinata precisione (float16 o int8)
+func (s *Server) handleVectorCompress(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST")
+		return
+	}
+
+	var req VectorCompressRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, "JSON invalido")
+		return
+	}
+
+	newPrecision := distance.PrecisionType(req.Precision)
+	if newPrecision != distance.Float16 && newPrecision != distance.Int8 {
+		s.writeHTTPError(w, http.StatusBadRequest, "Precisione non valida, usare 'float16' or 'int8'")
+		return
+	}
+
+	// Aggiungi all'AOF PRIMA di eseguire l'operazione
+	//aofCommand := fmt.Sprintf("VCOMPRESS %s %s\n", req.IndexName, newPrecision)
+	//s.aofMutex.Lock()
+	//s.aofFile.WriteString(aofCommand)
+	//s.aofMutex.Unlock()
+
+	// Esegui la compressione
+	if err := s.store.Compress(req.IndexName, newPrecision); err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Indice compresso con successo"})
 }
 
 // --- Helper per le Risposte HTTP ---
