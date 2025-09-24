@@ -649,7 +649,13 @@ func (h *Index) Iterate(callback func(id string, vector []float32)) {
 				for i, v := range vec {
 					vectorF32[i] = float16.Frombits(v).Float32()
 				}
-			// Aggiungeremo il case per []int8 qui in futuro
+			case []int8: // <-- NUOVO CASE
+				// Se è int8, dobbiamo de-quantizzarlo.
+				if h.quantizer == nil {
+					log.Printf("ATTENZIONE: indice int8 senza quantizzatore per il nodo %s", node.id)
+					continue
+				}
+				vectorF32 = h.quantizer.Dequantize(vec)
 			default:
 				// Tipo sconosciuto, saltiamo questo nodo per sicurezza
 				log.Printf("ATTENZIONE: tipo di vettore sconosciuto durante l'iterazione per il nodo %s", node.id)

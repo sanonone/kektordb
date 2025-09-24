@@ -222,6 +222,41 @@ func TestDistanceFloat16(t *testing.T) {
 	}
 }
 
+// --- NUOVI TEST PER INT8 DOT PRODUCT ---
+func TestDotProductInt8Functions(t *testing.T) {
+	if !cpuid.CPU.Has(cpuid.AVX2) {
+		t.Skip("Skipping int8 AVX2 test: CPU does not support this feature")
+	}
+
+	testCases := []struct {
+		name string
+		v1   []int8
+		v2   []int8
+	}{
+		{
+			name: "Vettori semplici (multiplo di 32)",
+			v1:   []int8{1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8},
+			v2:   []int8{2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2},
+		},
+		{
+			name: "Vettori con resto",
+			v1:   []int8{10, 20, 30},
+			v2:   []int8{-1, -2, -3},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			goResult, _ := dotProductGoInt8(tc.v1, tc.v2)
+			avxResult, _ := dotProductAVX2Int8(tc.v1, tc.v2)
+
+			if goResult != avxResult {
+				t.Errorf("I risultati int8 non corrispondono!\nGo:   %d\nAVX2: %d", goResult, avxResult)
+			}
+		})
+	}
+}
+
 // generateVectors crea due vettori casuali di una data dimensione.
 func generateVectors(dims int) ([]float32, []float32) {
 	v1 := make([]float32, dims)
@@ -338,5 +373,35 @@ func BenchmarkDistanceAVX2Float16FMA(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		squaredEuclideanDistanceAVX2Float16FMA(v1, v2)
+	}
+}
+
+// --- NUOVI BENCHMARK PER INT8 DOT PRODUCT ---
+func generateInt8Vectors(dims int) ([]int8, []int8) {
+	v1 := make([]int8, dims)
+	v2 := make([]int8, dims)
+	for i := 0; i < dims; i++ {
+		v1[i] = int8(rand.Intn(256) - 128)
+		v2[i] = int8(rand.Intn(256) - 128)
+	}
+	return v1, v2
+}
+
+func BenchmarkDotProductGoInt8(b *testing.B) {
+	v1, v2 := generateInt8Vectors(128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		dotProductGoInt8(v1, v2)
+	}
+}
+
+func BenchmarkDotProductAVX2Int8(b *testing.B) {
+	if !cpuid.CPU.Has(cpuid.AVX2) {
+		b.Skip("Skipping int8 AVX2 benchmark: CPU does not support this feature")
+	}
+	v1, v2 := generateInt8Vectors(128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		dotProductAVX2Int8(v1, v2)
 	}
 }

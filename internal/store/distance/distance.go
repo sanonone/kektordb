@@ -171,9 +171,11 @@ func init() {
 		}
 	}
 
-	if cpuid.CPU.Has(cpuid.AVX2) {
-		int8Funcs[Cosine] = dotProductAVX2Int8
-	}
+	/*
+		if cpuid.CPU.Has(cpuid.AVX2) {
+			int8Funcs[Cosine] = dotProductAVX2Int8
+		}
+	*/
 	// qui in futuro andranno altri check per altre ottimizzazioni
 
 }
