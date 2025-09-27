@@ -1,0 +1,72 @@
+name: Build & Release KektorDB
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  build-and-release:
+    name: Build and Upload Release Binaries
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        # le piattaforme per cui compilare
+        # GOOS = Operating System, GOARCH = Architecture
+        go-os-arch: [
+          'linux-amd64',
+          'linux-arm64',
+          'windows-amd64',
+          'darwin-amd64', # macOS Intel
+          'darwin-arm64'  # macOS Apple Silicon
+        ]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.24.6' 
+
+      - name: Parse OS and Arch from matrix
+        id: parse
+        run: |
+          os_arch=(${GO_OS_ARCH//-/ })
+          echo "GO_OS=${os_arch[0]}" >> $GITHUB_ENV
+          echo "GO_ARCH=${os_arch[1]}" >> $GITHUB_ENV
+        env:
+          GO_OS_ARCH: ${{ matrix.go-os-arch }}
+
+      - name: Set output file extension for Windows
+        id: set_ext
+        if: env.GO_OS == 'windows'
+        run: echo "EXT=.exe" >> $GITHUB_ENV
+
+      - name: Run Go tests
+        if: matrix.go-os-arch == 'linux-amd64' # Esegue i test solo una volta
+        run: go test ./...
+
+      - name: Build the application
+        run: |
+          go build -v -o kektordb${{ env.EXT }} ./cmd/kektordb
+
+      - name: Create archive
+        run: |
+          ARCHIVE_NAME="kektordb-${{ github.event.release.tag_name }}-${{ env.GO_OS }}-${{ env.GO_ARCH }}"
+          if [ "${{ env.GO_OS }}" = "windows" ]; then
+            7z a "${ARCHIVE_NAME}.zip" kektordb.exe LICENSE README.md
+            echo "ASSET_PATH=${ARCHIVE_NAME}.zip" >> $GITHUB_ENV
+          else
+            tar -czvf "${ARCHIVE_NAME}.tar.gz" kektordb LICENSE README.md
+            echo "ASSET_PATH=${ARCHIVE_NAME}.tar.gz" >> $GITHUB_ENV
+          fi
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ${{ env.ASSET_PATH }}
+          asset_name: ${{ env.ASSET_PATH }}
+          asset_content_type: application/octet-stream
