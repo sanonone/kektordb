@@ -11,6 +11,10 @@ import (
 // NOTA: Questo è un test di INTEGRAZIONE.
 // Richiede che un server KektorDB sia in esecuzione su localhost:9091.
 func TestClientIntegration(t *testing.T) {
+	// --- Salta questo test se viene eseguito con -short ---
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode.")
+	}
 	client := New("localhost", 9091)
 
 	// Usa un nome di indice univoco per ogni esecuzione del test per evitare conflitti.

@@ -4,6 +4,11 @@ on:
   release:
     types: [created]
 
+# --- Aggiungere i Permessi ---
+# il permesso di scrivere sulla release
+permissions:
+  contents: write
+
 jobs:
   build-and-release:
     name: Build and Upload Release Binaries
@@ -11,14 +16,12 @@ jobs:
     
     strategy:
       matrix:
-        # le piattaforme per cui compilare
-        # GOOS = Operating System, GOARCH = Architecture
         go-os-arch: [
           'linux-amd64',
           'linux-arm64',
           'windows-amd64',
-          'darwin-amd64', # macOS Intel
-          'darwin-arm64'  # macOS Apple Silicon
+          'darwin-amd64',
+          'darwin-arm64'
         ]
 
     steps:
@@ -28,7 +31,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: '1.24.6' 
+          go-version: '1.24.6'
 
       - name: Parse OS and Arch from matrix
         id: parse
@@ -44,9 +47,12 @@ jobs:
         if: env.GO_OS == 'windows'
         run: echo "EXT=.exe" >> $GITHUB_ENV
 
-      - name: Run Go tests
-        if: matrix.go-os-arch == 'linux-amd64' # Esegue i test solo una volta
-        run: go test ./...
+      # --- Eseguire solo i Test Unitari ---
+      # -short per escludere i test di integrazione 
+      # Modifiche per il test per rispettare questa convenzione
+      - name: Run Go unit tests
+        if: matrix.go-os-arch == 'linux-amd64' # Esegui i test solo una volta
+        run: go test -short -v ./...
 
       - name: Build the application
         run: |
@@ -65,6 +71,8 @@ jobs:
 
       - name: Upload Release Asset
         uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ github.event.release.upload_url }}
           asset_path: ${{ env.ASSET_PATH }}
