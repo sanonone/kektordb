@@ -7,6 +7,7 @@ import (
 	"github.com/sanonone/kektordb/internal/store/distance"
 	"log"
 	"net/http"
+	"net/http/pprof"
 	"strconv"
 	"strings"
 )
@@ -24,6 +25,13 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 
 	mux.HandleFunc("/system/aof-rewrite", s.handleAOFRewriteHTTP)
 	mux.HandleFunc("/vector/compress", s.handleVectorCompress)
+	// Questa sezione registra gli handler di pprof sotto il percorso /debug/pprof/
+	// Saranno disponibili sul server HTTP (es. http://localhost:9091/debug/pprof/)
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 }
 
 // --- Handler per KV ---

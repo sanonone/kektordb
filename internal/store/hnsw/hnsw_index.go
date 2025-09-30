@@ -485,7 +485,7 @@ func (h *Index) Delete(id string) {
 
 // fa la ricerca dei vicini più prossimi in un singolo livello del grafo
 func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level int, allowList map[uint32]struct{}) ([]candidate, error) {
-	log.Printf("DEBUG: Inizio searchLayer a livello %d con entrypoint %d\n", level, entrypointID)
+	//log.Printf("DEBUG: Inizio searchLayer a livello %d con entrypoint %d\n", level, entrypointID)
 	// si tracciano i nodi già visitati per non entrare in loop
 	visited := make(map[uint32]bool)
 
@@ -526,7 +526,7 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 			continue
 		}
 
-		log.Printf("DEBUG: Livello %d, esploro i vicini di %d (%d vicini)\n", level, current.id, len(currentNode.connections[level]))
+		//log.Printf("DEBUG: Livello %d, esploro i vicini di %d (%d vicini)\n", level, current.id, len(currentNode.connections[level]))
 
 		for _, neighborID := range currentNode.connections[level] {
 			// CHECK 1: Se c'è una allowList, il vicino DEVE essere in essa.
@@ -550,14 +550,14 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 				}
 
 				// --- LOG DI DEBUG CHIAVE ---
-				log.Printf("[DEBUG Cosine] Query vs. Nodo %d (%s): Distanza Calcolata = %f",
-					neighborID, h.nodes[neighborID].id, dist)
+				//log.Printf("[DEBUG Cosine] Query vs. Nodo %d (%s): Distanza Calcolata = %f",
+				//	neighborID, h.nodes[neighborID].id, dist)
 				// --- FINE LOG ---
 
 				// se abbiamo ancora spazio nei risultati o se questo vicino
 				// è più vicino del nostro peggior risultato, lo aggiunge
 				if results.Len() < k || dist < (*results)[0].distance {
-					log.Printf("DEBUG: Livello %d, aggiungo candidato %d con distanza %f\n", level, neighborID, dist)
+					//log.Printf("DEBUG: Livello %d, aggiungo candidato %d con distanza %f\n", level, neighborID, dist)
 
 					heap.Push(candidates, candidate{id: neighborID, distance: dist})
 					heap.Push(results, candidate{id: neighborID, distance: dist})
@@ -572,7 +572,7 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 		}
 
 	}
-	log.Printf("DEBUG: Fine searchLayer a livello %d dopo %d iterazioni\n", level, loopCount)
+	//log.Printf("DEBUG: Fine searchLayer a livello %d dopo %d iterazioni\n", level, loopCount)
 
 	// L'heap non è ordinato, dobbiamo estrarre tutti gli elementi e ordinarli.
 	finalResults := make([]candidate, results.Len())
@@ -697,11 +697,11 @@ func normalize(v []float32) {
 	// --- LOG DI DEBUG ---
 	// Stampa i primi elementi del vettore PRIMA della normalizzazione
 	// (stampiamo solo i primi 5 per non inondare il log)
-	limit := 5
-	if len(v) < 5 {
-		limit = len(v)
-	}
-	log.Printf("[DEBUG NORMALIZE] Vettore INGRESSO (primi %d elementi): %v", limit, v[:limit])
+	//limit := 5
+	//if len(v) < 5 {
+	//	limit = len(v)
+	//}
+	//log.Printf("[DEBUG NORMALIZE] Vettore INGRESSO (primi %d elementi): %v", limit, v[:limit])
 	// --- FINE LOG ---
 	var norm float32
 	for _, val := range v {
@@ -716,12 +716,12 @@ func normalize(v []float32) {
 
 	// --- LOG DI DEBUG ---
 	// Stampa i primi elementi del vettore DOPO la normalizzazione
-	log.Printf("[DEBUG NORMALIZE] Vettore USCITA (primi %d elementi): %v", limit, v[:limit])
+	//log.Printf("[DEBUG NORMALIZE] Vettore USCITA (primi %d elementi): %v", limit, v[:limit])
 	// Calcoliamo la nuova lunghezza per verifica
 	var finalNorm float32
 	for _, val := range v {
 		finalNorm += val * val
 	}
-	log.Printf("[DEBUG NORMALIZE] Lunghezza (norma L2) calcolata DOPO: %f", math.Sqrt(float64(finalNorm)))
+	//log.Printf("[DEBUG NORMALIZE] Lunghezza (norma L2) calcolata DOPO: %f", math.Sqrt(float64(finalNorm)))
 	// --- FINE LOG ---
 }
