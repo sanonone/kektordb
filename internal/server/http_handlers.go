@@ -272,6 +272,7 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 			s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": []string{}})
 			return
 		}
+		log.Printf("[DEBUG FILTER] Filtro '%s' ha prodotto una allow list di %d elementi: %v", req.Filter, len(allowList), allowList)
 	}
 
 	results := idx.Search(req.QueryVector, req.K, allowList)

@@ -53,6 +53,8 @@ type Index struct {
 
 	// per memorizzare il tipo  di metrica
 	metric distance.DistanceMetric
+
+	visitedPool sync.Pool // pool per i bitset
 }
 
 // crea ed inizializza un nuovo indice HNSW
@@ -78,6 +80,11 @@ func New(m int, efConstruction int, metric distance.DistanceMetric, precision di
 		levelRand:            rand.New(rand.NewSource(time.Now().UnixNano())),
 		metric:               metric,
 		precision:            precision,
+	}
+	h.visitedPool.New = func() any {
+		// dimensione di inizio che si adatterà se ragionevole
+		b := NewBitset(2048)
+		return &b
 	}
 
 	// --- LOGICA DI SELEZIONE E VALIDAZIONE ---
@@ -161,7 +168,7 @@ func (h *Index) distanceToQuery(query []float32, storedVector any) (float64, err
 		// per non modificare la slice originale.
 		queryCopy := make([]float32, len(query))
 		copy(queryCopy, query)
-		normalize(queryCopy)
+		Normalize(queryCopy)
 		queryToUse = queryCopy // Usa la copia normalizzata per i calcoli
 	}
 	// Usiamo un type switch per determinare come gestire la query.
@@ -303,7 +310,7 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	// Se l'indice usa la metrica Coseno, normalizza il vettore in ingresso.
 	// Questo garantisce che tutti i vettori memorizzati siano a lunghezza unitaria.
 	if h.metric == distance.Cosine {
-		normalize(vector)
+		Normalize(vector)
 	}
 
 	var storedVector interface{}
@@ -485,14 +492,29 @@ func (h *Index) Delete(id string) {
 
 // fa la ricerca dei vicini più prossimi in un singolo livello del grafo
 func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level int, allowList map[uint32]struct{}) ([]candidate, error) {
-	//log.Printf("DEBUG: Inizio searchLayer a livello %d con entrypoint %d\n", level, entrypointID)
-	// si tracciano i nodi già visitati per non entrare in loop
-	visited := make(map[uint32]bool)
+	// log.Printf("[DEBUG HNSW] Inizio searchLayer L=%d, k=%d, entrypoints=%v, allowList size=%d", level, k, entrypointID, len(allowList))
 
-	// coda candidati da esplorare (i più vicini prima)
-	candidates := newMinHeap()
+	// si tracciano i nodi già visitati per non entrare in loop
+	// visited := make(map[uint32]bool)
+
+	// prendi un bitset dal pool
+	visitedPtr := h.visitedPool.Get().(*Bitset)
+	defer h.visitedPool.Put(visitedPtr) // Restituiscilo alla fine
+
+	// Controlla se è abbastanza grande, altrimenti creane uno nuovo
+	if uint32(len(*visitedPtr)*64) < h.internalCounter+1 {
+		*visitedPtr = NewBitset(h.internalCounter + 1)
+	} else {
+		(*visitedPtr).Clear() // Azzeralo
+	}
+	visited := *visitedPtr
+
+	// Crea gli heap con capacità predefinite.
+	// `candidates` può crescere fino a `efConstruction` nel peggiore dei casi.
+	// `results` non crescerà mai oltre `k`.
+	candidates := newMinHeap(h.efConstruction)
 	// lista risultati trovati (il più lontano in cima, per rimpiazzarlo velocemente con uno migliore)
-	results := newMaxHeap()
+	results := newMaxHeap(k)
 
 	// clacola la distanza tra la query ed il punto di ingresso
 	// inizia con il punto di ingresso
@@ -504,7 +526,8 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 	// inserisco i nodi nelle heap
 	heap.Push(candidates, candidate{id: entrypointID, distance: dist})
 	heap.Push(results, candidate{id: entrypointID, distance: dist})
-	visited[entrypointID] = true // setto il nodo come visitato nella mappa
+	// visited[entrypointID] = true // setto il nodo come visitato nella mappa
+	visited.Set(entrypointID) // setta il valore nella bitset per indicarlo come visitato
 
 	loopCount := 0
 
@@ -534,30 +557,30 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 			if allowList != nil {
 				// `_, ok := ...` è un lookup O(1) in una mappa/set.
 				if _, ok := allowList[neighborID]; !ok {
+					// log.Printf("[DEBUG HNSW] L=%d: Vicino %d scartato da allowList", level, neighborID)
 					continue // Salta al prossimo vicino, questo è scartato.
 				}
 			}
 
 			// questo vicino non è mai stato visitato? allora vado (previene loop infiniti)
-			if !visited[neighborID] {
-				visited[neighborID] = true
+			// if !visited[neighborID] {
+			if !visited.IsSet(neighborID) {
+				// visited[neighborID] = true
+				visited.Set(neighborID)
 
 				// calcola la distanza tra la query ed il vicino
 				dist, err := h.distanceToQuery(query, h.nodes[neighborID].vector)
 				if err != nil {
+					// log.Printf("[DEBUG FILTER] Entry point %d scartato dal filtro.", entrypointID)
+
 					// ignora e continua in caso di errore di calcolo
 					continue
 				}
 
-				// --- LOG DI DEBUG CHIAVE ---
-				//log.Printf("[DEBUG Cosine] Query vs. Nodo %d (%s): Distanza Calcolata = %f",
-				//	neighborID, h.nodes[neighborID].id, dist)
-				// --- FINE LOG ---
-
 				// se abbiamo ancora spazio nei risultati o se questo vicino
 				// è più vicino del nostro peggior risultato, lo aggiunge
 				if results.Len() < k || dist < (*results)[0].distance {
-					//log.Printf("DEBUG: Livello %d, aggiungo candidato %d con distanza %f\n", level, neighborID, dist)
+					// log.Printf("[DEBUG HNSW] L=%d: Aggiungo candidato %d (dist: %f)", level, neighborID, dist)
 
 					heap.Push(candidates, candidate{id: neighborID, distance: dist})
 					heap.Push(results, candidate{id: neighborID, distance: dist})
@@ -691,9 +714,9 @@ func (h *Index) TrainQuantizer(vectors [][]float32) {
 	}
 }
 
-// normalize normalizza un vettore a lunghezza unitaria (norma L2).
+// Normalize normalizza un vettore a lunghezza unitaria (norma L2).
 // Modifica la slice in-place.
-func normalize(v []float32) {
+func Normalize(v []float32) {
 	// --- LOG DI DEBUG ---
 	// Stampa i primi elementi del vettore PRIMA della normalizzazione
 	// (stampiamo solo i primi 5 per non inondare il log)

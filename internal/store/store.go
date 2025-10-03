@@ -88,6 +88,10 @@ func (s *Store) IterateVectorIndexesUnlocked(callback func(indexName string, ind
 				internalID := hnswIndex.GetInternalID(id)
 				metadata := s.getMetadataForNodeUnlocked(name, internalID)
 
+				// --- LOG DI DEBUG CHIAVE ---
+				log.Printf("[DEBUG REWRITE] ID Esterno: %-15s | ID Interno: %-5d | Metadati Recuperati: %v", id, internalID, metadata)
+				// --- FINE LOG ---
+
 				callback(name, hnswIndex, VectorData{
 					ID:       id,
 					Vector:   vector,
@@ -163,6 +167,7 @@ func (s *Store) getMetadataForNode(indexName string, nodeID uint32) map[string]a
 	return metadata
 }
 
+/*
 // versione senza lock
 func (s *Store) getMetadataForNodeUnlocked(indexName string, nodeID uint32) map[string]any {
 	metadata := make(map[string]any)
@@ -181,6 +186,50 @@ func (s *Store) getMetadataForNodeUnlocked(indexName string, nodeID uint32) map[
 	}
 
 	// fare scansione b tree simile a sopra
+
+	return metadata
+}
+*/
+
+// getMetadataForNodeUnlocked ora recupera i dati sia dall'indice invertito (stringhe)
+// sia dal B-Tree (numeri).
+func (s *Store) getMetadataForNodeUnlocked(indexName string, nodeID uint32) map[string]interface{} {
+	metadata := make(map[string]interface{})
+
+	// 1. Recupera i metadati STRINGA dall'indice invertito.
+	if invIdx, ok := s.invertedIndex[indexName]; ok {
+		// Itera su ogni chiave di metadato (es. "tipo", "colore")
+		for key, valueMap := range invIdx {
+			// Itera su ogni valore per quella chiave (es. "sportiva", "rosso")
+			for value, idSet := range valueMap {
+				// Controlla se il nostro nodo è in questo set.
+				if _, exists := idSet[nodeID]; exists {
+					metadata[key] = value
+					// Trovato, possiamo passare alla prossima chiave di metadato
+					// per questo nodo.
+					break
+				}
+			}
+		}
+	}
+
+	// 2. Recupera i metadati NUMERICI dall'indice B-Tree.
+	if btreeIdx, ok := s.bTreeIndex[indexName]; ok {
+		// Itera su ogni chiave di metadato (es. "prezzo", "anno")
+		for key, tree := range btreeIdx {
+			// Itera su tutti gli elementi dell'albero per trovare il nostro nodo.
+			// NOTA: Questo è inefficiente ma corretto. Un'ottimizzazione futura
+			// sarebbe avere un "indice in avanti" da nodeID a metadati.
+			tree.Scan(func(item BTreeItem) bool {
+				if item.NodeID == nodeID {
+					metadata[key] = item.Value
+					// Trovato. Non possiamo fermare Scan(), ma abbiamo il dato.
+					// In teoria, un ID dovrebbe apparire una sola volta.
+				}
+				return true // Continua a scansionare il resto dell'albero
+			})
+		}
+	}
 
 	return metadata
 }
@@ -297,6 +346,10 @@ func (s *Store) Compress(indexName string, newPrecision distance.PrecisionType) 
 		return fmt.Errorf("impossibile comprimere un indice vuoto")
 	}
 
+	// Invece di `delete`, azzeriamo esplicitamente gli indici secondari per questo indexName.
+	s.invertedIndex[indexName] = make(map[string]map[string]map[uint32]struct{})
+	s.bTreeIndex[indexName] = make(map[string]*btree.BTreeG[BTreeItem])
+
 	// 3. Crea e "addestra" il nuovo indice
 	metric, m, efConst := oldHNSWIndex.GetParameters()
 
@@ -312,6 +365,12 @@ func (s *Store) Compress(indexName string, newPrecision distance.PrecisionType) 
 		for i, data := range allVectors {
 			floatVectors[i] = data.Vector
 		}
+
+		if metric == distance.Cosine {
+			for _, vec := range floatVectors {
+				hnsw.Normalize(vec)
+			}
+		}
 		newIndex.TrainQuantizer(floatVectors) // Dobbiamo creare questo metodo
 	}
 
@@ -324,6 +383,9 @@ func (s *Store) Compress(indexName string, newPrecision distance.PrecisionType) 
 		}
 		// Ri-associa i metadati
 		if len(data.Metadata) > 0 {
+			log.Printf("[DEBUG COMPRESS] Ripopolamento metadati per ID Esterno '%s' (Nuovo ID Interno: %d). Metadati: %v",
+				data.ID, internalID, data.Metadata)
+
 			s.AddMetadataUnlocked(indexName, internalID, data.Metadata)
 		}
 	}
@@ -397,21 +459,17 @@ func (s *Store) AddMetadataUnlocked(indexName string, nodeID uint32, metadata ma
 			}
 			indexMetadata[key][v][nodeID] = struct{}{}
 
+		// --- NUOVA LOGICA PER TUTTI I TIPI NUMERICI ---
 		case float64:
-			// --- NUOVA LOGICA B-TREE ---
-			indexBTree, ok := s.bTreeIndex[indexName]
-			if !ok {
-				return fmt.Errorf("indice b-tree per '%s' non trovato", indexName)
-			}
-
-			// Controlla se un B-Tree per questa chiave esiste già, altrimenti crealo.
-			if _, ok := indexBTree[key]; !ok {
-				indexBTree[key] = btree.NewBTreeG[BTreeItem](btreeItemLess)
-			}
-
-			// Inserisci l'item nel B-Tree.
-			indexBTree[key].Set(BTreeItem{Value: v, NodeID: nodeID})
-
+			s.addNumericMetadata(indexName, key, v, nodeID)
+		case float32:
+			s.addNumericMetadata(indexName, key, float64(v), nodeID)
+		case int:
+			s.addNumericMetadata(indexName, key, float64(v), nodeID)
+		case int32:
+			s.addNumericMetadata(indexName, key, float64(v), nodeID)
+		case int64:
+			s.addNumericMetadata(indexName, key, float64(v), nodeID)
 		default:
 			// Per ora ignoriamo altri tipi (bool, etc.)
 			continue
@@ -419,6 +477,20 @@ func (s *Store) AddMetadataUnlocked(indexName string, nodeID uint32, metadata ma
 	}
 
 	return nil
+}
+
+func (s *Store) addNumericMetadata(indexName, key string, value float64, nodeID uint32) {
+	indexBTree, ok := s.bTreeIndex[indexName]
+	if !ok {
+		// Questo non dovrebbe accadere, ma per sicurezza
+		return
+	}
+
+	if _, ok := indexBTree[key]; !ok {
+		indexBTree[key] = btree.NewBTreeG[BTreeItem](btreeItemLess)
+	}
+
+	indexBTree[key].Set(BTreeItem{Value: value, NodeID: nodeID})
 }
 
 // FindIDsByFilter funge da query planner per i filtri.
@@ -459,6 +531,7 @@ func (s *Store) FindIDsByFilter(indexName string, filter string) (map[uint32]str
 			if subFilter == "" {
 				continue
 			}
+			log.Printf("[DEBUG Planner] Blocco AND '%s' ha prodotto %d ID.", orBlock, len(blockIDSet))
 
 			currentIDSet, err := s.evaluateSingleFilter(indexName, subFilter)
 			if err != nil {
@@ -491,12 +564,15 @@ func (s *Store) FindIDsByFilter(indexName string, filter string) (map[uint32]str
 		return make(map[uint32]struct{}), nil
 	}
 
+	log.Printf("[DEBUG Planner] Filtro finale '%s' ha prodotto %d ID.", filter, len(finalIDSet))
+
 	return finalIDSet, nil
 }
 
 // evaluateSingleFilter valuta una singola espressione come "price>=10" o "name=Alice".
 // Restituisce un set di ID (map[uint32]struct{}) e un errore.
 func (s *Store) evaluateSingleFilter(indexName string, filter string) (map[uint32]struct{}, error) {
+	log.Printf("[DEBUG] Inizio valutazione filtro '%s' su indice '%s'", filter, indexName)
 	// Trova operatore (ordinale per lunghezza per gestire <= e >=)
 	var op string
 	opIndex := -1
@@ -576,21 +652,48 @@ func (s *Store) evaluateSingleFilter(indexName string, filter string) (map[uint3
 
 		tree, ok := indexBTree[key]
 		if !ok {
+			log.Printf("[DEBUG] Chiave B-Tree '%s' non trovata per l'indice '%s'", key, indexName)
 			// chiave non indicizzata: risultato vuoto
 			return make(map[uint32]struct{}), nil
 		}
 
 		switch op {
 		case "<":
-			// ascend dagli -inf e prendi fino a < numValue
-			tree.Ascend(BTreeItem{Value: math.Inf(-1)}, func(item BTreeItem) bool {
+			log.Printf("[Debug] case <")
+
+			log.Printf("[Debug] idSet inizio=", idSet)
+
+			// Itera in ordine crescente...
+			tree.Scan(func(item BTreeItem) bool {
+				// ...finché il valore non è più minore di quello cercato.
+				log.Printf("[DEBUG Planner] Item value=%.6f, numValue=%.6f", item.Value, numValue)
 				if item.Value >= numValue {
-					return false
+					log.Printf("[Debug] esce perche item >= di numVal: item=%2f, numVal=%2f", item.Value, numValue)
+
+					return false // Ferma la scansione.
 				}
+				log.Printf("[DEBUG] Trovato match per '%s': ID Interno %d (Valore %.2f)", filter, item.NodeID, item.Value)
 				idSet[item.NodeID] = struct{}{}
 				return true
 			})
+			/*
+				// ascend dagli -inf e prendi fino a < numValue
+				tree.Ascend(BTreeItem{Value: math.Inf(-1)}, func(item BTreeItem) bool {
+
+					log.Printf("[DEBUG Planner] Item value=%f, numValue=%f", item.Value, numValue)
+
+					if item.Value >= numValue {
+						log.Printf("[Debug] esce perche item >= di numVal")
+
+						return false
+					}
+					idSet[item.NodeID] = struct{}{}
+					return true
+				})
+			*/
 		case "<=":
+			log.Printf("[Debug] case <=")
+
 			tree.Ascend(BTreeItem{Value: math.Inf(-1)}, func(item BTreeItem) bool {
 				if item.Value > numValue {
 					return false
@@ -599,6 +702,8 @@ func (s *Store) evaluateSingleFilter(indexName string, filter string) (map[uint3
 				return true
 			})
 		case ">":
+			log.Printf("[Debug] case >")
+
 			// descend dal +inf e prendi > numValue
 			tree.Descend(BTreeItem{Value: math.Inf(+1)}, func(item BTreeItem) bool {
 				if item.Value <= numValue {
@@ -608,6 +713,8 @@ func (s *Store) evaluateSingleFilter(indexName string, filter string) (map[uint3
 				return true
 			})
 		case ">=":
+			log.Printf("[Debug] case >=")
+
 			tree.Descend(BTreeItem{Value: math.Inf(+1)}, func(item BTreeItem) bool {
 				if item.Value < numValue {
 					return false
@@ -617,6 +724,8 @@ func (s *Store) evaluateSingleFilter(indexName string, filter string) (map[uint3
 			})
 		}
 
+		log.Printf("[DEBUG Planner] Sotto-filtro '%s' ha prodotto %d ID.", filter, len(idSet))
+		log.Printf("[DEBUG Planner] Elementi nella lista =%v", idSet)
 		return idSet, nil
 
 	default:

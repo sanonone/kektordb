@@ -56,19 +56,18 @@ func (h *maxHeap) Pop() any {
 	return x
 }
 
-// funzioni di convenienza per usare l'heap
-func newMinHeap() *minHeap {
-	h := &minHeap{}
-	/*
-		Prende una slice disordinata e la riorganizza per soddisfare la proprietà di heap
-		Anche se inizia con una slice vuota, è una buona pratica chiamarlo per garantire che tutto sia inizializzato correttamente
-	*/
-	heap.Init(h)
-	return h
+// newMinHeap crea un nuovo min-heap con una capacità iniziale specificata.
+func newMinHeap(capacity int) *minHeap {
+	// Crea la slice con lunghezza 0 ma capacità 'capacity'.
+	// Questo pre-alloca la memoria senza aggiungere elementi.
+	h := make(minHeap, 0, capacity)
+	heap.Init(&h)
+	return &h
 }
 
-func newMaxHeap() *maxHeap {
-	h := &maxHeap{}
-	heap.Init(h)
-	return h
+// newMaxHeap crea un nuovo max-heap con una capacità iniziale specificata.
+func newMaxHeap(capacity int) *maxHeap {
+	h := make(maxHeap, 0, capacity)
+	heap.Init(&h)
+	return &h
 }

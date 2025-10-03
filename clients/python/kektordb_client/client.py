@@ -35,6 +35,7 @@ class KektorDBClient:
 
     def _request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
         """Internal helper method for making HTTP requests."""
+
         try:
             response = self._session.request(
                 method,
