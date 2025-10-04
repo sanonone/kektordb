@@ -691,6 +691,22 @@ func (h *Index) TrainQuantizer(vectors [][]float32) {
 	}
 }
 
+// GetInfo restituisce tutti i parametri pubblici e lo stato dell'indice.
+func (h *Index) GetInfo() (distance.DistanceMetric, int, int, distance.PrecisionType, int) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	// Contiamo solo i nodi non eliminati
+	count := 0
+	for _, node := range h.nodes {
+		if !node.deleted {
+			count++
+		}
+	}
+
+	return h.metric, h.m, h.efConstruction, h.precision, count
+}
+
 // normalize normalizza un vettore a lunghezza unitaria (norma L2).
 // Modifica la slice in-place.
 func normalize(v []float32) {

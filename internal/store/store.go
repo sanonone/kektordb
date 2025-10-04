@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,6 +27,16 @@ type VectorData struct {
 	ID       string
 	Vector   []float32
 	Metadata map[string]any
+}
+
+// struct pubblica che verrà serializzata in JSON per l'API per restituire le info dei vettori
+type IndexInfo struct {
+	Name           string                  `json:"name"`
+	Metric         distance.DistanceMetric `json:"metric"`
+	Precision      distance.PrecisionType  `json:"precision"`
+	M              int                     `json:"m"`
+	EfConstruction int                     `json:"ef_construction"`
+	VectorCount    int                     `json:"vector_count"`
 }
 
 // VectorIndexInfo è una struct per trasportare i metadati di un indice.
@@ -136,6 +147,61 @@ func (s *Store) GetVectorIndexInfoUnlocked() ([]VectorIndexInfo, error) {
 		}
 	}
 	return infoList, nil
+}
+
+// GetVectorIndexInfo restituisce le informazioni di configurazione e stato
+// per tutti gli indici vettoriali.
+func (s *Store) GetVectorIndexInfoAPI() ([]IndexInfo, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	infoList := make([]IndexInfo, 0, len(s.vectorIndexes))
+
+	for name, idx := range s.vectorIndexes {
+		if hnswIndex, ok := idx.(*hnsw.Index); ok {
+			metric, m, efConst, precision, count := hnswIndex.GetInfo() // Creeremo questo metodo
+			infoList = append(infoList, IndexInfo{
+				Name:           name,
+				Metric:         metric,
+				Precision:      precision,
+				M:              m,
+				EfConstruction: efConst,
+				VectorCount:    count,
+			})
+		}
+	}
+
+	// Ordina la lista per nome per una risposta API consistente
+	sort.Slice(infoList, func(i, j int) bool {
+		return infoList[i].Name < infoList[j].Name
+	})
+
+	return infoList, nil
+}
+
+// GetSingleVectorIndexInfo restituisce le informazioni per un singolo indice.
+func (s *Store) GetSingleVectorIndexInfoAPI(name string) (IndexInfo, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	idx, ok := s.vectorIndexes[name]
+	if !ok {
+		return IndexInfo{}, fmt.Errorf("indice '%s' non trovato", name)
+	}
+
+	if hnswIndex, ok := idx.(*hnsw.Index); ok {
+		metric, m, efConst, precision, count := hnswIndex.GetInfo()
+		return IndexInfo{
+			Name:           name,
+			Metric:         metric,
+			Precision:      precision,
+			M:              m,
+			EfConstruction: efConst,
+			VectorCount:    count,
+		}, nil
+	}
+
+	return IndexInfo{}, fmt.Errorf("tipo di indice non supportato per l'introspezione")
 }
 
 // --- Fine compattazione AOF ---
@@ -262,6 +328,30 @@ func (s *Store) GetVectorIndex(name string) (VectorIndex, bool) {
 
 	idx, found := s.vectorIndexes[name]
 	return idx, found
+}
+
+// rimuove un intero indice vettoriale e tutti i suoi dati associati
+func (s *Store) DeleteVectorIndex(name string) error {
+	s.mu.Lock() // Usiamo un Lock() esclusivo perché stiamo modificando tutte le strutture
+	defer s.mu.Unlock()
+
+	// Controlla che l'indice esista
+	_, ok := s.vectorIndexes[name]
+	if !ok {
+		return fmt.Errorf("indice '%s' non trovato", name)
+	}
+
+	// Rimuovi l'indice HNSW dalla mappa principale
+	delete(s.vectorIndexes, name)
+
+	// Rimuovi i dati associati dall'indice invertito
+	delete(s.invertedIndex, name)
+
+	// Rimuovi i dati associati dall'indice B-Tree
+	delete(s.bTreeIndex, name)
+
+	log.Printf("Indice '%s' e tutti i dati associati sono stati eliminati.", name)
+	return nil
 }
 
 // Compress converte un indice esistente in una nuova precisione.

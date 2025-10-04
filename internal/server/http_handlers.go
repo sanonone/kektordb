@@ -18,6 +18,8 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/kv/", s.handleKV) // Un solo handler per /kv/
 
 	// Endpoint per gli Indici Vettoriali
+	mux.HandleFunc("/vector/indexes", s.handleListIndexes)
+	mux.HandleFunc("/vector/indexes/", s.handleIndexRequest) // router per get e delete
 	mux.HandleFunc("/vector/create", s.handleVectorCreate)
 	mux.HandleFunc("/vector/add", s.handleVectorAdd)
 	mux.HandleFunc("/vector/search", s.handleVectorSearch)
@@ -32,6 +34,18 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+}
+
+// handler "router" per /vector/indexes/{name}
+func (s *Server) handleIndexRequest(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleGetIndex(w, r)
+	case http.MethodDelete:
+		s.handleDeleteIndex(w, r)
+	default:
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Metodo non supportato per questo endpoint")
+	}
 }
 
 // --- Handler per KV ---
@@ -99,6 +113,81 @@ func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, key stri
 
 	s.store.GetKVStore().Delete(key)
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK"})
+}
+
+// 2. Implementa l'handler per la lista di indici
+func (s *Server) handleListIndexes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo GET")
+		return
+	}
+
+	info, err := s.store.GetVectorIndexInfo()
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, info)
+}
+
+// 3. Implementa l'handler per il singolo indice
+func (s *Server) handleGetIndex(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo GET")
+		return
+	}
+
+	// Estrai il nome dell'indice dall'URL. es. /vector/indexes/my-index
+	name := strings.TrimPrefix(r.URL.Path, "/vector/indexes/")
+	if name == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, "Nome dell'indice mancante nell'URL")
+		return
+	}
+
+	info, err := s.store.GetSingleVectorIndexInfoAPI(name)
+	if err != nil {
+		// Se l'errore è "non trovato", restituisci 404
+		if strings.Contains(err.Error(), "non trovato") {
+			s.writeHTTPError(w, http.StatusNotFound, err.Error())
+		} else {
+			s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, info)
+}
+
+func (s *Server) handleDeleteIndex(w http.ResponseWriter, r *http.Request) {
+	// Estrai il nome dell'indice dall'URL (stessa logica di handleGetIndex)
+	name := strings.TrimPrefix(r.URL.Path, "/vector/indexes/")
+	if name == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, "Nome dell'indice mancante nell'URL")
+		return
+	}
+
+	// --- LOGICA AOF ---
+	// Registra il comando PRIMA di eseguire l'operazione.
+	// Creeremo un nuovo comando "VDROP" o "VDELETEINDEX" per l'AOF.
+	aofCommand := fmt.Sprintf("VDROP %s\n", name)
+	s.aofMutex.Lock()
+	s.aofFile.WriteString(aofCommand)
+	s.aofMutex.Unlock()
+
+	// Esegui l'eliminazione
+	err := s.store.DeleteVectorIndex(name)
+	if err != nil {
+		if strings.Contains(err.Error(), "non trovato") {
+			s.writeHTTPError(w, http.StatusNotFound, err.Error())
+		} else {
+			s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	// Per DELETE, una risposta 204 No Content è spesso appropriata
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- Handler per Vettori (VCREATE, VADD, VSEARCH, VDEL) ---

@@ -136,6 +136,13 @@ func (s *Server) loadFromAOF() error {
 				log.Printf("[AOF] riga %d: DEL con argomenti inattesi (%d)", lineNo, len(cmd.Args))
 			}
 
+		case "VDROP": // <-- NUOVO CASE
+			if len(cmd.Args) == 1 {
+				indexName := string(cmd.Args[0])
+				// Rimuovi l'indice dalla nostra mappa di stato temporanea
+				delete(state.vectorIndexes, indexName)
+			}
+
 		case "VCREATE":
 			// Formato AOF ora atteso: VCREATE <index_name> [METRIC <metric>] [M <m_val>] [EF_CONSTRUCTION <ef_val>] [PRECISION <p>]
 			if len(cmd.Args) >= 1 {
