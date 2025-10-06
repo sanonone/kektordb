@@ -1,3 +1,5 @@
+# File: clients/python/kektordb_client/client.py
+
 import requests
 from typing import List, Dict, Any, Union
 
@@ -33,7 +35,7 @@ class KektorDBClient:
         self.timeout = timeout
         self._session = requests.Session()
 
-    def _request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
+    def _request(self, method: str, endpoint: str, **kwargs) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
         """Internal helper method for making HTTP requests."""
         try:
             response = self._session.request(
@@ -43,13 +45,14 @@ class KektorDBClient:
                 **kwargs
             )
             response.raise_for_status()
-            if response.status_code == 204: # No Content
+            # Handle 204 No Content for successful DELETE operations
+            if response.status_code == 204:
                 return {}
             return response.json()
         except requests.exceptions.HTTPError as e:
             try:
                 msg = e.response.json().get("error", str(e))
-            except:
+            except (ValueError, AttributeError):
                 msg = str(e)
             raise APIError(f"KektorDB API Error: {msg}") from e
         except requests.exceptions.RequestException as e:
@@ -70,8 +73,10 @@ class KektorDBClient:
             ConnectionError: If a network error occurs.
         """
         if isinstance(value, bytes):
-            value = value.decode('utf-8')
-        payload = {"value": value}
+            value_str = value.decode('utf-8')
+        else:
+            value_str = value
+        payload = {"value": value_str}
         self._request("POST", f"/kv/{key}", json=payload)
 
     def get(self, key: str) -> str:
@@ -104,7 +109,7 @@ class KektorDBClient:
         """
         self._request("DELETE", f"/kv/{key}")
 
-    # --- Vector Index Methods ---
+    # --- Vector Index Management Methods ---
 
     def vcreate(self, index_name: str, metric: str = "euclidean", precision: str = "float32", m: int = 0, ef_construction: int = 0) -> None:
         """
@@ -112,8 +117,8 @@ class KektorDBClient:
 
         Args:
             index_name: The name for the new index.
-            metric: The distance metric to use ('euclidean' or 'cosine').
-            precision: The data precision for vectors ('float32', 'float16', 'int8').
+            metric: The distance metric ('euclidean' or 'cosine').
+            precision: The data precision ('float32', 'float16', 'int8').
             m: HNSW M parameter (max connections). Server default if 0.
             ef_construction: HNSW efConstruction parameter. Server default if 0.
         
@@ -124,8 +129,37 @@ class KektorDBClient:
         payload = {"index_name": index_name, "metric": metric, "precision": precision}
         if m > 0: payload["m"] = m
         if ef_construction > 0: payload["ef_construction"] = ef_construction
-        self._request("POST", "/vector/create", json=payload)
+        self._request("POST", "/vector/actions/create", json=payload)
 
+    def list_indexes(self) -> List[Dict[str, Any]]:
+        """Lists all vector indexes and their configuration."""
+        return self._request("GET", "/vector/indexes")
+
+    def get_index_info(self, index_name: str) -> Dict[str, Any]:
+        """Retrieves detailed information for a single index."""
+        return self._request("GET", f"/vector/indexes/{index_name}")
+
+    def delete_index(self, index_name: str) -> None:
+        """Deletes an entire vector index and all its data."""
+        self._request("DELETE", f"/vector/indexes/{index_name}")
+
+    def vcompress(self, index_name: str, precision: str) -> None:
+        """
+        Compresses an existing float32 index to a lower precision format.
+
+        Args:
+            index_name: The name of the index to compress.
+            precision: The target precision ('float16' or 'int8').
+        
+        Raises:
+            APIError: If the index does not exist or compression is not possible.
+            ConnectionError: If a network error occurs.
+        """
+        payload = {"index_name": index_name, "precision": precision}
+        self._request("POST", "/vector/actions/compress", json=payload)
+
+    # --- Vector Data Methods ---
+    
     def vadd(self, index_name: str, item_id: str, vector: List[float], metadata: Dict[str, Any] = None) -> None:
         """
         Adds a vector to an index.
@@ -142,7 +176,7 @@ class KektorDBClient:
         """
         payload = {"index_name": index_name, "id": item_id, "vector": vector}
         if metadata: payload["metadata"] = metadata
-        self._request("POST", "/vector/add", json=payload)
+        self._request("POST", "/vector/actions/add", json=payload)
 
     def vdelete(self, index_name: str, item_id: str) -> None:
         """
@@ -157,7 +191,29 @@ class KektorDBClient:
             ConnectionError: If a network error occurs.
         """
         payload = {"index_name": index_name, "id": item_id}
-        self._request("POST", "/vector/delete", json=payload)
+        self._request("POST", "/vector/actions/delete_vector", json=payload)
+
+    def vget(self, index_name: str, item_id: str) -> Dict[str, Any]:
+        """Retrieves data (vector and metadata) for a single vector by its ID."""
+        return self._request("GET", f"/vector/indexes/{index_name}/vectors/{item_id}")
+
+    def vget_many(self, index_name: str, item_ids: List[str]) -> List[Dict[str, Any]]:
+        """
+        Retrieves data for multiple vectors from an index in a single batch request.
+
+        Args:
+            index_name: The name of the index.
+            item_ids: A list of vector IDs to retrieve.
+
+        Returns:
+            A list of dictionaries, where each dictionary represents a found vector.
+        
+        Raises:
+            APIError: If the index does not exist.
+            ConnectionError: If a network error occurs.
+        """
+        payload = {"index_name": index_name, "ids": item_ids}
+        return self._request("POST", "/vector/actions/get-vectors", json=payload)
 
     def vsearch(self, index_name: str, query_vector: List[float], k: int, filter_str: str = "") -> List[str]:
         """
@@ -178,23 +234,8 @@ class KektorDBClient:
         """
         payload = {"index_name": index_name, "k": k, "query_vector": query_vector}
         if filter_str: payload["filter"] = filter_str
-        data = self._request("POST", "/vector/search", json=payload)
+        data = self._request("POST", "/vector/actions/search", json=payload)
         return data.get("results", [])
-
-    def vcompress(self, index_name: str, precision: str) -> None:
-        """
-        Compresses an existing float32 index to a lower precision format.
-
-        Args:
-            index_name: The name of the index to compress.
-            precision: The target precision ('float16' or 'int8').
-        
-        Raises:
-            APIError: If the index does not exist or compression is not possible.
-            ConnectionError: If a network error occurs.
-        """
-        payload = {"index_name": index_name, "precision": precision}
-        self._request("POST", "/vector/compress", json=payload)
 
     # --- System Methods ---
 
