@@ -680,15 +680,74 @@ func (h *Index) GetParameters() (distance.DistanceMetric, int, int) {
 
 // NodeData è una struct per trasportare i dati di un nodo fuori dal package.
 type NodeData struct {
-	ID       string
-	Vector   []float32
-	Metadata map[string]interface{}
+	ID         string
+	InternalID uint32
+	Vector     []float32
+	Metadata   map[string]interface{}
+}
+
+// GetNodeData recupera i dati di un nodo (de-compressi/de-quantizzati)
+// dato il suo ID esterno.
+func (h *Index) GetNodeData(externalID string) (NodeData, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	internalID, ok := h.externalToInternalID[externalID]
+	if !ok {
+		return NodeData{}, false
+	}
+
+	node, ok := h.nodes[internalID]
+	if !ok || node.deleted {
+		return NodeData{}, false
+	}
+
+	// Usa la stessa logica di 'Iterate' per de-comprimere/de-quantizzare
+	var vectorF32 []float32
+	switch vec := node.vector.(type) {
+	case []float32:
+		vectorF32 = vec
+	case []uint16:
+		vectorF32 = make([]float32, len(vec))
+		for i, v := range vec {
+			vectorF32[i] = float16.Frombits(v).Float32()
+		}
+	case []int8:
+		if h.quantizer == nil {
+			return NodeData{}, false // Stato inconsistente
+		}
+		vectorF32 = h.quantizer.Dequantize(vec)
+	default:
+		return NodeData{}, false // Tipo sconosciuto
+	}
+
+	return NodeData{
+		ID:         externalID,
+		InternalID: internalID,
+		Vector:     vectorF32,
+	}, true
 }
 
 func (h *Index) TrainQuantizer(vectors [][]float32) {
 	if h.quantizer != nil {
 		h.quantizer.Train(vectors)
 	}
+}
+
+// GetInfo restituisce tutti i parametri pubblici e lo stato dell'indice.
+func (h *Index) GetInfo() (distance.DistanceMetric, int, int, distance.PrecisionType, int) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	// Contiamo solo i nodi non eliminati
+	count := 0
+	for _, node := range h.nodes {
+		if !node.deleted {
+			count++
+		}
+	}
+
+	return h.metric, h.m, h.efConstruction, h.precision, count
 }
 
 // normalize normalizza un vettore a lunghezza unitaria (norma L2).

@@ -24,7 +24,7 @@ class TestKektorDBEndToEnd(unittest.TestCase):
         """Executed once at the beginning of all tests."""
         print("--- KektorDB E2E Test Suite ---")
         cls.client = KektorDBClient(host=HOST, port=PORT)
-
+        
         # Generate consistent test data
         cls.vectors = np.random.rand(NUM_VECTORS, VECTOR_DIMS).astype(np.float32)
         print(f"Generated {NUM_VECTORS} test vectors.")
@@ -32,19 +32,19 @@ class TestKektorDBEndToEnd(unittest.TestCase):
     def test_01_index_management(self):
         """Tests index creation, listing, getting details, and deletion."""
         print("\n--- Running: test_01_index_management ---")
-
+        
         # Test creation
         self.client.vcreate(INDEX_EUCLIDEAN, metric="euclidean", m=10)
         self.client.vcreate(INDEX_COSINE, metric="cosine")
         print(" -> vcreate OK")
-
+        
         # Test listing
         indexes = self.client.list_indexes()
         index_names = [idx['Name'] for idx in indexes]
         self.assertIn(INDEX_EUCLIDEAN, index_names)
         self.assertIn(INDEX_COSINE, index_names)
         print(" -> list_indexes OK")
-
+        
         # Test getting details
         info = self.client.get_index_info(INDEX_EUCLIDEAN)
         self.assertEqual(info['name'], INDEX_EUCLIDEAN)
@@ -62,21 +62,21 @@ class TestKektorDBEndToEnd(unittest.TestCase):
     def test_02_data_lifecycle(self):
         """Tests adding, getting, and deleting vectors."""
         print("\n--- Running: test_02_data_lifecycle ---")
-
+        
         # Add a vector
         vec_id = "test-vec-01"
         vec_data = self.vectors[0].tolist()
         metadata = {"test": "lifecycle"}
         self.client.vadd(INDEX_COSINE, vec_id, vec_data, metadata)
         print(" -> vadd OK")
-
+        
         # Get a single vector
         retrieved_vec = self.client.vget(INDEX_COSINE, vec_id)
         self.assertEqual(retrieved_vec['id'], vec_id)
         self.assertIn('vector', retrieved_vec)
         self.assertEqual(retrieved_vec['metadata']['test'], 'lifecycle')
         print(" -> vget (single) OK")
-
+        
         # Get multiple vectors (batch)
         self.client.vadd(INDEX_COSINE, "test-vec-02", self.vectors[1].tolist())
         retrieved_batch = self.client.vget_many(INDEX_COSINE, ["test-vec-01", "non-existent", "test-vec-02"])
@@ -92,20 +92,20 @@ class TestKektorDBEndToEnd(unittest.TestCase):
         error_message = cm.exception.args[0]
         self.assertIn("KektorDB API Error", error_message)
         self.assertIn("vettore con ID 'test-vec-01' non trovato", error_message)
-
-        print(" -> vdelete OK (con verifica dell'errore 404)")
+        
+        print(" -> vdelete OK (con verifica dell'errore 404)")        
     def test_03_search_and_filtering(self):
         """Tests search quality (recall) and metadata filtering."""
         print("\n--- Running: test_03_search_and_filtering ---")
         idx_search = f"e2e-search-{int(time.time())}"
         self.client.vcreate(idx_search, metric="euclidean")
-
+        
         for i, vec in enumerate(self.vectors):
             self.client.vadd(idx_search, f"vec_{i}", vec.tolist(), metadata={"id_num": i})
-
+        
         query_idx = 42
         query_vector = self.vectors[query_idx]
-
+        
         # Brute-force calculation for ground truth
         distances = np.sum((self.vectors - query_vector)**2, axis=1)
         true_neighbors_indices = np.argsort(distances)[:10]
@@ -114,13 +114,13 @@ class TestKektorDBEndToEnd(unittest.TestCase):
         # KektorDB search
         results = self.client.vsearch(idx_search, query_vector.tolist(), k=10)
         self.assertEqual(f"vec_{query_idx}", results[0])
-
+        
         # Recall check
         intersection = set(results).intersection(true_neighbor_ids)
         recall = len(intersection) / 10.0
         print(f" -> Recall@10: {recall:.2f}")
         self.assertGreaterEqual(recall, 0.9, "Recall should be at least 90%.")
-
+        
         # Filter check
         filtered_results = self.client.vsearch(idx_search, query_vector.tolist(), k=10, filter_str="id_num < 50")
         for item_id in filtered_results:

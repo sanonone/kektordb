@@ -8,6 +8,8 @@ import (
 	"log"
 	"math"
 	"regexp"
+	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,9 +25,19 @@ type KVPair struct {
 
 // struct per restituire i dati completi di un vettore
 type VectorData struct {
-	ID       string
-	Vector   []float32
-	Metadata map[string]any
+	ID       string         `json:"id"`
+	Vector   []float32      `json:"vector"`
+	Metadata map[string]any `json:"metadata"`
+}
+
+// struct pubblica che verrà serializzata in JSON per l'API per restituire le info dei vettori
+type IndexInfo struct {
+	Name           string                  `json:"name"`
+	Metric         distance.DistanceMetric `json:"metric"`
+	Precision      distance.PrecisionType  `json:"precision"`
+	M              int                     `json:"m"`
+	EfConstruction int                     `json:"ef_construction"`
+	VectorCount    int                     `json:"vector_count"`
 }
 
 // VectorIndexInfo è una struct per trasportare i metadati di un indice.
@@ -136,6 +148,172 @@ func (s *Store) GetVectorIndexInfoUnlocked() ([]VectorIndexInfo, error) {
 		}
 	}
 	return infoList, nil
+}
+
+// GetVectorIndexInfo restituisce le informazioni di configurazione e stato
+// per tutti gli indici vettoriali.
+func (s *Store) GetVectorIndexInfoAPI() ([]IndexInfo, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	infoList := make([]IndexInfo, 0, len(s.vectorIndexes))
+
+	for name, idx := range s.vectorIndexes {
+		if hnswIndex, ok := idx.(*hnsw.Index); ok {
+			metric, m, efConst, precision, count := hnswIndex.GetInfo() // Creeremo questo metodo
+			infoList = append(infoList, IndexInfo{
+				Name:           name,
+				Metric:         metric,
+				Precision:      precision,
+				M:              m,
+				EfConstruction: efConst,
+				VectorCount:    count,
+			})
+		}
+	}
+
+	// Ordina la lista per nome per una risposta API consistente
+	sort.Slice(infoList, func(i, j int) bool {
+		return infoList[i].Name < infoList[j].Name
+	})
+
+	return infoList, nil
+}
+
+// GetSingleVectorIndexInfo restituisce le informazioni per un singolo indice.
+func (s *Store) GetSingleVectorIndexInfoAPI(name string) (IndexInfo, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	idx, ok := s.vectorIndexes[name]
+	if !ok {
+		return IndexInfo{}, fmt.Errorf("indice '%s' non trovato", name)
+	}
+
+	if hnswIndex, ok := idx.(*hnsw.Index); ok {
+		metric, m, efConst, precision, count := hnswIndex.GetInfo()
+		return IndexInfo{
+			Name:           name,
+			Metric:         metric,
+			Precision:      precision,
+			M:              m,
+			EfConstruction: efConst,
+			VectorCount:    count,
+		}, nil
+	}
+
+	return IndexInfo{}, fmt.Errorf("tipo di indice non supportato per l'introspezione")
+}
+
+// GetVector recupera i dati completi per un singolo vettore dato il suo ID esterno.
+func (s *Store) GetVector(indexName, vectorID string) (VectorData, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// 1. Controlla che l'indice esista
+	idx, ok := s.vectorIndexes[indexName]
+	if !ok {
+		return VectorData{}, fmt.Errorf("indice '%s' non trovato", indexName)
+	}
+
+	hnswIndex, ok := idx.(*hnsw.Index)
+	if !ok {
+		return VectorData{}, fmt.Errorf("tipo di indice non supportato per il recupero dati")
+	}
+
+	// 2. Ottieni il nodo dall'indice HNSW
+	// Dobbiamo creare un nuovo metodo in HNSW per questo.
+	nodeData, found := hnswIndex.GetNodeData(vectorID)
+	if !found {
+		return VectorData{}, fmt.Errorf("vettore con ID '%s' non trovato nell'indice '%s'", vectorID, indexName)
+	}
+
+	// 3. Recupera i metadati associati
+	// La funzione getMetadataForNodeUnlocked è perfetta per questo,
+	// dato che abbiamo già un RLock.
+	metadata := s.getMetadataForNodeUnlocked(indexName, nodeData.InternalID)
+
+	return VectorData{
+		ID:       vectorID,
+		Vector:   nodeData.Vector,
+		Metadata: metadata,
+	}, nil
+}
+
+// GetVectors recupera i dati completi per una slice di ID di vettori in parallelo.
+// Restituisce una slice di VectorData. Se un ID non viene trovato,
+// semplicemente non sarà presente nella slice di ritorno.
+func (s *Store) GetVectors(indexName string, vectorIDs []string) ([]VectorData, error) {
+	// Acquisiamo il lock di lettura una sola volta per l'intera operazione.
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	idx, ok := s.vectorIndexes[indexName]
+	if !ok {
+		return nil, fmt.Errorf("indice '%s' non trovato", indexName)
+	}
+	hnswIndex, ok := idx.(*hnsw.Index)
+	if !ok {
+		return nil, fmt.Errorf("tipo di indice non supportato")
+	}
+
+	// --- LOGICA DI PARALLELISMO ---
+
+	// Canale per distribuire il "lavoro" (gli ID da cercare)
+	jobs := make(chan string, len(vectorIDs))
+	// Canale per raccogliere i risultati
+	resultsChan := make(chan VectorData, len(vectorIDs))
+	// WaitGroup per sapere quando tutti i worker hanno finito
+	var wg sync.WaitGroup
+
+	// Determina il numero di worker. Usiamo il numero di CPU disponibili come limite ragionevole.
+	numWorkers := runtime.NumCPU()
+	if len(vectorIDs) < numWorkers {
+		numWorkers = len(vectorIDs)
+	}
+	if numWorkers == 0 {
+		return []VectorData{}, nil
+	}
+
+	// 1. Avvia i Worker
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Ogni worker prende un ID dal canale `jobs`, lavora e invia il risultato.
+			for vectorID := range jobs {
+				nodeData, found := hnswIndex.GetNodeData(vectorID)
+				if !found {
+					continue
+				}
+				metadata := s.getMetadataForNodeUnlocked(indexName, nodeData.InternalID)
+
+				resultsChan <- VectorData{
+					ID:       vectorID,
+					Vector:   nodeData.Vector,
+					Metadata: metadata,
+				}
+			}
+		}()
+	}
+
+	// 2. Invia i Lavori
+	for _, id := range vectorIDs {
+		jobs <- id
+	}
+	close(jobs) // Chiudi il canale per segnalare ai worker che non ci sono più lavori
+
+	// 3. Attendi che tutti i worker finiscano
+	wg.Wait()
+	close(resultsChan) // Chiudi il canale dei risultati
+
+	// 4. Raccogli tutti i risultati
+	finalResults := make([]VectorData, 0, len(resultsChan))
+	for result := range resultsChan {
+		finalResults = append(finalResults, result)
+	}
+
+	return finalResults, nil
 }
 
 // --- Fine compattazione AOF ---
@@ -262,6 +440,30 @@ func (s *Store) GetVectorIndex(name string) (VectorIndex, bool) {
 
 	idx, found := s.vectorIndexes[name]
 	return idx, found
+}
+
+// rimuove un intero indice vettoriale e tutti i suoi dati associati
+func (s *Store) DeleteVectorIndex(name string) error {
+	s.mu.Lock() // Usiamo un Lock() esclusivo perché stiamo modificando tutte le strutture
+	defer s.mu.Unlock()
+
+	// Controlla che l'indice esista
+	_, ok := s.vectorIndexes[name]
+	if !ok {
+		return fmt.Errorf("indice '%s' non trovato", name)
+	}
+
+	// Rimuovi l'indice HNSW dalla mappa principale
+	delete(s.vectorIndexes, name)
+
+	// Rimuovi i dati associati dall'indice invertito
+	delete(s.invertedIndex, name)
+
+	// Rimuovi i dati associati dall'indice B-Tree
+	delete(s.bTreeIndex, name)
+
+	log.Printf("Indice '%s' e tutti i dati associati sono stati eliminati.", name)
+	return nil
 }
 
 // Compress converte un indice esistente in una nuova precisione.

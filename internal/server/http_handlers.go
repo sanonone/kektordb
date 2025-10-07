@@ -14,24 +14,115 @@ import (
 
 // registerHTTPHandlers imposta le route per la API REST
 func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
-	// Endpoint per il Key-Value Store
-	mux.HandleFunc("/kv/", s.handleKV) // Un solo handler per /kv/
+	mux.HandleFunc("/", s.router)
+}
 
-	// Endpoint per gli Indici Vettoriali
-	mux.HandleFunc("/vector/create", s.handleVectorCreate)
-	mux.HandleFunc("/vector/add", s.handleVectorAdd)
-	mux.HandleFunc("/vector/search", s.handleVectorSearch)
-	mux.HandleFunc("/vector/delete", s.handleVectorDelete)
+// router è il nostro router principale manuale. Analizza l'URL e delega all'handler corretto.
+func (s *Server) router(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
 
-	mux.HandleFunc("/system/aof-rewrite", s.handleAOFRewriteHTTP)
-	mux.HandleFunc("/vector/compress", s.handleVectorCompress)
-	// Questa sezione registra gli handler di pprof sotto il percorso /debug/pprof/
-	// Saranno disponibili sul server HTTP (es. http://localhost:9091/debug/pprof/)
-	mux.HandleFunc("/debug/pprof/", pprof.Index)
-	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	// --- Endpoint di Debug (pprof) ---
+	if strings.HasPrefix(path, "/debug/pprof") {
+		// Delega agli handler di pprof in base al suffisso
+		switch {
+		case path == "/debug/pprof/":
+			pprof.Index(w, r)
+		case path == "/debug/pprof/cmdline":
+			pprof.Cmdline(w, r)
+		case path == "/debug/pprof/profile":
+			pprof.Profile(w, r)
+		case path == "/debug/pprof/symbol":
+			pprof.Symbol(w, r)
+		case path == "/debug/pprof/trace":
+			pprof.Trace(w, r)
+		default:
+			s.writeHTTPError(w, http.StatusNotFound, "Endpoint pprof non trovato")
+		}
+		return
+	}
+
+	// --- Endpoint di Sistema ---
+	if path == "/system/aof-rewrite" {
+		s.handleAOFRewriteHTTP(w, r)
+		return
+	}
+
+	// --- Endpoint KV ---
+	if strings.HasPrefix(path, "/kv/") {
+		s.handleKV(w, r)
+		return
+	}
+
+	// --- Endpoint Vettoriali ---
+	switch path {
+	case "/vector/indexes":
+		// Questo gestisce GET (lista) e POST (crea)
+		s.handleIndexesRequest(w, r)
+		return
+	case "/vector/actions/create":
+		s.handleVectorCreate(w, r)
+		return
+	case "/vector/actions/add":
+		s.handleVectorAdd(w, r)
+		return
+	case "/vector/actions/search":
+		s.handleVectorSearch(w, r)
+		return
+	case "/vector/actions/delete_vector":
+		s.handleVectorDelete(w, r)
+		return
+	case "/vector/actions/compress":
+		s.handleVectorCompress(w, r)
+		return
+	case "/vector/actions/get-vectors":
+		s.handleGetVectorsBatch(w, r)
+		return
+	}
+
+	// Gestione di URL con parametri, come /vector/indexes/{name}
+	if strings.HasPrefix(path, "/vector/indexes/") {
+		// Tentiamo di matchare i pattern più specifici prima
+		// Pattern: /vector/indexes/{indexName}/vectors/{vectorID}
+		if parts := strings.Split(path, "/vectors/"); len(parts) == 2 {
+			indexName := strings.TrimPrefix(parts[0], "/vector/indexes/")
+			vectorID := parts[1]
+			s.handleGetVector(w, r, indexName, vectorID)
+			return
+		}
+
+		// Pattern: /vector/indexes/{indexName}
+		indexName := strings.TrimPrefix(path, "/vector/indexes/")
+		s.handleSingleIndexRequest(w, r, indexName)
+		return
+	}
+
+	// Se nessun pattern ha matchato, restituisci Not Found.
+	s.writeHTTPError(w, http.StatusNotFound, "Endpoint non trovato")
+}
+
+// handleIndexesRequest gestisce sia la lista che la creazione
+func (s *Server) handleIndexesRequest(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleListIndexes(w, r)
+	case http.MethodPost:
+		s.handleVectorCreate(w, r) // Riusiamo l'handler esistente
+	default:
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Consentiti solo GET e POST su /vector/indexes")
+	}
+}
+
+// handleSingleIndexRequest gestisce GET e DELETE su un singolo indice
+func (s *Server) handleSingleIndexRequest(w http.ResponseWriter, r *http.Request, indexName string) {
+	// ... (Qui chiamiamo gli handler specifici per GET e DELETE, passando `indexName`)
+	switch r.Method {
+	case http.MethodGet:
+		s.handleGetIndex(w, r, indexName)
+	case http.MethodDelete:
+		s.handleDeleteIndex(w, r, indexName)
+	default:
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Consentiti solo GET e DELETE su /vector/indexes/{name}")
+	}
 }
 
 // --- Handler per KV ---
@@ -99,6 +190,67 @@ func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, key stri
 
 	s.store.GetKVStore().Delete(key)
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK"})
+}
+
+// 2. Implementa l'handler per la lista di indici
+func (s *Server) handleListIndexes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo GET")
+		return
+	}
+
+	info, err := s.store.GetVectorIndexInfo()
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, info)
+}
+
+// 3. Implementa l'handler per il singolo indice
+func (s *Server) handleGetIndex(w http.ResponseWriter, r *http.Request, indexName string) {
+	if r.Method != http.MethodGet {
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo GET")
+		return
+	}
+
+	info, err := s.store.GetSingleVectorIndexInfoAPI(indexName)
+	if err != nil {
+		// Se l'errore è "non trovato", restituisci 404
+		if strings.Contains(err.Error(), "non trovato") {
+			s.writeHTTPError(w, http.StatusNotFound, err.Error())
+		} else {
+			s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, info)
+}
+
+func (s *Server) handleDeleteIndex(w http.ResponseWriter, r *http.Request, indexName string) {
+	// --- LOGICA AOF ---
+	// Registra il comando PRIMA di eseguire l'operazione.
+	// Creeremo un nuovo comando "VDROP" o "VDELETEINDEX" per l'AOF.
+	aofCommand := fmt.Sprintf("VDROP %s\n", indexName)
+	s.aofMutex.Lock()
+	s.aofFile.WriteString(aofCommand)
+	s.aofMutex.Unlock()
+
+	// Esegui l'eliminazione
+	err := s.store.DeleteVectorIndex(indexName)
+	if err != nil {
+		if strings.Contains(err.Error(), "non trovato") {
+			s.writeHTTPError(w, http.StatusNotFound, err.Error())
+		} else {
+			s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	// Per DELETE, una risposta 204 No Content è spesso appropriata
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- Handler per Vettori (VCREATE, VADD, VSEARCH, VDEL) ---
@@ -278,6 +430,44 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 	s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": results})
 }
 
+// struct della richiesta batch
+type BatchGetVectorsRequest struct {
+	IndexName string   `json:"index_name"`
+	IDs       []string `json:"ids"`
+}
+
+// handler per la richiesta batch
+func (s *Server) handleGetVectorsBatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST")
+		return
+	}
+
+	var req BatchGetVectorsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, "JSON invalido, atteso un oggetto con 'index_name' e 'ids'")
+		return
+	}
+
+	if req.IndexName == "" || len(req.IDs) == 0 {
+		s.writeHTTPError(w, http.StatusBadRequest, "'index_name' e 'ids' sono obbligatori")
+		return
+	}
+
+	// La logica di chiamata allo store è la stessa
+	vectorData, err := s.store.GetVectors(req.IndexName, req.IDs)
+	if err != nil {
+		if strings.Contains(err.Error(), "non trovato") {
+			s.writeHTTPError(w, http.StatusNotFound, err.Error())
+		} else {
+			s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, vectorData)
+}
+
 type VectorDeleteRequest struct {
 	IndexName string `json:"index_name"`
 	Id        string `json:"id"`
@@ -366,6 +556,21 @@ func (s *Server) handleVectorCompress(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Indice compresso con successo"})
+}
+
+// 4. Implementa la logica finale in handleGetVector
+func (s *Server) handleGetVector(w http.ResponseWriter, r *http.Request, indexName, vectorID string) {
+	vectorData, err := s.store.GetVector(indexName, vectorID)
+	if err != nil {
+		if strings.Contains(err.Error(), "non trovato") {
+			s.writeHTTPError(w, http.StatusNotFound, err.Error())
+		} else {
+			s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, vectorData)
 }
 
 // --- Helper per le Risposte HTTP ---
