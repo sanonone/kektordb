@@ -275,8 +275,8 @@ func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]stru
 	results := make([]string, 0, len(nearestNeighbors))
 	for _, neighbor := range nearestNeighbors {
 		// check per ignorare i nodi marcati come eliminati
-		if !h.nodes[neighbor.id].deleted {
-			results = append(results, h.nodes[neighbor.id].id)
+		if !h.nodes[neighbor.id].Deleted {
+			results = append(results, h.nodes[neighbor.id].Id)
 		}
 	}
 
@@ -332,8 +332,8 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 
 	// creazione nuovo nodo
 	node := &Node{
-		id:     id,
-		vector: storedVector,
+		Id:     id,
+		Vector: storedVector,
 	}
 
 	// aggiunta nodo all; mappe di tracciamento
@@ -343,13 +343,13 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	// scelta di un livello casuale per il nuovo nodo
 	level := h.randomLevel()
 
-	node.connections = make([][]uint32, level+1)
+	node.Connections = make([][]uint32, level+1)
 
 	// se questo è il primo nodo allora fine, diventa l'entrypoint e ritorna
 	if h.maxLevel == -1 {
 		h.entrypointID = internalID
 		h.maxLevel = 0
-		node.connections = make([][]uint32, 1) // solo il livello 0
+		node.Connections = make([][]uint32, 1) // solo il livello 0
 		return internalID, nil
 	}
 
@@ -388,16 +388,16 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 		selectedNeighbors := h.selectNeighbors(neighbors, maxConns)
 
 		// connette il nuovo nodo ai vicini selezionati
-		node.connections[l] = make([]uint32, len(selectedNeighbors))
+		node.Connections[l] = make([]uint32, len(selectedNeighbors))
 		for i, neighborCandidate := range selectedNeighbors {
-			node.connections[l][i] = neighborCandidate.id
+			node.Connections[l][i] = neighborCandidate.id
 		}
 
 		// connette anche i vicini al nuovo nodo (bidirezionale)
 		for _, neighborCandidate := range selectedNeighbors {
 			neighborNode := h.nodes[neighborCandidate.id]
 
-			neighborLevel := len(neighborNode.connections) - 1
+			neighborLevel := len(neighborNode.Connections) - 1
 			// se il nostro livello di inserimento 'l' è superiore al livello
 			// massimo del vicino, il vicino non può avere una connessione di ritorno
 			if l > neighborLevel {
@@ -405,11 +405,11 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 			}
 
 			// prendo la lista dei vicini attuali a quel livello
-			neighborConnections := neighborNode.connections[l]
+			neighborConnections := neighborNode.Connections[l]
 
 			// controllo che il vicino non superi il suo numero massimo di connessioni
 			if len(neighborConnections) < maxConns { // c'è spazio, aggiunge semplicemente la connessione
-				neighborNode.connections[l] = append(neighborConnections, internalID)
+				neighborNode.Connections[l] = append(neighborConnections, internalID)
 			} else {
 
 				// --- IMPLEMENTAZIONE DEL PRUNING SEMPLIFICATO ---
@@ -423,7 +423,7 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 
 				for i, currentNeighborOfNeighborID := range neighborConnections {
 					// confronto tra due nodi interni, neighborNode e il suo vicino
-					dist, _ := h.distance(neighborNode.vector, h.nodes[currentNeighborOfNeighborID].vector)
+					dist, _ := h.distance(neighborNode.Vector, h.nodes[currentNeighborOfNeighborID].Vector)
 					if dist > maxDist {
 						maxDist = dist
 						//worstNeighborID = currentNeighborOfNeighborID
@@ -432,12 +432,12 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 				}
 
 				// Calcola la distanza tra il vicino e il nostro nuovo nodo.
-				distToNewNode, _ := h.distance(neighborNode.vector, node.vector)
+				distToNewNode, _ := h.distance(neighborNode.Vector, node.Vector)
 
 				// Se il nostro nuovo nodo è più vicino del vicino più lontano,
 				// allora lo sostituiamo.
 				if distToNewNode < maxDist && worstNeighborIndex != -1 {
-					neighborNode.connections[l][worstNeighborIndex] = internalID
+					neighborNode.Connections[l][worstNeighborIndex] = internalID
 				}
 			}
 		}
@@ -474,7 +474,7 @@ func (h *Index) Delete(id string) {
 	// trova il nodo quindi imposta il flag
 	node, ok := h.nodes[internalID]
 	if ok {
-		node.deleted = true
+		node.Deleted = true
 	}
 
 	// rimozione ID dalla mappa di lookup esterna per impedire
@@ -496,7 +496,7 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 
 	// clacola la distanza tra la query ed il punto di ingresso
 	// inizia con il punto di ingresso
-	dist, err := h.distanceToQuery(query, h.nodes[entrypointID].vector)
+	dist, err := h.distanceToQuery(query, h.nodes[entrypointID].Vector)
 	if err != nil {
 		return nil, err
 	}
@@ -522,13 +522,13 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 		// esplora i vicini del candidato corrente
 		currentNode := h.nodes[current.id]
 		// verifica che il nodo abbia connessioni a questo livello
-		if level >= len(currentNode.connections) {
+		if level >= len(currentNode.Connections) {
 			continue
 		}
 
 		//log.Printf("DEBUG: Livello %d, esploro i vicini di %d (%d vicini)\n", level, current.id, len(currentNode.connections[level]))
 
-		for _, neighborID := range currentNode.connections[level] {
+		for _, neighborID := range currentNode.Connections[level] {
 			// CHECK 1: Se c'è una allowList, il vicino DEVE essere in essa.
 			// `allowList != nil` è il check principale.
 			if allowList != nil {
@@ -543,7 +543,7 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 				visited[neighborID] = true
 
 				// calcola la distanza tra la query ed il vicino
-				dist, err := h.distanceToQuery(query, h.nodes[neighborID].vector)
+				dist, err := h.distanceToQuery(query, h.nodes[neighborID].Vector)
 				if err != nil {
 					// ignora e continua in caso di errore di calcolo
 					continue
@@ -635,12 +635,12 @@ func (h *Index) Iterate(callback func(id string, vector []float32)) {
 	defer h.mu.RUnlock()
 
 	for _, node := range h.nodes {
-		if !node.deleted {
+		if !node.Deleted {
 			// --- LOGICA DI CONVERSIONE ---
 			var vectorF32 []float32
 
 			// Controlla il tipo del vettore memorizzato
-			switch vec := node.vector.(type) {
+			switch vec := node.Vector.(type) {
 			case []float32:
 				vectorF32 = vec
 			case []uint16:
@@ -652,17 +652,17 @@ func (h *Index) Iterate(callback func(id string, vector []float32)) {
 			case []int8: // <-- NUOVO CASE
 				// Se è int8, dobbiamo de-quantizzarlo.
 				if h.quantizer == nil {
-					log.Printf("ATTENZIONE: indice int8 senza quantizzatore per il nodo %s", node.id)
+					log.Printf("ATTENZIONE: indice int8 senza quantizzatore per il nodo %s", node.Id)
 					continue
 				}
 				vectorF32 = h.quantizer.Dequantize(vec)
 			default:
 				// Tipo sconosciuto, saltiamo questo nodo per sicurezza
-				log.Printf("ATTENZIONE: tipo di vettore sconosciuto durante l'iterazione per il nodo %s", node.id)
+				log.Printf("ATTENZIONE: tipo di vettore sconosciuto durante l'iterazione per il nodo %s", node.Id)
 				continue
 			}
 
-			callback(node.id, vectorF32)
+			callback(node.Id, vectorF32)
 		}
 	}
 }
@@ -698,13 +698,13 @@ func (h *Index) GetNodeData(externalID string) (NodeData, bool) {
 	}
 
 	node, ok := h.nodes[internalID]
-	if !ok || node.deleted {
+	if !ok || node.Deleted {
 		return NodeData{}, false
 	}
 
 	// Usa la stessa logica di 'Iterate' per de-comprimere/de-quantizzare
 	var vectorF32 []float32
-	switch vec := node.vector.(type) {
+	switch vec := node.Vector.(type) {
 	case []float32:
 		vectorF32 = vec
 	case []uint16:
@@ -742,7 +742,7 @@ func (h *Index) GetInfo() (distance.DistanceMetric, int, int, distance.Precision
 	// Contiamo solo i nodi non eliminati
 	count := 0
 	for _, node := range h.nodes {
-		if !node.deleted {
+		if !node.Deleted {
 			count++
 		}
 	}
@@ -783,4 +783,73 @@ func normalize(v []float32) {
 	}
 	//log.Printf("[DEBUG NORMALIZE] Lunghezza (norma L2) calcolata DOPO: %f", math.Sqrt(float64(finalNorm)))
 	// --- FINE LOG ---
+}
+
+// SnapshotData esporta i dati interni dell'indice per la persistenza.
+// Si aspetta che il chiamante gestisca il locking.
+func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uint32, int, *distance.Quantizer) {
+	// Questo metodo si aspetta che il chiamante abbia già acquisito un lock.
+
+	// Prima di salvare, assicuriamoci che ogni nodo abbia il suo InternalID popolato.
+	for id, node := range h.nodes {
+		node.InternalID = id
+	}
+
+	return h.nodes, h.externalToInternalID, h.internalCounter, h.entrypointID, h.maxLevel, h.quantizer
+}
+
+// LoadSnapshotData ripristina lo stato interno dell'indice da una slice di nodi.
+// Si aspetta che l'indice sia vuoto e che il chiamante gestisca il locking.
+func (h *Index) LoadSnapshotData(
+	nodes map[uint32]*Node,
+	extToInt map[string]uint32,
+	counter uint32,
+	entrypoint uint32,
+	maxLevel int,
+	quantizer *distance.Quantizer,
+) error {
+	h.nodes = nodes
+	h.externalToInternalID = extToInt
+	h.internalCounter = counter
+	h.entrypointID = entrypoint
+	h.maxLevel = maxLevel
+	h.quantizer = quantizer
+
+	// Verifica coerenza
+	if h.nodes == nil {
+		h.nodes = make(map[uint32]*Node)
+	}
+	if h.externalToInternalID == nil {
+		h.externalToInternalID = make(map[string]uint32)
+	}
+
+	return nil
+}
+
+// Metric restituisce la metrica di distanza usata dall'indice.
+func (h *Index) Metric() distance.DistanceMetric {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.metric
+}
+
+// Precision restituisce la precisione dei dati usata dall'indice.
+func (h *Index) Precision() distance.PrecisionType {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.precision
+}
+
+// M restituisce il parametro M di HNSW (massime connessioni per livello > 0).
+func (h *Index) M() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.m
+}
+
+// EfConstruction restituisce il parametro efConstruction di HNSW.
+func (h *Index) EfConstruction() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.efConstruction
 }

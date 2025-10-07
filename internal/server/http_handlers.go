@@ -10,6 +10,7 @@ import (
 	"net/http/pprof"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 // registerHTTPHandlers imposta le route per la API REST
@@ -44,6 +45,10 @@ func (s *Server) router(w http.ResponseWriter, r *http.Request) {
 	// --- Endpoint di Sistema ---
 	if path == "/system/aof-rewrite" {
 		s.handleAOFRewriteHTTP(w, r)
+		return
+	}
+	if path == "/system/save" {
+		s.handleSaveHTTP(w, r)
 		return
 	}
 
@@ -179,6 +184,9 @@ func (s *Server) handleKVSet(w http.ResponseWriter, r *http.Request, key string)
 	s.aofMutex.Unlock()
 
 	s.store.GetKVStore().Set(key, valueBytes)
+
+	atomic.AddInt64(&s.dirtyCounter, 1) // <-- INCREMENTA IL CONTATORE
+
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK"})
 }
 
@@ -189,6 +197,9 @@ func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, key stri
 	s.aofMutex.Unlock()
 
 	s.store.GetKVStore().Delete(key)
+
+	atomic.AddInt64(&s.dirtyCounter, 1) // <-- INCREMENTA IL CONTATORE
+
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK"})
 }
 
@@ -249,6 +260,8 @@ func (s *Server) handleDeleteIndex(w http.ResponseWriter, r *http.Request, index
 		return
 	}
 
+	atomic.AddInt64(&s.dirtyCounter, 1) // <-- INCREMENTA IL CONTATORE
+
 	// Per DELETE, una risposta 204 No Content è spesso appropriata
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -303,6 +316,9 @@ func (s *Server) handleVectorCreate(w http.ResponseWriter, r *http.Request) {
 		s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	atomic.AddInt64(&s.dirtyCounter, 1) // <-- INCREMENTA IL CONTATORE
+
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Indice creato"})
 }
 
@@ -380,6 +396,8 @@ func (s *Server) handleVectorAdd(w http.ResponseWriter, r *http.Request) {
 	s.aofFile.WriteString(aofCommand)
 	s.aofMutex.Unlock()
 	// --- FINE LOGICA AOF ---
+
+	atomic.AddInt64(&s.dirtyCounter, 1) // <-- INCREMENTA IL CONTATORE
 
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Vettore aggiunto"})
 }
@@ -498,6 +516,9 @@ func (s *Server) handleVectorDelete(w http.ResponseWriter, r *http.Request) {
 	s.aofMutex.Unlock()
 
 	idx.Delete(req.Id)
+
+	atomic.AddInt64(&s.dirtyCounter, 1) // <-- INCREMENTA IL CONTATORE
+
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Vettore eliminato"})
 }
 
@@ -517,6 +538,25 @@ func (s *Server) handleAOFRewriteHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Riscrittura AOF completata con successo"})
+}
+
+func (s *Server) handleSaveHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST per avviare SAVE")
+		return
+	}
+
+	// Aggiungi il comando SAVE all'AOF. Questo è importante perché se il server
+	// crasha durante il SAVE, al riavvio saprà che deve fidarsi dello snapshot.
+	// Per ora, omettiamo questa complessità e ci concentriamo sul flusso principale.
+
+	if err := s.Save(); err != nil {
+		log.Printf("ERRORE CRITICO durante SAVE via HTTP: %v", err)
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("fallimento processo SAVE: %v", err))
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Snapshot del database creato con successo."})
 }
 
 type VectorCompressRequest struct {
@@ -554,6 +594,8 @@ func (s *Server) handleVectorCompress(w http.ResponseWriter, r *http.Request) {
 		s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	atomic.AddInt64(&s.dirtyCounter, 1) // <-- INCREMENTA IL CONTATORE
 
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Indice compresso con successo"})
 }

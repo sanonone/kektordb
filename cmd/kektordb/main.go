@@ -17,11 +17,13 @@ func main() {
 	// tcpAddr := flag.String("tcp-addr", ":9090", "Indirizzo e porta per il server TCP (es. :9090 o 127.0.0.1:9090)")
 	httpAddr := flag.String("http-addr", ":9091", "Indirizzo e porta per il server API REST (es. :9091)")
 	aofPath := flag.String("aof-path", "kektordb.aof", "Percorso del file di persistenza AOF")
+	savePolicy := flag.String("save", "60 1000", "Policy di snapshot automatico: \"secondi scritture\". Disabilita con \"\".")
+	aofRewritePercentage := flag.Int("aof-rewrite-percentage", 100, "Riscrive l'AOF quando cresce di questa percentuale. 0 per disabilitare.")
 
 	flag.Parse() // popola le variabili sopra con i valori forniti dall'utente sulla riga di comando
 
 	// crea istanza server e passo la configurazione come parametro
-	srv, err := server.NewServer(*aofPath)
+	srv, err := server.NewServer(*aofPath, *savePolicy, *aofRewritePercentage)
 	if err != nil {
 		log.Fatalf("Impossibile creare il server: %v", err)
 	}

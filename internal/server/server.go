@@ -12,9 +12,11 @@ import (
 	"net/http" // per il web server
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic" // per contatore dirty
 	"time"
 )
 
@@ -26,10 +28,24 @@ type Server struct {
 	aofFile    *os.File     // file aof per persistenza
 	aofMutex   sync.Mutex   // mutex per gestire la scrittura sul file
 	httpServer *http.Server // il server http
+
+	// Stato per il salvataggio automatico
+	dirtyCounter int64 // Contatore atomico per le modifiche
+	lastSaveTime time.Time
+
+	// Configurazione
+	savePolicies         []savePolicy
+	aofRewritePercentage int
+	aofBaseSize          int64 // Dimensione AOF dopo l'ultima riscrittura
+}
+
+type savePolicy struct {
+	Seconds int
+	Changes int64
 }
 
 // crea una nuova istanza del server
-func NewServer(aofPath string) (*Server, error) {
+func NewServer(aofPath string, savePolicyStr string, aofRewritePerc int) (*Server, error) {
 	// aprie o crea il file AOF
 	//0666 sono i permessi del file
 	file, err := os.OpenFile(aofPath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
@@ -37,19 +53,63 @@ func NewServer(aofPath string) (*Server, error) {
 		log.Fatalf("Impossibile aprire il file AOF: %v", err)
 	}
 
+	policies, err := parseSavePolicies(savePolicyStr)
+	if err != nil {
+		return nil, err
+	}
+
 	s := &Server{
-		store:   store.NewStore(), // inizializzo store
-		aofFile: file,
+		store:                store.NewStore(), // inizializzo store
+		aofFile:              file,
+		savePolicies:         policies,
+		aofRewritePercentage: aofRewritePerc,
+		lastSaveTime:         time.Now(),
 	}
 	return s, nil
 }
 
 // avvia i server TCP e HTTP e li mette in ascolto sulle porte specificate
 func (s *Server) Run(httpAddr string) error {
-	// prima di tutto carica i dati dall'AOF
+	// Determina i percorsi dei file
+	aofPath := s.aofFile.Name()
+	snapshotPath := strings.TrimSuffix(aofPath, ".aof") + ".kdb"
+
+	// 1. Controlla se esiste lo snapshot
+	if _, err := os.Stat(snapshotPath); err == nil {
+		// Lo snapshot esiste, caricalo.
+		log.Printf("Trovato file di snapshot '%s', avvio del ripristino da RDB...", snapshotPath)
+
+		file, errOpen := os.Open(snapshotPath)
+		if errOpen != nil {
+			return fmt.Errorf("impossibile aprire il file di snapshot: %w", err)
+		}
+
+		err = s.store.LoadFromSnapshot(file)
+		file.Close() // Chiudi il file dopo la lettura
+		if err != nil {
+			return fmt.Errorf("errore durante il caricamento dello snapshot: %w", err)
+		}
+		log.Println("Ripristino da snapshot completato.")
+
+	} else if !os.IsNotExist(err) {
+		// C'è stato un errore diverso da "file non trovato" nel controllare lo snapshot
+		return fmt.Errorf("errore nel controllare il file di snapshot: %w", err)
+	}
+
+	// 2. Esegui sempre il replay dell'AOF.
+	// Se abbiamo caricato lo snapshot, questo applicherà solo le modifiche successive.
+	// Se non c'era uno snapshot, questo caricherà l'intera cronologia.
+	log.Println("Avvio riproduzione del log AOF per le modifiche recenti...")
 	if err := s.loadFromAOF(); err != nil {
 		return fmt.Errorf("impossibile caricare da AOF: %w", err)
 	}
+
+	// Ottieni la dimensione iniziale dell'AOF dopo il caricamento
+	info, _ := s.aofFile.Stat()
+	s.aofBaseSize = info.Size()
+
+	// --- NUOVO: Avvia la goroutine di manutenzione in background ---
+	go s.serverCron()
 
 	// --- configurazione ed avvio server HTTP ---
 	mux := http.NewServeMux()
@@ -67,6 +127,59 @@ func (s *Server) Run(httpAddr string) error {
 
 	return nil
 
+}
+
+// serverCron è il nostro "cron job" in background.
+func (s *Server) serverCron() {
+	// Esegui un check ogni secondo.
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		// Acquisiamo un lock leggero per leggere i contatori in modo sicuro
+		s.aofMutex.Lock()
+		dirty := atomic.LoadInt64(&s.dirtyCounter)
+		lastSave := s.lastSaveTime
+		s.aofMutex.Unlock()
+
+		// --- Logica di SAVE Automatico ---
+		for _, policy := range s.savePolicies {
+			if time.Since(lastSave).Seconds() >= float64(policy.Seconds) && dirty >= policy.Changes {
+				log.Println("Condizione di salvataggio automatico raggiunta. Avvio SAVE...")
+				if err := s.Save(); err == nil {
+					// Resetta i contatori solo se SAVE ha successo
+					s.aofMutex.Lock()
+					atomic.StoreInt64(&s.dirtyCounter, 0)
+					s.lastSaveTime = time.Now()
+					s.aofMutex.Unlock()
+					log.Println("SAVE automatico completato.")
+				} else {
+					log.Printf("ERRORE durante SAVE automatico: %v", err)
+				}
+				break // Esegui solo la prima policy che matcha
+			}
+		}
+
+		// --- Logica di AOF REWRITE Automatico ---
+		if s.aofRewritePercentage > 0 {
+			info, err := s.aofFile.Stat()
+			if err == nil {
+				currentSize := info.Size()
+				// Se la dimensione base è 0, evita divisione per zero. Usa una soglia minima.
+				threshold := s.aofBaseSize + (s.aofBaseSize * int64(s.aofRewritePercentage) / 100)
+				if s.aofBaseSize > 0 && currentSize > threshold {
+					log.Println("Condizione di riscrittura AOF automatica raggiunta. Avvio AOF REWRITE...")
+					if err := s.RewriteAOF(); err == nil {
+						newInfo, _ := s.aofFile.Stat()
+						s.aofBaseSize = newInfo.Size() // Aggiorna la dimensione base
+						log.Println("AOF REWRITE automatico completato.")
+					} else {
+						log.Printf("ERRORE durante AOF REWRITE automatico: %v", err)
+					}
+				}
+			}
+		}
+	}
 }
 
 // vectorIndexState contiene lo stato di un singolo indice vettoriale.
@@ -418,6 +531,61 @@ func (s *Server) RewriteAOF() error {
 	return nil
 }
 
+// Save esegue uno snapshot "stop-the-world" dello stato del database
+// su disco e poi tronca il file AOF.
+func (s *Server) Save() error {
+	log.Println("Avvio processo di snapshot (SAVE)...")
+
+	// 1. Acquisiamo un lock di LETTURA sullo store. Questo permette alle ricerche
+	// in corso di finire, ma blocca nuove scritture finché lo snapshot non è pronto.
+	// È un buon compromesso tra "stop-the-world" e disponibilità.
+	s.store.RLock()
+	defer s.store.RUnlock()
+
+	// 2. Creazione del file temporaneo
+	aofPath := s.aofFile.Name()
+	snapshotPath := strings.TrimSuffix(aofPath, ".aof") + ".kdb"
+	tempSnapshotPath := snapshotPath + ".tmp"
+
+	file, err := os.Create(tempSnapshotPath)
+	if err != nil {
+		return fmt.Errorf("impossibile creare il file di snapshot temporaneo: %w", err)
+	}
+	defer file.Close()
+	defer os.Remove(tempSnapshotPath) // Pulisci in caso di errore
+
+	// 3. Scrivi lo snapshot sul file temporaneo
+	log.Println("Scrittura dello stato in memoria sullo snapshot...")
+	if err := s.store.Snapshot(file); err != nil {
+		return fmt.Errorf("fallimento durante la scrittura dello snapshot: %w", err)
+	}
+	log.Println("Scrittura snapshot completata.")
+
+	// 4. Sostituzione Atomica
+	if err := os.Rename(tempSnapshotPath, snapshotPath); err != nil {
+		return fmt.Errorf("fallimento nella sostituzione del file di snapshot: %w", err)
+	}
+
+	// 5. Troncare il file AOF
+	// Questa è la parte più delicata. Dobbiamo bloccare le scritture AOF,
+	// troncare il file e poi sbloccare.
+	log.Println("Troncamento del file AOF...")
+	s.aofMutex.Lock()
+	defer s.aofMutex.Unlock()
+
+	// Troncamento del file a dimensione 0
+	if err := s.aofFile.Truncate(0); err != nil {
+		return fmt.Errorf("fallimento nel troncamento del file AOF: %w", err)
+	}
+	// Riporta il cursore all'inizio per le nuove scritture
+	if _, err := s.aofFile.Seek(0, 0); err != nil {
+		return fmt.Errorf("fallimento nel riposizionare il cursore AOF: %w", err)
+	}
+
+	log.Println("Processo di snapshot (SAVE) completato con successo.")
+	return nil
+}
+
 // looksLikeJSON rileva se un []byte inizia con '{' o '[' (semplice heuristic).
 func looksLikeJSON(b []byte) bool {
 	if len(b) == 0 {
@@ -474,4 +642,47 @@ func parseVectorFromByteParts(parts [][]byte) ([]float32, error) {
 		vector[i] = float32(val)
 	}
 	return vector, nil
+}
+
+// parseSavePolicies analizza la stringa della policy di salvataggio (es. "60 1000 300 10")
+// e la converte in una slice di struct savePolicy.
+func parseSavePolicies(policyStr string) ([]savePolicy, error) {
+	policyStr = strings.TrimSpace(policyStr)
+	if policyStr == "" {
+		return nil, nil // Nessuna policy, è un caso valido.
+	}
+
+	parts := strings.Fields(policyStr)
+	if len(parts)%2 != 0 {
+		return nil, fmt.Errorf("formato policy di salvataggio non valido: numero di argomenti dispari")
+	}
+
+	var policies []savePolicy
+	for i := 0; i < len(parts); i += 2 {
+		seconds, err := strconv.Atoi(parts[i])
+		if err != nil {
+			return nil, fmt.Errorf("secondi non validi nella policy di salvataggio: '%s'", parts[i])
+		}
+
+		changes, err := strconv.ParseInt(parts[i+1], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("numero di modifiche non valido nella policy di salvataggio: '%s'", parts[i+1])
+		}
+
+		if seconds <= 0 || changes <= 0 {
+			return nil, fmt.Errorf("secondi e modifiche devono essere maggiori di zero")
+		}
+
+		policies = append(policies, savePolicy{
+			Seconds: seconds,
+			Changes: changes,
+		})
+	}
+
+	// Ordina le policy dalla più stringente alla meno stringente (per tempo)
+	sort.Slice(policies, func(i, j int) bool {
+		return policies[i].Seconds < policies[j].Seconds
+	})
+
+	return policies, nil
 }

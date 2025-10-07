@@ -1,10 +1,12 @@
 package store
 
 import (
+	"encoding/gob"
 	"fmt"
 	"github.com/sanonone/kektordb/internal/store/distance" // Importa distance
 	"github.com/sanonone/kektordb/internal/store/hnsw"     // Importa hnsw
 	"github.com/tidwall/btree"
+	"io"
 	"log"
 	"math"
 	"regexp"
@@ -46,6 +48,186 @@ type VectorIndexInfo struct {
 	Metric         distance.DistanceMetric
 	M              int
 	EfConstruction int
+}
+
+// --- SNAPSHOTTING ---
+
+// rappresenta lo stato salvabile del database, questa conterrà tutto
+type Snapshot struct {
+	KVData     map[string][]byte
+	VectorData map[string]*IndexSnapshot
+}
+
+// rappresenta lo stato salvabile di un singolo vettore, cintiene la configurazione IndexConfig e i dati Nodes di un singolo indice HNSW
+type IndexSnapshot struct {
+	Config             IndexConfig
+	Nodes              map[uint32]*NodeSnapshot // Salveremo i nodi del grafo ed i metadata. È map perché più semplice da serializzare e deserializzare
+	ExternalToInternal map[string]uint32
+	InternalCounter    uint32
+	EntrypointID       uint32
+	MaxLevel           int
+	QuantizerState     *distance.Quantizer // Salva lo stato del quantizzatore
+	// Aggiungeremo altri campi se necessario (es. stato del quantizzatore)
+}
+
+// NodeSnapshot contiene tutti i dati necessari per ripristinare un singolo nodo.
+type NodeSnapshot struct {
+	NodeData *hnsw.Node             // I dati del grafo (ID, connessioni, etc.)
+	Metadata map[string]interface{} // I metadati associati
+
+	// dati del vettore tipizzati esplicitamente (altrimenti fa conversione a float64 in decode gob)
+	VectorF32 []float32 `json:"vector_f32,omitempty"`
+	VectorF16 []uint16  `json:"vector_f16,omitempty"`
+	VectorI8  []int8    `json:"vector_i8,omitempty"`
+}
+
+// contine le configurazioni di vector index,
+type IndexConfig struct {
+	Metric         distance.DistanceMetric
+	Precision      distance.PrecisionType
+	M              int
+	EfConstruction int
+}
+
+// Registriamo i nostri tipi custom con gob in modo che sappia come gestirli
+// fondamentale quando si usano interfacce. Gob ha bisogno di sapere in anticipo quali tipi concreti potrebbero essere memorizzati in un ampo any o interface{}
+/*
+func init() {
+	gob.Register([]float32{})
+	gob.Register([]uint16{})
+	gob.Register([]int8{})
+}
+*/
+
+// Snapshot serializza lo stato corrente dello store in formato gob su un io.Writer.
+// Questa funzione si aspetta che il chiamante gestisca il locking.
+func (s *Store) Snapshot(writer io.Writer) error {
+	s.mu.RLock() // Usiamo RLock perché stiamo solo leggendo lo stato.
+	defer s.mu.RUnlock()
+
+	snapshot := Snapshot{
+		KVData:     s.kvStore.data,
+		VectorData: make(map[string]*IndexSnapshot),
+	}
+
+	for name, idx := range s.vectorIndexes {
+		if hnswIndex, ok := idx.(*hnsw.Index); ok {
+			nodes, extToInt, counter, entrypoint, maxLevel, quantizer := hnswIndex.SnapshotData()
+
+			nodeSnapshots := make(map[uint32]*NodeSnapshot, len(nodes))
+			for internalID, node := range nodes {
+				// Crea lo snapshot del nodo
+				snap := &NodeSnapshot{
+					NodeData: node,
+					Metadata: s.getMetadataForNodeUnlocked(name, internalID),
+				}
+
+				// Esegui un type switch per popolare il campo corretto del vettore
+				switch vec := node.Vector.(type) {
+				case []float32:
+					snap.VectorF32 = vec
+				case []uint16:
+					snap.VectorF16 = vec
+				case []int8:
+					snap.VectorI8 = vec
+				default:
+					// Logga un avviso se troviamo un tipo inaspettato
+					log.Printf("ATTENZIONE: tipo di vettore sconosciuto '%T' durante lo snapshot del nodo %d", vec, internalID)
+				}
+				nodeSnapshots[internalID] = snap
+			}
+
+			snapshot.VectorData[name] = &IndexSnapshot{
+				Config: IndexConfig{
+					Metric:         hnswIndex.Metric(),
+					Precision:      hnswIndex.Precision(),
+					M:              hnswIndex.M(),
+					EfConstruction: hnswIndex.EfConstruction(),
+				},
+				Nodes:              nodeSnapshots, // Usa la nuova mappa
+				ExternalToInternal: extToInt,
+				InternalCounter:    counter,
+				EntrypointID:       entrypoint,
+				MaxLevel:           maxLevel,
+				QuantizerState:     quantizer,
+			}
+		}
+	}
+
+	encoder := gob.NewEncoder(writer)
+	if err := encoder.Encode(snapshot); err != nil {
+		return fmt.Errorf("impossibile codificare lo snapshot: %w", err)
+	}
+
+	return nil
+}
+
+// LoadFromSnapshot deserializza uno snapshot gob da un io.Reader e ripristina
+// lo stato dello store. Svuota lo store prima di caricare.
+func (s *Store) LoadFromSnapshot(reader io.Reader) error {
+	decoder := gob.NewDecoder(reader)
+	var snapshot Snapshot
+	if err := decoder.Decode(&snapshot); err != nil {
+		return fmt.Errorf("impossibile decodificare lo snapshot: %w", err)
+	}
+
+	// Svuota lo stato corrente per un caricamento pulito
+	s.kvStore.data = snapshot.KVData
+	if s.kvStore.data == nil {
+		s.kvStore.data = make(map[string][]byte)
+	}
+	s.vectorIndexes = make(map[string]VectorIndex)
+	s.invertedIndex = make(map[string]map[string]map[string]map[uint32]struct{})
+	s.bTreeIndex = make(map[string]map[string]*btree.BTreeG[BTreeItem])
+
+	// Itera sugli indici presenti nello snapshot
+	for name, indexSnap := range snapshot.VectorData {
+		// Crea un nuovo indice vuoto con la configurazione salvata
+		idx, err := hnsw.New(indexSnap.Config.M, indexSnap.Config.EfConstruction, indexSnap.Config.Metric, indexSnap.Config.Precision)
+		if err != nil {
+			return fmt.Errorf("impossibile ricreare l'indice '%s' dallo snapshot: %w", name, err)
+		}
+
+		// Prepara la mappa di nodi da caricare in HNSW
+		nodesToLoad := make(map[uint32]*hnsw.Node)
+
+		// --- NUOVA LOGICA: Ricostruzione del campo 'Vector' ---
+		for id, nodeSnap := range indexSnap.Nodes {
+			// Ricostruisci il campo generico 'Vector' (interface{})
+			// basandoti su quale dei campi tipizzati è popolato.
+			if nodeSnap.VectorF32 != nil {
+				nodeSnap.NodeData.Vector = nodeSnap.VectorF32
+			} else if nodeSnap.VectorF16 != nil {
+				nodeSnap.NodeData.Vector = nodeSnap.VectorF16
+			} else if nodeSnap.VectorI8 != nil {
+				nodeSnap.NodeData.Vector = nodeSnap.VectorI8
+			} else {
+				log.Printf("ATTENZIONE: Nessun dato vettoriale trovato per il nodo %d nello snapshot", id)
+			}
+			nodesToLoad[id] = nodeSnap.NodeData
+		}
+		// --- FINE NUOVA LOGICA ---
+
+		// Carica i dati del grafo HNSW
+		if err := idx.LoadSnapshotData(nodesToLoad, indexSnap.ExternalToInternal, indexSnap.InternalCounter, indexSnap.EntrypointID, indexSnap.MaxLevel, indexSnap.QuantizerState); err != nil {
+			return fmt.Errorf("impossibile caricare i dati HNSW per l'indice '%s': %w", name, err)
+		}
+
+		s.vectorIndexes[name] = idx
+
+		// Inizializza gli spazi per gli indici secondari
+		s.invertedIndex[name] = make(map[string]map[string]map[uint32]struct{})
+		s.bTreeIndex[name] = make(map[string]*btree.BTreeG[BTreeItem])
+
+		// Ricostruisci gli indici secondari (metadati)
+		for _, nodeSnap := range indexSnap.Nodes {
+			if len(nodeSnap.Metadata) > 0 {
+				s.AddMetadataUnlocked(name, nodeSnap.NodeData.InternalID, nodeSnap.Metadata)
+			}
+		}
+	}
+
+	return nil
 }
 
 // itera su tutte le coppie chiave-valore nello store e le passa a una funzione
