@@ -379,6 +379,11 @@ func (s *Server) handleVectorAdd(w http.ResponseWriter, r *http.Request) {
 	if req.Metadata != nil {
 		if err := s.store.AddMetadata(req.IndexName, internalID, req.Metadata); err != nil {
 			// operazione critica, se fallisce dovremmo disfare l'aggiunta del vettore (rollback)
+			// --- LOGICA DI ROLLBACK ---
+			log.Printf("ERRORE: Fallimento nell'indicizzare i metadati per '%s'. Avvio rollback.", req.Id)
+			// Rimuovi il nodo appena aggiunto per mantenere la consistenza.
+			idx.Delete(req.Id)
+			// --- FINE ROLLBACK ---
 			s.writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("errore nell'indicizzare i metadati: %v", err))
 			return
 		}
@@ -388,6 +393,8 @@ func (s *Server) handleVectorAdd(w http.ResponseWriter, r *http.Request) {
 	// Costruisci il comando AOF solo dopo che tutte le validazioni sono passate.
 	aofCommand, err := buildVAddAOFCommand(req.IndexName, req.Id, req.Vector, req.Metadata)
 	if err != nil {
+		// Anche qui, se la creazione del comando fallisce fare il rollback
+		idx.Delete(req.Id)
 		s.writeHTTPError(w, http.StatusInternalServerError, "errore nella creazione del comando AOF")
 		return
 	}
