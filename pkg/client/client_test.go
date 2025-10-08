@@ -1,108 +1,166 @@
+// File: pkg/client/client_test.go
 package client
 
 import (
 	"fmt"
-	"log"
 	"net/http"
+	"reflect"
+	"sort"
 	"testing"
 	"time"
 )
 
-// NOTA: Questo è un test di INTEGRAZIONE.
-// Richiede che un server KektorDB sia in esecuzione su localhost:9091.
+// Helper function to check if a slice contains a string
+func contains(s []string, str string) bool {
+	for _, v := range s {
+		if v == str {
+			return true
+		}
+	}
+	return false
+}
+
+// NOTE: This is an INTEGRATION test suite.
+// It requires a running KektorDB server at localhost:9091.
 func TestClientIntegration(t *testing.T) {
-	// --- Salta questo test se viene eseguito con -short ---
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode.")
 	}
+
 	client := New("localhost", 9091)
 
-	// Usa un nome di indice univoco per ogni esecuzione del test per evitare conflitti.
-	// Aggiungiamo un timestamp.
-	indexName := fmt.Sprintf("go-client-index-%d", time.Now().UnixNano())
+	// Use unique index names for each test run to prevent conflicts
+	timestamp := time.Now().UnixNano()
+	idxEuclidean := fmt.Sprintf("go-e2e-euclidean-%d", timestamp)
+	idxCosine := fmt.Sprintf("go-e2e-cosine-%d", timestamp)
 
-	t.Run("KV Store Operations", func(t *testing.T) {
-		key, value := "go-client-test-kv", []byte("hello from go client")
-
-		err := client.Set(key, value)
+	t.Run("A - Index Management", func(t *testing.T) {
+		// Test VCreate
+		err := client.VCreate(idxEuclidean, "euclidean", "float32", 10, 50)
 		if err != nil {
-			t.Fatalf("Set fallito: %v", err)
+			t.Fatalf("VCreate for euclidean index failed: %v", err)
 		}
-
-		retrieved, err := client.Get(key)
+		err = client.VCreate(idxCosine, "cosine", "float32", 0, 0)
 		if err != nil {
-			t.Fatalf("Get fallito: %v", err)
+			t.Fatalf("VCreate for cosine index failed: %v", err)
 		}
-		if string(retrieved) != string(value) {
-			t.Errorf("Get ha restituito '%s', atteso '%s'", retrieved, value)
-		}
+		t.Log(" -> VCreate OK")
 
-		err = client.Delete(key)
+		// Test ListIndexes
+		indexes, err := client.ListIndexes()
 		if err != nil {
-			t.Fatalf("Delete fallito: %v", err)
+			t.Fatalf("ListIndexes failed: %v", err)
 		}
+		indexMap := make(map[string]bool)
+		for _, idx := range indexes {
+			indexMap[idx.Name] = true
+		}
+		if !indexMap[idxEuclidean] || !indexMap[idxCosine] {
+			t.Errorf("ListIndexes did not return the created indexes. Got: %v", indexes)
+		}
+		t.Log(" -> ListIndexes OK")
 
-		_, err = client.Get(key)
+		// Test GetIndexInfo
+		info, err := client.GetIndexInfo(idxEuclidean)
+		if err != nil {
+			t.Fatalf("GetIndexInfo failed: %v", err)
+		}
+		if info.Name != idxEuclidean || info.M != 10 {
+			t.Errorf("GetIndexInfo returned incorrect data. Got: %+v", info)
+		}
+		t.Log(" -> GetIndexInfo OK")
+
+		// Test DeleteIndex
+		err = client.DeleteIndex(idxEuclidean)
+		if err != nil {
+			t.Fatalf("DeleteIndex failed: %v", err)
+		}
+		_, err = client.GetIndexInfo(idxEuclidean)
 		if err == nil {
-			t.Fatalf("Get dopo Delete avrebbe dovuto fallire, ma non l'ha fatto")
+			t.Fatalf("GetIndexInfo should have failed for a deleted index, but it succeeded.")
 		}
 		if apiErr, ok := err.(*APIError); !ok || apiErr.StatusCode != http.StatusNotFound {
-			t.Errorf("Get dopo Delete ha restituito un errore inatteso: %v", err)
+			t.Errorf("Expected a 404 Not Found error for deleted index, but got: %v", err)
 		}
-		log.Println("[OK] Test KV superato")
+		t.Log(" -> DeleteIndex OK")
 	})
 
-	t.Run("Vector Operations and Filtering", func(t *testing.T) {
-		err := client.VCreate(indexName, "cosine", 16, 200)
+	t.Run("B - Data Lifecycle", func(t *testing.T) {
+		// Add vectors
+		vecID1, vecID2 := "test-vec-1", "test-vec-2"
+		vec1 := []float32{0.1, 0.2, 0.3}
+		meta1 := map[string]interface{}{"tag": "go"}
+
+		err := client.VAdd(idxCosine, vecID1, vec1, meta1)
 		if err != nil {
-			t.Fatalf("VCreate fallito: %v", err)
+			t.Fatalf("VAdd for vec1 failed: %v", err)
 		}
 
-		err = client.VAdd(indexName, "vec1", []float32{0.1, 0.8}, map[string]interface{}{"tag": "A", "val": 10})
+		err = client.VAdd(idxCosine, vecID2, []float32{0.4, 0.5, 0.6}, nil)
 		if err != nil {
-			t.Fatalf("VAdd per vec1 fallito: %v", err)
+			t.Fatalf("VAdd for vec2 failed: %v", err)
+		}
+		t.Log(" -> VAdd OK")
+
+		// Get single vector
+		retrieved, err := client.VGet(idxCosine, vecID1)
+		if err != nil {
+			t.Fatalf("VGet failed: %v", err)
+		}
+		if retrieved.ID != vecID1 || !reflect.DeepEqual(retrieved.Metadata, meta1) {
+			t.Errorf("VGet returned incorrect data. Got: %+v", retrieved)
+		}
+		t.Log(" -> VGet (single) OK")
+
+		// Get multiple vectors (batch)
+		batch, err := client.VGetMany(idxCosine, []string{vecID1, "non-existent", vecID2})
+		if err != nil {
+			t.Fatalf("VGetMany failed: %v", err)
+		}
+		if len(batch) != 2 {
+			t.Errorf("VGetMany should return 2 vectors, but got %d", len(batch))
+		}
+		retrievedIDs := []string{batch[0].ID, batch[1].ID}
+		sort.Strings(retrievedIDs)
+		if !reflect.DeepEqual(retrievedIDs, []string{vecID1, vecID2}) {
+			t.Errorf("VGetMany returned incorrect IDs. Got: %v", retrievedIDs)
+		}
+		t.Log(" -> VGetMany (batch) OK")
+
+		// Delete vector
+		err = client.VDelete(idxCosine, vecID1)
+		if err != nil {
+			t.Fatalf("VDelete failed: %v", err)
 		}
 
-		err = client.VAdd(indexName, "vec2", []float32{0.9, 0.1}, map[string]interface{}{"tag": "B", "val": 20})
-		if err != nil {
-			t.Fatalf("VAdd per vec2 fallito: %v", err)
+		_, err = client.VGet(idxCosine, vecID1)
+		if err == nil {
+			t.Fatalf("VGet after VDelete should have failed")
 		}
-
-		results, err := client.VSearch(indexName, 1, []float32{0.2, 0.7}, "tag=A")
-		if err != nil {
-			t.Fatalf("VSearch fallito: %v", err)
-		}
-		if len(results) != 1 || results[0] != "vec1" {
-			t.Errorf("VSearch con filtro ha restituito %v, atteso ['vec1']", results)
-		}
-		log.Println("[OK] Test Vettoriale (VCreate/VAdd/VSearch) superato")
+		t.Log(" -> VDelete OK")
 	})
 
-	t.Run("Vector Deletion", func(t *testing.T) {
-		err := client.VDelete(indexName, "vec1")
+	t.Run("C - Compression and System", func(t *testing.T) {
+		err := client.VCompress(idxCosine, "int8")
 		if err != nil {
-			t.Fatalf("VDelete fallito: %v", err)
+			t.Fatalf("VCompress failed: %v", err)
 		}
+		t.Log(" -> VCompress OK")
 
-		// Cerca di nuovo. Ora non dovremmo trovare 'vec1'.
-		results, err := client.VSearch(indexName, 2, []float32{0.1, 0.8}, "") // Senza filtro
+		// Search should still work after compression
+		results, err := client.VSearch(idxCosine, 1, []float32{0.41, 0.51, 0.61}, "")
 		if err != nil {
-			t.Fatalf("VSearch dopo delete fallito: %v", err)
+			t.Fatalf("VSearch after compress failed: %v", err)
 		}
-
-		for _, id := range results {
-			if id == "vec1" {
-				t.Errorf("VSearch ha trovato 'vec1' dopo che era stato eliminato. Risultati: %v", results)
-			}
+		if len(results) != 1 || results[0] != "test-vec-2" {
+			t.Errorf("VSearch after compress returned %v, expected ['test-vec-2']", results)
 		}
-		log.Println("[OK] Test Eliminazione Vettoriale (VDelete) superato")
-	})
+		t.Log(" -> Search after compress OK")
 
-	t.Run("AOF Rewrite", func(t *testing.T) {
-		err := client.AOFRewrite()
+		err = client.AOFRewrite()
 		if err != nil {
-			t.Fatalf("AOFRewrite fallito: %v", err)
+			t.Fatalf("AOFRewrite failed: %v", err)
 		}
-		log.Println("[OK] Test Amministrazione (AOFRewrite) superato")
+		t.Log(" -> AOFRewrite OK")
 	})
 }

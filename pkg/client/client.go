@@ -35,6 +35,23 @@ type searchResponse struct {
 	Results []string `json:"results"`
 }
 
+// VectorData modella i dati completi di un vettore per le API di recupero.
+type VectorData struct {
+	ID       string                 `json:"id"`
+	Vector   []float32              `json:"vector"`
+	Metadata map[string]interface{} `json:"metadata"`
+}
+
+// IndexInfo modella le informazioni di un indice per l'API di introspezione.
+type IndexInfo struct {
+	Name           string `json:"name"`
+	Metric         string `json:"metric"`
+	Precision      string `json:"precision"`
+	M              int    `json:"m"`
+	EfConstruction int    `json:"ef_construction"`
+	VectorCount    int    `json:"vector_count"`
+}
+
 // --- Client ---
 
 // Client è il client Go per interagire con KektorDB.
@@ -75,6 +92,10 @@ func (c *Client) jsonRequest(method, endpoint string, payload any) ([]byte, erro
 		return nil, fmt.Errorf("errore di connessione: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil, nil // Per risposte 204 (es. DELETE)
+	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -119,10 +140,13 @@ func (c *Client) Delete(key string) error {
 
 // --- Metodi Vettoriali ---
 
-func (c *Client) VCreate(indexName, metric string, m, efConstruction int) error {
+func (c *Client) VCreate(indexName, metric, precision string, m, efConstruction int) error {
 	payload := map[string]interface{}{"index_name": indexName}
 	if metric != "" {
 		payload["metric"] = metric
+	}
+	if precision != "" {
+		payload["precision"] = precision
 	}
 	if m > 0 {
 		payload["m"] = m
@@ -131,7 +155,45 @@ func (c *Client) VCreate(indexName, metric string, m, efConstruction int) error 
 		payload["ef_construction"] = efConstruction
 	}
 
-	_, err := c.jsonRequest(http.MethodPost, "/vector/create", payload)
+	_, err := c.jsonRequest(http.MethodPost, "/vector/actions/create", payload)
+	return err
+}
+
+func (c *Client) ListIndexes() ([]IndexInfo, error) {
+	respBody, err := c.jsonRequest(http.MethodGet, "/vector/indexes", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp []IndexInfo
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("risposta JSON invalida per ListIndexes: %w", err)
+	}
+	return resp, nil
+}
+
+func (c *Client) GetIndexInfo(indexName string) (*IndexInfo, error) {
+	respBody, err := c.jsonRequest(http.MethodGet, "/vector/indexes/"+indexName, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp IndexInfo
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("risposta JSON invalida per GetIndexInfo: %w", err)
+	}
+	return &resp, nil
+}
+
+func (c *Client) DeleteIndex(indexName string) error {
+	_, err := c.jsonRequest(http.MethodDelete, "/vector/indexes/"+indexName, nil)
+	return err
+}
+
+func (c *Client) VCompress(indexName, precision string) error {
+	payload := map[string]interface{}{
+		"index_name": indexName,
+		"precision":  precision,
+	}
+	_, err := c.jsonRequest(http.MethodPost, "/vector/actions/compress", payload)
 	return err
 }
 
@@ -144,7 +206,7 @@ func (c *Client) VAdd(indexName, id string, vector []float32, metadata map[strin
 	if metadata != nil {
 		payload["metadata"] = metadata
 	}
-	_, err := c.jsonRequest(http.MethodPost, "/vector/add", payload)
+	_, err := c.jsonRequest(http.MethodPost, "/vector/actions/add", payload)
 	return err
 }
 
@@ -158,7 +220,7 @@ func (c *Client) VSearch(indexName string, k int, queryVector []float32, filter 
 		payload["filter"] = filter
 	}
 
-	respBody, err := c.jsonRequest(http.MethodPost, "/vector/search", payload)
+	respBody, err := c.jsonRequest(http.MethodPost, "/vector/actions/search", payload)
 	if err != nil {
 		return nil, err
 	}
@@ -174,8 +236,37 @@ func (c *Client) VDelete(indexName, id string) error {
 		"index_name": indexName,
 		"id":         id,
 	}
-	_, err := c.jsonRequest(http.MethodPost, "/vector/delete", payload)
+	// CORREZIONE: Usa l'endpoint corretto
+	_, err := c.jsonRequest(http.MethodPost, "/vector/actions/delete_vector", payload)
 	return err
+}
+
+func (c *Client) VGet(indexName, id string) (*VectorData, error) {
+	respBody, err := c.jsonRequest(http.MethodGet, fmt.Sprintf("/vector/indexes/%s/vectors/%s", indexName, id), nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp VectorData
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("risposta JSON invalida per VGet: %w", err)
+	}
+	return &resp, nil
+}
+
+func (c *Client) VGetMany(indexName string, ids []string) ([]VectorData, error) {
+	payload := map[string]interface{}{
+		"index_name": indexName,
+		"ids":        ids,
+	}
+	respBody, err := c.jsonRequest(http.MethodPost, "/vector/actions/get-vectors", payload)
+	if err != nil {
+		return nil, err
+	}
+	var resp []VectorData
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("risposta JSON invalida per VGetMany: %w", err)
+	}
+	return resp, nil
 }
 
 // --- Metodi di Amministrazione ---

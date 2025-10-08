@@ -594,6 +594,7 @@ func (h *Index) randomLevel() int {
 	return level
 }
 
+/*
 // sceglie i migliori vicini da una lista di candidati
 // per ora, implementa l'euristica semplice: prende i più vicini
 func (h *Index) selectNeighbors(candidates []candidate, m int) []candidate {
@@ -602,6 +603,58 @@ func (h *Index) selectNeighbors(candidates []candidate, m int) []candidate {
 	}
 	// la lista di candidati da searchLayer è già ordinata per distanza
 	return candidates[:m]
+}
+*/
+
+// selectNeighbors implementa l'euristica di selezione avanzata del paper HNSW.
+// Seleziona un set diversificato di vicini.
+func (h *Index) selectNeighbors(candidates []candidate, m int) []candidate {
+	if len(candidates) <= m {
+		return candidates
+	}
+
+	results := make([]candidate, 0, m)
+
+	// Manteniamo una copia dei candidati di lavoro da cui possiamo "scartare" elementi.
+	// La slice `candidates` è già ordinata per distanza crescente.
+	worklist := candidates
+
+	for len(worklist) > 0 && len(results) < m {
+		// Prendi il candidato migliore (il primo della lista)
+		e := worklist[0]
+		worklist = worklist[1:] // Rimuovilo dalla worklist
+
+		// Se è il primo risultato, aggiungilo sempre.
+		if len(results) == 0 {
+			results = append(results, e)
+			continue
+		}
+
+		// Condizione di diversità: 'e' deve essere più vicino alla query
+		// di quanto non sia a qualsiasi vicino già selezionato in 'results'.
+		isGoodCandidate := true
+		for _, r := range results {
+			dist_e_r, err := h.distance(h.nodes[e.id].Vector, h.nodes[r.id].Vector)
+			if err != nil {
+				// In caso di errore, consideriamolo un cattivo candidato per sicurezza
+				isGoodCandidate = false
+				break
+			}
+
+			// Se 'e' è più vicino a un vicino già scelto 'r' di quanto 'e' non sia
+			// alla query, allora è ridondante.
+			if dist_e_r < e.distance {
+				isGoodCandidate = false
+				break
+			}
+		}
+
+		if isGoodCandidate {
+			results = append(results, e)
+		}
+	}
+
+	return results
 }
 
 // funzione helper min che non c'è in Go
