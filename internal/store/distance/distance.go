@@ -1,8 +1,12 @@
+// File: internal/store/distance/distance.go
 package distance
+
+//go:generate go run ./gen -stubs ./stubs_f16.go -out ./distance_f16.s
 
 import (
 	"errors"
 	"fmt"
+	"github.com/klauspost/cpuid/v2"
 	"github.com/x448/float16"
 	"gonum.org/v1/gonum/blas/gonum"
 	"sync"
@@ -39,6 +43,18 @@ var diffWorkspace = sync.Pool{
 		s := make([]float32, 1536)
 		return &s
 	},
+}
+
+// Creiamo il wrapper che orchestra tutto
+func squaredEuclideanF16AVX2Wrapper(v1, v2 []uint16) (float64, error) {
+	if len(v1) != len(v2) {
+		return 0, errors.New("vettori di lunghezza diversa")
+	}
+	if len(v1) == 0 {
+		return 0, nil
+	}
+	res := SquaredEuclideanFloat16AVX2(v1, v2)
+	return float64(res), nil
 }
 
 // --- FUNZIONI DI RIFERIMENTO (GO PURO) ---
@@ -157,6 +173,10 @@ func init() {
 	// Gonum si occupa del dispatch SIMD al suo interno.
 	// float32Funcs[Euclidean] = squaredEuclideanGonum
 	float32Funcs[Cosine] = dotProductAsDistanceGonum
+
+	if cpuid.CPU.Has(cpuid.AVX2) && cpuid.CPU.Has(cpuid.F16C) {
+		float16Funcs[Euclidean] = squaredEuclideanF16AVX2Wrapper // Usa il wrapper
+	}
 }
 
 // --- Funzioni Getter Pubbliche ---

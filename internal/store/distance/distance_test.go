@@ -50,6 +50,32 @@ func TestDotProductAsDistanceGonum(t *testing.T) {
 	}
 }
 
+func TestSquaredEuclideanF16AVX(t *testing.T) {
+	v1f := []float32{1, 2, 3}
+	v2f := []float32{4, 5, 6}
+	expected := float32(27.0) // (4-1)^2 + (5-2)^2 + (6-3)^2 = 27
+
+	// Converti in uint16 come float16
+	v1 := make([]uint16, len(v1f))
+	v2 := make([]uint16, len(v2f))
+	for i := range v1f {
+		v1[i] = uint16(float16.Fromfloat32(v1f[i]).Bits())
+		v2[i] = uint16(float16.Fromfloat32(v2f[i]).Bits())
+	}
+
+	dist := SquaredEuclideanFloat16AVX2(v1, v2)
+
+	if absf(dist-expected) > 1e-3 {
+		t.Errorf("Risultato errato: ottenuto %f, atteso %f", dist, expected)
+	}
+}
+func absf(x float32) float32 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
 // --- BENCHMARK ---
 // Ora i benchmark misurano le performance di Gonum e dei fallback Go.
 
@@ -120,6 +146,14 @@ func BenchmarkEuclideanFloat16(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		squaredEuclideanGoFloat16(v1, v2)
+	}
+}
+
+func BenchmarkEuclideanFloat16AVX(b *testing.B) {
+	v1, v2 := generateFloat16Vectors(128)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		squaredEuclideanF16AVX2Wrapper(v1, v2)
 	}
 }
 
