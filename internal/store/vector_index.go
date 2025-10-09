@@ -13,7 +13,7 @@ import (
 // definisce le operazioni che un indice vettoriale deve supportare
 type VectorIndex interface {
 	Add(id string, vector []float32) (uint32, error)
-	Search(query []float32, k int, allowlist map[uint32]struct{}) []string
+	Search(query []float32, k int, allowlist map[uint32]struct{}, efSearch int) []string
 	Delete(id string)
 }
 
@@ -62,7 +62,7 @@ type searchResult struct {
 }
 
 // cerca i K vettori più vicini al vettore di query
-func (idx *BruteForceIndex) Search(query []float32, k int, allowList map[uint32]struct{}) []string {
+func (idx *BruteForceIndex) Search(query []float32, k int, allowList map[uint32]struct{}, efSearch int) []string {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 

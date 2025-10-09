@@ -102,8 +102,11 @@ func init() {
 // Snapshot serializza lo stato corrente dello store in formato gob su un io.Writer.
 // Questa funzione si aspetta che il chiamante gestisca il locking.
 func (s *Store) Snapshot(writer io.Writer) error {
-	s.mu.RLock() // Usiamo RLock perché stiamo solo leggendo lo stato.
-	defer s.mu.RUnlock()
+	// snapshot assume che il chiamante abbia già il lock di scrittura
+	/*
+		s.mu.RLock() // Usiamo RLock perché stiamo solo leggendo lo stato.
+		defer s.mu.RUnlock()
+	*/
 
 	snapshot := Snapshot{
 		KVData:     s.kvStore.data,

@@ -52,6 +52,13 @@ type IndexInfo struct {
 	VectorCount    int    `json:"vector_count"`
 }
 
+// struct per un singolo oggetto nel batch
+type VectorAddObject struct {
+	Id       string                 `json:"id"`
+	Vector   []float32              `json:"vector"`
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
+}
+
 // --- Client ---
 
 // Client è il client Go per interagire con KektorDB.
@@ -210,7 +217,25 @@ func (c *Client) VAdd(indexName, id string, vector []float32, metadata map[strin
 	return err
 }
 
-func (c *Client) VSearch(indexName string, k int, queryVector []float32, filter string) ([]string, error) {
+func (c *Client) VAddBatch(indexName string, vectors []VectorAddObject) (map[string]interface{}, error) {
+	payload := map[string]interface{}{
+		"index_name": indexName,
+		"vectors":    vectors,
+	}
+
+	respBody, err := c.jsonRequest(http.MethodPost, "/vector/actions/add-batch", payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("risposta JSON invalida per VAddBatch: %w", err)
+	}
+	return resp, nil
+}
+
+func (c *Client) VSearch(indexName string, k int, queryVector []float32, filter string, efSearch int) ([]string, error) {
 	payload := map[string]interface{}{
 		"index_name":   indexName,
 		"k":            k,
@@ -218,6 +243,10 @@ func (c *Client) VSearch(indexName string, k int, queryVector []float32, filter 
 	}
 	if filter != "" {
 		payload["filter"] = filter
+	}
+
+	if efSearch > 0 {
+		payload["ef_search"] = efSearch
 	}
 
 	respBody, err := c.jsonRequest(http.MethodPost, "/vector/actions/search", payload)

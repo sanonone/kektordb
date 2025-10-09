@@ -536,11 +536,10 @@ func (s *Server) RewriteAOF() error {
 func (s *Server) Save() error {
 	log.Println("Avvio processo di snapshot (SAVE)...")
 
-	// 1. Acquisiamo un lock di LETTURA sullo store. Questo permette alle ricerche
-	// in corso di finire, ma blocca nuove scritture finché lo snapshot non è pronto.
-	// È un buon compromesso tra "stop-the-world" e disponibilità.
-	s.store.RLock()
-	defer s.store.RUnlock()
+	// Usiamo un Lock() di scrittura per garantire che lo stato del database
+	// sia completamente "congelato" durante l'operazione di snapshot.
+	s.store.Lock()
+	defer s.store.Unlock()
 
 	// 2. Creazione del file temporaneo
 	aofPath := s.aofFile.Name()

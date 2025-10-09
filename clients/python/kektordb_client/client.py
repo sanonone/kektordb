@@ -178,6 +178,34 @@ class KektorDBClient:
         if metadata: payload["metadata"] = metadata
         self._request("POST", "/vector/actions/add", json=payload)
 
+    def vadd_batch(self, index_name: str, vectors: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Adds a batch of vectors to an index in a single request.
+
+        Args:
+            index_name: The name of the index.
+            vectors: A list of dictionaries, where each dictionary must contain
+                     'id' (str), 'vector' (List[float]), and optionally 
+                     'metadata' (Dict[str, Any]).
+                     Example:
+                     [
+                         {"id": "vec1", "vector": [0.1, 0.2], "metadata": {"tag": "A"}},
+                         {"id": "vec2", "vector": [0.3, 0.4]}
+                     ]
+
+        Returns:
+            A dictionary containing the status and number of vectors added.
+        
+        Raises:
+            APIError: If the index does not exist or an error occurs during ingestion.
+            ConnectionError: If a network error occurs.
+        """
+        payload = {
+            "index_name": index_name,
+            "vectors": vectors
+        }
+        return self._request("POST", "/vector/actions/add-batch", json=payload)
+
     def vdelete(self, index_name: str, item_id: str) -> None:
         """
         Deletes a vector from an index (soft delete).
@@ -215,7 +243,7 @@ class KektorDBClient:
         payload = {"index_name": index_name, "ids": item_ids}
         return self._request("POST", "/vector/actions/get-vectors", json=payload)
 
-    def vsearch(self, index_name: str, query_vector: List[float], k: int, filter_str: str = "") -> List[str]:
+    def vsearch(self, index_name: str, query_vector: List[float], k: int, filter_str: str = "", ef_search: int = 0) -> List[str]:
         """
         Performs a nearest neighbor search in an index.
 
@@ -224,6 +252,9 @@ class KektorDBClient:
             query_vector: The query vector.
             k: The number of nearest neighbors to return.
             filter_str: An optional filter string (e.g., "tag=cat AND price<50").
+            ef_search: An optional parameter to control the search breadth.
+                       A higher value increases recall at the cost of speed.
+                       If 0, the server's `efConstruction` default is used.
 
         Returns:
             A list of item IDs of the nearest neighbors.
@@ -232,10 +263,20 @@ class KektorDBClient:
             APIError: If the index does not exist or the query is invalid.
             ConnectionError: If a network error occurs.
         """
-        payload = {"index_name": index_name, "k": k, "query_vector": query_vector}
-        if filter_str: payload["filter"] = filter_str
+        payload = {
+            "index_name": index_name,
+            "k": k,
+            "query_vector": query_vector
+        }
+        if filter_str:
+            payload["filter"] = filter_str
+        
+        if ef_search > 0:
+            payload["ef_search"] = ef_search
+            
         data = self._request("POST", "/vector/actions/search", json=payload)
         return data.get("results", [])
+        
 
     # --- System Methods ---
 

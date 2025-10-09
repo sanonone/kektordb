@@ -205,14 +205,14 @@ func (h *Index) distanceToQuery(query []float32, storedVector any) (float64, err
 }
 
 // implementa il metodo dell'interfaccia VectorIndex
-func (h *Index) Search(query []float32, k int, allowList map[uint32]struct{}) []string {
+func (h *Index) Search(query []float32, k int, allowList map[uint32]struct{}, efSearch int) []string {
 	// la logica interna è la vecchia Search, ma deve restituire
 	// solo []string, non ([]string, error).
 
 	// h.mu.Lock()
 	// defer h.mu.RUnlock()
 
-	results, err := h.searchInternal(query, k, allowList) // richiama l'effettiva search
+	results, err := h.searchInternal(query, k, allowList, efSearch) // richiama l'effettiva search
 	if err != nil {
 		log.Printf("Errore durante la ricerca HNSW: %v", err)
 		return []string{} // risultato vuoto in caso di errore
@@ -221,7 +221,7 @@ func (h *Index) Search(query []float32, k int, allowList map[uint32]struct{}) []
 }
 
 // la funzione pubblica per trovare i K vicini più prossimi a un vettore di query
-func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]struct{}) ([]string, error) {
+func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]struct{}, efSearch int) ([]string, error) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
@@ -253,7 +253,9 @@ func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]stru
 
 	// 1) ricerca top-down iterativa per muovermi verso il layer base
 	for l := h.maxLevel; l > 0; l-- {
-		nearest, err := h.searchLayer(query, currentEntryPoint, 1, l, allowList)
+		// Per la ricerca top-down, k=1 è sufficiente, non serve efSearch
+		// Passiamo 0 per usare il default
+		nearest, err := h.searchLayer(query, currentEntryPoint, 1, l, allowList, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -266,7 +268,7 @@ func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]stru
 
 	// 2) ricerca affetiva al livello 0 per trovare i vicini alla query
 	// efConstruction lo usiamo per definire la qualità della ricerca
-	nearestNeighbors, err := h.searchLayer(query, currentEntryPoint, k, 0, allowList)
+	nearestNeighbors, err := h.searchLayer(query, currentEntryPoint, k, 0, allowList, efSearch)
 	if err != nil {
 		return nil, err
 	}
@@ -361,7 +363,7 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	// scende dal livello più alto fino al livello superiore di quello assegnato al nuovo nodo (ovvero livello del nuovo nodo + 1)
 	for l := h.maxLevel; l > level; l-- {
 		// trova il vicino più prossimo nel livello attuale e lo usa come entry point per il livello inferiore
-		nearest, err := h.searchLayer(vector, currentEntryPoint, 1, l, nil)
+		nearest, err := h.searchLayer(vector, currentEntryPoint, 1, l, nil, 1)
 		if err != nil {
 			return 0, fmt.Errorf("Errore durante linserimento del nodo")
 		}
@@ -374,7 +376,7 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	// trova i vicini e li connette al nuovo nodo
 	for l := min(level, h.maxLevel); l >= 0; l-- {
 		// trova gli efConstruction candidati più vicini per questo livello
-		neighbors, err := h.searchLayer(vector, currentEntryPoint, h.efConstruction, l, nil)
+		neighbors, err := h.searchLayer(vector, currentEntryPoint, h.efConstruction, l, nil, h.efConstruction)
 		if err != nil {
 			return 0, fmt.Errorf("Errore durante l'inserimento del nodo")
 		}
@@ -484,15 +486,34 @@ func (h *Index) Delete(id string) {
 }
 
 // fa la ricerca dei vicini più prossimi in un singolo livello del grafo
-func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level int, allowList map[uint32]struct{}) ([]candidate, error) {
+func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level int, allowList map[uint32]struct{}, efSearch int) ([]candidate, error) {
 	//log.Printf("DEBUG: Inizio searchLayer a livello %d con entrypoint %d\n", level, entrypointID)
 	// si tracciano i nodi già visitati per non entrare in loop
 	visited := make(map[uint32]bool)
 
+	// --- LOGICA DI efSearch CORRETTA ---
+	// ef (effective search size) deve essere almeno k
+	var ef int
+	if efSearch > 0 {
+		// L'utente ha specificato un valore, usiamo quello.
+		ef = efSearch
+	} else {
+		// L'utente non ha specificato un valore.
+		// Il default per la ricerca è k.
+		ef = k
+	}
+
+	// Assicuriamoci sempre che ef sia almeno grande quanto k.
+	if ef < k {
+		// Questo caso si verifica se l'utente passa un efSearch < k,
+		// il che non ha senso. Lo correggiamo.
+		ef = k
+	}
+
 	// coda candidati da esplorare (i più vicini prima)
-	candidates := newMinHeap()
+	candidates := newMinHeap(ef)
 	// lista risultati trovati (il più lontano in cima, per rimpiazzarlo velocemente con uno migliore)
-	results := newMaxHeap()
+	results := newMaxHeap(ef)
 
 	// clacola la distanza tra la query ed il punto di ingresso
 	// inizia con il punto di ingresso
@@ -515,7 +536,7 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 
 		// se questo candidato è più lontano del peggiore risultato (ele in cima di results) che
 		// abbiamo trovato finora, possiamo fermare l'esplorazione da questo ramo
-		if results.Len() >= k && current.distance > (*results)[0].distance {
+		if results.Len() >= ef && current.distance > (*results)[0].distance {
 			break
 		}
 
@@ -556,14 +577,14 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 
 				// se abbiamo ancora spazio nei risultati o se questo vicino
 				// è più vicino del nostro peggior risultato, lo aggiunge
-				if results.Len() < k || dist < (*results)[0].distance {
+				if results.Len() < ef || dist < (*results)[0].distance {
 					//log.Printf("DEBUG: Livello %d, aggiungo candidato %d con distanza %f\n", level, neighborID, dist)
 
 					heap.Push(candidates, candidate{id: neighborID, distance: dist})
 					heap.Push(results, candidate{id: neighborID, distance: dist})
 
 					// se non c'è più posto nella lista di risultati allora rimuoviamo il peggiore (che è il primo)
-					if results.Len() > k {
+					if results.Len() > ef {
 						heap.Pop(results)
 					}
 				}
@@ -578,6 +599,11 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 	finalResults := make([]candidate, results.Len())
 	for i := results.Len() - 1; i >= 0; i-- {
 		finalResults[i] = heap.Pop(results).(candidate)
+	}
+
+	// Restituisci solo i 'k' migliori. La slice `finalResults` è già ordinata dal migliore al peggiore.
+	if len(finalResults) > k {
+		return finalResults[:k], nil
 	}
 
 	return finalResults, nil

@@ -12,6 +12,16 @@
 # Test binary, built with `go test -c`
 *.test
 
+# File snapshot e aof
+*.aof
+*.kdb
+
+# Data files
+*.npy
+*.txt
+*.zip
+*.gz
+
 # Code coverage profiles and other test artifacts
 *.out
 coverage.*

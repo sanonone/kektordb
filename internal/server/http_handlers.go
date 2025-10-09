@@ -70,6 +70,9 @@ func (s *Server) router(w http.ResponseWriter, r *http.Request) {
 	case "/vector/actions/add":
 		s.handleVectorAdd(w, r)
 		return
+	case "/vector/actions/add-batch":
+		s.handleVectorAddBatch(w, r)
+		return
 	case "/vector/actions/search":
 		s.handleVectorSearch(w, r)
 		return
@@ -409,11 +412,86 @@ func (s *Server) handleVectorAdd(w http.ResponseWriter, r *http.Request) {
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Vettore aggiunto"})
 }
 
+// Vicino alle altre struct di richiesta
+type VectorAddObject struct {
+	Id       string                 `json:"id"`
+	Vector   []float32              `json:"vector"`
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
+}
+
+type BatchAddVectorsRequest struct {
+	IndexName string            `json:"index_name"`
+	Vectors   []VectorAddObject `json:"vectors"`
+}
+
+func (s *Server) handleVectorAddBatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST")
+		return
+	}
+
+	var req BatchAddVectorsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, "JSON invalido")
+		return
+	}
+
+	if req.IndexName == "" || len(req.Vectors) == 0 {
+		s.writeHTTPError(w, http.StatusBadRequest, "'index_name' e 'vectors' sono obbligatori")
+		return
+	}
+
+	idx, found := s.store.GetVectorIndex(req.IndexName)
+	if !found {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Indice '%s' non trovato", req.IndexName))
+		return
+	}
+
+	// Iteriamo e aggiungiamo i vettori uno per uno.
+	// La logica di Add, metadati e AOF è la stessa della VADD singola.
+	var addedCount int
+	for _, vec := range req.Vectors {
+		// Qui potremmo riutilizzare la logica di handleVectorAdd, ma è più pulito
+		// duplicare la parte di business logic.
+		internalID, err := idx.Add(vec.Id, vec.Vector)
+		if err != nil {
+			log.Printf("Errore durante l'inserimento batch per l'ID '%s': %v. Interruzione.", vec.Id, err)
+			// In un'implementazione più avanzata, potremmo restituire errori parziali.
+			s.writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("fallimento all'inserimento di '%s': %v", vec.Id, err))
+			return
+		}
+
+		if len(vec.Metadata) > 0 {
+			if err := s.store.AddMetadata(req.IndexName, internalID, vec.Metadata); err != nil {
+				// Esegui il rollback per questo singolo vettore
+				idx.Delete(vec.Id)
+				log.Printf("Errore metadati per '%s', rollback eseguito. Errore: %v", vec.Id, err)
+				s.writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("fallimento metadati per '%s': %v", vec.Id, err))
+				return
+			}
+		}
+
+		// Scrivi sull'AOF per ogni vettore aggiunto con successo
+		aofCommand, _ := buildVAddAOFCommand(req.IndexName, vec.Id, vec.Vector, vec.Metadata)
+		s.aofMutex.Lock()
+		s.aofFile.WriteString(aofCommand)
+		s.aofMutex.Unlock()
+
+		addedCount++
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]interface{}{
+		"status":        "OK",
+		"vectors_added": addedCount,
+	})
+}
+
 type VectorSearchRequest struct {
 	IndexName   string    `json:"index_name"`
 	K           int       `json:"k"`
 	QueryVector []float32 `json:"query_vector"`
 	Filter      string    `json:"filter,omitempty"` // filtro opzionale
+	EfSearch    int       `json:"ef_search,omitempty"`
 }
 
 func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
@@ -451,7 +529,7 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	results := idx.Search(req.QueryVector, req.K, allowList)
+	results := idx.Search(req.QueryVector, req.K, allowList, req.EfSearch)
 	s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": results})
 }
 

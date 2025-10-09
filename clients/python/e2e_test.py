@@ -127,6 +127,46 @@ class TestKektorDBEndToEnd(unittest.TestCase):
             self.assertLess(int(item_id.split('_')[1]), 50)
         print(" -> Filtering OK")
 
+    def test_04_dynamic_ef_search(self):
+        """Tests the dynamic ef_search parameter."""
+        print("\n--- Running: test_04_dynamic_ef_search ---")
+        idx_name = f"e2e-efsearch-{int(time.time())}"
+        
+        # Usiamo parametri di costruzione bassi per rendere più facile vedere
+        # l'impatto di ef_search
+        self.client.vcreate(idx_name, metric="euclidean", m=8, ef_construction=20)
+        
+        # Inseriamo un numero sufficiente di vettori
+        for i, vec in enumerate(self.vectors):
+            self.client.vadd(idx_name, f"vec_{i}", vec.tolist())
+
+        query_vector = self.vectors[75].tolist()
+        
+        # 1. Ricerca "veloce" con ef_search basso (appena sopra k)
+        print(" -> Performing fast search (low ef_search)...")
+        fast_results = self.client.vsearch(idx_name, query_vector, k=10, ef_search=12)
+        
+        # 2. Ricerca "accurata" con ef_search alto
+        print(" -> Performing accurate search (high ef_search)...")
+        accurate_results = self.client.vsearch(idx_name, query_vector, k=10, ef_search=100)
+
+        # 3. Verifica
+        self.assertEqual("vec_75", fast_results[0], "La ricerca veloce deve trovare l'elemento esatto.")
+        self.assertEqual("vec_75", accurate_results[0], "La ricerca accurata deve trovare l'elemento esatto.")
+        
+        # Confronta i set di risultati. È possibile (ma non garantito) che
+        # la ricerca accurata trovi più "veri" vicini.
+        fast_set = set(fast_results)
+        accurate_set = set(accurate_results)
+        
+        print(f" -> Fast search found {len(fast_set)} unique results.")
+        print(f" -> Accurate search found {len(accurate_set)} unique results.")
+
+        # L'asserzione principale è che il codice non dia errori.
+        # La differenza qualitativa è difficile da asserire in modo deterministico,
+        # ma questo test verifica che il parametro venga accettato e funzioni.
+        print("✅ PASS: Dynamic ef_search parameter test completed.")
+
 
 if __name__ == '__main__':
     # Questo permette di eseguire lo script con `python3 e2e_test.py`
