@@ -538,8 +538,8 @@ func (s *Server) Save() error {
 
 	// Usiamo un Lock() di scrittura per garantire che lo stato del database
 	// sia completamente "congelato" durante l'operazione di snapshot.
-	s.store.Lock()
-	defer s.store.Unlock()
+	// s.store.Lock()
+	// defer s.store.Unlock()
 
 	// 2. Creazione del file temporaneo
 	aofPath := s.aofFile.Name()

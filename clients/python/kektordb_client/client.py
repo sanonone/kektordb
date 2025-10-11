@@ -146,18 +146,21 @@ class KektorDBClient:
     def vcompress(self, index_name: str, precision: str) -> None:
         """
         Compresses an existing float32 index to a lower precision format.
-
-        Args:
-            index_name: The name of the index to compress.
-            precision: The target precision ('float16' or 'int8').
-        
-        Raises:
-            APIError: If the index does not exist or compression is not possible.
-            ConnectionError: If a network error occurs.
+        NOTE: This can be a long-running operation.
         """
         payload = {"index_name": index_name, "precision": precision}
-        self._request("POST", "/vector/actions/compress", json=payload)
-
+        
+        # --- CORREZIONE: Usa un timeout molto più lungo per questa operazione ---
+        # Salva il timeout originale
+        original_timeout = self.timeout
+        # Imposta un timeout molto lungo (es. 1 ora)
+        self.timeout = 3600 
+        
+        try:
+            self._request("POST", "/vector/actions/compress", json=payload)
+        finally:
+            # Ripristina sempre il timeout originale, anche in caso di errore
+            self.timeout = original_timeout 
     # --- Vector Data Methods ---
     
     def vadd(self, index_name: str, item_id: str, vector: List[float], metadata: Dict[str, Any] = None) -> None:

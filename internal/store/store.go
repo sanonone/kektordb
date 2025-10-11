@@ -108,14 +108,65 @@ func (s *Store) Snapshot(writer io.Writer) error {
 		defer s.mu.RUnlock()
 	*/
 
+	/*
+		s.mu.Lock()
+		defer s.mu.Unlock()
+
+		snapshot := Snapshot{
+			KVData:     s.kvStore.data,
+			VectorData: make(map[string]*IndexSnapshot),
+		}*/
+
+	// --- FASE 1: Acquisisci tutti i lock di LETTURA necessari ---
+
+	// 1a. Blocca lo Store per ottenere una lista stabile di indici.
+	s.mu.RLock()
+
+	// 1b. Blocca il KV store.
+	//s.kvStore.RLock()
+
+	// 1c. Blocca ogni singolo indice HNSW.
+	// Creiamo una lista degli indici per poterli sbloccare dopo.
+	indexesToUnlock := make([]*hnsw.Index, 0, len(s.vectorIndexes))
+	for _, idx := range s.vectorIndexes {
+		if hnswIndex, ok := idx.(*hnsw.Index); ok {
+			hnswIndex.RLock()
+			log.Println("In snapshot è stato preso il lock su index")
+			indexesToUnlock = append(indexesToUnlock, hnswIndex)
+		}
+	}
+
+	// --- FASE 2: Rilascia il lock di più alto livello ---
+	// Ora che abbiamo bloccato tutte le strutture dati "figlie", possiamo rilasciare
+	// il lock sulla lista "genitore", permettendo ad alcune operazioni
+	// (come GetVectorIndex) di procedere.
+	s.mu.RUnlock()
+
+	// --- FASE 3: Assicura lo sblocco finale di tutto il resto ---
+	defer func() {
+		//s.kvStore.RUnlock()
+		for _, idx := range indexesToUnlock {
+			idx.RUnlock()
+		}
+	}()
+
+	// --- FASE 4: Esegui lo Snapshot (ora è 100% sicuro) ---
+	// A questo punto, possediamo un RLock su KVStore e su ogni HNSWIndex.
+	// Nessuna scrittura (`SET`, `VADD`) può avvenire. Possiamo leggere tutto.
+	log.Println("Fase 4")
+
 	snapshot := Snapshot{
-		KVData:     s.kvStore.data,
+		KVData:     s.kvStore.data, // Sicuro, perché abbiamo il RLock
 		VectorData: make(map[string]*IndexSnapshot),
 	}
 
 	for name, idx := range s.vectorIndexes {
+		log.Println("Fase 4")
 		if hnswIndex, ok := idx.(*hnsw.Index); ok {
 			nodes, extToInt, counter, entrypoint, maxLevel, quantizer := hnswIndex.SnapshotData()
+
+			// Chiama le versioni "Unlocked" dei getter (che dobbiamo creare).
+			metric, precision, m, efc := hnswIndex.GetParametersUnlocked()
 
 			nodeSnapshots := make(map[uint32]*NodeSnapshot, len(nodes))
 			for internalID, node := range nodes {
@@ -142,10 +193,10 @@ func (s *Store) Snapshot(writer io.Writer) error {
 
 			snapshot.VectorData[name] = &IndexSnapshot{
 				Config: IndexConfig{
-					Metric:         hnswIndex.Metric(),
-					Precision:      hnswIndex.Precision(),
-					M:              hnswIndex.M(),
-					EfConstruction: hnswIndex.EfConstruction(),
+					Metric:         metric,
+					Precision:      precision,
+					M:              m,
+					EfConstruction: efc,
 				},
 				Nodes:              nodeSnapshots, // Usa la nuova mappa
 				ExternalToInternal: extToInt,
@@ -154,6 +205,7 @@ func (s *Store) Snapshot(writer io.Writer) error {
 				MaxLevel:           maxLevel,
 				QuantizerState:     quantizer,
 			}
+			log.Println("Fase 4")
 		}
 	}
 
@@ -668,17 +720,43 @@ func (s *Store) Compress(indexName string, newPrecision distance.PrecisionType) 
 		return fmt.Errorf("la compressione è supportata solo per indici HNSW")
 	}
 
-	// 2. Raccogli tutti i dati "vivi" dall'indice esistente
-	var allVectors []hnsw.NodeData // Creiamo una nuova struct per trasportare i dati
-	oldHNSWIndex.Iterate(func(id string, vector []float32) {
-		internalID := oldHNSWIndex.GetInternalID(id)
-		metadata := s.getMetadataForNodeUnlocked(indexName, internalID)
-		allVectors = append(allVectors, hnsw.NodeData{
-			ID:       id,
-			Vector:   vector,
-			Metadata: metadata,
+	/*
+		// 2. Raccogli tutti i dati "vivi" dall'indice esistente
+		var allVectors []hnsw.NodeData // Creiamo una nuova struct per trasportare i dati
+		oldHNSWIndex.Iterate(func(id string, vector []float32) {
+			internalID := oldHNSWIndex.GetInternalID(id)
+			metadata := s.getMetadataForNodeUnlocked(indexName, internalID)
+			allVectors = append(allVectors, hnsw.NodeData{
+				ID:       id,
+				Vector:   vector,
+				Metadata: metadata,
+			})
 		})
+	*/
+
+	// --- CORREZIONE CHIAVE ---
+	// Raccogliamo i dati GREZZI. Ci aspettiamo che siano []float32
+	// perché comprimiamo solo da float32.
+	type rawData struct {
+		ID       string
+		Vector   []float32
+		Metadata map[string]interface{}
+	}
+	var allVectors []rawData
+
+	oldHNSWIndex.IterateRaw(func(id string, vector interface{}) {
+		// Facciamo un type assertion per essere sicuri
+		if vecF32, ok := vector.([]float32); ok {
+			internalID := oldHNSWIndex.GetInternalID(id) // Necessario un metodo unlocked
+			metadata := s.getMetadataForNodeUnlocked(indexName, internalID)
+			allVectors = append(allVectors, rawData{
+				ID:       id,
+				Vector:   vecF32,
+				Metadata: metadata,
+			})
+		}
 	})
+	// --- FINE CORREZIONE ---
 
 	if len(allVectors) == 0 {
 		return fmt.Errorf("impossibile comprimere un indice vuoto")
@@ -699,7 +777,43 @@ func (s *Store) Compress(indexName string, newPrecision distance.PrecisionType) 
 		for i, data := range allVectors {
 			floatVectors[i] = data.Vector
 		}
+
+		//log.Printf("[DEBUG COMPRESS] Training quantizer su %d vettori.", len(floatVectors))
+		//log.Printf("[DEBUG COMPRESS] Esempio vettore di training (primi 5 elementi): %v", floatVectors[0][:5])
+
 		newIndex.TrainQuantizer(floatVectors) // Dobbiamo creare questo metodo
+
+		// --- NUOVO: ANALISI DELLA DISTRIBUZIONE ---
+		log.Println("Analisi della distribuzione dei dati quantizzati...")
+
+		// Crea un istogramma per contare le occorrenze di ogni valore int8
+		histogram := make(map[int8]int)
+		totalValues := 0
+
+		for _, vec := range floatVectors {
+			quantizedVec := newIndex.Quantizer().Quantize(vec) // Dobbiamo esporre il quantizzatore
+			for _, val := range quantizedVec {
+				histogram[val]++
+				totalValues++
+			}
+		}
+
+		// Stampa l'istogramma
+		log.Println("--- Istogramma Valori Int8 ---")
+		// Ordina le chiavi per una stampa pulita
+		keys := make([]int, 0, len(histogram))
+		for k := range histogram {
+			keys = append(keys, int(k))
+		}
+		sort.Ints(keys)
+
+		for _, k := range keys {
+			count := histogram[int8(k)]
+			percentage := float64(count) / float64(totalValues) * 100
+			log.Printf("Valore: %4d | Conteggio: %8d | Percentuale: %.2f%%", k, count, percentage)
+		}
+		log.Println("-----------------------------")
+		// --- FINE ANALISI ---
 	}
 
 	// 4. Popola il nuovo indice con i dati

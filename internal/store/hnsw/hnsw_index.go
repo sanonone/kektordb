@@ -145,7 +145,30 @@ func (h *Index) distance(v1, v2 any) (float64, error) {
 			return 0, fmt.Errorf("tipi di vettore non corrispondenti (atteso int8)")
 		}
 		dot, err := fn(vec1, vec2)
-		return -float64(dot), err
+
+		// --- NUOVA LOGICA DI SCALA ---
+		// Calcola le "norme" dei vettori int8. Non sono vere norme,
+		// ma servono a scalare il risultato.
+		var norm1, norm2 int64
+		for i := range vec1 {
+			norm1 += int64(vec1[i]) * int64(vec1[i])
+			norm2 += int64(vec2[i]) * int64(vec2[i])
+		}
+
+		if norm1 == 0 || norm2 == 0 {
+			return 1.0, nil // Distanza massima se un vettore è nullo
+		}
+
+		similarity := float64(dot) / (math.Sqrt(float64(norm1)) * math.Sqrt(float64(norm2)))
+
+		// Assicurati che la similarità sia nel range [-1, 1] a causa di errori numerici
+		if similarity > 1.0 {
+			similarity = 1.0
+		}
+		if similarity < -1.0 {
+			similarity = -1.0
+		}
+		return 1.0 - similarity, err
 	default:
 		return 0, fmt.Errorf("funzione di distanza non valida o non inizializzata")
 	}
@@ -188,7 +211,10 @@ func (h *Index) distanceToQuery(query []float32, storedVector any) (float64, err
 		if h.quantizer == nil {
 			return 0, fmt.Errorf("l'indice è quantizzato ma manca il quantizzatore")
 		}
-		queryI8 := h.quantizer.Quantize(query)
+
+		//log.Printf("[DEBUG SEARCH] Query float32 (prima di quantize, primi 5): %v", queryToUse[:5])
+
+		queryI8 := h.quantizer.Quantize(queryToUse)
 		stored, ok := storedVector.([]int8)
 		if !ok {
 			return 0, fmt.Errorf("tipo di vettore memorizzato non corrispondente (atteso int8)")
@@ -198,7 +224,31 @@ func (h *Index) distanceToQuery(query []float32, storedVector any) (float64, err
 		// Va convertirlo in una "distanza" dove un valore più piccolo è migliore.
 		// Usa il negativo del prodotto scalare.
 		dot, err := fn(queryI8, stored)
-		return -float64(dot), err // Minimizzare -dot è come massimizzare dot.
+
+		// --- NUOVA LOGICA DI SCALA ---
+		// Calcola le "norme" dei vettori int8. Non sono vere norme,
+		// ma servono a scalare il risultato.
+		var norm1, norm2 int64
+		for i := range queryI8 {
+			norm1 += int64(queryI8[i]) * int64(queryI8[i])
+			norm2 += int64(stored[i]) * int64(stored[i])
+		}
+
+		if norm1 == 0 || norm2 == 0 {
+			return 1.0, nil // Distanza massima se un vettore è nullo
+		}
+
+		similarity := float64(dot) / (math.Sqrt(float64(norm1)) * math.Sqrt(float64(norm2)))
+
+		// Assicurati che la similarità sia nel range [-1, 1] a causa di errori numerici
+		if similarity > 1.0 {
+			similarity = 1.0
+		}
+		if similarity < -1.0 {
+			similarity = -1.0
+		}
+
+		return 1.0 - similarity, err // Minimizzare -dot è come massimizzare dot.
 	default:
 		return 0, fmt.Errorf("funzione di distanza non valida o non inizializzata")
 	}
@@ -304,7 +354,7 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 
 	// Se l'indice usa la metrica Coseno, normalizza il vettore in ingresso.
 	// Questo garantisce che tutti i vettori memorizzati siano a lunghezza unitaria.
-	if h.metric == distance.Cosine {
+	if h.metric == distance.Cosine && h.precision == distance.Float32 {
 		normalize(vector)
 	}
 
@@ -327,6 +377,12 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 		}
 		storedVector = h.quantizer.Quantize(vector)
 	}
+
+	// --- LOG DI DEBUG FONDAMENTALE ---
+	//if f32vec, ok := storedVector.([]float32); ok {
+	//log.Printf("[DEBUG ADD] Memorizzazione vettore float32 (primi 5): %v", f32vec[:5])
+	//}
+	// --- FINE LOG ---
 
 	// assegnamento ID interno
 	h.internalCounter++
@@ -667,12 +723,29 @@ func (h *Index) selectNeighbors(candidates []candidate, m int) []candidate {
 				break
 			}
 
-			// Se 'e' è più vicino a un vicino già scelto 'r' di quanto 'e' non sia
-			// alla query, allora è ridondante.
-			if dist_e_r < e.distance {
+			// --- MODIFICA SPERIMENTALE ---
+			// Se la metrica è Coseno, usiamo un confronto "minore o uguale"
+			// per essere meno aggressivi nello scartare candidati.
+			var condition bool
+			if h.metric == distance.Cosine {
+				condition = (dist_e_r <= e.distance)
+			} else {
+				condition = (dist_e_r < e.distance)
+			}
+
+			if condition { // Se 'e' è vicino o alla stessa distanza da 'r'...
 				isGoodCandidate = false
 				break
 			}
+
+			/*
+				// Se 'e' è più vicino a un vicino già scelto 'r' di quanto 'e' non sia
+				// alla query, allora è ridondante.
+				if dist_e_r < e.distance {
+					isGoodCandidate = false
+					break
+				}
+			*/
 		}
 
 		if isGoodCandidate {
@@ -746,9 +819,26 @@ func (h *Index) Iterate(callback func(id string, vector []float32)) {
 	}
 }
 
+// IterateRaw itera sui nodi non eliminati e passa l'ID e il vettore GREZZO
+// (come interface{}) alla callback.
+func (h *Index) IterateRaw(callback func(id string, vector interface{})) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	for _, node := range h.nodes {
+		if !node.Deleted {
+			callback(node.Id, node.Vector)
+		}
+	}
+}
+
 func (h *Index) GetInternalID(externalID string) uint32 {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	return h.externalToInternalID[externalID]
+}
+
+func (h *Index) GetInternalIDUnlocked(externalID string) uint32 {
 	return h.externalToInternalID[externalID]
 }
 
@@ -864,6 +954,24 @@ func normalize(v []float32) {
 	// --- FINE LOG ---
 }
 
+// Permettono a un chiamante esterno (come lo Store) di orchestrare il locking.
+
+func (h *Index) RLock() {
+	log.Println("Save chiede lock su index")
+	h.mu.RLock()
+	log.Println("SAVE prende lock su index")
+}
+
+func (h *Index) RUnlock() {
+	log.Println("SAVE lascia lock su index")
+	h.mu.RUnlock()
+}
+
+// GetParametersUnlocked restituisce i parametri SENZA lock.
+func (h *Index) GetParametersUnlocked() (distance.DistanceMetric, distance.PrecisionType, int, int) {
+	return h.metric, h.precision, h.m, h.efConstruction
+}
+
 // SnapshotData esporta i dati interni dell'indice per la persistenza.
 // Si aspetta che il chiamante gestisca il locking.
 func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uint32, int, *distance.Quantizer) {
@@ -931,4 +1039,8 @@ func (h *Index) EfConstruction() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.efConstruction
+}
+
+func (h *Index) Quantizer() *distance.Quantizer {
+	return h.quantizer
 }

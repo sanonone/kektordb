@@ -29,7 +29,7 @@ const (
 // Definiamo i tipi di funzione per ogni precisione
 type DistanceFuncF32 func(v1, v2 []float32) (float64, error)
 type DistanceFuncF16 func(v1, v2 []uint16) (float64, error)
-type DistanceFuncI8 func(v1, v2 []int8) (int32, error)
+type DistanceFuncI8 func(v1, v2 []int8) (int64, error)
 
 // --- WORKSPACE POOL ---
 // Crea un pool di slice. Ogni chiamata a squaredEuclideanGonum
@@ -107,13 +107,13 @@ func squaredEuclideanGoFloat16(v1, v2 []uint16) (float64, error) {
 	return float64(sum), nil
 }
 
-func dotProductGoInt8(v1, v2 []int8) (int32, error) {
+func dotProductGoInt8(v1, v2 []int8) (int64, error) {
 	if len(v1) != len(v2) {
 		return 0, errors.New("i vettori int8 devono avere la stessa lunghezza")
 	}
-	var sum int32
+	var sum int64
 	for i := range v1 {
-		sum += int32(v1[i]) * int32(v2[i])
+		sum += int64(v1[i]) * int64(v2[i])
 	}
 	return sum, nil
 }

@@ -480,6 +480,11 @@ func (s *Server) handleVectorAddBatch(w http.ResponseWriter, r *http.Request) {
 		addedCount++
 	}
 
+	// Incrementa il contatore globale del numero di vettori effettivamente aggiunti.
+	if addedCount > 0 {
+		atomic.AddInt64(&s.dirtyCounter, int64(addedCount))
+	}
+
 	s.writeHTTPResponse(w, http.StatusOK, map[string]interface{}{
 		"status":        "OK",
 		"vectors_added": addedCount,

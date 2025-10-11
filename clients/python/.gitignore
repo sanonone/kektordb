@@ -40,6 +40,7 @@ pip-delete-this-directory.txt
 *.txt
 *.zip
 *.gz
+sift/
 
 # Unit test / coverage reports
 htmlcov/
