@@ -5,12 +5,13 @@ from tqdm import tqdm
 from kektordb_client import KektorDBClient
 import zipfile
 import urllib.request
-import argparse # <-- NUOVO IMPORT
+import argparse 
+import time
 
 # --- Configurazione ---
 DATASET_URL = "https://nlp.stanford.edu/data/glove.6B.zip"
 DATASET_ZIP_FILE = "glove.6B.zip"
-DATASET_TXT_FILE = "glove.6B.50d.txt"
+DATASET_TXT_FILE = "glove.6B.100d.txt"
 
 METRIC = "cosine"
 PRECISION = "int8"
@@ -77,7 +78,7 @@ def main(args):
     
     try:
         print(f"\n--- Fase di Indicizzazione (BATCH, {METRIC}, float32) ---")
-        client.vcreate(INDEX_NAME, metric=METRIC, precision="float32", ef_construction=300, m=16)
+        client.vcreate(INDEX_NAME, metric=METRIC, precision="float32", ef_construction=200, m=16)
 
         # 3. Inserisci i dati
         print(f"Inserimento di {num_vectors} vettori...")
@@ -94,6 +95,7 @@ def main(args):
         print(f"Indicizzazione completata in {end_time - start_time:.2f}s.")
 
         # --- COMPRESSIONE ---
+        '''
         print(f"\nCompressione dell'indice a precisione '{PRECISION}'...")
         # Aumenta il timeout per la compressione
         original_timeout = client.timeout
@@ -103,6 +105,22 @@ def main(args):
         finally:
             client.timeout = original_timeout # Ripristina sempre
         print("Compressione completata.")
+        '''
+
+        print(f"\nAvvio compressione dell'indice a precisione '{PRECISION}'...")
+        start_time_compress = time.time()
+        try:
+            # La chiamata sembra la stessa, ma ora sotto il cofano fa il polling.
+            # Stampa i messaggi di "attesa".
+            task = client.vcompress(INDEX_NAME, precision=PRECISION)
+            if task.status == 'failed':
+                raise APIError(task.error)
+            
+            duration_compress = time.time() - start_time_compress
+            print(f"Compressione completata in {duration_compress:.2f} secondi.")
+        except Exception as e:
+            print(f"Fallimento della compressione: {e}")
+            exit(1)
 
        # --- NUOVO: TEST DI QUALITÀ DELLA QUANTIZZAZIONE ---
         print("\nVerifica della qualità della quantizzazione...")
@@ -174,6 +192,8 @@ def main(args):
             print("Indice eliminato con successo.")
         except Exception as e:
             print(f"Impossibile eliminare l'indice: {e}")
+
+        print(f"\nTest eseguito su dataset {DATASET_TXT_FILE}, con {num_vectors} vettori, metric {METRIC}, precision float32, m 16, ef construction 200, ef search 200, k search 10 ")
 
 
 if __name__ == "__main__":

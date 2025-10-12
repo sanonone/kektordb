@@ -11,7 +11,7 @@ import argparse
 # --- Configurazione ---
 DATASET_URL = "https://nlp.stanford.edu/data/glove.6B.zip"
 DATASET_ZIP_FILE = "glove.6B.zip"
-DATASET_TXT_FILE = "glove.6B.50d.txt" # Useremo i vettori a 50 dimensioni
+DATASET_TXT_FILE = "glove.6B.100d.txt" # Useremo i vettori a 50 dimensioni
 
 METRIC = "cosine" # GloVe è tipicamente usato con la similarità del coseno
 K_SEARCH = 10
@@ -59,7 +59,7 @@ def load_vectors_from_txt(filepath):
             try:
                 vector = np.array(parts[1:], dtype=np.float32)
                 # Assicurati che le dimensioni siano corrette (ignora righe malformate)
-                if len(vector) == 50:
+                if len(vector) == 100:
                     words.append(word)
                     vectors.append(vector)
             except ValueError:
@@ -151,7 +151,7 @@ def main(args):
         average_recall = total_recall / NUM_QUERIES
         qps = NUM_QUERIES / total_search_time
 
-        print(f"\n--- BENCHMARK RESULTS (GloVe-{num_vectors}-50d) ---")
+        print(f"\n--- BENCHMARK RESULTS (GloVe-{num_vectors}-) ---")
         print(f"Recall Media @{K_SEARCH}: {average_recall:.4f}")
         print(f"Performance di Ricerca (QPS): {qps:.2f} query/secondo")
     
@@ -163,6 +163,7 @@ def main(args):
             print("Indice eliminato con successo.")
         except Exception as e:
             print(f"Impossibile eliminare l'indice: {e}")
+        print(f"\nTest eseguito su dataset {DATASET_TXT_FILE}, con {num_vectors} vettori, metric {METRIC}, precision float32, m 16, ef construction 200, ef search 100, k search 10 ")
 
 
 if __name__ == "__main__":

@@ -158,6 +158,8 @@ def main(args):
         except Exception as e:
             print(f"Impossibile eliminare l'indice: {e}")
 
+        print(f"\nTest eseguito su dataset {DATASET_BIN_FILE}, con {num_vectors} vettori, metric {METRIC}, precision float16, m 16, ef construction 200, ef search 100, k search 10 ")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Benchmark script for KektorDB (SIFT, Euclidean, float32).")

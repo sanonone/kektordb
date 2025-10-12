@@ -51,6 +51,10 @@ func (s *Server) router(w http.ResponseWriter, r *http.Request) {
 		s.handleSaveHTTP(w, r)
 		return
 	}
+	if strings.HasPrefix(path, "/system/tasks/") {
+		s.handleTaskStatus(w, r)
+		return
+	}
 
 	// --- Endpoint KV ---
 	if strings.HasPrefix(path, "/kv/") {
@@ -613,6 +617,7 @@ func (s *Server) handleVectorDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // funzione handler per l'endpoint per compattazione AOF
+/*
 func (s *Server) handleAOFRewriteHTTP(w http.ResponseWriter, r *http.Request) {
 	// Accettiamo solo richieste POST per azioni che modificano lo stato del server.
 	if r.Method != http.MethodPost {
@@ -628,6 +633,27 @@ func (s *Server) handleAOFRewriteHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Riscrittura AOF completata con successo"})
+}
+*/
+
+// versione async
+func (s *Server) handleAOFRewriteHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost { /* ... */
+	}
+
+	task := s.taskManager.NewTask()
+	log.Printf("Avvio task di riscrittura AOF asincrono con ID: %s", task.ID)
+
+	go func() {
+		err := s.RewriteAOF()
+		if err != nil {
+			task.SetError(err)
+		} else {
+			task.SetStatus(TaskStatusCompleted)
+		}
+	}()
+
+	s.writeHTTPResponse(w, http.StatusAccepted, task)
 }
 
 func (s *Server) handleSaveHTTP(w http.ResponseWriter, r *http.Request) {
@@ -649,12 +675,39 @@ func (s *Server) handleSaveHTTP(w http.ResponseWriter, r *http.Request) {
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Snapshot del database creato con successo."})
 }
 
+func (s *Server) handleTaskStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo GET")
+		return
+	}
+
+	// Estrai il task ID dall'URL
+	taskID := strings.TrimPrefix(r.URL.Path, "/system/tasks/")
+	if taskID == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, "Task ID mancante nell'URL")
+		return
+	}
+
+	// Recupera il task dal manager
+	task, found := s.taskManager.GetTask(taskID)
+	if !found {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Task con ID '%s' non trovato", taskID))
+		return
+	}
+
+	// Leggi lo stato del task in modo sicuro e restituiscilo
+	task.mu.RLock()
+	defer task.mu.RUnlock()
+	s.writeHTTPResponse(w, http.StatusOK, task)
+}
+
 type VectorCompressRequest struct {
 	IndexName string `json:"index_name"`
 	Precision string `json:"precision"`
 }
 
 // compressione di un indice ad una determinata precisione (float16 o int8)
+/*
 func (s *Server) handleVectorCompress(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST")
@@ -688,6 +741,49 @@ func (s *Server) handleVectorCompress(w http.ResponseWriter, r *http.Request) {
 	atomic.AddInt64(&s.dirtyCounter, 1) // <-- INCREMENTA IL CONTATORE
 
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Indice compresso con successo"})
+}
+*/
+
+// versione async
+func (s *Server) handleVectorCompress(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST")
+		return
+	}
+
+	var req VectorCompressRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, "JSON invalido")
+		return
+	}
+
+	newPrecision := distance.PrecisionType(req.Precision)
+	if newPrecision != distance.Float16 && newPrecision != distance.Int8 {
+		s.writeHTTPError(w, http.StatusBadRequest, "Precisione non valida, usare 'float16' or 'int8'")
+		return
+	}
+
+	// 1. Crea un nuovo task per questa operazione
+	task := s.taskManager.NewTask()
+	log.Printf("Avvio task di compressione asincrono con ID: %s", task.ID)
+
+	// 2. Avvia il lavoro pesante in una nuova goroutine
+	go func() {
+		// Chiama la logica di compressione esistente
+		err := s.store.Compress(req.IndexName, newPrecision)
+
+		// 3. Aggiorna lo stato del task in base al risultato
+		if err != nil {
+			log.Printf("Task di compressione %s fallito: %v", task.ID, err)
+			task.SetError(err)
+		} else {
+			log.Printf("Task di compressione %s completato con successo.", task.ID)
+			task.SetStatus(TaskStatusCompleted)
+		}
+	}()
+
+	// 4. Restituisci immediatamente una risposta 202 Accepted con il task ID
+	s.writeHTTPResponse(w, http.StatusAccepted, task)
 }
 
 // 4. Implementa la logica finale in handleGetVector

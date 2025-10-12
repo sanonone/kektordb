@@ -59,6 +59,16 @@ type VectorAddObject struct {
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
+// Task rappresenta un'operazione asincrona sul server KektorDB.
+type Task struct {
+	ID              string `json:"id"`
+	Status          string `json:"status"`
+	ProgressMessage string `json:"progress_message,omitempty"`
+	Error           string `json:"error,omitempty"`
+
+	client *Client // Riferimento al client per il polling
+}
+
 // --- Client ---
 
 // Client è il client Go per interagire con KektorDB.
@@ -118,6 +128,51 @@ func (c *Client) jsonRequest(method, endpoint string, payload any) ([]byte, erro
 	}
 
 	return respBody, nil
+}
+
+// Refresh aggiorna lo stato del task interrogando il server.
+func (t *Task) Refresh() error {
+	if t.client == nil {
+		return fmt.Errorf("il client non è associato al task")
+	}
+	updatedTask, err := t.client.GetTaskStatus(t.ID)
+	if err != nil {
+		return err
+	}
+	t.Status = updatedTask.Status
+	t.ProgressMessage = updatedTask.ProgressMessage
+	t.Error = updatedTask.Error
+	return nil
+}
+
+// Wait attende il completamento del task, controllando lo stato a intervalli regolari.
+func (t *Task) Wait(interval, timeout time.Duration) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timer.C:
+			return fmt.Errorf("timeout superato in attesa del task %s", t.ID)
+		case <-ticker.C:
+			if err := t.Refresh(); err != nil {
+				return err
+			}
+			switch t.Status {
+			case "completed":
+				return nil
+			case "failed":
+				return fmt.Errorf("il task %s è fallito con errore: %s", t.ID, t.Error)
+			case "running", "started":
+				// Continua ad attendere
+			default:
+				return fmt.Errorf("stato del task sconosciuto: %s", t.Status)
+			}
+		}
+	}
 }
 
 // --- Metodi KV ---
@@ -195,13 +250,23 @@ func (c *Client) DeleteIndex(indexName string) error {
 	return err
 }
 
-func (c *Client) VCompress(indexName, precision string) error {
+// VCompress avvia la compressione di un indice e restituisce un Task.
+func (c *Client) VCompress(indexName, precision string) (*Task, error) {
 	payload := map[string]interface{}{
 		"index_name": indexName,
 		"precision":  precision,
 	}
-	_, err := c.jsonRequest(http.MethodPost, "/vector/actions/compress", payload)
-	return err
+	respBody, err := c.jsonRequest(http.MethodPost, "/vector/actions/compress", payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var task Task
+	if err := json.Unmarshal(respBody, &task); err != nil {
+		return nil, fmt.Errorf("risposta JSON invalida per VCompress: %w", err)
+	}
+	task.client = c // Inietta il client per permettere il polling
+	return &task, nil
 }
 
 func (c *Client) VAdd(indexName, id string, vector []float32, metadata map[string]interface{}) error {
@@ -300,7 +365,32 @@ func (c *Client) VGetMany(indexName string, ids []string) ([]VectorData, error) 
 
 // --- Metodi di Amministrazione ---
 
-func (c *Client) AOFRewrite() error {
-	_, err := c.jsonRequest(http.MethodPost, "/system/aof-rewrite", nil)
-	return err
+// AOFRewrite avvia la riscrittura dell'AOF e restituisce un Task.
+func (c *Client) AOFRewrite() (*Task, error) {
+	respBody, err := c.jsonRequest(http.MethodPost, "/system/aof-rewrite", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var task Task
+	if err := json.Unmarshal(respBody, &task); err != nil {
+		return nil, fmt.Errorf("risposta JSON invalida per AOFRewrite: %w", err)
+	}
+	task.client = c
+	return &task, nil
+}
+
+// GetTaskStatus recupera lo stato di un task a lunga esecuzione.
+func (c *Client) GetTaskStatus(taskID string) (*Task, error) {
+	respBody, err := c.jsonRequest(http.MethodGet, "/system/tasks/"+taskID, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var task Task
+	if err := json.Unmarshal(respBody, &task); err != nil {
+		return nil, fmt.Errorf("risposta JSON invalida per GetTaskStatus: %w", err)
+	}
+	task.client = c
+	return &task, nil
 }

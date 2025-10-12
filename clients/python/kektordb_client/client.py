@@ -1,6 +1,7 @@
 # File: clients/python/kektordb_client/client.py
 
 import requests
+import time
 from typing import List, Dict, Any, Union
 
 # --- Custom Exceptions ---
@@ -16,6 +17,51 @@ class APIError(KektorDBError):
 class ConnectionError(KektorDBError):
     """Raised for network-related errors (e.g., connection refused)."""
     pass
+
+class Task:
+    """Rappresenta un task asincrono sul server KektorDB."""
+    def __init__(self, client: 'KektorDBClient', data: Dict[str, Any]):
+        self._client = client
+        self.id = data.get("id")
+        self.status = data.get("status")
+        self.progress_message = data.get("progress_message")
+        self.error = data.get("error")
+
+    def __repr__(self):
+        return f"<Task id={self.id} status='{self.status}'>"
+
+    def refresh(self):
+        """Aggiorna lo stato del task interrogando il server."""
+        data = self._client.get_task_status(self.id)
+        self.status = data.get("status")
+        self.progress_message = data.get("progress_message")
+        self.error = data.get("error")
+        return self
+
+    def wait(self, interval: int = 10, timeout: int = 7200) -> 'Task':
+        """
+        Attende il completamento del task, controllando lo stato a intervalli regolari.
+
+        Args:
+            interval: Secondi da attendere tra un controllo e l'altro.
+            timeout: Massimo tempo di attesa in secondi.
+
+        Returns:
+            L'oggetto Task aggiornato al suo stato finale.
+            
+        Raises:
+            TimeoutError: Se il task non termina entro il timeout.
+        """
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            self.refresh()
+            if self.status in ("completed", "failed"):
+                return self
+            print(f"  ... stato del task '{self.id}': {self.status} (controllo tra {interval}s)")
+            time.sleep(interval)
+        
+        raise TimeoutError(f"Il task '{self.id}' non è terminato entro il timeout di {timeout} secondi.")
+
 
 
 class KektorDBClient:
@@ -143,24 +189,28 @@ class KektorDBClient:
         """Deletes an entire vector index and all its data."""
         self._request("DELETE", f"/vector/indexes/{index_name}")
 
-    def vcompress(self, index_name: str, precision: str) -> None:
+    def vcompress(self, index_name: str, precision: str, wait: bool = True) -> Task:
         """
-        Compresses an existing float32 index to a lower precision format.
-        NOTE: This can be a long-running operation.
+        AVVIA la compressione di un indice.
+        Questa è un'operazione asincrona.
+
+        Args:
+            index_name: The name of the index to compress.
+            precision: The target precision ('float16' or 'int8').
+            wait: Se True, il metodo attenderà il completamento del task.
+                  Se False, restituirà immediatamente l'oggetto Task.
+
+        Returns:
+            Un oggetto Task che rappresenta l'operazione di compressione.
         """
         payload = {"index_name": index_name, "precision": precision}
+        task_data = self._request("POST", "/vector/actions/compress", json=payload)
+        task = Task(self, task_data)
         
-        # --- CORREZIONE: Usa un timeout molto più lungo per questa operazione ---
-        # Salva il timeout originale
-        original_timeout = self.timeout
-        # Imposta un timeout molto lungo (es. 1 ora)
-        self.timeout = 3600 
-        
-        try:
-            self._request("POST", "/vector/actions/compress", json=payload)
-        finally:
-            # Ripristina sempre il timeout originale, anche in caso di errore
-            self.timeout = original_timeout 
+        if wait:
+            return task.wait()
+        return task 
+
     # --- Vector Data Methods ---
     
     def vadd(self, index_name: str, item_id: str, vector: List[float], metadata: Dict[str, Any] = None) -> None:
@@ -283,6 +333,7 @@ class KektorDBClient:
 
     # --- System Methods ---
 
+    '''
     def aof_rewrite(self) -> None:
         """
         Requests the server to perform an AOF compaction.
@@ -292,3 +343,23 @@ class KektorDBClient:
             ConnectionError: If a network error occurs.
         """
         self._request("POST", "/system/aof-rewrite")
+
+
+    '''
+    def aof_rewrite(self, wait: bool = True) -> Task:
+        """
+        AVVIA la compattazione dell'AOF.
+        Operazione asincrona.
+        """
+        task_data = self._request("POST", "/system/aof-rewrite") # Assumendo che lo modificheremo
+        task = Task(self, task_data)
+
+        if wait:
+            return task.wait()
+        return task
+    
+
+
+    def get_task_status(self, task_id: str) -> Dict[str, Any]:
+        """Recupera lo stato di un task a lunga esecuzione."""
+        return self._request("GET", f"/system/tasks/{task_id}")

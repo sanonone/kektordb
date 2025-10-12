@@ -5,6 +5,7 @@ import (
 	"context" // per gestire graceful shutdown (ctrl + c)
 	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
 	"github.com/sanonone/kektordb/internal/store"
 	"github.com/sanonone/kektordb/internal/store/distance"
 	"github.com/sanonone/kektordb/internal/store/hnsw"
@@ -37,6 +38,7 @@ type Server struct {
 	savePolicies         []savePolicy
 	aofRewritePercentage int
 	aofBaseSize          int64 // Dimensione AOF dopo l'ultima riscrittura
+	taskManager          *TaskManager
 }
 
 type savePolicy struct {
@@ -64,6 +66,7 @@ func NewServer(aofPath string, savePolicyStr string, aofRewritePerc int) (*Serve
 		savePolicies:         policies,
 		aofRewritePercentage: aofRewritePerc,
 		lastSaveTime:         time.Now(),
+		taskManager:          NewTaskManager(),
 	}
 	return s, nil
 }
@@ -684,4 +687,81 @@ func parseSavePolicies(policyStr string) ([]savePolicy, error) {
 	})
 
 	return policies, nil
+}
+
+// --- NUOVE STRUCT PER LA GESTIONE DEI TASK ASINCRONI ---
+
+// TaskStatus definisce i possibili stati di un task.
+type TaskStatus string
+
+const (
+	TaskStatusStarted   TaskStatus = "started"
+	TaskStatusRunning   TaskStatus = "running"
+	TaskStatusCompleted TaskStatus = "completed"
+	TaskStatusFailed    TaskStatus = "failed"
+)
+
+// Task rappresenta un'operazione a lunga esecuzione.
+type Task struct {
+	ID              string     `json:"id"`
+	Status          TaskStatus `json:"status"`
+	ProgressMessage string     `json:"progress_message,omitempty"`
+	Error           string     `json:"error,omitempty"`
+	mu              sync.RWMutex
+}
+
+// TaskManager tiene traccia di tutti i task in esecuzione.
+type TaskManager struct {
+	tasks map[string]*Task
+	mu    sync.RWMutex
+}
+
+// NewTaskManager crea un nuovo gestore di task.
+func NewTaskManager() *TaskManager {
+	return &TaskManager{
+		tasks: make(map[string]*Task),
+	}
+}
+
+// NewTask crea un nuovo task, lo registra e lo restituisce.
+func (tm *TaskManager) NewTask() *Task {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	task := &Task{
+		ID:     uuid.New().String(), // Genera un ID univoco
+		Status: TaskStatusStarted,
+	}
+	tm.tasks[task.ID] = task
+	return task
+}
+
+// GetTask recupera un task in modo sicuro.
+func (tm *TaskManager) GetTask(id string) (*Task, bool) {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+	task, found := tm.tasks[id]
+	return task, found
+}
+
+// --- Metodi di aggiornamento per un Task ---
+// (Questi metodi verranno chiamati dalla goroutine in background)
+
+func (t *Task) SetStatus(status TaskStatus) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.Status = status
+}
+
+func (t *Task) SetError(err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.Status = TaskStatusFailed
+	t.Error = err.Error()
+}
+
+func (t *Task) SetProgress(message string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.ProgressMessage = message
 }
