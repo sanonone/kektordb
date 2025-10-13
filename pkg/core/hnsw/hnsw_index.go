@@ -3,7 +3,7 @@ package hnsw
 import (
 	"container/heap"
 	"fmt"
-	"github.com/sanonone/kektordb/internal/store/distance"
+	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/x448/float16"
 	"log"
 	"math"

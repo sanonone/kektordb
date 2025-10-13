@@ -4,7 +4,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/sanonone/kektordb/internal/store/distance"
+	"github.com/sanonone/kektordb/pkg/core/distance"
 	"log"
 	"net/http"
 	"net/http/pprof"
@@ -160,7 +160,7 @@ func (s *Server) handleKV(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, key string) {
-	value, found := s.store.GetKVStore().Get(key)
+	value, found := s.db.GetKVStore().Get(key)
 	if !found {
 		s.writeHTTPError(w, http.StatusNotFound, "Chiave non trovata")
 		return
@@ -190,7 +190,7 @@ func (s *Server) handleKVSet(w http.ResponseWriter, r *http.Request, key string)
 	s.aofFile.WriteString(aofCommand)
 	s.aofMutex.Unlock()
 
-	s.store.GetKVStore().Set(key, valueBytes)
+	s.db.GetKVStore().Set(key, valueBytes)
 
 	atomic.AddInt64(&s.dirtyCounter, 1) // <-- INCREMENTA IL CONTATORE
 
@@ -203,7 +203,7 @@ func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, key stri
 	s.aofFile.WriteString(aofCommand)
 	s.aofMutex.Unlock()
 
-	s.store.GetKVStore().Delete(key)
+	s.db.GetKVStore().Delete(key)
 
 	atomic.AddInt64(&s.dirtyCounter, 1) // <-- INCREMENTA IL CONTATORE
 
@@ -217,7 +217,7 @@ func (s *Server) handleListIndexes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	info, err := s.store.GetVectorIndexInfo()
+	info, err := s.db.GetVectorIndexInfo()
 	if err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -233,7 +233,7 @@ func (s *Server) handleGetIndex(w http.ResponseWriter, r *http.Request, indexNam
 		return
 	}
 
-	info, err := s.store.GetSingleVectorIndexInfoAPI(indexName)
+	info, err := s.db.GetSingleVectorIndexInfoAPI(indexName)
 	if err != nil {
 		// Se l'errore è "non trovato", restituisci 404
 		if strings.Contains(err.Error(), "non trovato") {
@@ -257,7 +257,7 @@ func (s *Server) handleDeleteIndex(w http.ResponseWriter, r *http.Request, index
 	s.aofMutex.Unlock()
 
 	// Esegui l'eliminazione
-	err := s.store.DeleteVectorIndex(indexName)
+	err := s.db.DeleteVectorIndex(indexName)
 	if err != nil {
 		if strings.Contains(err.Error(), "non trovato") {
 			s.writeHTTPError(w, http.StatusNotFound, err.Error())
@@ -318,7 +318,7 @@ func (s *Server) handleVectorCreate(w http.ResponseWriter, r *http.Request) {
 	s.aofFile.WriteString(aofCommand) // gestire l'errore qui in un sistema di produzione
 	s.aofMutex.Unlock()
 
-	err := s.store.CreateVectorIndex(req.IndexName, metric, req.M, req.EfConstruction, precision)
+	err := s.db.CreateVectorIndex(req.IndexName, metric, req.M, req.EfConstruction, precision)
 	if err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -354,7 +354,7 @@ func (s *Server) handleVectorAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	idx, found := s.store.GetVectorIndex(req.IndexName)
+	idx, found := s.db.GetVectorIndex(req.IndexName)
 	if !found {
 		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Indice '%s' non trovato", req.IndexName))
 		return
@@ -384,7 +384,7 @@ func (s *Server) handleVectorAdd(w http.ResponseWriter, r *http.Request) {
 
 	// se ci sono metadati li indicizza
 	if req.Metadata != nil {
-		if err := s.store.AddMetadata(req.IndexName, internalID, req.Metadata); err != nil {
+		if err := s.db.AddMetadata(req.IndexName, internalID, req.Metadata); err != nil {
 			// operazione critica, se fallisce dovremmo disfare l'aggiunta del vettore (rollback)
 			// --- LOGICA DI ROLLBACK ---
 			log.Printf("ERRORE: Fallimento nell'indicizzare i metadati per '%s'. Avvio rollback.", req.Id)
@@ -445,7 +445,7 @@ func (s *Server) handleVectorAddBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	idx, found := s.store.GetVectorIndex(req.IndexName)
+	idx, found := s.db.GetVectorIndex(req.IndexName)
 	if !found {
 		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Indice '%s' non trovato", req.IndexName))
 		return
@@ -466,7 +466,7 @@ func (s *Server) handleVectorAddBatch(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if len(vec.Metadata) > 0 {
-			if err := s.store.AddMetadata(req.IndexName, internalID, vec.Metadata); err != nil {
+			if err := s.db.AddMetadata(req.IndexName, internalID, vec.Metadata); err != nil {
 				// Esegui il rollback per questo singolo vettore
 				idx.Delete(vec.Id)
 				log.Printf("Errore metadati per '%s', rollback eseguito. Errore: %v", vec.Id, err)
@@ -515,7 +515,7 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	idx, found := s.store.GetVectorIndex(req.IndexName)
+	idx, found := s.db.GetVectorIndex(req.IndexName)
 	if !found {
 		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Indice '%s' non trovato", req.IndexName))
 		return
@@ -526,7 +526,7 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	if req.Filter != "" {
-		allowList, err = s.store.FindIDsByFilter(req.IndexName, req.Filter)
+		allowList, err = s.db.FindIDsByFilter(req.IndexName, req.Filter)
 		if err != nil {
 			s.writeHTTPError(w, http.StatusBadRequest, fmt.Sprintf("filtro invalido: %v", err))
 			return
@@ -567,7 +567,7 @@ func (s *Server) handleGetVectorsBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// La logica di chiamata allo store è la stessa
-	vectorData, err := s.store.GetVectors(req.IndexName, req.IDs)
+	vectorData, err := s.db.GetVectors(req.IndexName, req.IDs)
 	if err != nil {
 		if strings.Contains(err.Error(), "non trovato") {
 			s.writeHTTPError(w, http.StatusNotFound, err.Error())
@@ -597,7 +597,7 @@ func (s *Server) handleVectorDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	idx, found := s.store.GetVectorIndex(req.IndexName)
+	idx, found := s.db.GetVectorIndex(req.IndexName)
 	if !found {
 		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Indice '%s' non trovato", req.IndexName))
 		return
@@ -770,7 +770,7 @@ func (s *Server) handleVectorCompress(w http.ResponseWriter, r *http.Request) {
 	// 2. Avvia il lavoro pesante in una nuova goroutine
 	go func() {
 		// Chiama la logica di compressione esistente
-		err := s.store.Compress(req.IndexName, newPrecision)
+		err := s.db.Compress(req.IndexName, newPrecision)
 
 		// 3. Aggiorna lo stato del task in base al risultato
 		if err != nil {
@@ -788,7 +788,7 @@ func (s *Server) handleVectorCompress(w http.ResponseWriter, r *http.Request) {
 
 // 4. Implementa la logica finale in handleGetVector
 func (s *Server) handleGetVector(w http.ResponseWriter, r *http.Request, indexName, vectorID string) {
-	vectorData, err := s.store.GetVector(indexName, vectorID)
+	vectorData, err := s.db.GetVector(indexName, vectorID)
 	if err != nil {
 		if strings.Contains(err.Error(), "non trovato") {
 			s.writeHTTPError(w, http.StatusNotFound, err.Error())

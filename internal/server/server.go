@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/google/uuid"
-	"github.com/sanonone/kektordb/internal/store"
-	"github.com/sanonone/kektordb/internal/store/distance"
-	"github.com/sanonone/kektordb/internal/store/hnsw"
+	"github.com/sanonone/kektordb/pkg/core"
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"log"
 	"net/http" // per il web server
 	"os"
@@ -24,7 +24,7 @@ import (
 // struct server con informazioni necessarie
 
 type Server struct {
-	store *store.Store // puntatore allo store
+	db *core.DB // puntatore allo core
 
 	aofFile    *os.File     // file aof per persistenza
 	aofMutex   sync.Mutex   // mutex per gestire la scrittura sul file
@@ -61,7 +61,7 @@ func NewServer(aofPath string, savePolicyStr string, aofRewritePerc int) (*Serve
 	}
 
 	s := &Server{
-		store:                store.NewStore(), // inizializzo store
+		db:                   core.NewDB(), // inizializzo core
 		aofFile:              file,
 		savePolicies:         policies,
 		aofRewritePercentage: aofRewritePerc,
@@ -87,7 +87,7 @@ func (s *Server) Run(httpAddr string) error {
 			return fmt.Errorf("impossibile aprire il file di snapshot: %w", err)
 		}
 
-		err = s.store.LoadFromSnapshot(file)
+		err = s.db.LoadFromSnapshot(file)
 		file.Close() // Chiudi il file dopo la lettura
 		if err != nil {
 			return fmt.Errorf("errore durante il caricamento dello snapshot: %w", err)
@@ -375,12 +375,12 @@ func (s *Server) loadFromAOF() error {
 		return fmt.Errorf("scanner aof: %w", err)
 	}
 
-	// --- FASE 3: Ricostruzione dello Stato nello Store ---
+	// --- FASE 3: Ricostruzione dello Stato nello core ---
 	log.Println("Ricostruzione dello stato compattato in memoria...")
 
-	// Ricostruisci il KV store
+	// Ricostruisci il KV core
 	for key, value := range state.kvData {
-		s.store.GetKVStore().Set(key, value)
+		s.db.GetKVStore().Set(key, value)
 	}
 
 	// Ricostruisci gli indici vettoriali
@@ -392,13 +392,13 @@ func (s *Server) loadFromAOF() error {
 			indexName, indexState.metric, indexState.precision, len(indexState.entries))
 		// --- CHIAMATA CORRETTA ---
 		// Ora passiamo la metrica che abbiamo salvato nello stato
-		err := s.store.CreateVectorIndex(indexName, indexState.metric, indexState.m, indexState.efConstruction, indexState.precision)
+		err := s.db.CreateVectorIndex(indexName, indexState.metric, indexState.m, indexState.efConstruction, indexState.precision)
 		if err != nil {
 			log.Printf("[AOF] ERRORE: impossibile creare l'indice '%s' con metrica %s, M=%d, EF=%d: %v",
 				indexName, indexState.metric, indexState.m, indexState.efConstruction, err)
 			continue
 		}
-		idx, found := s.store.GetVectorIndex(indexName)
+		idx, found := s.db.GetVectorIndex(indexName)
 		if !found {
 			log.Printf("[AOF] impossibile ottenere indice '%s'", indexName)
 			continue
@@ -437,7 +437,7 @@ func (s *Server) loadFromAOF() error {
 					delete(entry.metadata, "__deleted")
 				}
 				if len(entry.metadata) > 0 {
-					s.store.AddMetadata(indexName, internalID, entry.metadata)
+					s.db.AddMetadata(indexName, internalID, entry.metadata)
 				}
 			}
 		}
@@ -453,9 +453,9 @@ func (s *Server) loadFromAOF() error {
 func (s *Server) RewriteAOF() error {
 	log.Println("Avvio riscrittura AOF...")
 
-	// Usa i metodi di lock pubblici dello Store.
-	s.store.Lock()
-	defer s.store.Unlock()
+	// Usa i metodi di lock pubblici dello core.
+	s.db.Lock()
+	defer s.db.Unlock()
 
 	// il percorso della directory del file AOF originale
 	aofDir := filepath.Dir(s.aofFile.Name())
@@ -469,8 +469,8 @@ func (s *Server) RewriteAOF() error {
 
 	// --- FASE 1: Scrittura dei Comandi di Creazione Stato ---
 
-	// 1a. Scrivi i comandi SET per il KV Store
-	s.store.IterateKVUnlocked(func(pair store.KVPair) {
+	// 1a. Scrivi i comandi SET per il KV core
+	s.db.IterateKVUnlocked(func(pair core.KVPair) {
 		// Dobbiamo gestire correttamente valori che potrebbero contenere spazi.
 		// Per ora il nostro protocollo è semplice, ma in futuro potremmo
 		// dover "quotare" il valore.
@@ -480,7 +480,7 @@ func (s *Server) RewriteAOF() error {
 
 	// 1b. Scrivi i comandi VCREATE per ogni indice vettoriale
 	// Otteniamo prima le informazioni su tutti gli indici.
-	vectorIndexInfo, err := s.store.GetVectorIndexInfoUnlocked()
+	vectorIndexInfo, err := s.db.GetVectorIndexInfoUnlocked()
 	if err != nil {
 		return fmt.Errorf("impossibile ottenere informazioni sugli indici vettoriali: %w", err)
 	}
@@ -492,7 +492,7 @@ func (s *Server) RewriteAOF() error {
 	}
 
 	// 1c. Scrivi i comandi VADD per ogni vettore in ogni indice
-	s.store.IterateVectorIndexesUnlocked(func(indexName string, index *hnsw.Index, data store.VectorData) {
+	s.db.IterateVectorIndexesUnlocked(func(indexName string, index *hnsw.Index, data core.VectorData) {
 		cmd, err := buildVAddAOFCommand(indexName, data.ID, data.Vector, data.Metadata)
 		if err == nil {
 			tempFile.WriteString(cmd)
@@ -558,7 +558,7 @@ func (s *Server) Save() error {
 
 	// 3. Scrivi lo snapshot sul file temporaneo
 	log.Println("Scrittura dello stato in memoria sullo snapshot...")
-	if err := s.store.Snapshot(file); err != nil {
+	if err := s.db.Snapshot(file); err != nil {
 		return fmt.Errorf("fallimento durante la scrittura dello snapshot: %w", err)
 	}
 	log.Println("Scrittura snapshot completata.")

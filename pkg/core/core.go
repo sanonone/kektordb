@@ -1,10 +1,10 @@
-package store
+package core
 
 import (
 	"encoding/gob"
 	"fmt"
-	"github.com/sanonone/kektordb/internal/store/distance" // Importa distance
-	"github.com/sanonone/kektordb/internal/store/hnsw"     // Importa hnsw
+	"github.com/sanonone/kektordb/pkg/core/distance" // Importa distance
+	"github.com/sanonone/kektordb/pkg/core/hnsw"     // Importa hnsw
 	"github.com/tidwall/btree"
 	"io"
 	"log"
@@ -101,7 +101,7 @@ func init() {
 
 // Snapshot serializza lo stato corrente dello store in formato gob su un io.Writer.
 // Questa funzione si aspetta che il chiamante gestisca il locking.
-func (s *Store) Snapshot(writer io.Writer) error {
+func (s *DB) Snapshot(writer io.Writer) error {
 	// snapshot assume che il chiamante abbia già il lock di scrittura
 	/*
 		s.mu.RLock() // Usiamo RLock perché stiamo solo leggendo lo stato.
@@ -219,7 +219,7 @@ func (s *Store) Snapshot(writer io.Writer) error {
 
 // LoadFromSnapshot deserializza uno snapshot gob da un io.Reader e ripristina
 // lo stato dello store. Svuota lo store prima di caricare.
-func (s *Store) LoadFromSnapshot(reader io.Reader) error {
+func (s *DB) LoadFromSnapshot(reader io.Reader) error {
 	decoder := gob.NewDecoder(reader)
 	var snapshot Snapshot
 	if err := decoder.Decode(&snapshot); err != nil {
@@ -287,7 +287,7 @@ func (s *Store) LoadFromSnapshot(reader io.Reader) error {
 
 // itera su tutte le coppie chiave-valore nello store e le passa a una funzione
 // di callback. L'iterazione avviene in un read lock
-func (s *Store) IterateKV(callback func(pair KVPair)) {
+func (s *DB) IterateKV(callback func(pair KVPair)) {
 	s.kvStore.mu.RLock()
 	defer s.kvStore.mu.RUnlock()
 
@@ -297,14 +297,14 @@ func (s *Store) IterateKV(callback func(pair KVPair)) {
 }
 
 // iterateKVUnlocked esegue l'iterazione senza acquisire lock
-func (s *Store) IterateKVUnlocked(callback func(pair KVPair)) {
+func (s *DB) IterateKVUnlocked(callback func(pair KVPair)) {
 	for key, value := range s.kvStore.data {
 		callback(KVPair{Key: key, Value: value})
 	}
 }
 
 // itera su tutti gli indici vettoriali e i loro contenuti
-func (s *Store) IterateVectorIndexes(callback func(indexName string, index *hnsw.Index, data VectorData)) {
+func (s *DB) IterateVectorIndexes(callback func(indexName string, index *hnsw.Index, data VectorData)) {
 	s.mu.RUnlock()
 	defer s.mu.RUnlock()
 
@@ -327,7 +327,7 @@ func (s *Store) IterateVectorIndexes(callback func(indexName string, index *hnsw
 }
 
 // iterateVectorIndexesUnlocked esegue l'iterazione senza acquisire lock.
-func (s *Store) IterateVectorIndexesUnlocked(callback func(indexName string, index *hnsw.Index, data VectorData)) {
+func (s *DB) IterateVectorIndexesUnlocked(callback func(indexName string, index *hnsw.Index, data VectorData)) {
 	for name, idx := range s.vectorIndexes {
 		if hnswIndex, ok := idx.(*hnsw.Index); ok {
 			hnswIndex.Iterate(func(id string, vector []float32) {
@@ -349,7 +349,7 @@ func (s *Store) IterateVectorIndexesUnlocked(callback func(indexName string, ind
 
 // GetVectorIndexInfo restituisce una slice con le informazioni di configurazione
 // di tutti gli indici vettoriali presenti.
-func (s *Store) GetVectorIndexInfo() ([]VectorIndexInfo, error) {
+func (s *DB) GetVectorIndexInfo() ([]VectorIndexInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -371,7 +371,7 @@ func (s *Store) GetVectorIndexInfo() ([]VectorIndexInfo, error) {
 	return infoList, nil
 }
 
-func (s *Store) GetVectorIndexInfoUnlocked() ([]VectorIndexInfo, error) {
+func (s *DB) GetVectorIndexInfoUnlocked() ([]VectorIndexInfo, error) {
 	infoList := make([]VectorIndexInfo, 0, len(s.vectorIndexes))
 	for name, idx := range s.vectorIndexes {
 		if hnswIndex, ok := idx.(*hnsw.Index); ok {
@@ -389,7 +389,7 @@ func (s *Store) GetVectorIndexInfoUnlocked() ([]VectorIndexInfo, error) {
 
 // GetVectorIndexInfo restituisce le informazioni di configurazione e stato
 // per tutti gli indici vettoriali.
-func (s *Store) GetVectorIndexInfoAPI() ([]IndexInfo, error) {
+func (s *DB) GetVectorIndexInfoAPI() ([]IndexInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -418,7 +418,7 @@ func (s *Store) GetVectorIndexInfoAPI() ([]IndexInfo, error) {
 }
 
 // GetSingleVectorIndexInfo restituisce le informazioni per un singolo indice.
-func (s *Store) GetSingleVectorIndexInfoAPI(name string) (IndexInfo, error) {
+func (s *DB) GetSingleVectorIndexInfoAPI(name string) (IndexInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -443,7 +443,7 @@ func (s *Store) GetSingleVectorIndexInfoAPI(name string) (IndexInfo, error) {
 }
 
 // GetVector recupera i dati completi per un singolo vettore dato il suo ID esterno.
-func (s *Store) GetVector(indexName, vectorID string) (VectorData, error) {
+func (s *DB) GetVector(indexName, vectorID string) (VectorData, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -480,7 +480,7 @@ func (s *Store) GetVector(indexName, vectorID string) (VectorData, error) {
 // GetVectors recupera i dati completi per una slice di ID di vettori in parallelo.
 // Restituisce una slice di VectorData. Se un ID non viene trovato,
 // semplicemente non sarà presente nella slice di ritorno.
-func (s *Store) GetVectors(indexName string, vectorIDs []string) ([]VectorData, error) {
+func (s *DB) GetVectors(indexName string, vectorIDs []string) ([]VectorData, error) {
 	// Acquisiamo il lock di lettura una sola volta per l'intera operazione.
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -557,7 +557,7 @@ func (s *Store) GetVectors(indexName string, vectorIDs []string) ([]VectorData, 
 
 // funzione helper per IterateVectorIndexes
 // nota: logica inefficiente, in futuro si dovranno legare i metadata più strettamente ai nodi HNSW
-func (s *Store) getMetadataForNode(indexName string, nodeID uint32) map[string]any {
+func (s *DB) getMetadataForNode(indexName string, nodeID uint32) map[string]any {
 	metadata := make(map[string]any)
 
 	// fa la scansione dell'indice invertito
@@ -579,7 +579,7 @@ func (s *Store) getMetadataForNode(indexName string, nodeID uint32) map[string]a
 }
 
 // versione senza lock
-func (s *Store) getMetadataForNodeUnlocked(indexName string, nodeID uint32) map[string]any {
+func (s *DB) getMetadataForNodeUnlocked(indexName string, nodeID uint32) map[string]any {
 	metadata := make(map[string]any)
 
 	// fa la scansione dell'indice invertito
@@ -607,7 +607,7 @@ type BTreeItem struct {
 }
 
 // store è il contenitore principale che contiene tutti i tipi di dato di kektorDB
-type Store struct {
+type DB struct {
 	mu            sync.RWMutex
 	kvStore       *KVStore
 	vectorIndexes map[string]VectorIndex
@@ -624,8 +624,8 @@ type Store struct {
 	bTreeIndex map[string]map[string]*btree.BTreeG[BTreeItem]
 }
 
-func NewStore() *Store {
-	return &Store{
+func NewDB() *DB {
+	return &DB{
 		kvStore:       NewKVStore(),
 		vectorIndexes: make(map[string]VectorIndex),
 
@@ -637,12 +637,12 @@ func NewStore() *Store {
 }
 
 // restituisce lo store KVStore
-func (s *Store) GetKVStore() *KVStore {
+func (s *DB) GetKVStore() *KVStore {
 	return s.kvStore
 }
 
 // crea un nuovo indice vettoriale
-func (s *Store) CreateVectorIndex(name string, metric distance.DistanceMetric, m, efConstruction int, precision distance.PrecisionType) error {
+func (s *DB) CreateVectorIndex(name string, metric distance.DistanceMetric, m, efConstruction int, precision distance.PrecisionType) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -671,7 +671,7 @@ func (s *Store) CreateVectorIndex(name string, metric distance.DistanceMetric, m
 }
 
 // recupera un indice vettoriale per nome
-func (s *Store) GetVectorIndex(name string) (VectorIndex, bool) {
+func (s *DB) GetVectorIndex(name string) (VectorIndex, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -680,7 +680,7 @@ func (s *Store) GetVectorIndex(name string) (VectorIndex, bool) {
 }
 
 // rimuove un intero indice vettoriale e tutti i suoi dati associati
-func (s *Store) DeleteVectorIndex(name string) error {
+func (s *DB) DeleteVectorIndex(name string) error {
 	s.mu.Lock() // Usiamo un Lock() esclusivo perché stiamo modificando tutte le strutture
 	defer s.mu.Unlock()
 
@@ -704,7 +704,7 @@ func (s *Store) DeleteVectorIndex(name string) error {
 }
 
 // Compress converte un indice esistente in una nuova precisione.
-func (s *Store) Compress(indexName string, newPrecision distance.PrecisionType) error {
+func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) error {
 	s.mu.Lock() // Usiamo un Lock() esclusivo perché modifichiamo la struttura dello store
 	defer s.mu.Unlock()
 
@@ -837,7 +837,7 @@ func (s *Store) Compress(indexName string, newPrecision distance.PrecisionType) 
 }
 
 // AddMetadata associa i metadati a un ID di nodo e aggiorna gli indici secondari.
-func (s *Store) AddMetadata(indexName string, nodeID uint32, metadata map[string]any) error {
+func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -881,7 +881,7 @@ func (s *Store) AddMetadata(indexName string, nodeID uint32, metadata map[string
 	return nil
 }
 
-func (s *Store) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[string]any) error {
+func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[string]any) error {
 	for key, value := range metadata {
 		switch v := value.(type) { // controlla il tipo della variabile any
 		case string:
@@ -925,7 +925,7 @@ func (s *Store) AddMetadataUnlocked(indexName string, nodeID uint32, metadata ma
 // FindIDsByFilter funge da query planner per i filtri.
 // Supporta OR e AND. OR ha precedenza più bassa (prima si scompone sugli OR,
 // ogni blocco OR è valutato come AND di sottofiltri).
-func (s *Store) FindIDsByFilter(indexName string, filter string) (map[uint32]struct{}, error) {
+func (s *DB) FindIDsByFilter(indexName string, filter string) (map[uint32]struct{}, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -997,7 +997,7 @@ func (s *Store) FindIDsByFilter(indexName string, filter string) (map[uint32]str
 
 // evaluateSingleFilter valuta una singola espressione come "price>=10" o "name=Alice".
 // Restituisce un set di ID (map[uint32]struct{}) e un errore.
-func (s *Store) evaluateSingleFilter(indexName string, filter string) (map[uint32]struct{}, error) {
+func (s *DB) evaluateSingleFilter(indexName string, filter string) (map[uint32]struct{}, error) {
 	// Trova operatore (ordinale per lunghezza per gestire <= e >=)
 	var op string
 	opIndex := -1
@@ -1213,21 +1213,21 @@ func btreeItemLess(a, b BTreeItem) bool {
 }
 
 // RLock acquisisce un read lock sullo store.
-func (s *Store) RLock() {
+func (s *DB) RLock() {
 	s.mu.RLock()
 }
 
 // RUnlock rilascia il read lock.
-func (s *Store) RUnlock() {
+func (s *DB) RUnlock() {
 	s.mu.RUnlock()
 }
 
 // Lock acquisisce un write lock sullo store.
-func (s *Store) Lock() {
+func (s *DB) Lock() {
 	s.mu.Lock()
 }
 
 // Unlock rilascia il write lock.
-func (s *Store) Unlock() {
+func (s *DB) Unlock() {
 	s.mu.Unlock()
 }

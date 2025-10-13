@@ -1,4 +1,4 @@
-package store
+package core
 
 import (
 	"sync"
@@ -7,11 +7,11 @@ import (
 // lo store key-value in memory
 type KVStore struct {
 	// con rwmutex permetto letture concorrenti ma scritture esclusive
-	mu sync.RWMutex 
+	mu   sync.RWMutex
 	data map[string][]byte
 }
 
-// crea e restituisce un vuovo store 
+// crea e restituisce un vuovo store
 func NewKVStore() *KVStore {
 	return &KVStore{
 		data: make(map[string][]byte),
@@ -21,14 +21,14 @@ func NewKVStore() *KVStore {
 // SET: imposta un valore per una determinata chiave
 // scrittura quindi si usa lock()
 func (s *KVStore) Set(key string, value []byte) {
-	s.mu.Lock() // blocca la scrittura 
+	s.mu.Lock() // blocca la scrittura
 	defer s.mu.Unlock()
 
-	s.data[key] = value 
+	s.data[key] = value
 }
 
-// GET: recupera il valore data una chiave 
-// lettura quindi usaimo rlock() condiviso 
+// GET: recupera il valore data una chiave
+// lettura quindi usaimo rlock() condiviso
 func (s *KVStore) Get(key string) ([]byte, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -37,7 +37,7 @@ func (s *KVStore) Get(key string) ([]byte, bool) {
 	return value, found
 }
 
-// DELETE: rimuove una chiave dallo store 
+// DELETE: rimuove una chiave dallo store
 // scrittura quindi lock()
 func (s *KVStore) Delete(key string) {
 	s.mu.Lock()
