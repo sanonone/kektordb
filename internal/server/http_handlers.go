@@ -185,7 +185,9 @@ func (s *Server) handleKVSet(w http.ResponseWriter, r *http.Request, key string)
 	valueBytes := []byte(req.Value)
 
 	// 3. La logica AOF e di store rimane la stessa
-	aofCommand := fmt.Sprintf("SET %s %s\n", key, req.Value) // Usiamo req.Value
+	// aofCommand := fmt.Sprintf("SET %s %s\n", key, req.Value) // Usiamo req.Value
+
+	aofCommand := formatCommandAsRESP("SET", []byte(key), []byte(req.Value))
 	s.aofMutex.Lock()
 	s.aofFile.WriteString(aofCommand)
 	s.aofMutex.Unlock()
@@ -198,7 +200,8 @@ func (s *Server) handleKVSet(w http.ResponseWriter, r *http.Request, key string)
 }
 
 func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, key string) {
-	aofCommand := fmt.Sprintf("DEL %s\n", key)
+	// aofCommand := fmt.Sprintf("DEL %s\n", key)
+	aofCommand := formatCommandAsRESP("DEL", []byte(key))
 	s.aofMutex.Lock()
 	s.aofFile.WriteString(aofCommand)
 	s.aofMutex.Unlock()
@@ -222,6 +225,9 @@ func (s *Server) handleListIndexes(w http.ResponseWriter, r *http.Request) {
 		s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	jsonBytes, _ := json.Marshal(info)
+	log.Printf("[DEBUG JSON] Risposta per /vector/indexes: %s", string(jsonBytes))
 
 	s.writeHTTPResponse(w, http.StatusOK, info)
 }
@@ -251,7 +257,8 @@ func (s *Server) handleDeleteIndex(w http.ResponseWriter, r *http.Request, index
 	// --- LOGICA AOF ---
 	// Registra il comando PRIMA di eseguire l'operazione.
 	// Creeremo un nuovo comando "VDROP" o "VDELETEINDEX" per l'AOF.
-	aofCommand := fmt.Sprintf("VDROP %s\n", indexName)
+	// aofCommand := fmt.Sprintf("VDROP %s\n", indexName)
+	aofCommand := formatCommandAsRESP("VDROP", []byte(indexName))
 	s.aofMutex.Lock()
 	s.aofFile.WriteString(aofCommand)
 	s.aofMutex.Unlock()
@@ -282,6 +289,7 @@ type VectorCreateRequest struct {
 	M              int    `json:"m,omitempty"`
 	EfConstruction int    `json:"ef_construction,omitempty"`
 	Precision      string `json:"precision,omitempty"`
+	TextLanguage   string `json:"text_language,omitempty"`
 }
 
 func (s *Server) handleVectorCreate(w http.ResponseWriter, r *http.Request) {
@@ -312,13 +320,25 @@ func (s *Server) handleVectorCreate(w http.ResponseWriter, r *http.Request) {
 		precision = distance.Float32 // Imposta float32 come default se non specificato
 	}
 
+	// Il valore di default è "" (stringa vuota), che significa "nessuna analisi testuale".
+	textLang := req.TextLanguage
+
 	// scrittura AOF per persistenza
-	aofCommand := fmt.Sprintf("VCREATE %s METRIC %s M %d EF_CONSTRUCTION %d PRECISION %s\n", req.IndexName, metric, req.M, req.EfConstruction, req.Precision)
+	// aofCommand := fmt.Sprintf("VCREATE %s METRIC %s M %d EF_CONSTRUCTION %d PRECISION %s TEXT_LANGUAGE %s\n", req.IndexName, metric, req.M, req.EfConstruction, precision, textLang)
+	aofCommand := formatCommandAsRESP("VCREATE",
+		[]byte(req.IndexName),
+		[]byte("METRIC"), []byte(metric),
+		[]byte("M"), []byte(strconv.Itoa(req.M)),
+		[]byte("EF_CONSTRUCTION"), []byte(strconv.Itoa(req.EfConstruction)),
+		[]byte("PRECISION"), []byte(string(precision)),
+		[]byte("TEXT_LANGUAGE"), []byte(textLang),
+	)
+
 	s.aofMutex.Lock()
 	s.aofFile.WriteString(aofCommand) // gestire l'errore qui in un sistema di produzione
 	s.aofMutex.Unlock()
 
-	err := s.db.CreateVectorIndex(req.IndexName, metric, req.M, req.EfConstruction, precision)
+	err := s.db.CreateVectorIndex(req.IndexName, metric, req.M, req.EfConstruction, precision, textLang)
 	if err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -384,7 +404,7 @@ func (s *Server) handleVectorAdd(w http.ResponseWriter, r *http.Request) {
 
 	// se ci sono metadati li indicizza
 	if req.Metadata != nil {
-		if err := s.db.AddMetadata(req.IndexName, internalID, req.Metadata); err != nil {
+		if err := s.db.AddMetadataUnlocked(req.IndexName, internalID, req.Metadata); err != nil {
 			// operazione critica, se fallisce dovremmo disfare l'aggiunta del vettore (rollback)
 			// --- LOGICA DI ROLLBACK ---
 			log.Printf("ERRORE: Fallimento nell'indicizzare i metadati per '%s'. Avvio rollback.", req.Id)
@@ -397,14 +417,25 @@ func (s *Server) handleVectorAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// --- LOGICA AOF ---
-	// Costruisci il comando AOF solo dopo che tutte le validazioni sono passate.
-	aofCommand, err := buildVAddAOFCommand(req.IndexName, req.Id, req.Vector, req.Metadata)
-	if err != nil {
-		// Anche qui, se la creazione del comando fallisce fare il rollback
-		idx.Delete(req.Id)
-		s.writeHTTPError(w, http.StatusInternalServerError, "errore nella creazione del comando AOF")
-		return
-	}
+	/*
+		// Costruisci il comando AOF solo dopo che tutte le validazioni sono passate.
+		aofCommand, err := buildVAddAOFCommand(req.IndexName, req.Id, req.Vector, req.Metadata)
+		if err != nil {
+			// Anche qui, se la creazione del comando fallisce fare il rollback
+			idx.Delete(req.Id)
+			s.writeHTTPError(w, http.StatusInternalServerError, "errore nella creazione del comando AOF")
+			return
+		}
+	*/
+	vectorStr := float32SliceToString(req.Vector)
+	metadataBytes, _ := json.Marshal(req.Metadata)
+
+	aofCommand := formatCommandAsRESP("VADD",
+		[]byte(req.IndexName),
+		[]byte(req.Id),
+		[]byte(vectorStr),
+		metadataBytes,
+	)
 
 	s.aofMutex.Lock()
 	s.aofFile.WriteString(aofCommand)
@@ -476,7 +507,16 @@ func (s *Server) handleVectorAddBatch(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Scrivi sull'AOF per ogni vettore aggiunto con successo
-		aofCommand, _ := buildVAddAOFCommand(req.IndexName, vec.Id, vec.Vector, vec.Metadata)
+		// aofCommand, _ := buildVAddAOFCommand(req.IndexName, vec.Id, vec.Vector, vec.Metadata)
+		vectorStr := float32SliceToString(vec.Vector)
+		metadataBytes, _ := json.Marshal(vec.Metadata)
+
+		aofCommand := formatCommandAsRESP("VADD",
+			[]byte(req.IndexName),
+			[]byte(vec.Id),
+			[]byte(vectorStr),
+			metadataBytes,
+		)
 		s.aofMutex.Lock()
 		s.aofFile.WriteString(aofCommand)
 		s.aofMutex.Unlock()
@@ -531,6 +571,10 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 			s.writeHTTPError(w, http.StatusBadRequest, fmt.Sprintf("filtro invalido: %v", err))
 			return
 		}
+
+		// --- LOG DI DEBUG ---
+		log.Printf("[DEBUG FILTER] Filtro: '%s'. ID permessi trovati: %d. Lista: %v", req.Filter, len(allowList), allowList)
+		// --- FINE LOG ---
 		// Se il filtro non produce risultati, può terminare subito
 		if len(allowList) == 0 {
 			s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": []string{}})
@@ -604,7 +648,9 @@ func (s *Server) handleVectorDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Logica AOF
-	aofCommand := fmt.Sprintf("VDEL %s %s\n", req.IndexName, req.Id)
+	// aofCommand := fmt.Sprintf("VDEL %s %s\n", req.IndexName, req.Id)
+
+	aofCommand := formatCommandAsRESP("VDEL", []byte(req.IndexName), []byte(req.Id))
 	s.aofMutex.Lock()
 	s.aofFile.WriteString(aofCommand)
 	s.aofMutex.Unlock()

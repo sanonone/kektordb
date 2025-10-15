@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"math/rand"
+	"sort"
 	"sync"
 	"time"
 )
@@ -53,10 +54,12 @@ type Index struct {
 
 	// per memorizzare il tipo  di metrica
 	metric distance.DistanceMetric
+
+	textLanguage string
 }
 
 // crea ed inizializza un nuovo indice HNSW
-func New(m int, efConstruction int, metric distance.DistanceMetric, precision distance.PrecisionType) (*Index, error) {
+func New(m int, efConstruction int, metric distance.DistanceMetric, precision distance.PrecisionType, textLang string) (*Index, error) {
 	// imposto valori di default se non sono stati passati come parametri dall'utente
 	if m <= 0 {
 		m = 16 // default
@@ -78,6 +81,7 @@ func New(m int, efConstruction int, metric distance.DistanceMetric, precision di
 		levelRand:            rand.New(rand.NewSource(time.Now().UnixNano())),
 		metric:               metric,
 		precision:            precision,
+		textLanguage:         textLang,
 	}
 
 	// --- LOGICA DI SELEZIONE E VALIDAZIONE ---
@@ -662,6 +666,12 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 		return finalResults[:k], nil
 	}
 
+	// 2. Ordina la slice in modo esplicito e corretto.
+	// Ordina per 'distance' in ordine crescente (dal più piccolo al più grande).
+	sort.Slice(finalResults, func(i, j int) bool {
+		return finalResults[i].distance < finalResults[j].distance
+	})
+
 	return finalResults, nil
 
 }
@@ -904,9 +914,12 @@ func (h *Index) TrainQuantizer(vectors [][]float32) {
 }
 
 // GetInfo restituisce tutti i parametri pubblici e lo stato dell'indice.
-func (h *Index) GetInfo() (distance.DistanceMetric, int, int, distance.PrecisionType, int) {
+func (h *Index) GetInfo() (distance.DistanceMetric, int, int, distance.PrecisionType, int, string) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	// --- LOG DI DEBUG ---
+	log.Printf("[DEBUG GetInfo] Nome Esterno: (non disponibile qui), Metrica: %s, Precisione: %s", h.metric, h.precision)
+	// --- FINE LOG ---
 
 	// Contiamo solo i nodi non eliminati
 	count := 0
@@ -916,7 +929,7 @@ func (h *Index) GetInfo() (distance.DistanceMetric, int, int, distance.Precision
 		}
 	}
 
-	return h.metric, h.m, h.efConstruction, h.precision, count
+	return h.metric, h.m, h.efConstruction, h.precision, count, h.textLanguage
 }
 
 // normalize normalizza un vettore a lunghezza unitaria (norma L2).
@@ -1043,4 +1056,13 @@ func (h *Index) EfConstruction() int {
 
 func (h *Index) Quantizer() *distance.Quantizer {
 	return h.quantizer
+}
+
+// getter TextLanguage
+func (h *Index) TextLanguage() string {
+	// Questo getter non ha bisogno di un lock perché il valore è immutabile
+	// dopo la creazione, ma per coerenza con gli altri lo mettiamo.
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.textLanguage
 }

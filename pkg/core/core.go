@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/sanonone/kektordb/pkg/core/distance" // Importa distance
 	"github.com/sanonone/kektordb/pkg/core/hnsw"     // Importa hnsw
+	"github.com/sanonone/kektordb/pkg/textanalyzer"
 	"github.com/tidwall/btree"
 	"io"
 	"log"
@@ -40,15 +41,20 @@ type IndexInfo struct {
 	M              int                     `json:"m"`
 	EfConstruction int                     `json:"ef_construction"`
 	VectorCount    int                     `json:"vector_count"`
+	TextLanguage   string                  `json:"text_language"`
 }
 
+/*
 // VectorIndexInfo è una struct per trasportare i metadati di un indice.
 type VectorIndexInfo struct {
 	Name           string
 	Metric         distance.DistanceMetric
 	M              int
 	EfConstruction int
+	Precision      distance.PrecisionType
+	TextLanguage   string
 }
+*/
 
 // --- SNAPSHOTTING ---
 
@@ -87,6 +93,7 @@ type IndexConfig struct {
 	Precision      distance.PrecisionType
 	M              int
 	EfConstruction int
+	TextLanguage   string // "english" "italian" o "" per disabilitare
 }
 
 // Registriamo i nostri tipi custom con gob in modo che sappia come gestirli
@@ -197,6 +204,7 @@ func (s *DB) Snapshot(writer io.Writer) error {
 					Precision:      precision,
 					M:              m,
 					EfConstruction: efc,
+					TextLanguage:   hnswIndex.TextLanguage(),
 				},
 				Nodes:              nodeSnapshots, // Usa la nuova mappa
 				ExternalToInternal: extToInt,
@@ -238,7 +246,7 @@ func (s *DB) LoadFromSnapshot(reader io.Reader) error {
 	// Itera sugli indici presenti nello snapshot
 	for name, indexSnap := range snapshot.VectorData {
 		// Crea un nuovo indice vuoto con la configurazione salvata
-		idx, err := hnsw.New(indexSnap.Config.M, indexSnap.Config.EfConstruction, indexSnap.Config.Metric, indexSnap.Config.Precision)
+		idx, err := hnsw.New(indexSnap.Config.M, indexSnap.Config.EfConstruction, indexSnap.Config.Metric, indexSnap.Config.Precision, indexSnap.Config.TextLanguage)
 		if err != nil {
 			return fmt.Errorf("impossibile ricreare l'indice '%s' dallo snapshot: %w", name, err)
 		}
@@ -349,20 +357,23 @@ func (s *DB) IterateVectorIndexesUnlocked(callback func(indexName string, index 
 
 // GetVectorIndexInfo restituisce una slice con le informazioni di configurazione
 // di tutti gli indici vettoriali presenti.
-func (s *DB) GetVectorIndexInfo() ([]VectorIndexInfo, error) {
+func (s *DB) GetVectorIndexInfo() ([]IndexInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	infoList := make([]VectorIndexInfo, 0, len(s.vectorIndexes))
+	infoList := make([]IndexInfo, 0, len(s.vectorIndexes))
 
 	for name, idx := range s.vectorIndexes {
 		if hnswIndex, ok := idx.(*hnsw.Index); ok {
-			metric, m, efConst := hnswIndex.GetParameters()
-			infoList = append(infoList, VectorIndexInfo{
+			metric, m, efConst, precision, count, textLang := hnswIndex.GetInfo()
+			infoList = append(infoList, IndexInfo{
 				Name:           name,
 				Metric:         metric,
+				Precision:      precision,
 				M:              m,
 				EfConstruction: efConst,
+				VectorCount:    count,
+				TextLanguage:   textLang,
 			})
 		}
 		// Potremmo gestire altri tipi di indici qui in futuro.
@@ -371,16 +382,19 @@ func (s *DB) GetVectorIndexInfo() ([]VectorIndexInfo, error) {
 	return infoList, nil
 }
 
-func (s *DB) GetVectorIndexInfoUnlocked() ([]VectorIndexInfo, error) {
-	infoList := make([]VectorIndexInfo, 0, len(s.vectorIndexes))
+func (s *DB) GetVectorIndexInfoUnlocked() ([]IndexInfo, error) {
+	infoList := make([]IndexInfo, 0, len(s.vectorIndexes))
 	for name, idx := range s.vectorIndexes {
 		if hnswIndex, ok := idx.(*hnsw.Index); ok {
-			metric, m, efConst := hnswIndex.GetParameters()
-			infoList = append(infoList, VectorIndexInfo{
+			metric, m, efConst, precision, count, textLang := hnswIndex.GetInfo()
+			infoList = append(infoList, IndexInfo{
 				Name:           name,
 				Metric:         metric,
 				M:              m,
 				EfConstruction: efConst,
+				TextLanguage:   textLang,
+				Precision:      precision,
+				VectorCount:    count,
 			})
 		}
 	}
@@ -397,7 +411,7 @@ func (s *DB) GetVectorIndexInfoAPI() ([]IndexInfo, error) {
 
 	for name, idx := range s.vectorIndexes {
 		if hnswIndex, ok := idx.(*hnsw.Index); ok {
-			metric, m, efConst, precision, count := hnswIndex.GetInfo() // Creeremo questo metodo
+			metric, m, efConst, precision, count, textLang := hnswIndex.GetInfo() // Creeremo questo metodo
 			infoList = append(infoList, IndexInfo{
 				Name:           name,
 				Metric:         metric,
@@ -405,6 +419,7 @@ func (s *DB) GetVectorIndexInfoAPI() ([]IndexInfo, error) {
 				M:              m,
 				EfConstruction: efConst,
 				VectorCount:    count,
+				TextLanguage:   textLang,
 			})
 		}
 	}
@@ -428,7 +443,7 @@ func (s *DB) GetSingleVectorIndexInfoAPI(name string) (IndexInfo, error) {
 	}
 
 	if hnswIndex, ok := idx.(*hnsw.Index); ok {
-		metric, m, efConst, precision, count := hnswIndex.GetInfo()
+		metric, m, efConst, precision, count, textLang := hnswIndex.GetInfo()
 		return IndexInfo{
 			Name:           name,
 			Metric:         metric,
@@ -436,6 +451,7 @@ func (s *DB) GetSingleVectorIndexInfoAPI(name string) (IndexInfo, error) {
 			M:              m,
 			EfConstruction: efConst,
 			VectorCount:    count,
+			TextLanguage:   textLang,
 		}, nil
 	}
 
@@ -606,6 +622,14 @@ type BTreeItem struct {
 	NodeID uint32
 }
 
+// una lista di ID di documenti (gli id interni uint32)
+type PostingList []uint32
+
+// struttura dati per la ricerca testuale
+// mappa un token (parola) a una lista di documenti che la contengono
+// struttura: map[nome_indice_vettoriale] -> map[chiave_metadato] -> map[token] -> PostingList
+type InvertedIndex map[string]map[string]map[string]PostingList
+
 // store è il contenitore principale che contiene tutti i tipi di dato di kektorDB
 type DB struct {
 	mu            sync.RWMutex
@@ -622,6 +646,7 @@ type DB struct {
 	// strutture: map[nome indice vettoriale]->map[chiave metadato]->BTree
 	// B-Tree memorizzerà BTreeItem, permettendo ricerche di range veloci
 	bTreeIndex map[string]map[string]*btree.BTreeG[BTreeItem]
+	textIndex  InvertedIndex
 }
 
 func NewDB() *DB {
@@ -633,6 +658,7 @@ func NewDB() *DB {
 		// saranno create on demand quando necessario
 		invertedIndex: make(map[string]map[string]map[string]map[uint32]struct{}),
 		bTreeIndex:    make(map[string]map[string]*btree.BTreeG[BTreeItem]),
+		textIndex:     make(InvertedIndex),
 	}
 }
 
@@ -642,7 +668,7 @@ func (s *DB) GetKVStore() *KVStore {
 }
 
 // crea un nuovo indice vettoriale
-func (s *DB) CreateVectorIndex(name string, metric distance.DistanceMetric, m, efConstruction int, precision distance.PrecisionType) error {
+func (s *DB) CreateVectorIndex(name string, metric distance.DistanceMetric, m, efConstruction int, precision distance.PrecisionType, textLang string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -656,7 +682,7 @@ func (s *DB) CreateVectorIndex(name string, metric distance.DistanceMetric, m, e
 		defaultM       = 16
 		defaultEfConst = 200
 	)
-	idx, err := hnsw.New(m, efConstruction, metric, precision)
+	idx, err := hnsw.New(m, efConstruction, metric, precision, textLang)
 	if err != nil {
 		return err
 	}
@@ -666,6 +692,7 @@ func (s *DB) CreateVectorIndex(name string, metric distance.DistanceMetric, m, e
 	// Inizializziamo lo spazio per i metadati di questo nuovo indice.
 	s.invertedIndex[name] = make(map[string]map[string]map[uint32]struct{})
 	s.bTreeIndex[name] = make(map[string]*btree.BTreeG[BTreeItem])
+	s.textIndex[name] = make(map[string]map[string]PostingList)
 
 	return nil
 }
@@ -698,6 +725,9 @@ func (s *DB) DeleteVectorIndex(name string) error {
 
 	// Rimuovi i dati associati dall'indice B-Tree
 	delete(s.bTreeIndex, name)
+
+	// rimuove i dati associati all'indice testuale
+	delete(s.textIndex, name)
 
 	log.Printf("Indice '%s' e tutti i dati associati sono stati eliminati.", name)
 	return nil
@@ -765,7 +795,9 @@ func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) err
 	// 3. Crea e "addestra" il nuovo indice
 	metric, m, efConst := oldHNSWIndex.GetParameters()
 
-	newIndex, err := hnsw.New(m, efConst, metric, newPrecision)
+	textLang := oldHNSWIndex.TextLanguage()
+
+	newIndex, err := hnsw.New(m, efConst, metric, newPrecision, textLang)
 	if err != nil {
 		return fmt.Errorf("impossibile creare il nuovo indice compresso: %w", err)
 	}
@@ -816,6 +848,15 @@ func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) err
 		// --- FINE ANALISI ---
 	}
 
+	// --- CORREZIONE CHIAVE: Pulisci i vecchi indici secondari ---
+	log.Printf("[DEBUG COMPRESS] Pulizia indici secondari per '%s'", indexName)
+	s.invertedIndex[indexName] = make(map[string]map[string]map[uint32]struct{})
+	s.bTreeIndex[indexName] = make(map[string]*btree.BTreeG[BTreeItem])
+	//    s.metadataStore[indexName] = make(map[uint32]map[string]interface{})
+	// --- FINE CORREZIONE ---
+
+	// Popola il nuovo indice e ri-popola gli indici secondari da zero
+	log.Printf("[DEBUG COMPRESS] Ripopolamento del nuovo indice e degli indici secondari...")
 	// 4. Popola il nuovo indice con i dati
 	for _, data := range allVectors {
 		internalID, err := newIndex.Add(data.ID, data.Vector)
@@ -882,6 +923,27 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 }
 
 func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[string]any) error {
+	// Ottieni la configurazione dell'indice per sapere quale analizzatore usare
+	idx, ok := s.vectorIndexes[indexName]
+	if !ok {
+		return nil
+	} // L'indice non esiste, non fare nulla
+
+	hnswIndex, ok := idx.(*hnsw.Index)
+	if !ok {
+		return nil
+	}
+
+	var analyzer textanalyzer.Analyzer
+	switch hnswIndex.TextLanguage() { // Dobbiamo creare questo metodo getter
+	case "english":
+		analyzer = textanalyzer.NewEnglishStemmer()
+	case "italian":
+		analyzer = textanalyzer.NewItalianStemmer()
+	default:
+		// Nessun analizzatore se la lingua non è impostata o non è supportata
+	}
+
 	for key, value := range metadata {
 		switch v := value.(type) { // controlla il tipo della variabile any
 		case string:
@@ -897,6 +959,26 @@ func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[s
 				indexMetadata[key][v] = make(map[uint32]struct{})
 			}
 			indexMetadata[key][v][nodeID] = struct{}{}
+
+			// --- Indicizzazione Full-Text (con analyzer) ---
+			if analyzer != nil {
+				tokens := analyzer.Analyze(v)                                         // Usa il tuo analizzatore!
+				log.Printf("[DEBUG TEXT INDEX] Testo: '%s' -> Tokens: %v", v, tokens) // <-- LOG 1
+
+				if _, ok := s.textIndex[indexName][key]; !ok {
+					s.textIndex[indexName][key] = make(map[string]PostingList)
+				}
+
+				for _, token := range tokens {
+					log.Printf("[DEBUG TEXT INDEX] Indicizzazione token '%s' per nodo %d", token, nodeID) // <-- LOG 2
+					list := s.textIndex[indexName][key][token]
+					if len(list) == 0 || list[len(list)-1] != nodeID {
+						s.textIndex[indexName][key][token] = append(list, nodeID)
+					}
+				}
+			} else {
+				log.Printf("[DEBUG TEXT INDEX] Analyzer è nil per l'indice '%s'", indexName) // <-- LOG 3
+			}
 
 		case float64:
 			// --- NUOVA LOGICA B-TREE ---
@@ -918,6 +1000,10 @@ func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[s
 			continue
 		}
 	}
+	// --- LOG DI DEBUG ---
+	log.Printf("[DEBUG TEXT INDEX] Stato dell'indice testuale per '%s' dopo l'aggiunta del nodo %d:", indexName, nodeID)
+	log.Printf("%+v", s.textIndex[indexName])
+	// --- FINE LOG DI DEBUG ---
 
 	return nil
 }
@@ -995,9 +1081,26 @@ func (s *DB) FindIDsByFilter(indexName string, filter string) (map[uint32]struct
 	return finalIDSet, nil
 }
 
+// regex per parsare la funzione CONTAINS
+var containsRegex = regexp.MustCompile(`(?i)CONTAINS\s*\(\s*(\w+)\s*,\s*['"](.+?)['"]\s*\)`)
+
 // evaluateSingleFilter valuta una singola espressione come "price>=10" o "name=Alice".
 // Restituisce un set di ID (map[uint32]struct{}) e un errore.
 func (s *DB) evaluateSingleFilter(indexName string, filter string) (map[uint32]struct{}, error) {
+	filter = strings.TrimSpace(filter)
+
+	// --- Check per CONTAINS ---
+	matches := containsRegex.FindStringSubmatch(filter)
+	if len(matches) == 3 {
+		// Abbiamo trovato una corrispondenza per CONTAINS(campo, "valore")
+		// matches[0] = stringa intera
+		// matches[1] = nome del campo (es. "descrizione")
+		// matches[2] = testo della query (es. "scarpe rosse")
+		fieldName := matches[1]
+		queryText := matches[2]
+		return s.findIDsByTextSearch(indexName, fieldName, queryText)
+	}
+
 	// Trova operatore (ordinale per lunghezza per gestire <= e >=)
 	var op string
 	opIndex := -1
@@ -1230,4 +1333,87 @@ func (s *DB) Lock() {
 // Unlock rilascia il write lock.
 func (s *DB) Unlock() {
 	s.mu.Unlock()
+}
+
+// helper esegue una ricerca sull'indice testuale
+func (db *DB) findIDsByTextSearch(indexName, fieldName, queryText string) (map[uint32]struct{}, error) {
+	// Ottieni l'analizzatore corretto per questo indice
+	idx, ok := db.vectorIndexes[indexName]
+	if !ok {
+		return nil, fmt.Errorf("indice '%s' non trovato", indexName)
+	}
+
+	hnswIndex, _ := idx.(*hnsw.Index)
+	var analyzer textanalyzer.Analyzer
+	switch hnswIndex.TextLanguage() {
+	case "english":
+		analyzer = textanalyzer.NewEnglishStemmer()
+	case "italian":
+		analyzer = textanalyzer.NewItalianStemmer()
+	default:
+		return nil, fmt.Errorf("l'indice '%s' non ha un analizzatore di testo configurato", indexName)
+	}
+
+	// 1. Analizza la query per ottenere i token da cercare
+	queryTokens := analyzer.Analyze(queryText)
+	log.Printf("[DEBUG TEXT SEARCH] Query: '%s' -> Tokens: %v", queryText, queryTokens)
+	if len(queryTokens) == 0 {
+		return make(map[uint32]struct{}), nil // Query vuota, nessun risultato
+	}
+
+	// 2. Recupera le "posting list" per ogni token
+	var postingLists [][]uint32
+	textIndexForField, ok := db.textIndex[indexName][fieldName]
+	if !ok {
+		log.Printf("[DEBUG TEXT SEARCH] Campo '%s' non trovato nell'indice testuale.", fieldName)
+		return make(map[uint32]struct{}), nil // Il campo non è mai stato indicizzato
+	}
+
+	for _, token := range queryTokens {
+		list, found := textIndexForField[token]
+		if !found {
+			log.Printf("[DEBUG TEXT SEARCH] Token '%s' non trovato nell'indice.", token)
+			// Se anche solo un token non viene trovato, la ricerca AND fallisce.
+			return make(map[uint32]struct{}), nil
+		}
+		log.Printf("[DEBUG TEXT SEARCH] Trovata posting list per il token '%s': %v", token, list)
+		postingLists = append(postingLists, list)
+	}
+
+	// 3. Calcola l'intersezione delle posting list
+	// (Questa è l'operazione chiave per la ricerca "boolean AND")
+	if len(postingLists) == 1 {
+		// Se c'è un solo token, non serve l'intersezione
+		resultSet := make(map[uint32]struct{})
+		for _, id := range postingLists[0] {
+			resultSet[id] = struct{}{}
+		}
+		return resultSet, nil
+	}
+
+	// Ordina le liste per lunghezza per un'intersezione più efficiente
+	sort.Slice(postingLists, func(i, j int) bool {
+		return len(postingLists[i]) < len(postingLists[j])
+	})
+
+	// Inizia l'intersezione
+	resultSet := make(map[uint32]struct{})
+	for _, id := range postingLists[0] {
+		resultSet[id] = struct{}{}
+	}
+
+	for _, list := range postingLists[1:] {
+		intersection := make(map[uint32]struct{})
+		for _, id := range list {
+			if _, ok := resultSet[id]; ok {
+				intersection[id] = struct{}{}
+			}
+		}
+		resultSet = intersection
+		if len(resultSet) == 0 {
+			break
+		} // Ottimizzazione
+	}
+
+	return resultSet, nil
 }

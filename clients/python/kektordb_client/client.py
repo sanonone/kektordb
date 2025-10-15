@@ -357,6 +357,12 @@ class KektorDBClient:
         if wait:
             return task.wait()
         return task
+
+    def save(self) -> None:
+        """
+        Requests the server to perform a database snapshot (SAVE).
+        """
+        self._request("POST", "/system/save")
     
 
 

@@ -9,6 +9,7 @@ import (
 	"github.com/sanonone/kektordb/pkg/core"
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
+	"io"
 	"log"
 	"net/http" // per il web server
 	"os"
@@ -192,6 +193,7 @@ type vectorIndexState struct {
 	efConstruction int
 	precision      distance.PrecisionType
 	entries        map[string]vectorEntry // map[vectorID] -> entry
+	textLanguage   string
 }
 
 // rappresenta lo stato finale aggregato dopo aver letto l'aof
@@ -222,18 +224,16 @@ func (s *Server) loadFromAOF() error {
 		vectorIndexes: make(map[string]vectorIndexState), // Usa la nuova struct
 	}
 
-	scanner := bufio.NewScanner(s.aofFile)
-	lineNo := 0
-	for scanner.Scan() {
-		lineNo++
-		line := scanner.Text()
-		if strings.TrimSpace(line) == "" {
-			continue
+	reader := bufio.NewReader(s.aofFile)
+	for {
+		cmd, err := ParseRESP(reader)
+		if err == io.EOF {
+			break // Fine del file, abbiamo finito di leggere
 		}
-
-		cmd, err := Parse(line)
 		if err != nil {
-			log.Printf("[AOF] riga %d: impossibile parsare '%s' -> salto. err=%v", lineNo, line, err)
+			log.Printf("[AOF] Errore nel leggere comando RESP, potenziale corruzione file: %v. Interruzione.", err)
+			// Con RESP, un errore di parsing è più grave, potrebbe essere meglio interrompere.
+			// Per ora, continuiamo a provare.
 			continue
 		}
 
@@ -242,17 +242,17 @@ func (s *Server) loadFromAOF() error {
 			if len(cmd.Args) == 2 {
 				state.kvData[string(cmd.Args[0])] = cmd.Args[1]
 			} else {
-				log.Printf("[AOF] riga %d: SET con argomenti inattesi (%d)", lineNo, len(cmd.Args))
+				log.Printf("[AOF] SET con argomenti inattesi (%d)", len(cmd.Args))
 			}
 
 		case "DEL":
 			if len(cmd.Args) == 1 {
 				delete(state.kvData, string(cmd.Args[0]))
 			} else {
-				log.Printf("[AOF] riga %d: DEL con argomenti inattesi (%d)", lineNo, len(cmd.Args))
+				log.Printf("[AOF] DEL con argomenti inattesi (%d)", len(cmd.Args))
 			}
 
-		case "VDROP": // <-- NUOVO CASE
+		case "VDROP":
 			if len(cmd.Args) == 1 {
 				indexName := string(cmd.Args[0])
 				// Rimuovi l'indice dalla nostra mappa di stato temporanea
@@ -269,6 +269,7 @@ func (s *Server) loadFromAOF() error {
 				precision := distance.Float32 // Default a float32
 				m := 0                        // 0 per usare il default in NewHNSWIndex
 				efConstruction := 0
+				textLang := ""
 
 				// Parsing degli argomenti opzionali
 				i := 1 // Inizia dall'indice del primo argomento possibile
@@ -296,6 +297,8 @@ func (s *Server) loadFromAOF() error {
 						} // Ignora se non è un numero valido
 					case "PRECISION":
 						precision = distance.PrecisionType(value)
+					case "TEXT_LANGUAGE":
+						textLang = value
 					default:
 						// Ignora parametri sconosciuti
 					}
@@ -309,51 +312,93 @@ func (s *Server) loadFromAOF() error {
 						m:              m,
 						efConstruction: efConstruction,
 						precision:      precision,
+						textLanguage:   textLang,
 						entries:        make(map[string]vectorEntry),
 					}
 				}
 			}
 
 		case "VADD":
-			// Supportiamo: VADD indexName vectorID <vectorParts...> [metadataJSON]
-			if len(cmd.Args) >= 3 {
-				indexName := string(cmd.Args[0])
-				vectorID := string(cmd.Args[1])
 
-				if _, ok := state.vectorIndexes[indexName]; !ok {
-					continue // Ignora se l'indice non è stato creato
-				}
+			// Formato RESP atteso: VADD, indexName, vectorID, vectorString, [metadataJSON]
+			if len(cmd.Args) < 3 {
+				log.Printf("[AOF] VADD con argomenti insufficienti, saltato.")
+				continue
+			}
 
-				vectorParts := cmd.Args[2:]
-				var metadataJSON []byte
+			indexName := string(cmd.Args[0])
+			vectorID := string(cmd.Args[1])
+			vectorStr := string(cmd.Args[2])
 
-				// Separa i metadati se presenti
-				if len(vectorParts) > 0 {
-					lastArg := vectorParts[len(vectorParts)-1]
-					if len(lastArg) > 1 && lastArg[0] == '{' && lastArg[len(lastArg)-1] == '}' {
-						metadataJSON = lastArg
-						vectorParts = vectorParts[:len(vectorParts)-1]
+			if _, ok := state.vectorIndexes[indexName]; !ok {
+				continue // Indice non creato, ignora
+			}
+
+			vector, err := parseVectorFromString(vectorStr)
+			if err != nil {
+				log.Printf("Avviso AOF: VADD per '%s' ha un vettore malformato, saltato. Errore: %v", vectorID, err)
+				continue
+			}
+
+			entry := vectorEntry{vector: vector}
+
+			// Controlla se l'argomento opzionale dei metadati esiste
+			if len(cmd.Args) == 4 && len(cmd.Args[3]) > 0 {
+				metadataJSON := cmd.Args[3]
+				// Ignora il valore 'null' che il client Python potrebbe inviare
+				if string(metadataJSON) != "null" {
+					var metadata map[string]interface{}
+					if json.Unmarshal(metadataJSON, &metadata) == nil {
+						entry.metadata = metadata
 					}
-				}
-
-				if len(vectorParts) == 0 {
-					continue
-				} // Vettore mancante
-
-				vector, err := parseVectorFromByteParts(vectorParts)
-				if err == nil {
-					entry := vectorEntry{vector: vector}
-					if len(metadataJSON) > 0 {
-						var metadata map[string]interface{}
-						if json.Unmarshal(metadataJSON, &metadata) == nil {
-							entry.metadata = metadata
-						}
-					}
-					state.vectorIndexes[indexName].entries[vectorID] = entry
-				} else {
-					log.Printf("Avviso AOF: impossibile parsare il vettore per '%s', saltato. Errore: %v", vectorID, err)
 				}
 			}
+
+			state.vectorIndexes[indexName].entries[vectorID] = entry
+
+			/*
+				// Supportiamo: VADD indexName vectorID <vectorParts...> [metadataJSON]
+				if len(cmd.Args) >= 3 {
+
+					indexName := string(cmd.Args[0])
+					vectorID := string(cmd.Args[1])
+
+					if _, ok := state.vectorIndexes[indexName]; !ok {
+						continue // Ignora se l'indice non è stato creato
+					}
+					vectorStr := string(cmd.Args[2])
+
+					vectorParts := cmd.Args[2:]
+					var metadataJSON []byte
+
+					// Separa i metadati se presenti
+					if len(vectorParts) > 0 {
+						lastArg := vectorParts[len(vectorParts)-1]
+						if len(lastArg) > 1 && lastArg[0] == '{' && lastArg[len(lastArg)-1] == '}' {
+							metadataJSON = lastArg
+							vectorParts = vectorParts[:len(vectorParts)-1]
+						}
+					}
+
+					if len(vectorParts) == 0 {
+						continue
+					} // Vettore mancante
+
+					vector, err := parseVectorFromString(vectorStr)
+					if err == nil {
+						entry := vectorEntry{vector: vector}
+						if len(metadataJSON) > 0 {
+							var metadata map[string]interface{}
+							if json.Unmarshal(metadataJSON, &metadata) == nil {
+								entry.metadata = metadata
+							}
+						}
+						state.vectorIndexes[indexName].entries[vectorID] = entry
+					} else {
+						log.Printf("Avviso AOF: impossibile parsare il vettore per '%s', saltato. Errore: %v", vectorID, err)
+					}
+				}
+			*/
 
 		case "VDEL":
 			// Soft-delete: marca l'entry come deleted (non rimuovere l'entry dallo state)
@@ -370,9 +415,6 @@ func (s *Server) loadFromAOF() error {
 			// ignora altri comandi o loggali se servono
 			// log.Printf("[AOF] riga %d: comando ignorato: %s", lineNo, cmd.Name)
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("scanner aof: %w", err)
 	}
 
 	// --- FASE 3: Ricostruzione dello Stato nello core ---
@@ -392,7 +434,7 @@ func (s *Server) loadFromAOF() error {
 			indexName, indexState.metric, indexState.precision, len(indexState.entries))
 		// --- CHIAMATA CORRETTA ---
 		// Ora passiamo la metrica che abbiamo salvato nello stato
-		err := s.db.CreateVectorIndex(indexName, indexState.metric, indexState.m, indexState.efConstruction, indexState.precision)
+		err := s.db.CreateVectorIndex(indexName, indexState.metric, indexState.m, indexState.efConstruction, indexState.precision, indexState.textLanguage)
 		if err != nil {
 			log.Printf("[AOF] ERRORE: impossibile creare l'indice '%s' con metrica %s, M=%d, EF=%d: %v",
 				indexName, indexState.metric, indexState.m, indexState.efConstruction, err)
@@ -474,7 +516,7 @@ func (s *Server) RewriteAOF() error {
 		// Dobbiamo gestire correttamente valori che potrebbero contenere spazi.
 		// Per ora il nostro protocollo è semplice, ma in futuro potremmo
 		// dover "quotare" il valore.
-		cmd := fmt.Sprintf("SET %s %s\n", pair.Key, string(pair.Value))
+		cmd := formatCommandAsRESP("SET", []byte(pair.Key), pair.Value)
 		tempFile.WriteString(cmd)
 	})
 
@@ -486,17 +528,32 @@ func (s *Server) RewriteAOF() error {
 	}
 
 	for _, info := range vectorIndexInfo {
-		cmd := fmt.Sprintf("VCREATE %s METRIC %s M %d EF_CONSTRUCTION %d\n",
-			info.Name, info.Metric, info.M, info.EfConstruction)
+		cmd := formatCommandAsRESP("VCREATE",
+			[]byte(info.Name),
+			[]byte("METRIC"), []byte(info.Metric),
+			[]byte("PRECISION"), []byte(info.Precision),
+			[]byte("M"), []byte(strconv.Itoa(info.M)),
+			[]byte("EF_CONSTRUCTION"), []byte(strconv.Itoa(info.EfConstruction)),
+			[]byte("TEXT_LANGUAGE"), []byte(info.TextLanguage),
+		)
 		tempFile.WriteString(cmd)
 	}
 
 	// 1c. Scrivi i comandi VADD per ogni vettore in ogni indice
 	s.db.IterateVectorIndexesUnlocked(func(indexName string, index *hnsw.Index, data core.VectorData) {
-		cmd, err := buildVAddAOFCommand(indexName, data.ID, data.Vector, data.Metadata)
-		if err == nil {
-			tempFile.WriteString(cmd)
+		vectorStr := float32SliceToString(data.Vector)
+		var metadataBytes []byte
+		if len(data.Metadata) > 0 {
+			metadataBytes, _ = json.Marshal(data.Metadata)
 		}
+
+		cmd := formatCommandAsRESP("VADD",
+			[]byte(indexName),
+			[]byte(data.ID),
+			[]byte(vectorStr),
+			metadataBytes, // Sarà nil se non ci sono metadati, gestito da formatCommandAsRESP
+		)
+		tempFile.WriteString(cmd)
 	})
 
 	// --- FASE 2: Sostituzione Atomica del File ---
@@ -639,6 +696,24 @@ func parseVectorFromByteParts(parts [][]byte) ([]float32, error) {
 	for i, part := range parts {
 		val, err := strconv.ParseFloat(string(part), 32)
 		if err != nil {
+			return nil, err
+		}
+		vector[i] = float32(val)
+	}
+	return vector, nil
+}
+
+// parseVectorFromString analizza una singola stringa contenente numeri separati da spazi.
+func parseVectorFromString(s string) ([]float32, error) {
+	parts := strings.Fields(s)
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("la stringa del vettore è vuota")
+	}
+	vector := make([]float32, len(parts))
+	for i, part := range parts {
+		val, err := strconv.ParseFloat(part, 32)
+		if err != nil {
+			// Restituisci l'errore originale per un debug migliore
 			return nil, err
 		}
 		vector[i] = float32(val)
