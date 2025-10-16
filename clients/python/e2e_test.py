@@ -40,7 +40,7 @@ class TestKektorDBEndToEnd(unittest.TestCase):
         
         # Test listing
         indexes = self.client.list_indexes()
-        index_names = [idx['Name'] for idx in indexes]
+        index_names = [idx['name'] for idx in indexes]
         self.assertIn(INDEX_EUCLIDEAN, index_names)
         self.assertIn(INDEX_COSINE, index_names)
         print(" -> list_indexes OK")
@@ -55,7 +55,7 @@ class TestKektorDBEndToEnd(unittest.TestCase):
         # Test deletion
         self.client.delete_index(INDEX_EUCLIDEAN)
         indexes_after_delete = self.client.list_indexes()
-        index_names_after_delete = [idx['Name'] for idx in indexes_after_delete]
+        index_names_after_delete = [idx['name'] for idx in indexes_after_delete]
         self.assertNotIn(INDEX_EUCLIDEAN, index_names_after_delete)
         print(" -> delete_index OK")
 

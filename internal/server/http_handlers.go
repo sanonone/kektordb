@@ -497,7 +497,7 @@ func (s *Server) handleVectorAddBatch(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if len(vec.Metadata) > 0 {
-			if err := s.db.AddMetadata(req.IndexName, internalID, vec.Metadata); err != nil {
+			if err := s.db.AddMetadataUnlocked(req.IndexName, internalID, vec.Metadata); err != nil {
 				// Esegui il rollback per questo singolo vettore
 				idx.Delete(vec.Id)
 				log.Printf("Errore metadati per '%s', rollback eseguito. Errore: %v", vec.Id, err)

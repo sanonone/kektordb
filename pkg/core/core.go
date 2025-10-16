@@ -130,15 +130,15 @@ func (s *DB) Snapshot(writer io.Writer) error {
 	s.mu.RLock()
 
 	// 1b. Blocca il KV store.
-	//s.kvStore.RLock()
+	s.kvStore.RLock()
 
 	// 1c. Blocca ogni singolo indice HNSW.
 	// Creiamo una lista degli indici per poterli sbloccare dopo.
 	indexesToUnlock := make([]*hnsw.Index, 0, len(s.vectorIndexes))
-	for _, idx := range s.vectorIndexes {
+	for name, idx := range s.vectorIndexes {
 		if hnswIndex, ok := idx.(*hnsw.Index); ok {
 			hnswIndex.RLock()
-			log.Println("In snapshot è stato preso il lock su index")
+			log.Printf("In snapshot è stato preso il lock su index %s", name)
 			indexesToUnlock = append(indexesToUnlock, hnswIndex)
 		}
 	}
@@ -151,7 +151,7 @@ func (s *DB) Snapshot(writer io.Writer) error {
 
 	// --- FASE 3: Assicura lo sblocco finale di tutto il resto ---
 	defer func() {
-		//s.kvStore.RUnlock()
+		s.kvStore.RUnlock()
 		for _, idx := range indexesToUnlock {
 			idx.RUnlock()
 		}
@@ -173,7 +173,7 @@ func (s *DB) Snapshot(writer io.Writer) error {
 			nodes, extToInt, counter, entrypoint, maxLevel, quantizer := hnswIndex.SnapshotData()
 
 			// Chiama le versioni "Unlocked" dei getter (che dobbiamo creare).
-			metric, precision, m, efc := hnswIndex.GetParametersUnlocked()
+			metric, m, efc, precision, _, textLang := hnswIndex.GetInfoUnlocked()
 
 			nodeSnapshots := make(map[uint32]*NodeSnapshot, len(nodes))
 			for internalID, node := range nodes {
@@ -204,7 +204,7 @@ func (s *DB) Snapshot(writer io.Writer) error {
 					Precision:      precision,
 					M:              m,
 					EfConstruction: efc,
-					TextLanguage:   hnswIndex.TextLanguage(),
+					TextLanguage:   textLang,
 				},
 				Nodes:              nodeSnapshots, // Usa la nuova mappa
 				ExternalToInternal: extToInt,
@@ -920,6 +920,7 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 	}
 
 	return nil
+
 }
 
 func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[string]any) error {

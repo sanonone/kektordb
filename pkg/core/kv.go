@@ -45,3 +45,11 @@ func (s *KVStore) Delete(key string) {
 
 	delete(s.data, key)
 }
+
+func (s *KVStore) RLock() {
+	s.mu.RLock()
+}
+
+func (s *KVStore) RUnlock() {
+	s.mu.RUnlock()
+}
