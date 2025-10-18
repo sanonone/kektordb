@@ -9,23 +9,31 @@ KektorDB is a high-performance, in-memory vector database built from scratch in 
 
 ### Motivation and Philosophy
 
-This project began as a personal learning endeavor to dive deep into complex software engineering topics, from low-level performance optimization to database architecture. While the primary goal was learning, the project has been developed with a focus on creating a robust and useful tool.
+This project began as a personal learning endeavor to dive deep into complex software engineering topics, from low-level performance optimization to database architecture. While the primary goal was learning, the project has been developed with the rigor of a professional tool.
 
-The result is not intended to be a definitive, production-ready database competitor, but rather a reflection of this engineering process. The mission is to provide a powerful, simple, and self-contained vector search engine, embodying the "SQLite of Vector DBs" philosophy.
+The architectural mission is to be the **"SQLite of Vector DBs"**: a powerful, self-contained, and dependency-free search engine. It is available both as a standalone server and as an embeddable Go library (`pkg/core`), making it perfect for Go developers, AI/ML applications, and anyone needing fast vector search without the complexity of a large-scale database setup.
 
 ---
 
 ### Core Features
 
-*   **Custom HNSW Engine:** A from-scratch implementation of the HNSW algorithm for high-recall ANN search, featuring an advanced neighbor selection heuristic.
+*   **Custom HNSW Engine:** A from-scratch implementation of the HNSW algorithm for high-recall ANN search, featuring an advanced neighbor selection heuristic for superior graph quality.
+*   **Hybrid Search Engine:**
+    *   **Full-Text Search:** A built-in text analysis engine (tokenizer, stemmer) and inverted index powers keyword search.
+    *   **BM25 Ranking:** Text search results are ranked by relevance using the industry-standard BM25 algorithm.
+    *   **Score Fusion:** Hybrid queries combine vector similarity and text relevance scores using a configurable `alpha` parameter for a single, unified ranking.
 *   **Advanced Metadata Filtering:** High-performance pre-filtering on metadata. Supports equality (`tag="cat"`), range (`price<100`), and compound (`AND`/`OR`) filters.
-*   **Multiple Distance Metrics:** Supports both **Euclidean (L2)** and **Cosine Similarity**, configurable per index.
-*   **Vector Compression & Quantization:**
-    *   **Float16:** Compresses Euclidean indexes by **50%**, maintaining >99% recall.
-    *   **Int8:** Quantizes Cosine indexes by **75%**, maintaining >93% recall on large datasets.
-*   **High-Performance API:** A clean REST API with batch operations and dynamic search tuning (`ef_search`).
-*   **Reliable Persistence:** A hybrid **AOF + Snapshot** system ensures durability and provides near-instantaneous restarts. Features automatic, configurable background maintenance for snapshots and AOF compaction.
-*   **Ecosystem:** Official clients for **Python** and **Go** for easy integration.
+*   **Multiple Distance Metrics & Precision:**
+    *   Supports **Euclidean (L2)** and **Cosine Similarity**, configurable per index.
+    *   **Float16 Compression:** Compresses Euclidean indexes by **50%**.
+    *   **Int8 Quantization:** Quantizes Cosine indexes by **75%**.
+*   **Asynchronous, High-Performance API:**
+    *   A clean, consistent **REST API** using JSON.
+    *   **Batch Operations:** Efficiently add and retrieve thousands of vectors in single requests.
+    *   **Async Task Management:** Long-running operations like index compression are handled asynchronously, with a polling endpoint to check task status.
+*   **Reliable Persistence:** A hybrid **AOF + Snapshot** system ensures durability and provides near-instantaneous restarts. Features automatic, configurable background maintenance.
+*   **Ecosystem:** Official clients for **Python** and **Go**.
+
 
 ---
 
@@ -82,20 +90,27 @@ These benchmarks measure the speed of the core distance functions for vectors of
     client = KektorDBClient(port=9091)
     index_name = "knowledge_base"
     
-    client.vcreate(index_name, metric="cosine", precision="int8")
+    client.vcreate(
+        index_name, 
+        metric="cosine", 
+        precision="int8", 
+        text_language="english" # Enable text indexing
+    )
 
     client.vadd(
         index_name=index_name,
         item_id="doc1",
         vector=[0.1, 0.8, 0.3],
-        metadata={"source": "manual_v1.pdf", "page": 42}
+        metadata={"content": "KektorDB supports hybrid search.", "year": 2025}
     )
 
+    # Perform a hybrid search
     results = client.vsearch(
         index_name=index_name,
         k=1,
         query_vector=[0.15, 0.75, 0.35],
-        filter_str='source=manuale_v1.pdf AND page>40'
+        filter_str='CONTAINS(content, "hybrid") AND year>2023',
+        alpha=0.5 # Balance between vector and text relevance
     )
 
     print(f"Found results: {results}")
@@ -115,27 +130,31 @@ These benchmarks measure the speed of the core distance functions for vectors of
 - `GET /vector/indexes/{name}`: Gets detailed info for a single index.
 - `DELETE /vector/indexes/{name}`: Deletes an index.
 
-#### Vector Actions
+#### Vector Actions (RPC-Style)
 - `POST /vector/actions/create`: Creates a new vector index.
-  - Body: `{"index_name": "...", "metric": "...", "precision": "...", "m": ..., "ef_construction": ...}`
+  - Body: `{"index_name": "...", "metric": "...", "precision": "...", "text_language": "...", "m": ..., "ef_construction": ...}`
 - `POST /vector/actions/add`: Adds a single vector.
   - Body: `{"index_name": "...", "id": "...", "vector": [...], "metadata": {...}}`
 - `POST /vector/actions/add-batch`: Adds multiple vectors.
   - Body: `{"index_name": "...", "vectors": [{"id": ..., "vector": ...}, ...]}`
-- `POST /vector/actions/search`: Performs a vector search.
-  - Body: `{"index_name": "...", "k": ..., "query_vector": [...], "filter": "...", "ef_search": ...}`
+- `POST /vector/actions/search`: Performs a hybrid vector search.
+  - Body: `{"index_name": "...", "k": ..., "query_vector": [...], "filter": "...", "ef_search": ..., "alpha": ...}`
 - `POST /vector/actions/delete_vector`: Deletes a single vector.
   - Body: `{"index_name": "...", "id": "..."}`
 - `POST /vector/actions/get-vectors`: Retrieves data for multiple vectors by ID.
   - Body: `{"index_name": "...", "ids": ["...", "..."]}`
-- `POST /vector/actions/compress`: Compresses an index to a lower precision.
+- `POST /vector/actions/compress`: Asynchronously compresses an index.
   - Body: `{"index_name": "...", "precision": "..."}`
+
+#### Data Retrieval
+- `GET /vector/indexes/{name}/vectors/{id}`: Retrieves data for a single vector.
 
 #### System
 - `POST /system/save`: Triggers a database snapshot.
-- `POST /system/aof-rewrite`: Triggers an AOF compaction.
+- `POST /system/aof-rewrite`: Triggers an asynchronous AOF compaction.
 - `GET /system/tasks/{id}`: Gets the status of an asynchronous task.
 - `GET /debug/pprof/*`: Exposes Go pprof profiling endpoints.
+
 
 ---
 
@@ -143,8 +162,8 @@ These benchmarks measure the speed of the core distance functions for vectors of
 
 KektorDB is an ongoing project. The next steps will focus on:
 
--   **Hybrid Search (BM25):** Integrating a full-text search index for powerful queries that combine keyword and semantic relevance.
--   **Performance Optimizations:** Replace the pure Go fallbacks for `float16` and `int8` distance calculations with high-performance SIMD implementations (likely via `avo`).
+-   **Automatic Embedding Synchronization (Vectorizer):** Introducing a "vectorizer" feature inspired by tools like pgai. This will allow users to declaratively link source data to vector embeddings. KektorDB will automatically monitor for changes in the source (e.g., text files, database rows) and update the corresponding vectors in the background, ensuring the search index never becomes stale. This is a crucial feature for building robust, self-maintaining RAG (Retrieval-Augmented Generation) systems.
+-   **Performance Optimizations:** Replace the pure Go fallbacks for `float16` and `int8` distance calculations with high-performance SIMD implementations (likely via `avo` or `cgo`).
 -   **Mobile/Edge Deployment:** Exploring a build mode that compiles KektorDB as a shared library for integration with mobile frameworks like Flutter.
 
 ---

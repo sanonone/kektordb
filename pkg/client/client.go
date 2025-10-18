@@ -300,7 +300,7 @@ func (c *Client) VAddBatch(indexName string, vectors []VectorAddObject) (map[str
 	return resp, nil
 }
 
-func (c *Client) VSearch(indexName string, k int, queryVector []float32, filter string, efSearch int) ([]string, error) {
+func (c *Client) VSearch(indexName string, k int, queryVector []float32, filter string, efSearch int, alpha float64) ([]string, error) {
 	payload := map[string]interface{}{
 		"index_name":   indexName,
 		"k":            k,
@@ -312,6 +312,10 @@ func (c *Client) VSearch(indexName string, k int, queryVector []float32, filter 
 
 	if efSearch > 0 {
 		payload["ef_search"] = efSearch
+	}
+
+	if alpha != 0 { // In Go, il valore zero di un float è 0.0, quindi se è diverso da 0 lo inviamo.
+		payload["alpha"] = alpha
 	}
 
 	respBody, err := c.jsonRequest(http.MethodPost, "/vector/actions/search", payload)

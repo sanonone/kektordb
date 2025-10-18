@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/sanonone/kektordb/pkg/core/distance" // Importa distance
 	"github.com/sanonone/kektordb/pkg/core/hnsw"     // Importa hnsw
+	"github.com/sanonone/kektordb/pkg/core/types"
 	"github.com/sanonone/kektordb/pkg/textanalyzer"
 	"github.com/tidwall/btree"
 	"io"
@@ -160,7 +161,6 @@ func (s *DB) Snapshot(writer io.Writer) error {
 	// --- FASE 4: Esegui lo Snapshot (ora è 100% sicuro) ---
 	// A questo punto, possediamo un RLock su KVStore e su ogni HNSWIndex.
 	// Nessuna scrittura (`SET`, `VADD`) può avvenire. Possiamo leggere tutto.
-	log.Println("Fase 4")
 
 	snapshot := Snapshot{
 		KVData:     s.kvStore.data, // Sicuro, perché abbiamo il RLock
@@ -168,7 +168,6 @@ func (s *DB) Snapshot(writer io.Writer) error {
 	}
 
 	for name, idx := range s.vectorIndexes {
-		log.Println("Fase 4")
 		if hnswIndex, ok := idx.(*hnsw.Index); ok {
 			nodes, extToInt, counter, entrypoint, maxLevel, quantizer := hnswIndex.SnapshotData()
 
@@ -213,7 +212,6 @@ func (s *DB) Snapshot(writer io.Writer) error {
 				MaxLevel:           maxLevel,
 				QuantizerState:     quantizer,
 			}
-			log.Println("Fase 4")
 		}
 	}
 
@@ -242,6 +240,8 @@ func (s *DB) LoadFromSnapshot(reader io.Reader) error {
 	s.vectorIndexes = make(map[string]VectorIndex)
 	s.invertedIndex = make(map[string]map[string]map[string]map[uint32]struct{})
 	s.bTreeIndex = make(map[string]map[string]*btree.BTreeG[BTreeItem])
+	s.textIndex = make(InvertedIndex) // Svuota l'indice testuale
+	s.textIndexStats = make(map[string]map[string]*TextIndexStats)
 
 	// Itera sugli indici presenti nello snapshot
 	for name, indexSnap := range snapshot.VectorData {
@@ -281,6 +281,8 @@ func (s *DB) LoadFromSnapshot(reader io.Reader) error {
 		// Inizializza gli spazi per gli indici secondari
 		s.invertedIndex[name] = make(map[string]map[string]map[uint32]struct{})
 		s.bTreeIndex[name] = make(map[string]*btree.BTreeG[BTreeItem])
+		s.textIndex[name] = make(map[string]map[string]PostingList)
+		s.textIndexStats[name] = make(map[string]*TextIndexStats)
 
 		// Ricostruisci gli indici secondari (metadati)
 		for _, nodeSnap := range indexSnap.Nodes {
@@ -622,13 +624,29 @@ type BTreeItem struct {
 	NodeID uint32
 }
 
-// una lista di ID di documenti (gli id interni uint32)
-type PostingList []uint32
+// contiene la frequenza del termine (TF) e ID.
+type PostingEntry struct {
+	DocID         uint32
+	TermFrequency int
+}
+
+// una slice di PostingEntry
+type PostingList []PostingEntry
 
 // struttura dati per la ricerca testuale
 // mappa un token (parola) a una lista di documenti che la contengono
 // struttura: map[nome_indice_vettoriale] -> map[chiave_metadato] -> map[token] -> PostingList
 type InvertedIndex map[string]map[string]map[string]PostingList
+
+// nuova struttura per le statistiche dell'indice testuale
+type TextIndexStats struct {
+	// Numero totale di documenti in un campo indicizzato
+	TotalDocs int
+	// Lunghezza media di un campo in tutti i documenti
+	AvgFieldLength float64
+	// Mappa di DocID -> lunghezza del campo
+	DocLengths map[uint32]int
+}
 
 // store è il contenitore principale che contiene tutti i tipi di dato di kektorDB
 type DB struct {
@@ -645,8 +663,9 @@ type DB struct {
 	// indice B-Tree per i metadati numerici
 	// strutture: map[nome indice vettoriale]->map[chiave metadato]->BTree
 	// B-Tree memorizzerà BTreeItem, permettendo ricerche di range veloci
-	bTreeIndex map[string]map[string]*btree.BTreeG[BTreeItem]
-	textIndex  InvertedIndex
+	bTreeIndex     map[string]map[string]*btree.BTreeG[BTreeItem]
+	textIndex      InvertedIndex
+	textIndexStats map[string]map[string]*TextIndexStats // map[indexName][fieldName] -> stats
 }
 
 func NewDB() *DB {
@@ -656,9 +675,10 @@ func NewDB() *DB {
 
 		// iniziizza la mappa principale dell'indice, le mappe interne
 		// saranno create on demand quando necessario
-		invertedIndex: make(map[string]map[string]map[string]map[uint32]struct{}),
-		bTreeIndex:    make(map[string]map[string]*btree.BTreeG[BTreeItem]),
-		textIndex:     make(InvertedIndex),
+		invertedIndex:  make(map[string]map[string]map[string]map[uint32]struct{}),
+		bTreeIndex:     make(map[string]map[string]*btree.BTreeG[BTreeItem]),
+		textIndex:      make(InvertedIndex),
+		textIndexStats: make(map[string]map[string]*TextIndexStats),
 	}
 }
 
@@ -693,6 +713,7 @@ func (s *DB) CreateVectorIndex(name string, metric distance.DistanceMetric, m, e
 	s.invertedIndex[name] = make(map[string]map[string]map[uint32]struct{})
 	s.bTreeIndex[name] = make(map[string]*btree.BTreeG[BTreeItem])
 	s.textIndex[name] = make(map[string]map[string]PostingList)
+	s.textIndexStats[name] = make(map[string]*TextIndexStats)
 
 	return nil
 }
@@ -728,6 +749,8 @@ func (s *DB) DeleteVectorIndex(name string) error {
 
 	// rimuove i dati associati all'indice testuale
 	delete(s.textIndex, name)
+
+	delete(s.textIndexStats, name)
 
 	log.Printf("Indice '%s' e tutti i dati associati sono stati eliminati.", name)
 	return nil
@@ -810,42 +833,41 @@ func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) err
 			floatVectors[i] = data.Vector
 		}
 
-		//log.Printf("[DEBUG COMPRESS] Training quantizer su %d vettori.", len(floatVectors))
-		//log.Printf("[DEBUG COMPRESS] Esempio vettore di training (primi 5 elementi): %v", floatVectors[0][:5])
-
 		newIndex.TrainQuantizer(floatVectors) // Dobbiamo creare questo metodo
 
 		// --- NUOVO: ANALISI DELLA DISTRIBUZIONE ---
-		log.Println("Analisi della distribuzione dei dati quantizzati...")
+		/*
+			log.Println("Analisi della distribuzione dei dati quantizzati...")
 
-		// Crea un istogramma per contare le occorrenze di ogni valore int8
-		histogram := make(map[int8]int)
-		totalValues := 0
+			// Crea un istogramma per contare le occorrenze di ogni valore int8
+			histogram := make(map[int8]int)
+			totalValues := 0
 
-		for _, vec := range floatVectors {
-			quantizedVec := newIndex.Quantizer().Quantize(vec) // Dobbiamo esporre il quantizzatore
-			for _, val := range quantizedVec {
-				histogram[val]++
-				totalValues++
+			for _, vec := range floatVectors {
+				quantizedVec := newIndex.Quantizer().Quantize(vec) // Dobbiamo esporre il quantizzatore
+				for _, val := range quantizedVec {
+					histogram[val]++
+					totalValues++
+				}
 			}
-		}
 
-		// Stampa l'istogramma
-		log.Println("--- Istogramma Valori Int8 ---")
-		// Ordina le chiavi per una stampa pulita
-		keys := make([]int, 0, len(histogram))
-		for k := range histogram {
-			keys = append(keys, int(k))
-		}
-		sort.Ints(keys)
+			// Stampa l'istogramma
+			log.Println("--- Istogramma Valori Int8 ---")
+			// Ordina le chiavi per una stampa pulita
+			keys := make([]int, 0, len(histogram))
+			for k := range histogram {
+				keys = append(keys, int(k))
+			}
+			sort.Ints(keys)
 
-		for _, k := range keys {
-			count := histogram[int8(k)]
-			percentage := float64(count) / float64(totalValues) * 100
-			log.Printf("Valore: %4d | Conteggio: %8d | Percentuale: %.2f%%", k, count, percentage)
-		}
-		log.Println("-----------------------------")
-		// --- FINE ANALISI ---
+			for _, k := range keys {
+				count := histogram[int8(k)]
+				percentage := float64(count) / float64(totalValues) * 100
+				log.Printf("Valore: %4d | Conteggio: %8d | Percentuale: %.2f%%", k, count, percentage)
+			}
+			log.Println("-----------------------------")
+			// --- FINE ANALISI ---
+		*/
 	}
 
 	// --- CORREZIONE CHIAVE: Pulisci i vecchi indici secondari ---
@@ -924,7 +946,7 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 }
 
 func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[string]any) error {
-	// Ottieni la configurazione dell'indice per sapere quale analizzatore usare
+	// Ottiene la configurazione dell'indice per sapere quale analizzatore usare
 	idx, ok := s.vectorIndexes[indexName]
 	if !ok {
 		return nil
@@ -962,23 +984,74 @@ func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[s
 			indexMetadata[key][v][nodeID] = struct{}{}
 
 			// --- Indicizzazione Full-Text (con analyzer) ---
-			if analyzer != nil {
-				tokens := analyzer.Analyze(v)                                         // Usa il tuo analizzatore!
-				log.Printf("[DEBUG TEXT INDEX] Testo: '%s' -> Tokens: %v", v, tokens) // <-- LOG 1
+			/*
+				if analyzer != nil {
+					tokens := analyzer.Analyze(v)                                         // Usa il tuo analizzatore!
+					log.Printf("[DEBUG TEXT INDEX] Testo: '%s' -> Tokens: %v", v, tokens) // <-- LOG 1
 
+					if _, ok := s.textIndex[indexName][key]; !ok {
+						s.textIndex[indexName][key] = make(map[string]PostingList)
+					}
+
+					for _, token := range tokens {
+						log.Printf("[DEBUG TEXT INDEX] Indicizzazione token '%s' per nodo %d", token, nodeID) // <-- LOG 2
+						list := s.textIndex[indexName][key][token]
+						if len(list) == 0 || list[len(list)-1] != nodeID {
+							s.textIndex[indexName][key][token] = append(list, nodeID)
+						}
+					}
+				} else {
+					log.Printf("[DEBUG TEXT INDEX] Analyzer è nil per l'indice '%s'", indexName) // <-- LOG 3
+				}
+			*/
+			if analyzer != nil {
+				tokens := analyzer.Analyze(v)
+
+				// Inizializza le mappe se non esistono
 				if _, ok := s.textIndex[indexName][key]; !ok {
 					s.textIndex[indexName][key] = make(map[string]PostingList)
 				}
-
-				for _, token := range tokens {
-					log.Printf("[DEBUG TEXT INDEX] Indicizzazione token '%s' per nodo %d", token, nodeID) // <-- LOG 2
-					list := s.textIndex[indexName][key][token]
-					if len(list) == 0 || list[len(list)-1] != nodeID {
-						s.textIndex[indexName][key][token] = append(list, nodeID)
+				if _, ok := s.textIndexStats[indexName][key]; !ok {
+					s.textIndexStats[indexName][key] = &TextIndexStats{
+						DocLengths: make(map[uint32]int),
 					}
 				}
-			} else {
-				log.Printf("[DEBUG TEXT INDEX] Analyzer è nil per l'indice '%s'", indexName) // <-- LOG 3
+
+				stats := s.textIndexStats[indexName][key]
+
+				// --- NUOVA LOGICA BM25 ---
+
+				// 1. Aggiorna le statistiche del documento
+				if _, docExists := stats.DocLengths[nodeID]; !docExists {
+					stats.TotalDocs++
+				}
+				stats.DocLengths[nodeID] = len(tokens)
+
+				// 2. Calcola le frequenze dei termini (TF) per questo documento
+				termFrequencies := make(map[string]int)
+				for _, token := range tokens {
+					termFrequencies[token]++
+				}
+
+				// 3. Aggiorna l'indice invertido con TF
+				for token, freq := range termFrequencies {
+					list := s.textIndex[indexName][key][token]
+
+					// Controlla se il docID è già nella lista per evitare duplicati
+					found := false
+					for _, entry := range list {
+						if entry.DocID == nodeID {
+							found = true
+							break
+						}
+					}
+					if !found {
+						s.textIndex[indexName][key][token] = append(list, PostingEntry{
+							DocID:         nodeID,
+							TermFrequency: freq,
+						})
+					}
+				}
 			}
 
 		case float64:
@@ -1001,12 +1074,27 @@ func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[s
 			continue
 		}
 	}
-	// --- LOG DI DEBUG ---
-	log.Printf("[DEBUG TEXT INDEX] Stato dell'indice testuale per '%s' dopo l'aggiunta del nodo %d:", indexName, nodeID)
-	log.Printf("%+v", s.textIndex[indexName])
-	// --- FINE LOG DI DEBUG ---
+
+	// Dobbiamo ricalcolare la lunghezza media del campo, che è costoso.
+	// Potremmo farlo qui o in un processo separato. Per ora, lo facciamo qui.
+	s.recalculateAvgFieldLengths(indexName)
 
 	return nil
+}
+
+// Nuova funzione helper
+func (s *DB) recalculateAvgFieldLengths(indexName string) {
+	if indexStats, ok := s.textIndexStats[indexName]; ok {
+		for _, fieldStats := range indexStats {
+			var totalLength int
+			for _, length := range fieldStats.DocLengths {
+				totalLength += length
+			}
+			if fieldStats.TotalDocs > 0 {
+				fieldStats.AvgFieldLength = float64(totalLength) / float64(fieldStats.TotalDocs)
+			}
+		}
+	}
 }
 
 // FindIDsByFilter funge da query planner per i filtri.
@@ -1048,7 +1136,7 @@ func (s *DB) FindIDsByFilter(indexName string, filter string) (map[uint32]struct
 				continue
 			}
 
-			currentIDSet, err := s.evaluateSingleFilter(indexName, subFilter)
+			currentIDSet, err := s.evaluateBooleanFilter(indexName, subFilter)
 			if err != nil {
 				return nil, fmt.Errorf("errore nel filtro '%s': %w", subFilter, err)
 			}
@@ -1085,22 +1173,10 @@ func (s *DB) FindIDsByFilter(indexName string, filter string) (map[uint32]struct
 // regex per parsare la funzione CONTAINS
 var containsRegex = regexp.MustCompile(`(?i)CONTAINS\s*\(\s*(\w+)\s*,\s*['"](.+?)['"]\s*\)`)
 
-// evaluateSingleFilter valuta una singola espressione come "price>=10" o "name=Alice".
+// evaluateBooleanFilter valuta una singola espressione come "price>=10" o "name=Alice".
 // Restituisce un set di ID (map[uint32]struct{}) e un errore.
-func (s *DB) evaluateSingleFilter(indexName string, filter string) (map[uint32]struct{}, error) {
+func (s *DB) evaluateBooleanFilter(indexName string, filter string) (map[uint32]struct{}, error) {
 	filter = strings.TrimSpace(filter)
-
-	// --- Check per CONTAINS ---
-	matches := containsRegex.FindStringSubmatch(filter)
-	if len(matches) == 3 {
-		// Abbiamo trovato una corrispondenza per CONTAINS(campo, "valore")
-		// matches[0] = stringa intera
-		// matches[1] = nome del campo (es. "descrizione")
-		// matches[2] = testo della query (es. "scarpe rosse")
-		fieldName := matches[1]
-		queryText := matches[2]
-		return s.findIDsByTextSearch(indexName, fieldName, queryText)
-	}
 
 	// Trova operatore (ordinale per lunghezza per gestire <= e >=)
 	var op string
@@ -1336,8 +1412,21 @@ func (s *DB) Unlock() {
 	s.mu.Unlock()
 }
 
+// Parametri standard per l'algoritmo BM25
+const (
+	bm25k1 = 1.2
+	bm25b  = 0.75
+)
+
+/*
+type types.SearchResult struct {
+	DocID uint32
+	Score float64
+}
+*/
+
 // helper esegue una ricerca sull'indice testuale
-func (db *DB) findIDsByTextSearch(indexName, fieldName, queryText string) (map[uint32]struct{}, error) {
+func (db *DB) FindIDsByTextSearch(indexName, fieldName, queryText string) ([]types.SearchResult, error) {
 	// Ottieni l'analizzatore corretto per questo indice
 	idx, ok := db.vectorIndexes[indexName]
 	if !ok {
@@ -1357,64 +1446,135 @@ func (db *DB) findIDsByTextSearch(indexName, fieldName, queryText string) (map[u
 
 	// 1. Analizza la query per ottenere i token da cercare
 	queryTokens := analyzer.Analyze(queryText)
-	log.Printf("[DEBUG TEXT SEARCH] Query: '%s' -> Tokens: %v", queryText, queryTokens)
 	if len(queryTokens) == 0 {
-		return make(map[uint32]struct{}), nil // Query vuota, nessun risultato
+		return nil, nil // Query vuota, nessun risultato
 	}
 
-	// 2. Recupera le "posting list" per ogni token
-	var postingLists [][]uint32
+	stats, ok := db.textIndexStats[indexName][fieldName]
+	if !ok || stats.TotalDocs == 0 {
+		return nil, nil // Nessun documento indicizzato per questo campo
+	}
+
+	// 1. Raccogli tutti i documenti candidati (unione delle posting list)
+	candidateDocs := make(map[uint32]map[string]int) // map[docID] -> map[token] -> termFrequency
+	// postingLists := make(map[string]PostingList) // Mappa di token -> lista
 	textIndexForField, ok := db.textIndex[indexName][fieldName]
 	if !ok {
-		log.Printf("[DEBUG TEXT SEARCH] Campo '%s' non trovato nell'indice testuale.", fieldName)
-		return make(map[uint32]struct{}), nil // Il campo non è mai stato indicizzato
+		return nil, nil
 	}
 
 	for _, token := range queryTokens {
 		list, found := textIndexForField[token]
-		if !found {
-			log.Printf("[DEBUG TEXT SEARCH] Token '%s' non trovato nell'indice.", token)
-			// Se anche solo un token non viene trovato, la ricerca AND fallisce.
-			return make(map[uint32]struct{}), nil
+		if found {
+			for _, entry := range list {
+				if _, ok := candidateDocs[entry.DocID]; !ok {
+					candidateDocs[entry.DocID] = make(map[string]int)
+				}
+				candidateDocs[entry.DocID][token] = entry.TermFrequency
+			}
 		}
-		log.Printf("[DEBUG TEXT SEARCH] Trovata posting list per il token '%s': %v", token, list)
-		postingLists = append(postingLists, list)
 	}
 
-	// 3. Calcola l'intersezione delle posting list
-	// (Questa è l'operazione chiave per la ricerca "boolean AND")
-	if len(postingLists) == 1 {
-		// Se c'è un solo token, non serve l'intersezione
+	// 2. Calcola lo score BM25 per ogni documento candidato
+	results := make([]types.SearchResult, 0, len(candidateDocs))
+	for docID, termFreqs := range candidateDocs {
+		score := 0.0
+		for _, token := range queryTokens {
+			// Calcola il punteggio di questo token per questo documento
+			tf := termFreqs[token] // Sarà 0 se il token non è nel documento
+			score += db.calculateBM25TermScore(token, docID, tf, stats, textIndexForField)
+		}
+		results = append(results, types.SearchResult{DocID: docID, Score: score})
+	}
+
+	// 3. Ordina i risultati per score decrescente
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+
+	return results, nil
+
+	/*
+		// 2. Recupera le "posting list" per ogni token
+		var postingLists [][]uint32
+		textIndexForField, ok := db.textIndex[indexName][fieldName]
+		if !ok {
+			log.Printf("[DEBUG TEXT SEARCH] Campo '%s' non trovato nell'indice testuale.", fieldName)
+			return make(map[uint32]struct{}), nil // Il campo non è mai stato indicizzato
+		}
+
+		for _, token := range queryTokens {
+			list, found := textIndexForField[token]
+			if !found {
+				log.Printf("[DEBUG TEXT SEARCH] Token '%s' non trovato nell'indice.", token)
+				// Se anche solo un token non viene trovato, la ricerca AND fallisce.
+				return make(map[uint32]struct{}), nil
+			}
+			log.Printf("[DEBUG TEXT SEARCH] Trovata posting list per il token '%s': %v", token, list)
+			postingLists = append(postingLists, list)
+		}
+
+		// 3. Calcola l'intersezione delle posting list
+		// (Questa è l'operazione chiave per la ricerca "boolean AND")
+		if len(postingLists) == 1 {
+			// Se c'è un solo token, non serve l'intersezione
+			resultSet := make(map[uint32]struct{})
+			for _, id := range postingLists[0] {
+				resultSet[id] = struct{}{}
+			}
+			return resultSet, nil
+		}
+
+		// Ordina le liste per lunghezza per un'intersezione più efficiente
+		sort.Slice(postingLists, func(i, j int) bool {
+			return len(postingLists[i]) < len(postingLists[j])
+		})
+
+		// Inizia l'intersezione
 		resultSet := make(map[uint32]struct{})
 		for _, id := range postingLists[0] {
 			resultSet[id] = struct{}{}
 		}
-		return resultSet, nil
-	}
 
-	// Ordina le liste per lunghezza per un'intersezione più efficiente
-	sort.Slice(postingLists, func(i, j int) bool {
-		return len(postingLists[i]) < len(postingLists[j])
-	})
-
-	// Inizia l'intersezione
-	resultSet := make(map[uint32]struct{})
-	for _, id := range postingLists[0] {
-		resultSet[id] = struct{}{}
-	}
-
-	for _, list := range postingLists[1:] {
-		intersection := make(map[uint32]struct{})
-		for _, id := range list {
-			if _, ok := resultSet[id]; ok {
-				intersection[id] = struct{}{}
+		for _, list := range postingLists[1:] {
+			intersection := make(map[uint32]struct{})
+			for _, id := range list {
+				if _, ok := resultSet[id]; ok {
+					intersection[id] = struct{}{}
+				}
 			}
+			resultSet = intersection
+			if len(resultSet) == 0 {
+				break
+			} // Ottimizzazione
 		}
-		resultSet = intersection
-		if len(resultSet) == 0 {
-			break
-		} // Ottimizzazione
+
+		return resultSet, nil
+	*/
+}
+
+func (db *DB) calculateBM25TermScore(token string, docID uint32, tf int, stats *TextIndexStats, textIndexForField map[string]PostingList) float64 {
+	// list, ok := postingLists[token]
+	list, ok := textIndexForField[token]
+	if !ok {
+		return 0.0
 	}
 
-	return resultSet, nil
+	if tf == 0 {
+		return 0.0
+	}
+
+	// Calcola IDF (Inverse Document Frequency)
+	docFreq := len(list)
+	idf := math.Log(1 + (float64(stats.TotalDocs)-float64(docFreq)+0.5)/(float64(docFreq)+0.5))
+
+	// Calcola il punteggio del termine
+	docLen := float64(stats.DocLengths[docID])
+	avgLen := stats.AvgFieldLength
+
+	tfFloat := float64(tf)
+	numerator := tfFloat * (bm25k1 + 1)
+	denominator := tfFloat + bm25k1*(1-bm25b+bm25b*(docLen/avgLen))
+
+	return idf * (numerator / denominator)
 }

@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"fmt"
 	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/types"
 	"github.com/x448/float16"
 	"log"
 	"math"
@@ -37,6 +38,7 @@ type Index struct {
 
 	// mappa separata per tradurre gli id esterni in id interni
 	externalToInternalID map[string]uint32
+	internalToExternalID map[uint32]string
 	internalCounter      uint32
 
 	// memorizza se siamo in precisione f32 o f16
@@ -75,6 +77,7 @@ func New(m int, efConstruction int, metric distance.DistanceMetric, precision di
 		ml:                   1.0 / math.Log(float64(m)),
 		nodes:                make(map[uint32]*Node),
 		externalToInternalID: make(map[string]uint32),
+		internalToExternalID: make(map[uint32]string),
 		internalCounter:      0,
 		maxLevel:             -1, // all'inizio nessun livello
 		entrypointID:         0,  // inizializzato al primo inserito
@@ -258,6 +261,7 @@ func (h *Index) distanceToQuery(query []float32, storedVector any) (float64, err
 	}
 }
 
+/*
 // implementa il metodo dell'interfaccia VectorIndex
 func (h *Index) Search(query []float32, k int, allowList map[uint32]struct{}, efSearch int) []string {
 	// la logica interna è la vecchia Search, ma deve restituire
@@ -273,15 +277,35 @@ func (h *Index) Search(query []float32, k int, allowList map[uint32]struct{}, ef
 	}
 	return results
 }
+*/
+
+// SearchWithScores è la nuova versione di Search che restituisce i punteggi.
+func (h *Index) SearchWithScores(query []float32, k int, allowList map[uint32]struct{}, efSearch int) []types.SearchResult {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	// searchInternal deve essere modificato per restituire []candidate
+	candidates, err := h.searchInternal(query, k, allowList, efSearch)
+	if err != nil {
+		log.Printf("Errore durante la ricerca HNSW: %v", err)
+		return []types.SearchResult{}
+	}
+
+	results := make([]types.SearchResult, len(candidates))
+	for i, c := range candidates {
+		results[i] = types.SearchResult{DocID: c.Id, Score: c.Distance} // Usa i campi pubblici
+	}
+	return results
+}
 
 // la funzione pubblica per trovare i K vicini più prossimi a un vettore di query
-func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]struct{}, efSearch int) ([]string, error) {
+func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]struct{}, efSearch int) ([]types.Candidate, error) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
 	// se il grafo è vuoto ritorno senza risultati
 	if h.maxLevel == -1 {
-		return []string{}, nil
+		return []types.Candidate{}, nil
 	}
 
 	// inizia la ricerca dal punto di ingresso globale al livello più alto
@@ -300,7 +324,7 @@ func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]stru
 				break
 			}
 			if !foundNewEntryPoint { // L'allow list era vuota
-				return []string{}, nil
+				return []types.Candidate{}, nil
 			}
 		}
 	}
@@ -315,9 +339,9 @@ func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]stru
 		}
 		if len(nearest) == 0 {
 			// dovrebbe capitare in casi complessi o errori
-			return []string{}, fmt.Errorf("ricerca fallita al livello %d, grafo potenzialmente inconsistente", l)
+			return []types.Candidate{}, fmt.Errorf("ricerca fallita al livello %d, grafo potenzialmente inconsistente", l)
 		}
-		currentEntryPoint = nearest[0].id
+		currentEntryPoint = nearest[0].Id
 	}
 
 	// 2) ricerca affetiva al livello 0 per trovare i vicini alla query
@@ -327,22 +351,24 @@ func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]stru
 		return nil, err
 	}
 
-	// estrae gli ID esterni (string) dai risultati
-	results := make([]string, 0, len(nearestNeighbors))
-	for _, neighbor := range nearestNeighbors {
-		// check per ignorare i nodi marcati come eliminati
-		if !h.nodes[neighbor.id].Deleted {
-			results = append(results, h.nodes[neighbor.id].Id)
+	/*
+		// estrae gli ID esterni (string) dai risultati
+		results := make([]string, 0, len(nearestNeighbors))
+		for _, neighbor := range nearestNeighbors {
+			// check per ignorare i nodi marcati come eliminati
+			if !h.nodes[neighbor.id].Deleted {
+				results = append(results, h.nodes[neighbor.id].Id)
+			}
 		}
-	}
 
-	// la lista potrebbe risultare più corta di k se ci sono nodi eliminati
-	// o se il numero totali di nodi è inferiore a k
-	if len(results) > k {
-		return results[:k], nil
-	}
+		// la lista potrebbe risultare più corta di k se ci sono nodi eliminati
+		// o se il numero totali di nodi è inferiore a k
+		if len(results) > k {
+			return results[:k], nil
+		}
+	*/
 
-	return results, nil
+	return nearestNeighbors, nil
 }
 
 // inserisce un nuovo vettore nel grafo
@@ -401,6 +427,7 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	// aggiunta nodo all; mappe di tracciamento
 	h.nodes[internalID] = node
 	h.externalToInternalID[id] = internalID
+	h.internalToExternalID[internalID] = id
 
 	// scelta di un livello casuale per il nuovo nodo
 	level := h.randomLevel()
@@ -428,7 +455,7 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 			return 0, fmt.Errorf("Errore durante linserimento del nodo")
 		}
 		// si assime che searchLayer restituisca sempre un risultato se l'entry point è valido
-		currentEntryPoint = nearest[0].id
+		currentEntryPoint = nearest[0].Id
 	}
 
 	// 2) --- inserimento bottom up e connessione dei vicini ---
@@ -452,12 +479,12 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 		// connette il nuovo nodo ai vicini selezionati
 		node.Connections[l] = make([]uint32, len(selectedNeighbors))
 		for i, neighborCandidate := range selectedNeighbors {
-			node.Connections[l][i] = neighborCandidate.id
+			node.Connections[l][i] = neighborCandidate.Id
 		}
 
 		// connette anche i vicini al nuovo nodo (bidirezionale)
 		for _, neighborCandidate := range selectedNeighbors {
-			neighborNode := h.nodes[neighborCandidate.id]
+			neighborNode := h.nodes[neighborCandidate.Id]
 
 			neighborLevel := len(neighborNode.Connections) - 1
 			// se il nostro livello di inserimento 'l' è superiore al livello
@@ -506,7 +533,7 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 
 		// per i livelli sottostanti si usa il vicino più vicino trovato
 		// come punto di ingresso per migliorare l'efficienza
-		currentEntryPoint = neighbors[0].id
+		currentEntryPoint = neighbors[0].Id
 	}
 
 	// se il nuovo nodo ha un livello più alto di qualsiasi altro,
@@ -517,6 +544,14 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	}
 	return internalID, nil
 
+}
+
+// GetExternalID è il nuovo metodo che ci serve.
+func (h *Index) GetExternalID(internalID uint32) (string, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	externalID, found := h.internalToExternalID[internalID]
+	return externalID, found
 }
 
 // marca un nodo come eliminato (soft delete)
@@ -546,7 +581,7 @@ func (h *Index) Delete(id string) {
 }
 
 // fa la ricerca dei vicini più prossimi in un singolo livello del grafo
-func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level int, allowList map[uint32]struct{}, efSearch int) ([]candidate, error) {
+func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level int, allowList map[uint32]struct{}, efSearch int) ([]types.Candidate, error) {
 	//log.Printf("DEBUG: Inizio searchLayer a livello %d con entrypoint %d\n", level, entrypointID)
 	// si tracciano i nodi già visitati per non entrare in loop
 	visited := make(map[uint32]bool)
@@ -583,8 +618,8 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 	}
 
 	// inserisco i nodi nelle heap
-	heap.Push(candidates, candidate{id: entrypointID, distance: dist})
-	heap.Push(results, candidate{id: entrypointID, distance: dist})
+	heap.Push(candidates, types.Candidate{Id: entrypointID, Distance: dist})
+	heap.Push(results, types.Candidate{Id: entrypointID, Distance: dist})
 	visited[entrypointID] = true // setto il nodo come visitato nella mappa
 
 	loopCount := 0
@@ -592,16 +627,16 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 	for candidates.Len() > 0 {
 		loopCount++
 		// estrae l'elemento più vicino dalla coda
-		current := heap.Pop(candidates).(candidate)
+		current := heap.Pop(candidates).(types.Candidate)
 
 		// se questo candidato è più lontano del peggiore risultato (ele in cima di results) che
 		// abbiamo trovato finora, possiamo fermare l'esplorazione da questo ramo
-		if results.Len() >= ef && current.distance > (*results)[0].distance {
+		if results.Len() >= ef && current.Distance > (*results)[0].Distance {
 			break
 		}
 
 		// esplora i vicini del candidato corrente
-		currentNode := h.nodes[current.id]
+		currentNode := h.nodes[current.Id]
 		// verifica che il nodo abbia connessioni a questo livello
 		if level >= len(currentNode.Connections) {
 			continue
@@ -637,11 +672,11 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 
 				// se abbiamo ancora spazio nei risultati o se questo vicino
 				// è più vicino del nostro peggior risultato, lo aggiunge
-				if results.Len() < ef || dist < (*results)[0].distance {
+				if results.Len() < ef || dist < (*results)[0].Distance {
 					//log.Printf("DEBUG: Livello %d, aggiungo candidato %d con distanza %f\n", level, neighborID, dist)
 
-					heap.Push(candidates, candidate{id: neighborID, distance: dist})
-					heap.Push(results, candidate{id: neighborID, distance: dist})
+					heap.Push(candidates, types.Candidate{Id: neighborID, Distance: dist})
+					heap.Push(results, types.Candidate{Id: neighborID, Distance: dist})
 
 					// se non c'è più posto nella lista di risultati allora rimuoviamo il peggiore (che è il primo)
 					if results.Len() > ef {
@@ -656,9 +691,9 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 	//log.Printf("DEBUG: Fine searchLayer a livello %d dopo %d iterazioni\n", level, loopCount)
 
 	// L'heap non è ordinato, dobbiamo estrarre tutti gli elementi e ordinarli.
-	finalResults := make([]candidate, results.Len())
+	finalResults := make([]types.Candidate, results.Len())
 	for i := results.Len() - 1; i >= 0; i-- {
-		finalResults[i] = heap.Pop(results).(candidate)
+		finalResults[i] = heap.Pop(results).(types.Candidate)
 	}
 
 	// Restituisci solo i 'k' migliori. La slice `finalResults` è già ordinata dal migliore al peggiore.
@@ -669,7 +704,7 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 	// 2. Ordina la slice in modo esplicito e corretto.
 	// Ordina per 'distance' in ordine crescente (dal più piccolo al più grande).
 	sort.Slice(finalResults, func(i, j int) bool {
-		return finalResults[i].distance < finalResults[j].distance
+		return finalResults[i].Distance < finalResults[j].Distance
 	})
 
 	return finalResults, nil
@@ -700,12 +735,12 @@ func (h *Index) selectNeighbors(candidates []candidate, m int) []candidate {
 
 // selectNeighbors implementa l'euristica di selezione avanzata del paper HNSW.
 // Seleziona un set diversificato di vicini.
-func (h *Index) selectNeighbors(candidates []candidate, m int) []candidate {
+func (h *Index) selectNeighbors(candidates []types.Candidate, m int) []types.Candidate {
 	if len(candidates) <= m {
 		return candidates
 	}
 
-	results := make([]candidate, 0, m)
+	results := make([]types.Candidate, 0, m)
 
 	// Manteniamo una copia dei candidati di lavoro da cui possiamo "scartare" elementi.
 	// La slice `candidates` è già ordinata per distanza crescente.
@@ -726,7 +761,7 @@ func (h *Index) selectNeighbors(candidates []candidate, m int) []candidate {
 		// di quanto non sia a qualsiasi vicino già selezionato in 'results'.
 		isGoodCandidate := true
 		for _, r := range results {
-			dist_e_r, err := h.distance(h.nodes[e.id].Vector, h.nodes[r.id].Vector)
+			dist_e_r, err := h.distance(h.nodes[e.Id].Vector, h.nodes[r.Id].Vector)
 			if err != nil {
 				// In caso di errore, consideriamolo un cattivo candidato per sicurezza
 				isGoodCandidate = false
@@ -738,9 +773,9 @@ func (h *Index) selectNeighbors(candidates []candidate, m int) []candidate {
 			// per essere meno aggressivi nello scartare candidati.
 			var condition bool
 			if h.metric == distance.Cosine {
-				condition = (dist_e_r <= e.distance)
+				condition = (dist_e_r <= e.Distance)
 			} else {
-				condition = (dist_e_r < e.distance)
+				condition = (dist_e_r < e.Distance)
 			}
 
 			if condition { // Se 'e' è vicino o alla stessa distanza da 'r'...
@@ -857,28 +892,20 @@ func (h *Index) GetParameters() (distance.DistanceMetric, int, int) {
 	return h.metric, h.m, h.efConstruction
 }
 
-// NodeData è una struct per trasportare i dati di un nodo fuori dal package.
-type NodeData struct {
-	ID         string
-	InternalID uint32
-	Vector     []float32
-	Metadata   map[string]interface{}
-}
-
 // GetNodeData recupera i dati di un nodo (de-compressi/de-quantizzati)
 // dato il suo ID esterno.
-func (h *Index) GetNodeData(externalID string) (NodeData, bool) {
+func (h *Index) GetNodeData(externalID string) (types.NodeData, bool) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
 	internalID, ok := h.externalToInternalID[externalID]
 	if !ok {
-		return NodeData{}, false
+		return types.NodeData{}, false
 	}
 
 	node, ok := h.nodes[internalID]
 	if !ok || node.Deleted {
-		return NodeData{}, false
+		return types.NodeData{}, false
 	}
 
 	// Usa la stessa logica di 'Iterate' per de-comprimere/de-quantizzare
@@ -893,14 +920,14 @@ func (h *Index) GetNodeData(externalID string) (NodeData, bool) {
 		}
 	case []int8:
 		if h.quantizer == nil {
-			return NodeData{}, false // Stato inconsistente
+			return types.NodeData{}, false // Stato inconsistente
 		}
 		vectorF32 = h.quantizer.Dequantize(vec)
 	default:
-		return NodeData{}, false // Tipo sconosciuto
+		return types.NodeData{}, false // Tipo sconosciuto
 	}
 
-	return NodeData{
+	return types.NodeData{
 		ID:         externalID,
 		InternalID: internalID,
 		Vector:     vectorF32,
@@ -1032,6 +1059,24 @@ func (h *Index) LoadSnapshotData(
 	}
 	if h.externalToInternalID == nil {
 		h.externalToInternalID = make(map[string]uint32)
+	}
+
+	// NUOVO: Ricostruisci internalToExternalID dai nodes
+	h.internalToExternalID = make(map[uint32]string) // Inizializza (se non già fatto in New)
+	for internalID, node := range h.nodes {
+		if node.Id == "" {
+			return fmt.Errorf("nodo con ID interno %d ha ID esterno vuoto", internalID)
+		}
+		h.internalToExternalID[internalID] = node.Id
+
+		// Opzionale: Assicura coerenza con externalToInternal
+		if existingInternal, ok := h.externalToInternalID[node.Id]; ok && existingInternal != internalID {
+			return fmt.Errorf("inconsistenza ID: esterno '%s' mappato a %d ma nodo ha %d", node.Id, existingInternal, internalID)
+		}
+		h.externalToInternalID[node.Id] = internalID // Sovrascrivi se necessario per sicurezza
+
+		// Opzionale: Assicura node.InternalID
+		node.InternalID = internalID
 	}
 
 	return nil

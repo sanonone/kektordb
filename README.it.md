@@ -12,27 +12,30 @@ Fornisce un motore basato su **HNSW** per la ricerca approssimata dei vicini pi�
 
 ### Motivazione e Filosofia
 
-Questo progetto è nato come un percorso personale di apprendimento, per esplorare a fondo argomenti complessi di ingegneria del software: dall’ottimizzazione a basso livello fino all’architettura dei database.
-Sebbene l’obiettivo principale fosse didattico, lo sviluppo è stato condotto con l’intento di creare uno strumento robusto e realmente utile.
+Questo progetto è nato come un percorso personale di apprendimento per esplorare a fondo argomenti complessi di ingegneria del software, dall’ottimizzazione a basso livello fino all’architettura dei database. Sebbene l’obiettivo principale fosse didattico, lo sviluppo è stato condotto con il rigore di uno strumento professionale.
 
-Il risultato non vuole essere un concorrente “definitivo” dei database vettoriali di produzione, ma piuttosto una rappresentazione del processo di ingegneria che lo ha generato.
-La missione è offrire un motore di ricerca vettoriale potente, semplice e autosufficiente, incarnando la filosofia di una **“SQLite dei database vettoriali”**.
+L'architettura persegue la missione di essere la **“SQLite dei database vettoriali”**: un motore di ricerca potente, autosufficiente e senza dipendenze, disponibile sia come server standalone che come libreria Go (`pkg/core`), perfetto per sviluppatori Go e per l'ecosistema AI/ML.
 
 ---
 
 ### Funzionalità Principali
 
-* **Motore HNSW personalizzato:** Implementazione da zero dell’algoritmo HNSW per ricerche ANN ad alta accuratezza, con euristiche avanzate per la selezione dei vicini.
-* **Filtraggio avanzato dei metadati:** Pre-filtraggio ad alte prestazioni sui metadati. Supporta uguaglianze (`tag="cat"`), range (`price<100`) e filtri composti (`AND` / `OR`).
-* **Supporto a più metriche di distanza:** Compatibile sia con **Euclidea (L2)** che con **Cosine Similarity**, configurabili per indice.
-* **Compressione e Quantizzazione dei Vettori:**
-
-  * **Float16:** Comprime gli indici euclidei del **50%**, mantenendo un recall superiore al 99%.
-  * **Int8:** Quantizza gli indici con metrica Cosine riducendo lo spazio del **75%**, mantenendo oltre il 93% di recall su dataset di grandi dimensioni.
-* **API ad alte prestazioni:** Interfaccia REST pulita, con operazioni batch e tuning dinamico della ricerca (`ef_search`).
-* **Persistenza affidabile:** Sistema ibrido **AOF + Snapshot** che garantisce durabilità e riavvii quasi istantanei.
-  Include manutenzione automatica e configurabile per snapshot e compattazione AOF.
-* **Ecosistema:** Client ufficiali per **Python** e **Go** per un’integrazione semplice.
+*   **Motore HNSW Custom:** Implementazione da zero dell’algoritmo HNSW per ricerche ANN ad alta accuratezza, con euristiche avanzate per la selezione dei vicini.
+*   **Ricerca Ibrida:**
+    *   **Full-Text Search:** Un motore di analisi testuale (tokenizer, stemmer) e un indice invertito potenziano la ricerca per parole chiave.
+    *   **Ranking BM25:** I risultati testuali sono ordinati per rilevanza usando l'algoritmo standard di settore BM25.
+    *   **Fusione dei Punteggi:** Le query ibride combinano i punteggi di rilevanza vettoriale e testuale usando un parametro `alpha` configurabile per una classifica unificata.
+*   **Filtraggio Avanzato sui Metadati:** Pre-filtraggio ad alte prestazioni sui metadati. Supporta uguaglianze (`tag="cat"`), range (`price<100`) e filtri composti (`AND` / `OR`).
+*   **Supporto a più Metriche e Precisioni:**
+    *   Metriche **Euclidea (L2)** e **Cosine Similarity**, configurabili per indice.
+    *   **Float16:** Compressione per indici Euclidei (**-50%** di memoria).
+    *   **Int8:** Quantizzazione per indici Coseno (**-75%** di memoria).
+*   **API Asincrona ad Alte Prestazioni:**
+    *   API REST pulita e consistente basata su JSON.
+    *   **Operazioni Batch:** Inserimento e recupero efficiente di migliaia di vettori in singole richieste.
+    *   **Gestione Task Asincroni:** Le operazioni a lunga esecuzione (es. compressione) sono gestite in background, con un endpoint per monitorarne lo stato.
+*   **Persistenza Affidabile:** Sistema ibrido **AOF + Snapshot** che garantisce durabilità e riavvii quasi istantanei, con manutenzione automatica in background.
+*   **Ecosistema:** Client ufficiali per **Python** e **Go**.
 
 ---
 
@@ -93,20 +96,27 @@ Un’area chiave di miglioramento futuro sarà sostituirle con versioni accelera
    client = KektorDBClient(port=9091)
    index_name = "knowledge_base"
 
-   client.vcreate(index_name, metric="cosine", precision="int8")
+   client.vcreate(
+       index_name, 
+       metric="cosine", 
+       precision="int8",
+       text_language="english" # Enable text indexing
+   )
 
    client.vadd(
        index_name=index_name,
        item_id="doc1",
        vector=[0.1, 0.8, 0.3],
-       metadata={"source": "manual_v1.pdf", "page": 42}
+       metadata={"content": "KektorDB supports hybrid search.", "year": 2024}
    )
 
+   # Perform a hybrid search
    results = client.vsearch(
        index_name=index_name,
        k=1,
        query_vector=[0.15, 0.75, 0.35],
-       filter_str='source=manual_v1.pdf AND page>40'
+       filter_str='CONTAINS(content, "hybrid") AND year>2023',
+       alpha=0.5 # Balance between vector and text relevance
    )
 
    print(f"Risultati trovati: {results}")
@@ -118,39 +128,40 @@ Un’area chiave di miglioramento futuro sarà sostituirle con versioni accelera
 
 #### Key-Value Store
 
-* `GET /kv/{key}`: Recupera un valore.
-* `POST /kv/{key}`: Imposta un valore. Corpo: `{"value": "..."}`.
-* `DELETE /kv/{key}`: Elimina una chiave.
+#### Key-Value Store
+- `GET /kv/{key}`: Recupera un valore.
+- `POST /kv/{key}`: Imposta un valore. Corpo: `{"value": "..."}`.
+- `DELETE /kv/{key}`: Elimina una chiave.
 
 #### Gestione Indici
+- `GET /vector/indexes`: Elenca tutti gli indici.
+- `GET /vector/indexes/{name}`: Restituisce informazioni dettagliate su un singolo indice.
+- `DELETE /vector/indexes/{name}`: Elimina un indice.
 
-* `GET /vector/indexes`: Elenca tutti gli indici.
-* `GET /vector/indexes/{name}`: Restituisce informazioni dettagliate su un singolo indice.
-* `DELETE /vector/indexes/{name}`: Elimina un indice.
+#### Operazioni sui Vettori (RPC-Style)
+- `POST /vector/actions/create`: Crea un nuovo indice vettoriale.
+  - Corpo: `{"index_name": "...", "metric": "...", "precision": "...", "text_language": "...", "m": ..., "ef_construction": ...}`
+- `POST /vector/actions/add`: Aggiunge un singolo vettore.
+  - Corpo: `{"index_name": "...", "id": "...", "vector": [...], "metadata": {...}}`
+- `POST /vector/actions/add-batch`: Aggiunge più vettori in batch.
+  - Corpo: `{"index_name": "...", "vectors": [{"id": ..., "vector": ...}, ...]}`
+- `POST /vector/actions/search`: Esegue una ricerca ibrida.
+  - Corpo: `{"index_name": "...", "k": ..., "query_vector": [...], "filter": "...", "ef_search": ..., "alpha": ...}`
+- `POST /vector/actions/delete_vector`: Elimina un vettore.
+  - Corpo: `{"index_name": "...", "id": "..."}`
+- `POST /vector/actions/get-vectors`: Recupera dati per più vettori tramite ID.
+  - Corpo: `{"index_name": "...", "ids": ["...", "..."]}`
+- `POST /vector/actions/compress`: Comprime un indice (operazione asincrona).
+  - Corpo: `{"index_name": "...", "precision": "..."}`
 
-#### Operazioni sui Vettori
-
-* `POST /vector/actions/create`: Crea un nuovo indice vettoriale.
-  Corpo: `{"index_name": "...", "metric": "...", "precision": "...", "m": ..., "ef_construction": ...}`
-* `POST /vector/actions/add`: Aggiunge un singolo vettore.
-  Corpo: `{"index_name": "...", "id": "...", "vector": [...], "metadata": {...}}`
-* `POST /vector/actions/add-batch`: Aggiunge più vettori in batch.
-  Corpo: `{"index_name": "...", "vectors": [{"id": ..., "vector": ...}, ...]}`
-* `POST /vector/actions/search`: Esegue una ricerca vettoriale.
-  Corpo: `{"index_name": "...", "k": ..., "query_vector": [...], "filter": "...", "ef_search": ...}`
-* `POST /vector/actions/delete_vector`: Elimina un vettore.
-  Corpo: `{"index_name": "...", "id": "..."}`
-* `POST /vector/actions/get-vectors`: Recupera dati per più vettori tramite ID.
-  Corpo: `{"index_name": "...", "ids": ["...", "..."]}`
-* `POST /vector/actions/compress`: Comprime un indice a una precisione inferiore.
-  Corpo: `{"index_name": "...", "precision": "..."}`
+#### Recupero Dati
+- `GET /vector/indexes/{name}/vectors/{id}`: Recupera dati per un singolo vettore.
 
 #### Sistema
-
-* `POST /system/save`: Esegue un salvataggio (snapshot) del database.
-* `POST /system/aof-rewrite`: Avvia una compattazione dell’AOF.
-* `GET /system/tasks/{id}`: Restituisce lo stato di un task asincrono.
-* `GET /debug/pprof/*`: Esporta gli endpoint di profiling `pprof` di Go.
+- `POST /system/save`: Esegue un salvataggio (snapshot) del database.
+- `POST /system/aof-rewrite`: Avvia una compattazione dell’AOF (operazione asincrona).
+- `GET /system/tasks/{id}`: Restituisce lo stato di un task asincrono.
+- `GET /debug/pprof/*`: Esporta gli endpoint di profiling `pprof`.
 
 ---
 
@@ -158,9 +169,10 @@ Un’area chiave di miglioramento futuro sarà sostituirle con versioni accelera
 
 KektorDB è un progetto in continuo sviluppo. I prossimi passi si concentreranno su:
 
-* **Ricerca Ibrida (BM25):** Integrazione di un indice full-text per combinare rilevanza semantica e per parole chiave.
-* **Ottimizzazioni delle Prestazioni:** Sostituzione delle versioni “pure Go” per `float16` e `int8` con implementazioni SIMD ad alte prestazioni (probabilmente tramite `avo`).
+* **Sincronizzazione Automatica degli Embeddings (Vectorizer):** Introduzione di una funzionalità "vectorizer" ispirata a strumenti come pgai. Questo permetterà di collegare in modo dichiarativo i dati sorgente agli embeddings vettoriali. KektorDB monitorerà automaticamente i cambiamenti nella fonte (es. file di testo, righe di un database) e aggiornerà i vettori corrispondenti in background, garantendo che l'indice di ricerca non diventi mai obsoleto. Questa è una feature cruciale per costruire sistemi RAG (Retrieval-Augmented Generation) robusti e auto-manutenuti.
+* **Ottimizzazioni delle Prestazioni:** Sostituzione delle versioni “pure Go” per `float16` e `int8` con implementazioni SIMD ad alte prestazioni (probabilmente tramite `avo` o `cgo`).
 * **Distribuzione Mobile/Edge:** Esplorazione di una modalità di build che compili KektorDB come libreria condivisa per l’integrazione con framework mobili come Flutter.
+* **Boh, altre cose
 
 ---
 

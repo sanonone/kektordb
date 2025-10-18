@@ -1,29 +1,26 @@
 package hnsw
 
-import "container/heap"
-
-// è un elemento nella coda di priorità
-type candidate struct {
-	id       uint32
-	distance float64
-}
+import (
+	"container/heap"
+	"github.com/sanonone/kektordb/pkg/core/types"
+)
 
 // è un mini heap di candidati, ovvero (i più vicini) in cima
 // qui ci saranno i nodi ancora da visitare, il primo sarà
 // sempre quello più vicino (distanza più piccola)
-type minHeap []candidate
+type minHeap []types.Candidate
 
 // ritorna dimensione heap
 func (h minHeap) Len() int { return len(h) }
 
 // ritorna true se i < j, per minheap minore vuol dire che i ha distanza più piccola di j
-func (h minHeap) Less(i, j int) bool { return h[i].distance < h[j].distance }
+func (h minHeap) Less(i, j int) bool { return h[i].Distance < h[j].Distance }
 
 // scambia elementi
 func (h minHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
 
 // aggiunge un elemento, ha il puntatore perché deve modificare la slice
-func (h *minHeap) Push(x any) { *h = append(*h, x.(candidate)) }
+func (h *minHeap) Push(x any) { *h = append(*h, x.(types.Candidate)) }
 
 // rimuove l'ultimo elemento dalla slice e lo restituisce
 func (h *minHeap) Pop() any {
@@ -40,14 +37,14 @@ func (h *minHeap) Pop() any {
 // l'ordinamento è opposto a min heap quindi il primo elemento
 // rappresenta il peggiore (per essere pronto a farsi buttare fuori
 // per far posto ad un nodo migliore)
-type maxHeap []candidate
+type maxHeap []types.Candidate
 
 func (h maxHeap) Len() int { return len(h) }
 
 // ritorna true se i > j, per maxheap maggiore vuol dire che i ha una distanza maggiore di j
-func (h maxHeap) Less(i, j int) bool { return h[i].distance > h[j].distance } // distanza più grande = priorità maggiore quindi deve salire in cima
+func (h maxHeap) Less(i, j int) bool { return h[i].Distance > h[j].Distance } // distanza più grande = priorità maggiore quindi deve salire in cima
 func (h maxHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-func (h *maxHeap) Push(x any)        { *h = append(*h, x.(candidate)) }
+func (h *maxHeap) Push(x any)        { *h = append(*h, x.(types.Candidate)) }
 func (h *maxHeap) Pop() any {
 	old := *h
 	n := len(old)

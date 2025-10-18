@@ -296,7 +296,7 @@ class KektorDBClient:
         payload = {"index_name": index_name, "ids": item_ids}
         return self._request("POST", "/vector/actions/get-vectors", json=payload)
 
-    def vsearch(self, index_name: str, query_vector: List[float], k: int, filter_str: str = "", ef_search: int = 0) -> List[str]:
+    def vsearch(self, index_name: str, query_vector: List[float], k: int, filter_str: str = "", ef_search: int = 0, alpha: float = 0.5) -> List[str]:
         """
         Performs a nearest neighbor search in an index.
 
@@ -308,6 +308,9 @@ class KektorDBClient:
             ef_search: An optional parameter to control the search breadth.
                        A higher value increases recall at the cost of speed.
                        If 0, the server's `efConstruction` default is used.
+            alpha: The weight for hybrid search fusion (0 to 1).
+                   1.0 = pure vector search, 0.0 = pure text search.
+                   Only used when a CONTAINS filter is present. Default: 0.5.
 
         Returns:
             A list of item IDs of the nearest neighbors.
@@ -326,6 +329,9 @@ class KektorDBClient:
         
         if ef_search > 0:
             payload["ef_search"] = ef_search
+
+        if alpha != 0.5:
+            payload["alpha"] = alpha
             
         data = self._request("POST", "/vector/actions/search", json=payload)
         return data.get("results", [])

@@ -479,7 +479,7 @@ func (s *Server) loadFromAOF() error {
 					delete(entry.metadata, "__deleted")
 				}
 				if len(entry.metadata) > 0 {
-					s.db.AddMetadata(indexName, internalID, entry.metadata)
+					s.db.AddMetadataUnlocked(indexName, internalID, entry.metadata)
 				}
 			}
 		}

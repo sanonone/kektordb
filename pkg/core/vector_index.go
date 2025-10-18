@@ -4,6 +4,8 @@ import (
 	//"math"
 	"errors"
 	"fmt"
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/types"
 	"sort"
 	"sync"
 )
@@ -13,8 +15,14 @@ import (
 // definisce le operazioni che un indice vettoriale deve supportare
 type VectorIndex interface {
 	Add(id string, vector []float32) (uint32, error)
-	Search(query []float32, k int, allowlist map[uint32]struct{}, efSearch int) []string
+	// Search(query []float32, k int, allowlist map[uint32]struct{}, efSearch int) []string
 	Delete(id string)
+	// metodo che restituisce anche i punteggi (distanze)
+	SearchWithScores(query []float32, k int, allowList map[uint32]struct{}, efSearch int) []types.SearchResult
+
+	// Aggiungiamo anche i metodi getter che sono comuni a tutti gli indici
+	Metric() distance.DistanceMetric
+	Precision() distance.PrecisionType
 }
 
 // --- implementazione Brute Force Index ---
@@ -62,7 +70,7 @@ type searchResult struct {
 }
 
 // cerca i K vettori più vicini al vettore di query
-func (idx *BruteForceIndex) Search(query []float32, k int, allowList map[uint32]struct{}, efSearch int) []string {
+func (idx *BruteForceIndex) SearchWithScores(query []float32, k int, allowList map[uint32]struct{}, efSearch int) []types.SearchResult {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
@@ -83,45 +91,21 @@ func (idx *BruteForceIndex) Search(query []float32, k int, allowList map[uint32]
 		return results[i].distance < results[j].distance
 	})
 
-	var finalIDs []string
+	var finalResults []types.SearchResult
 	count := 0
-	for _, res := range results {
+	for _, res := range results { // 'results' è la tua slice ordinata di candidati
 		if count >= k {
 			break
 		}
 
-		// Ottieni l'ID interno per il controllo
 		internalID := idx.internalIDs[res.id]
-
-		// --- LOGICA DI CONTROLLO CORRETTA ---
-		// Controlliamo prima se il filtro è attivo (allowList != nil).
-		// Se lo è, controlliamo se l'ID esiste nella mappa.
-
-		passesFilter := true // Assumiamo che passi, a meno che non fallisca il check
-		if allowList != nil {
-			// L'idioma "comma, ok" ci dà un booleano che indica l'esistenza
-			_, ok := allowList[internalID]
-			if !ok {
-				passesFilter = false // La chiave non è nell'allow list, quindi non passa
-			}
-		}
-
-		if passesFilter {
-			finalIDs = append(finalIDs, res.id)
+		_, ok := allowList[internalID]
+		if allowList == nil || ok {
+			finalResults = append(finalResults, types.SearchResult{DocID: internalID, Score: res.distance})
 			count++
 		}
 	}
-	return finalIDs
-
-	/* // parte pre filtri, da eliminare se funziona tutto
-	// estrae i K id migliori
-	var finalIDs []string
-	for i := 0; i < k && i < len(results); i++ {
-		finalIDs = append(finalIDs, results[i].id)
-	}
-
-	return finalIDs
-	*/
+	return finalResults
 
 }
 

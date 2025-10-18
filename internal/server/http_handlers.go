@@ -5,11 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
+	"github.com/sanonone/kektordb/pkg/core/types"
 	"log"
 	"net/http"
 	"net/http/pprof"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -541,8 +546,279 @@ type VectorSearchRequest struct {
 	QueryVector []float32 `json:"query_vector"`
 	Filter      string    `json:"filter,omitempty"` // filtro opzionale
 	EfSearch    int       `json:"ef_search,omitempty"`
+	Alpha       float64   `json:"alpha,omitempty"`
 }
 
+// FusedResult è la struct per l'ordinamento finale, con ID ESTERNO.
+type FusedResult struct {
+	ID    string // ID Esterno
+	Score float64
+}
+
+// normalizeVectorScores normalizza le distanze (dove più piccolo è meglio) in un punteggio [0, 1]
+// (dove più grande è meglio).
+func normalizeVectorScores(results []types.SearchResult) {
+	// Una semplice normalizzazione: 1 / (1 + distanza)
+	// Distanza 0 -> Punteggio 1
+	// Distanza grande -> Punteggio vicino a 0
+	for i := range results {
+		results[i].Score = 1.0 / (1.0 + results[i].Score)
+	}
+}
+
+// normalizeTextScores normalizza i punteggi BM25 (dove più grande è meglio) in un range [0, 1].
+func normalizeTextScores(results []types.SearchResult) {
+	if len(results) == 0 {
+		return
+	}
+	// Normalizzazione Min-Max: (score - min) / (max - min)
+	// Dato che il minimo score BM25 è > 0, possiamo semplificare a score / max_score
+	maxScore := 0.0
+	for _, res := range results {
+		if res.Score > maxScore {
+			maxScore = res.Score
+		}
+	}
+	if maxScore > 0 {
+		for i := range results {
+			results[i].Score /= maxScore
+		}
+	}
+}
+
+func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST")
+		return
+	}
+
+	var req VectorSearchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, "JSON invalido")
+		return
+	}
+
+	idx, found := s.db.GetVectorIndex(req.IndexName)
+	if !found {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Indice '%s' non trovato", req.IndexName))
+		return
+	}
+	hnswIndex, ok := idx.(*hnsw.Index) // Assumiamo sia un HNSW
+	if !ok {
+		s.writeHTTPError(w, http.StatusInternalServerError, "L'indice non è di tipo HNSW, la ricerca ibrida non è supportata")
+		return
+	}
+
+	// --- 2. Separazione dei Filtri ---
+	booleanFilters, textQuery, textQueryField := parseHybridFilter(req.Filter)
+
+	// --- 3. Esecuzione del Pre-Filtering Booleano ---
+	var allowList map[uint32]struct{}
+	var err error
+	if booleanFilters != "" {
+		allowList, err = s.db.FindIDsByFilter(req.IndexName, booleanFilters)
+		if err != nil {
+			s.writeHTTPError(w, http.StatusBadRequest, fmt.Sprintf("Filtro booleano invalido: %v", err))
+			return
+		}
+		// Se i filtri booleani non producono risultati, possiamo terminare subito
+		if len(allowList) == 0 {
+			s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": []string{}})
+			return
+		}
+	}
+
+	// --- 4. Esecuzione delle Ricerche Parallele ---
+
+	// Controlla se la ricerca è puramente testuale
+	isVectorQueryEmpty := true
+	for _, v := range req.QueryVector {
+		if v != 0 {
+			isVectorQueryEmpty = false
+			break
+		}
+	}
+
+	// CASO A: RICERCA PURAMENTE TESTUALE (o solo filtri booleani senza query vettoriale)
+	if isVectorQueryEmpty && textQuery != "" {
+		textResults, _ := s.db.FindIDsByTextSearch(req.IndexName, textQueryField, textQuery)
+
+		finalIDs := make([]string, 0, req.K)
+		count := 0
+		for _, res := range textResults {
+			if count >= req.K {
+				break
+			}
+			_, ok := allowList[res.DocID]
+			if allowList == nil || ok {
+				externalID, _ := hnswIndex.GetExternalID(res.DocID)
+				finalIDs = append(finalIDs, externalID)
+				count++
+			}
+		}
+		s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": finalIDs})
+		return
+	}
+
+	// CASO B: RICERCA VETTORIALE O IBRIDA
+	var vectorResults []types.SearchResult
+	var textResults []types.SearchResult
+	var wg sync.WaitGroup
+
+	// Ricerca Vettoriale
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// idx.Search restituisce []string, dobbiamo convertirlo in []SearchResult
+		// Modifichiamo Search per restituire anche le distanze!
+		vectorResults = idx.SearchWithScores(req.QueryVector, req.K, allowList, req.EfSearch)
+	}()
+
+	// Ricerca Testuale (se presente)
+	if textQuery != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// db.findIDsByTextSearch già restituisce []SearchResult
+			results, _ := s.db.FindIDsByTextSearch(req.IndexName, textQueryField, textQuery)
+			// Applica l'allow list anche qui
+			if allowList != nil {
+				var filteredTextResults []types.SearchResult
+				for _, res := range results {
+					if _, ok := allowList[res.DocID]; ok {
+						filteredTextResults = append(filteredTextResults, res)
+					}
+				}
+				textResults = filteredTextResults
+			} else {
+				textResults = results
+			}
+		}()
+	}
+
+	wg.Wait() // Attendi che entrambe le ricerche finiscano
+
+	// --- 5. Fase di Fusione (Reciprocal Rank Fusion) ---
+	// Se non c'è stata una ricerca testuale, i risultati sono semplicemente quelli vettoriali.
+	if textQuery == "" {
+		finalIDs := make([]string, len(vectorResults))
+		for i, res := range vectorResults {
+			// Converti l'ID interno in esterno
+			externalID, _ := hnswIndex.GetExternalID(res.DocID)
+			finalIDs[i] = externalID
+		}
+		s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": finalIDs})
+		return
+	}
+
+	/*
+		// versione RRF usata inizialmente, ignora i punteggi grezzi e si basa
+		// solo sul rank (posizione) di un documento in ogni lista
+		// non richiede normalizzazione ma perde l'informazione contenuta nei punteggi
+		// per il momento mantengo ma forse da eliminare
+		fusedScores := make(map[uint32]float64)
+		const rrf_k = 60 // Costante di tuning standard
+
+		// Aggiungi punteggi dalla ricerca vettoriale
+		for rank, res := range vectorResults {
+			// Per la distanza, un rank più basso è migliore. Il punteggio è 1 / (k + rank)
+			fusedScores[res.DocID] += 1.0 / (float64(rrf_k + rank))
+		}
+
+		// Aggiungi punteggi dalla ricerca testuale
+		for rank, res := range textResults {
+			// Per BM25, un rank più basso è migliore. Usiamo la stessa formula.
+			fusedScores[res.DocID] += 1.0 / (float64(rrf_k + rank))
+		}
+	*/
+
+	// Imposta il valore di alpha. Default a 0.5 se non fornito.
+	alpha := req.Alpha
+	if alpha == 0 {
+		alpha = 0.5
+	} else if alpha < 0 || alpha > 1 {
+		s.writeHTTPError(w, http.StatusBadRequest, "alpha deve essere compreso tra 0.1 e 1, 0 = default alpha 0.5")
+		return
+	}
+
+	// Normalizza entrambi i set di punteggi in un range [0, 1]
+	normalizeVectorScores(vectorResults)
+	normalizeTextScores(textResults)
+
+	// Crea una mappa per unire i risultati in modo efficiente
+	fusedScores := make(map[uint32]float64)
+
+	// Aggiungi punteggi dalla ricerca vettoriale
+	for _, res := range vectorResults {
+		fusedScores[res.DocID] += alpha * res.Score
+	}
+
+	// Aggiungi punteggi dalla ricerca testuale
+	for _, res := range textResults {
+		fusedScores[res.DocID] += (1 - alpha) * res.Score
+	}
+
+	// --- 6. Ordinamento Finale e Restituzione ---
+
+	// Converti la mappa dei punteggi fusi in una slice
+	finalResults := make([]FusedResult, 0, len(fusedScores))
+	for id, score := range fusedScores {
+		// Dobbiamo convertire l'ID interno in esterno
+		externalID, found := hnswIndex.GetExternalID(id)
+		if !found {
+			continue
+		} // Sicurezza: ignora se non troviamo la corrispondenza
+		finalResults = append(finalResults, FusedResult{ID: externalID, Score: score})
+	}
+
+	// Ordina per punteggio decrescente
+	sort.Slice(finalResults, func(i, j int) bool {
+		return finalResults[i].Score > finalResults[j].Score
+	})
+
+	// Prendi i primi 'k' risultati
+	finalIDs := make([]string, 0, req.K)
+	for i := 0; i < req.K && i < len(finalResults); i++ {
+		finalIDs = append(finalIDs, finalResults[i].ID)
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": finalIDs})
+
+}
+
+// Definiamo la regex a livello di package per compilarla una sola volta.
+var containsRegex = regexp.MustCompile(`(?i)\s*CONTAINS\s*\(\s*(\w+)\s*,\s*['"](.+?)['"]\s*\)`)
+
+// parseHybridFilter separa il filtro testuale (CONTAINS) dai filtri booleani.
+func parseHybridFilter(filter string) (booleanFilter, textQuery, textField string) {
+	// Trova la clausola CONTAINS
+	matches := containsRegex.FindStringSubmatch(filter)
+
+	if len(matches) == 0 {
+		// Nessuna clausola CONTAINS, tutto il filtro è booleano.
+		return filter, "", ""
+	}
+
+	// Estrai le parti della clausola CONTAINS
+	fullMatch := matches[0]
+	textField = matches[1]
+	textQuery = matches[2]
+
+	// Rimuovi la clausola CONTAINS dalla stringa di filtro originale
+	// per ottenere solo i filtri booleani.
+	booleanFilter = strings.Replace(filter, fullMatch, "", 1)
+
+	// Pulisci eventuali "AND" rimasti appesi
+	booleanFilter = strings.TrimSpace(booleanFilter)
+	booleanFilter = strings.TrimPrefix(booleanFilter, "AND ")
+	booleanFilter = strings.TrimSuffix(booleanFilter, " AND")
+	booleanFilter = strings.TrimSpace(booleanFilter)
+	// booleanFilter = strings.Trim(booleanFilter, "AND") // Trim taglia da entrambi i lati
+
+	return booleanFilter, textQuery, textField
+}
+
+/*
 func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST")
@@ -585,6 +861,7 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 	results := idx.Search(req.QueryVector, req.K, allowList, req.EfSearch)
 	s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": results})
 }
+*/
 
 // struct della richiesta batch
 type BatchGetVectorsRequest struct {
