@@ -61,6 +61,16 @@ func (s *Server) router(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// --- Endpoint di Sistema ---
+	if path == "/system/vectorizers" {
+		s.handleGetVectorizers(w, r)
+		return
+	}
+	if strings.HasPrefix(path, "/system/vectorizers/") {
+		s.handleTriggerVectorizer(w, r)
+		return
+	}
+
 	// --- Endpoint KV ---
 	if strings.HasPrefix(path, "/kv/") {
 		s.handleKV(w, r)
@@ -1027,6 +1037,45 @@ func (s *Server) handleTaskStatus(w http.ResponseWriter, r *http.Request) {
 type VectorCompressRequest struct {
 	IndexName string `json:"index_name"`
 	Precision string `json:"precision"`
+}
+
+func (s *Server) handleGetVectorizers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo GET")
+		return
+	}
+	if s.vectorizerService == nil {
+		s.writeHTTPResponse(w, http.StatusOK, []interface{}{})
+		return
+	}
+	statuses := s.vectorizerService.GetStatuses()
+	s.writeHTTPResponse(w, http.StatusOK, statuses)
+}
+
+func (s *Server) handleTriggerVectorizer(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST")
+		return
+	}
+
+	name := strings.TrimPrefix(r.URL.Path, "/system/vectorizers/")
+	name = strings.TrimSuffix(name, "/trigger") // Rimuove il suffisso
+
+	if s.vectorizerService == nil {
+		s.writeHTTPError(w, http.StatusNotFound, "VectorizerService non è attivo")
+		return
+	}
+
+	err := s.vectorizerService.Trigger(name)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{
+		"status":  "OK",
+		"message": fmt.Sprintf("Sincronizzazione per il vectorizer '%s' avviata in background.", name),
+	})
 }
 
 // compressione di un indice ad una determinata precisione (float16 o int8)

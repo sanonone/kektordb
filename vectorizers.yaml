@@ -1,0 +1,17 @@
+vectorizers:
+  - name: "manuale_prodotto"
+    kektor_index: "knowledge_base"
+    schedule: "30s"
+    source:
+      type: "filesystem"
+      path: "tmp/docs" # Usa una cartella che esiste
+    embedder:
+      type: "ollama_api"
+      url: "http://localhost:11434/api/embeddings"
+      model: "nomic-embed-text"
+    document_processor:
+      chunking_strategy: "lines"
+      chunk_size: 200
+    metadata_template:
+      source_file: "{{file_path}}"
+      progetto: "kektordb-docs"

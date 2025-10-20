@@ -40,6 +40,8 @@ type Server struct {
 	aofRewritePercentage int
 	aofBaseSize          int64 // Dimensione AOF dopo l'ultima riscrittura
 	taskManager          *TaskManager
+	vectorizerConfig     *Config
+	vectorizerService    *VectorizerService
 }
 
 type savePolicy struct {
@@ -48,7 +50,7 @@ type savePolicy struct {
 }
 
 // crea una nuova istanza del server
-func NewServer(aofPath string, savePolicyStr string, aofRewritePerc int) (*Server, error) {
+func NewServer(aofPath string, savePolicyStr string, aofRewritePerc int, vectorizersConfigPath string) (*Server, error) {
 	// aprie o crea il file AOF
 	//0666 sono i permessi del file
 	file, err := os.OpenFile(aofPath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
@@ -61,6 +63,16 @@ func NewServer(aofPath string, savePolicyStr string, aofRewritePerc int) (*Serve
 		return nil, err
 	}
 
+	// --- Carica la configurazione dei Vectorizer ---
+	vecConfig, err := LoadVectorizersConfig(vectorizersConfigPath)
+	if err != nil {
+		return nil, err
+	}
+	// Stampa un log per confermare il caricamento
+	if len(vecConfig.Vectorizers) > 0 {
+		log.Printf("Caricate %d configurazioni di Vectorizer dal file '%s'", len(vecConfig.Vectorizers), vectorizersConfigPath)
+	}
+
 	s := &Server{
 		db:                   core.NewDB(), // inizializzo core
 		aofFile:              file,
@@ -68,7 +80,15 @@ func NewServer(aofPath string, savePolicyStr string, aofRewritePerc int) (*Serve
 		aofRewritePercentage: aofRewritePerc,
 		lastSaveTime:         time.Now(),
 		taskManager:          NewTaskManager(),
+		vectorizerConfig:     vecConfig,
 	}
+	vecService, err := NewVectorizerService(s)
+	if err != nil {
+		// Questo errore non è fatale, il server può partire anche senza vectorizer
+		log.Printf("ATTENZIONE: Il servizio Vectorizer non è partito: %v", err)
+	}
+	s.vectorizerService = vecService
+
 	return s, nil
 }
 
@@ -111,6 +131,10 @@ func (s *Server) Run(httpAddr string) error {
 	// Ottieni la dimensione iniziale dell'AOF dopo il caricamento
 	info, _ := s.aofFile.Stat()
 	s.aofBaseSize = info.Size()
+
+	if s.vectorizerService != nil {
+		s.vectorizerService.Start() // Avvia tutti i vectorizer
+	}
 
 	// --- NUOVO: Avvia la goroutine di manutenzione in background ---
 	go s.serverCron()
@@ -680,6 +704,12 @@ func (s *Server) Shutdown() {
 	if s.aofFile != nil {
 		s.aofFile.Close()
 	}
+
+	// ferma il vectorizer service
+	if s.vectorizerService != nil {
+		s.vectorizerService.Stop()
+	}
+
 	log.Println("Shutdown completato.")
 }
 

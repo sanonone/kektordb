@@ -904,6 +904,27 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Ottiene la configurazione dell'indice per sapere quale analizzatore usare
+	idx, ok := s.vectorIndexes[indexName]
+	if !ok {
+		return nil
+	} // L'indice non esiste, non fare nulla
+
+	hnswIndex, ok := idx.(*hnsw.Index)
+	if !ok {
+		return nil
+	}
+
+	var analyzer textanalyzer.Analyzer
+	switch hnswIndex.TextLanguage() { // Dobbiamo creare questo metodo getter
+	case "english":
+		analyzer = textanalyzer.NewEnglishStemmer()
+	case "italian":
+		analyzer = textanalyzer.NewItalianStemmer()
+	default:
+		// Nessun analizzatore se la lingua non è impostata o non è supportata
+	}
+
 	for key, value := range metadata {
 		switch v := value.(type) { // controlla il tipo della variabile any
 		case string:
@@ -919,6 +940,77 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 				indexMetadata[key][v] = make(map[uint32]struct{})
 			}
 			indexMetadata[key][v][nodeID] = struct{}{}
+
+			// --- Indicizzazione Full-Text (con analyzer) ---
+			/*
+				if analyzer != nil {
+					tokens := analyzer.Analyze(v)                                         // Usa il tuo analizzatore!
+					log.Printf("[DEBUG TEXT INDEX] Testo: '%s' -> Tokens: %v", v, tokens) // <-- LOG 1
+
+					if _, ok := s.textIndex[indexName][key]; !ok {
+						s.textIndex[indexName][key] = make(map[string]PostingList)
+					}
+
+					for _, token := range tokens {
+						log.Printf("[DEBUG TEXT INDEX] Indicizzazione token '%s' per nodo %d", token, nodeID) // <-- LOG 2
+						list := s.textIndex[indexName][key][token]
+						if len(list) == 0 || list[len(list)-1] != nodeID {
+							s.textIndex[indexName][key][token] = append(list, nodeID)
+						}
+					}
+				} else {
+					log.Printf("[DEBUG TEXT INDEX] Analyzer è nil per l'indice '%s'", indexName) // <-- LOG 3
+				}
+			*/
+			if analyzer != nil {
+				tokens := analyzer.Analyze(v)
+
+				// Inizializza le mappe se non esistono
+				if _, ok := s.textIndex[indexName][key]; !ok {
+					s.textIndex[indexName][key] = make(map[string]PostingList)
+				}
+				if _, ok := s.textIndexStats[indexName][key]; !ok {
+					s.textIndexStats[indexName][key] = &TextIndexStats{
+						DocLengths: make(map[uint32]int),
+					}
+				}
+
+				stats := s.textIndexStats[indexName][key]
+
+				// --- NUOVA LOGICA BM25 ---
+
+				// 1. Aggiorna le statistiche del documento
+				if _, docExists := stats.DocLengths[nodeID]; !docExists {
+					stats.TotalDocs++
+				}
+				stats.DocLengths[nodeID] = len(tokens)
+
+				// 2. Calcola le frequenze dei termini (TF) per questo documento
+				termFrequencies := make(map[string]int)
+				for _, token := range tokens {
+					termFrequencies[token]++
+				}
+
+				// 3. Aggiorna l'indice invertido con TF
+				for token, freq := range termFrequencies {
+					list := s.textIndex[indexName][key][token]
+
+					// Controlla se il docID è già nella lista per evitare duplicati
+					found := false
+					for _, entry := range list {
+						if entry.DocID == nodeID {
+							found = true
+							break
+						}
+					}
+					if !found {
+						s.textIndex[indexName][key][token] = append(list, PostingEntry{
+							DocID:         nodeID,
+							TermFrequency: freq,
+						})
+					}
+				}
+			}
 
 		case float64:
 			// --- NUOVA LOGICA B-TREE ---
@@ -941,11 +1033,16 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 		}
 	}
 
+	// Dobbiamo ricalcolare la lunghezza media del campo, che è costoso.
+	// Potremmo farlo qui o in un processo separato. Per ora, lo facciamo qui.
+	s.recalculateAvgFieldLengths(indexName)
+
 	return nil
 
 }
 
 func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[string]any) error {
+
 	// Ottiene la configurazione dell'indice per sapere quale analizzatore usare
 	idx, ok := s.vectorIndexes[indexName]
 	if !ok {
