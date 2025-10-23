@@ -36,15 +36,33 @@ func replaceSuffixIfInRegion(s string, regionStart int, old, new string) (string
 // --- Algoritmo di Stemming Inglese (Porter2) ---
 
 func isEnglishVowel(runes []rune, i int) bool {
+	// --- CONTROLLO DI SICUREZZA ---
+	// Aggiungiamo un "guard bound" per prevenire qualsiasi panic.
+	if i < 0 || i >= len(runes) {
+		return false
+	}
+
 	r := runes[i]
 	switch r {
 	case 'a', 'e', 'i', 'o', 'u':
 		return true
 	case 'y':
+		// La 'y' è una vocale se non è il primo carattere e
+		// il carattere precedente NON è una vocale.
 		if i == 0 {
-			return false
+			return false // 'y' a inizio parola è una consonante.
 		}
-		return !isEnglishVowel(runes, i-1)
+
+		// Controlla il carattere precedente senza ricorsione.
+		prevRune := runes[i-1]
+		switch prevRune {
+		case 'a', 'e', 'i', 'o', 'u':
+			return false // Il precedente era una vocale, quindi 'y' è una consonante.
+		default:
+			// Se il precedente non è a,e,i,o,u, allora 'y' è una vocale.
+			// (Questo non gestisce il caso di 'yy', ma per ora va bene).
+			return true
+		}
 	}
 	return false
 }
@@ -68,11 +86,11 @@ func getEnglishRegions(runes []rune) (r1, r2 int) {
 }
 
 func endsWithShortSyllable(s string) bool {
-	l := len(s)
+	runes := []rune(s)
+	l := len(runes)
 	if l < 2 {
 		return false
 	}
-	runes := []rune(s)
 	if l >= 3 && !isEnglishVowel(runes, l-3) && isEnglishVowel(runes, l-2) && !isEnglishVowel(runes, l-1) {
 		last := runes[l-1]
 		if last != 'w' && last != 'x' && last != 'y' {
@@ -305,4 +323,3 @@ func englishStep5(s string, r1 int) string {
 	}
 	return s
 }
-

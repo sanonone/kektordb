@@ -1,17 +1,83 @@
 vectorizers:
-  - name: "manuale_prodotto"
+  - name: "kektordb"
     kektor_index: "knowledge_base"
     schedule: "30s"
     source:
       type: "filesystem"
-      path: "tmp/docs" # Usa una cartella che esiste
+      path: "/home/dash/myGoProg/kektordb/internal/" # Usa una cartella che esiste
     embedder:
       type: "ollama_api"
       url: "http://localhost:11434/api/embeddings"
       model: "nomic-embed-text"
     document_processor:
       chunking_strategy: "lines"
-      chunk_size: 200
+      chunk_size: 400
     metadata_template:
       source_file: "{{file_path}}"
       progetto: "kektordb-docs"
+  - name: "kektordb"
+    kektor_index: "knowledge_base"
+    schedule: "30s"
+    source:
+      type: "filesystem"
+      path: "/home/dash/myGoProg/kektordb/pkg/" # Usa una cartella che esiste
+    embedder:
+      type: "ollama_api"
+      url: "http://localhost:11434/api/embeddings"
+      model: "nomic-embed-text"
+    document_processor:
+      chunking_strategy: "lines"
+      chunk_size: 400
+    metadata_template:
+      source_file: "{{file_path}}"
+      progetto: "kektordb-docs"
+  - name: "kektordb"
+    kektor_index: "knowledge_base"
+    schedule: "30s"
+    source:
+      type: "filesystem"
+      path: "/home/dash/myGoProg/kektordb/cmd/" # Usa una cartella che esiste
+    embedder:
+      type: "ollama_api"
+      url: "http://localhost:11434/api/embeddings"
+      model: "nomic-embed-text"
+    document_processor:
+      chunking_strategy: "lines"
+      chunk_size: 400
+    metadata_template:
+      source_file: "{{file_path}}"
+      progetto: "kektordb-docs"
+  - name: "kektordb"
+    kektor_index: "knowledge_base"
+    schedule: "30s"
+    source:
+      type: "filesystem"
+      path: "/home/dash/myGoProg/kektordb/examples/" # Usa una cartella che esiste
+    embedder:
+      type: "ollama_api"
+      url: "http://localhost:11434/api/embeddings"
+      model: "nomic-embed-text"
+    document_processor:
+      chunking_strategy: "lines"
+      chunk_size: 400
+    metadata_template:
+      source_file: "{{file_path}}"
+      progetto: "kektordb-docs"
+  - name: "kektordb"
+    kektor_index: "knowledge_base"
+    schedule: "30s"
+    source:
+      type: "filesystem"
+      path: "/home/dash/Documenti/nvim comandi" # Usa una cartella che esiste
+    embedder:
+      type: "ollama_api"
+      url: "http://localhost:11434/api/embeddings"
+      model: "nomic-embed-text"
+    document_processor:
+      chunking_strategy: "lines"
+      chunk_size: 400
+    metadata_template:
+      source_file: "{{file_path}}"
+      progetto: "kektordb-docs"
+
+

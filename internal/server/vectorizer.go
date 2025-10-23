@@ -226,6 +226,7 @@ func (v *Vectorizer) processFile(filePath string) error {
 		v.server.aofMutex.Lock()
 		v.server.aofFile.WriteString(aofCommand)
 		v.server.aofMutex.Unlock()
+		atomic.AddInt64(&v.server.dirtyCounter, 1)
 
 		// Ora crea l'indice in memoria
 		err := v.server.db.CreateVectorIndex(v.config.KektorIndex, metric, m, efConstruction, precision, textLang)
@@ -308,6 +309,8 @@ func (v *Vectorizer) processFile(filePath string) error {
 		v.server.aofMutex.Lock()
 		v.server.aofFile.WriteString(aofCommand)
 		v.server.aofMutex.Unlock()
+
+		atomic.AddInt64(&v.server.dirtyCounter, 1)
 	}
 	// --- FINE LOOP ---
 
@@ -325,6 +328,7 @@ func (v *Vectorizer) processFile(filePath string) error {
 	v.server.aofMutex.Unlock()
 
 	v.server.db.GetKVStore().Set(stateKey, []byte(newModTime))
+	atomic.AddInt64(&v.server.dirtyCounter, 1)
 
 	// Se tutti i chunk sono falliti, restituisci un errore per l'intero file.
 	if failedChunks == len(chunks) && len(chunks) > 0 {
