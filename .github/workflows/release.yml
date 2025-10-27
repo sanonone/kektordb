@@ -2,79 +2,73 @@ name: Build & Release KektorDB
 
 on:
   release:
-    types: [created]
+    types: [published]
 
-# --- Aggiungere i Permessi ---
-# il permesso di scrivere sulla release
 permissions:
   contents: write
 
 jobs:
-  build-and-release:
-    name: Build and Upload Release Binaries
+  create-release-assets:
+    name: Create Release Assets
     runs-on: ubuntu-latest
-    
-    strategy:
-      matrix:
-        go-os-arch: [
-          'linux-amd64',
-          'linux-arm64',
-          'windows-amd64',
-          'darwin-amd64',
-          'darwin-arm64'
-        ]
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+        # Esegui il fetch di tutti i tag per ottenere il nome della versione corretto
+        with:
+          fetch-depth: 0 
 
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
           go-version: '1.24.6'
-
-      - name: Parse OS and Arch from matrix
-        id: parse
-        run: |
-          os_arch=(${GO_OS_ARCH//-/ })
-          echo "GO_OS=${os_arch[0]}" >> $GITHUB_ENV
-          echo "GO_ARCH=${os_arch[1]}" >> $GITHUB_ENV
-        env:
-          GO_OS_ARCH: ${{ matrix.go-os-arch }}
-
-      - name: Set output file extension for Windows
-        id: set_ext
-        if: env.GO_OS == 'windows'
-        run: echo "EXT=.exe" >> $GITHUB_ENV
-
-      # --- Eseguire solo i Test Unitari ---
-      # -short per escludere i test di integrazione 
-      # Modifiche per il test per rispettare questa convenzione
-      - name: Run Go unit tests
-        if: matrix.go-os-arch == 'linux-amd64' # Esegui i test solo una volta
-        run: go test -short -v ./...
-
-      - name: Build the application
-        run: |
-          go build -v -o kektordb${{ env.EXT }} ./cmd/kektordb
-
-      - name: Create archive
-        run: |
-          ARCHIVE_NAME="kektordb-${{ github.event.release.tag_name }}-${{ env.GO_OS }}-${{ env.GO_ARCH }}"
-          if [ "${{ env.GO_OS }}" = "windows" ]; then
-            7z a "${ARCHIVE_NAME}.zip" kektordb.exe LICENSE README.md
-            echo "ASSET_PATH=${ARCHIVE_NAME}.zip" >> $GITHUB_ENV
-          else
-            tar -czvf "${ARCHIVE_NAME}.tar.gz" kektordb LICENSE README.md
-            echo "ASSET_PATH=${ARCHIVE_NAME}.tar.gz" >> $GITHUB_ENV
-          fi
-
-      - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Set up Rust (Stable Toolchain)
+        uses: actions-rs/toolchain@v1
         with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: ${{ env.ASSET_PATH }}
-          asset_name: ${{ env.ASSET_PATH }}
-          asset_content_type: application/octet-stream
+          toolchain: stable
+      
+      - name: Set up Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Add all Rust cross-compilation targets
+        run: |
+          rustup target add x86_64-unknown-linux-gnu
+          rustup target add aarch64-unknown-linux-gnu
+          rustup target add x86_64-pc-windows-gnu
+          rustup target add aarch64-apple-darwin
+          rustup target add x86_64-apple-darwin
+
+      - name: Run unit tests (Go-pure mode)
+        # Eseguiamo i test sulla versione più semplice e portabile
+        run: make test
+
+      - name: Build all release binaries using Makefile
+        # Il Makefile si occuperà di tutta la logica di cross-compilazione
+        run: make release
+      
+      - name: Package release assets into archives
+        run: |
+          cd release
+          for f in *; do
+            BASENAME=$(echo "$f" | sed 's/\.exe$//')
+            if [[ "$f" == *.exe ]]; then
+              zip "${BASENAME}.zip" "$f" ../LICENSE ../README.md
+            else
+              tar -czvf "${BASENAME}.tar.gz" "$f" ../LICENSE ../README.md
+            fi
+          done
+          # Elenca i file creati per il debug
+          ls -l ../
+          mv *.zip *.tar.gz ../
+          
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v1
+        with:
+          # Carica tutti i file .zip e .tar.gz dalla radice
+          files: |
+            *.zip
+            *.tar.gz

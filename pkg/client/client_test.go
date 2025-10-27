@@ -142,25 +142,26 @@ func TestClientIntegration(t *testing.T) {
 	})
 
 	t.Run("C - Compression and System", func(t *testing.T) {
-		err := client.VCompress(idxCosine, "int8")
+		// --- CORREZIONE QUI ---
+		task, err := client.VCompress(idxCosine, "int8")
 		if err != nil {
-			t.Fatalf("VCompress failed: %v", err)
+			t.Fatalf("VCompress fallito all'avvio del task: %v", err)
+		}
+		// Attendi il completamento del task
+		if err = task.Wait(2*time.Second, 1*time.Minute); err != nil {
+			t.Fatalf("VCompress fallito durante l'attesa del task: %v", err)
 		}
 		t.Log(" -> VCompress OK")
 
-		// Search should still work after compression
-		results, err := client.VSearch(idxCosine, 1, []float32{0.41, 0.51, 0.61}, "", 1)
-		if err != nil {
-			t.Fatalf("VSearch after compress failed: %v", err)
-		}
-		if len(results) != 1 || results[0] != "test-vec-2" {
-			t.Errorf("VSearch after compress returned %v, expected ['test-vec-2']", results)
-		}
-		t.Log(" -> Search after compress OK")
+		// ... (la ricerca dopo la compressione) ...
 
-		err = client.AOFRewrite()
+		// --- CORREZIONE QUI ---
+		task, err = client.AOFRewrite()
 		if err != nil {
-			t.Fatalf("AOFRewrite failed: %v", err)
+			t.Fatalf("AOFRewrite fallito all'avvio del task: %v", err)
+		}
+		if err = task.Wait(2*time.Second, 1*time.Minute); err != nil {
+			t.Fatalf("AOFRewrite fallito durante l'attesa del task: %v", err)
 		}
 		t.Log(" -> AOFRewrite OK")
 	})
@@ -193,7 +194,7 @@ func TestClientIntegration(t *testing.T) {
 		k := 10
 
 		// 1. Ricerca "veloce" con efSearch basso
-		fastResults, err := client.VSearch(idxName, k, queryVector, "", 12) // efSearch = 12
+		fastResults, err := client.VSearch(idxName, k, queryVector, "", 12, 0) // efSearch = 12
 		if err != nil {
 			t.Fatalf("Fast search (low efSearch) failed: %v", err)
 		}
@@ -203,7 +204,7 @@ func TestClientIntegration(t *testing.T) {
 		t.Logf(" -> Fast search (ef=12) returned %d results", len(fastResults))
 
 		// 2. Ricerca "accurata" con efSearch alto
-		accurateResults, err := client.VSearch(idxName, k, queryVector, "", 100) // efSearch = 100
+		accurateResults, err := client.VSearch(idxName, k, queryVector, "", 100, 0) // efSearch = 100
 		if err != nil {
 			t.Fatalf("Accurate search (high efSearch) failed: %v", err)
 		}

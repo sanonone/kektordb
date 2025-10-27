@@ -1,79 +1,89 @@
 package distance
 
 import (
+	"fmt"
 	"github.com/x448/float16"
 	"math"
 	"math/rand"
 	"testing"
 )
 
-// altrimenti il test da segna come differenti due valori praticamente uguali
+// Helper di normalizzazione SOLO per i test
+func normalizeTest(v []float32) {
+	var norm float32
+	for _, val := range v {
+		norm += val * val
+	}
+	if norm > 0 {
+		norm = float32(math.Sqrt(float64(norm)))
+		for i := range v {
+			v[i] /= norm
+		}
+	}
+}
+
+// Helper per il confronto con tolleranza
 func floatsAreEqual(a, b float64) bool {
 	const tolerance = 1e-6
 	return math.Abs(a-b) < tolerance
 }
 
-// --- TEST DI CORRETTEZZA ---
-// Dato che ora non abbiamo più implementazioni separate (Go vs SIMD),
-// testiamo che le nostre implementazioni diano risultati ragionevoli.
-// Un test più approfondito confronterebbe Gonum con l'implementazione Go pura.
+// --- TEST DI CORRETTEZZA UNIFICATI ---
+// Questi test funzionano sia in modalità Go-pura che Rust,
+// perché usano i getter pubblici che si adattano dinamicamente.
 
-func TestSquaredEuclideanGonum(t *testing.T) {
-	v1 := []float32{1, 2, 3}
-	v2 := []float32{4, 5, 6}
-	// (4-1)^2 + (5-2)^2 + (6-3)^2 = 9 + 9 + 9 = 27
-	expected := 27.0
+func TestImplementations(t *testing.T) {
+	// Questi test usano Get...Func(), quindi testano
+	// automaticamente la versione attiva (Go o Rust).
 
-	dist, err := squaredEuclideanGonum(v1, v2)
-	if err != nil {
-		t.Fatalf("Errore inatteso: %v", err)
-	}
-	if dist != expected {
-		t.Errorf("Risultato errato: ottenuto %f, atteso %f", dist, expected)
-	}
-}
+	t.Run("EuclideanF32", func(t *testing.T) {
+		fn, _ := GetFloat32Func(Euclidean)
+		v1, v2 := []float32{1, 2}, []float32{3, 4}
+		expected := 8.0 // (3-1)^2 + (4-2)^2 = 4 + 4 = 8
+		dist, _ := fn(v1, v2)
+		if !floatsAreEqual(dist, expected) {
+			t.Errorf("got %f, want %f", dist, expected)
+		}
+	})
 
-func TestDotProductAsDistanceGonum(t *testing.T) {
-	// Vettori normalizzati
-	v1 := []float32{0.26726124, 0.5345225, 0.8017837}
-	v2 := []float32{0.26726124, 0.5345225, 0.8017837}
-	// dot = 1.0; 1 - dot = 0.0
-	expected := 0.0
+	t.Run("CosineF32", func(t *testing.T) {
+		fn, _ := GetFloat32Func(Cosine)
+		v1 := []float32{1, 2, 3}
+		normalizeTest(v1)                // Normalizza per il test
+		v2 := append([]float32{}, v1...) // Crea una copia
+		expected := 0.0
+		dist, _ := fn(v1, v2)
+		if !floatsAreEqual(dist, expected) {
+			t.Errorf("got %.15f, want %.15f", dist, expected)
+		}
+	})
 
-	dist, err := dotProductAsDistanceGonum(v1, v2)
-	if err != nil {
-		t.Fatalf("Errore inatteso: %v", err)
-	}
-	// Usa il confronto con tolleranza
-	if !floatsAreEqual(dist, expected) {
-		t.Errorf("Risultato errato: ottenuto %.15f, atteso %.15f", dist, expected)
-	}
-}
+	t.Run("EuclideanF16", func(t *testing.T) {
+		fn, _ := GetFloat16Func(Euclidean)
+		v1f, v2f := []float32{1, 2}, []float32{3, 4}
+		expected := 8.0
+		v1 := make([]uint16, len(v1f))
+		v2 := make([]uint16, len(v2f))
+		for i := range v1f {
+			v1[i] = float16.Fromfloat32(v1f[i]).Bits()
+			v2[i] = float16.Fromfloat32(v2f[i]).Bits()
+		}
+		dist, _ := fn(v1, v2)
+		if !floatsAreEqual(dist, expected) {
+			t.Errorf("got %f, want %f", dist, expected)
+		}
+	})
 
-func TestSquaredEuclideanF16AVX(t *testing.T) {
-	v1f := []float32{1, 2, 3}
-	v2f := []float32{4, 5, 6}
-	expected := float32(27.0) // (4-1)^2 + (5-2)^2 + (6-3)^2 = 27
-
-	// Converti in uint16 come float16
-	v1 := make([]uint16, len(v1f))
-	v2 := make([]uint16, len(v2f))
-	for i := range v1f {
-		v1[i] = uint16(float16.Fromfloat32(v1f[i]).Bits())
-		v2[i] = uint16(float16.Fromfloat32(v2f[i]).Bits())
-	}
-
-	dist := SquaredEuclideanFloat16AVX2(v1, v2)
-
-	if absf(dist-expected) > 1e-3 {
-		t.Errorf("Risultato errato: ottenuto %f, atteso %f", dist, expected)
-	}
-}
-func absf(x float32) float32 {
-	if x < 0 {
-		return -x
-	}
-	return x
+	t.Run("CosineInt8", func(t *testing.T) {
+		fn, _ := GetInt8Func(Cosine)
+		v1 := []int8{10, 20}
+		v2 := []int8{2, 3}
+		expected := int32(80) // 10*2 + 20*3 = 80
+		dist, _ := fn(v1, v2)
+		if int32(dist) != expected {
+			t.Errorf("got %d, want %d", dist, expected)
+		}
+	})
 }
 
 // --- BENCHMARK ---
@@ -109,94 +119,55 @@ func generateInt8Vectors(dims int) ([]int8, []int8) {
 	return v1, v2
 }
 
-// Benchmark per Euclidean: Go vs Gonum
-func BenchmarkEuclideanGo(b *testing.B) {
-	v1, v2 := generateVectors(128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		squaredEuclideanDistanceGo(v1, v2)
-	}
-}
-func BenchmarkEuclideanGonum(b *testing.B) {
-	v1, v2 := generateVectors(128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		squaredEuclideanGonum(v1, v2)
-	}
-}
+func BenchmarkFloat32(b *testing.B) {
+	eucFunc, _ := GetFloat32Func(Euclidean)
+	cosFunc, _ := GetFloat32Func(Cosine)
+	dims := []int{64, 128, 256, 512, 1024, 1536}
 
-// Benchmark per Coseno: Go vs Gonum
-func BenchmarkCosineGo(b *testing.B) {
-	v1, v2 := generateVectors(128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		dotProductAsDistanceGo(v1, v2)
-	}
-}
-func BenchmarkCosineGonum(b *testing.B) {
-	v1, v2 := generateVectors(128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		dotProductAsDistanceGonum(v1, v2)
+	for _, d := range dims {
+		b.Run(fmt.Sprintf("Euclidean_%dD", d), func(b *testing.B) {
+			v1, v2 := generateVectors(d)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				eucFunc(v1, v2)
+			}
+		})
+
+		b.Run(fmt.Sprintf("Cosine_%dD", d), func(b *testing.B) {
+			v1, v2 := generateVectors(d)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				cosFunc(v1, v2)
+			}
+		})
 	}
 }
 
-func BenchmarkEuclideanFloat16(b *testing.B) {
-	v1, v2 := generateFloat16Vectors(128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		squaredEuclideanGoFloat16(v1, v2)
+func BenchmarkFloat16(b *testing.B) {
+	f16Func, _ := GetFloat16Func(Euclidean)
+	dims := []int{64, 128, 256, 512, 1024, 1536}
+
+	for _, d := range dims {
+		b.Run(fmt.Sprintf("Euclidean_%dD", d), func(b *testing.B) {
+			v1, v2 := generateFloat16Vectors(d)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				f16Func(v1, v2)
+			}
+		})
 	}
 }
 
-func BenchmarkEuclideanFloat16AVX(b *testing.B) {
-	v1, v2 := generateFloat16Vectors(128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		squaredEuclideanF16AVX2Wrapper(v1, v2)
-	}
-}
-
-func BenchmarkCosineInt8(b *testing.B) {
-	v1, v2 := generateInt8Vectors(128)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		dotProductGoInt8(v1, v2)
-	}
-}
-
-// --- BENCHMARK SU VETTORI LUNGHI (768 dimensioni, tipico per BERT) ---
-
-const longVectorDims = 768
-
-func BenchmarkEuclideanGo_Long(b *testing.B) {
-	v1, v2 := generateVectors(longVectorDims)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		squaredEuclideanDistanceGo(v1, v2)
-	}
-}
-
-func BenchmarkEuclideanGonum_Long(b *testing.B) {
-	v1, v2 := generateVectors(longVectorDims)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		squaredEuclideanGonum(v1, v2)
-	}
-}
-
-func BenchmarkCosineGo_Long(b *testing.B) {
-	v1, v2 := generateVectors(longVectorDims)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		dotProductAsDistanceGo(v1, v2)
-	}
-}
-
-func BenchmarkCosineGonum_Long(b *testing.B) {
-	v1, v2 := generateVectors(longVectorDims)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		dotProductAsDistanceGonum(v1, v2)
+func BenchmarkInt8(b *testing.B) {
+	i8Func, _ := GetInt8Func(Cosine)
+	dims := []int{64, 128, 256, 512, 1024}
+	for _, d := range dims {
+		b.Run(fmt.Sprintf("Cosine_%dD", d), func(b *testing.B) {
+			v1, v2 := generateInt8Vectors(d)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				i8Func(v1, v2)
+			}
+		})
 	}
 }
