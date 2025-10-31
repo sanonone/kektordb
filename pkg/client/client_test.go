@@ -1,4 +1,3 @@
-// File: pkg/client/client_test.go
 package client
 
 import (
@@ -142,26 +141,22 @@ func TestClientIntegration(t *testing.T) {
 	})
 
 	t.Run("C - Compression and System", func(t *testing.T) {
-		// --- CORREZIONE QUI ---
 		task, err := client.VCompress(idxCosine, "int8")
 		if err != nil {
-			t.Fatalf("VCompress fallito all'avvio del task: %v", err)
+			t.Fatalf("VCompress failed to start task: %v", err)
 		}
-		// Attendi il completamento del task
+		// Wait for the task to complete
 		if err = task.Wait(2*time.Second, 1*time.Minute); err != nil {
-			t.Fatalf("VCompress fallito durante l'attesa del task: %v", err)
+			t.Fatalf("VCompress failed while waiting for task: %v", err)
 		}
 		t.Log(" -> VCompress OK")
 
-		// ... (la ricerca dopo la compressione) ...
-
-		// --- CORREZIONE QUI ---
 		task, err = client.AOFRewrite()
 		if err != nil {
-			t.Fatalf("AOFRewrite fallito all'avvio del task: %v", err)
+			t.Fatalf("AOFRewrite failed to start task: %v", err)
 		}
 		if err = task.Wait(2*time.Second, 1*time.Minute); err != nil {
-			t.Fatalf("AOFRewrite fallito durante l'attesa del task: %v", err)
+			t.Fatalf("AOFRewrite failed while waiting for task: %v", err)
 		}
 		t.Log(" -> AOFRewrite OK")
 	})
@@ -169,13 +164,13 @@ func TestClientIntegration(t *testing.T) {
 	t.Run("D - Dynamic Search Tuning", func(t *testing.T) {
 		idxName := fmt.Sprintf("go-e2e-efsearch-%d", timestamp)
 
-		// Usiamo parametri di costruzione bassi per evidenziare l'effetto di efSearch
+		// Use low construction parameters to highlight the effect of efSearch
 		err := client.VCreate(idxName, "euclidean", "float32", 8, 20)
 		if err != nil {
 			t.Fatalf("VCreate for efSearch test failed: %v", err)
 		}
 
-		// Popola con un numero sufficiente di vettori
+		// Populate with a sufficient number of vectors
 		const numVectors = 100
 		const dims = 16
 		vectors := make([][]float32, numVectors)
@@ -193,7 +188,7 @@ func TestClientIntegration(t *testing.T) {
 		queryVector := vectors[50]
 		k := 10
 
-		// 1. Ricerca "veloce" con efSearch basso
+		// 1. "Fast" search with low efSearch
 		fastResults, err := client.VSearch(idxName, k, queryVector, "", 12, 0) // efSearch = 12
 		if err != nil {
 			t.Fatalf("Fast search (low efSearch) failed: %v", err)
@@ -203,7 +198,7 @@ func TestClientIntegration(t *testing.T) {
 		}
 		t.Logf(" -> Fast search (ef=12) returned %d results", len(fastResults))
 
-		// 2. Ricerca "accurata" con efSearch alto
+		// 2. "Accurate" search with high efSearch
 		accurateResults, err := client.VSearch(idxName, k, queryVector, "", 100, 0) // efSearch = 100
 		if err != nil {
 			t.Fatalf("Accurate search (high efSearch) failed: %v", err)
@@ -213,10 +208,10 @@ func TestClientIntegration(t *testing.T) {
 		}
 		t.Logf(" -> Accurate search (ef=100) returned %d results", len(accurateResults))
 
-		// La verifica principale è che entrambe le chiamate abbiano successo.
-		// Confrontare la qualità in modo deterministico è difficile, ma possiamo
-		// verificare che i set di risultati non siano identici, il che suggerisce
-		// che il parametro ha avuto un effetto.
+		// The main verification is that both calls succeed.
+		// Deterministically comparing quality is difficult, but we can
+		// check that the result sets are not identical, which suggests
+		// the parameter had an effect.
 		if reflect.DeepEqual(fastResults, accurateResults) && numVectors > 20 {
 			t.Log("Warning: fast and accurate search returned identical results, ef_search might not be having a strong effect.")
 		}

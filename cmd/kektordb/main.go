@@ -1,9 +1,24 @@
+// Package main starts the KektorDB server with configurable options.
+//
+// It parses command-line flags, initializes the server with persistence (AOF),
+// snapshot policies, and vectorizer configuration, then runs the REST API.
+// Graceful shutdown is supported via SIGINT/SIGTERM.
+//
+// Usage:
+//   kektordb --http-addr :9091 --aof-path data.aof --save "60 1000"
+//
+// Flags:
+//   --http-addr              HTTP address for the REST API (default: :9091)
+//   --aof-path               Path to the Append-Only File for persistence
+//   --save                   Snapshot policy: "seconds writes" (e.g., "60 1000")
+//   --aof-rewrite-percentage Percentage growth to trigger AOF rewrite (0 to disable)
+//   --vectorizers-config     Path to YAML config for automatic vectorizers
+
 package main
 
 import (
-	"flag"
-	//"fmt"
 	"errors"
+	"flag"
 	"github.com/sanonone/kektordb/internal/server"
 	"log"
 	"net/http"
@@ -13,41 +28,38 @@ import (
 )
 
 func main() {
-	// flag.String e flag.Int per definire parametri
-	// la funzione restituisce un puntatore alle variabili che conterrà il valore
-	// flag.String(nome, val_default, descrizione per help)
-	// tcpAddr := flag.String("tcp-addr", ":9090", "Indirizzo e porta per il server TCP (es. :9090 o 127.0.0.1:9090)")
-	httpAddr := flag.String("http-addr", ":9091", "Indirizzo e porta per il server API REST (es. :9091)")
-	aofPath := flag.String("aof-path", "kektordb.aof", "Percorso del file di persistenza AOF")
-	savePolicy := flag.String("save", "60 1000", "Policy di snapshot automatico: \"secondi scritture\". Disabilita con \"\".")
-	aofRewritePercentage := flag.Int("aof-rewrite-percentage", 100, "Riscrive l'AOF quando cresce di questa percentuale. 0 per disabilitare.")
-	vectorizersConfigPath := flag.String("vectorizers-config", "", "Percorso del file YAML di configurazione dei Vectorizer")
+	// Command-line flags with default values and help descriptions
+	httpAddr := flag.String("http-addr", ":9091", "HTTP address and port for the REST API (e.g., :9091 or 127.0.0.1:8080)")
+	aofPath := flag.String("aof-path", "kektordb.aof", "Path to the Append-Only File (AOF) for data persistence")
+	savePolicy := flag.String("save", "60 1000", "Auto-snapshot policy: \"seconds writes\". Use empty string to disable.")
+	aofRewritePercentage := flag.Int("aof-rewrite-percentage", 100, "Rewrite AOF when it grows by this percentage. Set 0 to disable.")
+	vectorizersConfigPath := flag.String("vectorizers-config", "", "Path to YAML configuration file for vectorizers")
 
-	flag.Parse() // popola le variabili sopra con i valori forniti dall'utente sulla riga di comando
+	flag.Parse() // Parse flags into the variables above
 
-	// crea istanza server e passo la configurazione come parametro
+	// Initialize the server with configuration
 	srv, err := server.NewServer(*aofPath, *savePolicy, *aofRewritePercentage, *vectorizersConfigPath)
 	if err != nil {
 		log.Fatalf("Impossibile creare il server: %v", err)
 	}
 
-	// canale in ascolto del segnale di interruzione (Ctrl+c)
+	// Channel to receive OS shutdown signals (Ctrl+C, SIGTERM)
 	shutdownChan := make(chan os.Signal, 1)
 	signal.Notify(shutdownChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// avvia il server TCP e HTTP in una goroutine per non bloccare il main
+	// Start HTTP server in a goroutine to avoid blocking main
 	go func() {
-		log.Printf("Avvio server KektorDB: API REST su %s, AOF in %s", *httpAddr, *aofPath)
+		log.Printf("Starting KektorDB server: REST API on %s, AOF at %s", *httpAddr, *aofPath)
 		// log.Fatal(srv.Run(*httpAddr)) // avvia il server con i parametri dell'utente
 		if err := srv.Run(*httpAddr); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("Errore critico del server: %v", err)
+			log.Fatalf("Server error: %v", err)
 		}
 	}()
 
-	// blocca il main in attesa del segnale di shutdown
+	// Block until shutdown signal is received
 	<-shutdownChan
 
-	// esegue lo spegnimento pulito
+	// Perform clean shutdown (flush AOF, stop vectorizers, etc.)
 	srv.Shutdown()
-
+	log.Println("Server stopped.")
 }

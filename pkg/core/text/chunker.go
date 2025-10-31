@@ -1,30 +1,35 @@
+// Package text provides utilities for text processing, such as document chunking.
+//
+// The functions in this package are designed to be Unicode-aware, ensuring correct
+// handling of multi-byte characters. It includes strategies for splitting large
+// documents into smaller, manageable pieces for tasks like embedding.
 package text
 
-// Chunk rappresenta un singolo pezzo di testo.
+// Chunk represents a single piece of text produced by a chunker.
+// It includes the content and its sequential position within the original document.
 type Chunk struct {
 	Content     string
 	ChunkNumber int
 }
 
-/*
-Prende il testo, la dimensione del chunk e la dimensione della sovrapposizione come input.
-
-Lavora con le rune invece che con i byte per non tagliare a metà i caratteri multi-byte (come emoji o lettere accentate).
-
-Avanza nel testo di chunkSize - overlapSize. Ad esempio, con chunkSize=100 e overlap=20, il primo chunk sarà [0:100], il secondo [80:180], il terzo [160:260], e così via.
-
-La sovrapposizione di 20 caratteri assicura che il contesto non venga perso bruscamente tra un chunk e l'altro.
-*/
-// FixedSizeChunker divide il testo in chunk di dimensione fissa con sovrapposizione.
-// La sovrapposizione aiuta a mantenere il contesto tra i chunk.
+// FixedSizeChunker splits text into fixed-size chunks with a specified overlap.
+//
+// This function operates on runes rather than bytes to correctly handle multi-byte
+// Unicode characters (e.g., emojis, accented letters), preventing them from being
+// split. The overlap helps to maintain semantic context across chunk boundaries,
+// which is crucial for downstream tasks like embedding and retrieval.
+//
+// For example, with a chunkSize of 100 and an overlapSize of 20, the function
+// advances by 80 runes for each new chunk. The first chunk would be runes[0:100],
+// the second runes[80:180], the third runes[160:260], and so on.
 func FixedSizeChunker(text string, chunkSize, overlapSize int) []Chunk {
 	if chunkSize <= 0 || overlapSize < 0 || overlapSize >= chunkSize {
-		// Se i parametri non sono validi, restituisci l'intero testo come un unico chunk.
+		// If the parameters are invalid, return the entire text as a single chunk.
 		return []Chunk{{Content: text, ChunkNumber: 0}}
 	}
 
 	var chunks []Chunk
-	runes := []rune(text) // rune per gestire correttamente i caratteri Unicode
+	runes := []rune(text) // Use runes to handle Unicode characters correctly.
 	length := len(runes)
 
 	if length == 0 {

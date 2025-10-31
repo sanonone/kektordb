@@ -1,4 +1,16 @@
-// codice delle API http
+// Package server implements the KektorDB HTTP API and request routing.
+//
+// This file defines all REST endpoints for:
+//   - Vector operations (create, add, search, delete, compress)
+//   - Index management
+//   - System tasks (AOF rewrite, snapshot, vectorizers)
+//   - Debug (pprof)
+//
+// All routes are manually routed via a custom router for performance and clarity.
+// JSON responses are standardized using writeHTTPResponse/writeHTTPError.
+//
+// Endpoints are versioned under /vector/* and /system/* for future compatibility.
+
 package server
 
 import (
@@ -18,18 +30,28 @@ import (
 	"sync/atomic"
 )
 
-// registerHTTPHandlers imposta le route per la API REST
+// registerHTTPHandlers sets up all HTTP routes on the provided ServeMux.
+//
+// This includes:
+//   - Debug endpoints (/debug/pprof/*)
+//   - System endpoints (/system/*)
+//   - KV endpoints (/kv/*)
+//   - Vector API endpoints (/vector/*)
+//
+// The root path "/" is routed to the main request router.
 func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("/", s.router)
 }
 
-// router è il nostro router principale manuale. Analizza l'URL e delega all'handler corretto.
+// router is the main HTTP request router.
+//
+// It parses the request path and dispatches to the appropriate handler.
+// Manual routing avoids external router overhead and allows fine-grained control.
 func (s *Server) router(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 
-	// --- Endpoint di Debug (pprof) ---
+	// --- Debug: pprof profiling endpoints ---
 	if strings.HasPrefix(path, "/debug/pprof") {
-		// Delega agli handler di pprof in base al suffisso
 		switch {
 		case path == "/debug/pprof/":
 			pprof.Index(w, r)
@@ -42,12 +64,12 @@ func (s *Server) router(w http.ResponseWriter, r *http.Request) {
 		case path == "/debug/pprof/trace":
 			pprof.Trace(w, r)
 		default:
-			s.writeHTTPError(w, http.StatusNotFound, "Endpoint pprof non trovato")
+			s.writeHTTPError(w, http.StatusNotFound, "pprof endpoint not found")
 		}
 		return
 	}
 
-	// --- Endpoint di Sistema ---
+	// --- System: persistence and task management ---
 	if path == "/system/aof-rewrite" {
 		s.handleAOFRewriteHTTP(w, r)
 		return
@@ -61,7 +83,7 @@ func (s *Server) router(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Endpoint di Sistema ---
+	// --- System: vectorizer management ---
 	if path == "/system/vectorizers" {
 		s.handleGetVectorizers(w, r)
 		return
@@ -71,16 +93,15 @@ func (s *Server) router(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Endpoint KV ---
+	// --- KV: key-value store operations ---
 	if strings.HasPrefix(path, "/kv/") {
 		s.handleKV(w, r)
 		return
 	}
 
-	// --- Endpoint Vettoriali ---
+	// --- Vector API: core operations ---
 	switch path {
 	case "/vector/indexes":
-		// Questo gestisce GET (lista) e POST (crea)
 		s.handleIndexesRequest(w, r)
 		return
 	case "/vector/actions/create":
@@ -106,9 +127,8 @@ func (s *Server) router(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Gestione di URL con parametri, come /vector/indexes/{name}
+	// Try dynamic index routes: /vector/indexes/{name}/...
 	if strings.HasPrefix(path, "/vector/indexes/") {
-		// Tentiamo di matchare i pattern più specifici prima
 		// Pattern: /vector/indexes/{indexName}/vectors/{vectorID}
 		if parts := strings.Split(path, "/vectors/"); len(parts) == 2 {
 			indexName := strings.TrimPrefix(parts[0], "/vector/indexes/")
@@ -123,32 +143,30 @@ func (s *Server) router(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Se nessun pattern ha matchato, restituisci Not Found.
-	s.writeHTTPError(w, http.StatusNotFound, "Endpoint non trovato")
+	s.writeHTTPError(w, http.StatusNotFound, "Endpoint not found")
 }
 
-// handleIndexesRequest gestisce sia la lista che la creazione
+// handleIndexesRequest handles GET (list indexes) and POST (create index) on /vector/indexes.
 func (s *Server) handleIndexesRequest(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		s.handleListIndexes(w, r)
 	case http.MethodPost:
-		s.handleVectorCreate(w, r) // Riusiamo l'handler esistente
+		s.handleVectorCreate(w, r)
 	default:
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Consentiti solo GET e POST su /vector/indexes")
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}
 }
 
 // handleSingleIndexRequest gestisce GET e DELETE su un singolo indice
 func (s *Server) handleSingleIndexRequest(w http.ResponseWriter, r *http.Request, indexName string) {
-	// ... (Qui chiamiamo gli handler specifici per GET e DELETE, passando `indexName`)
 	switch r.Method {
 	case http.MethodGet:
 		s.handleGetIndex(w, r, indexName)
 	case http.MethodDelete:
 		s.handleDeleteIndex(w, r, indexName)
 	default:
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Consentiti solo GET e DELETE su /vector/indexes/{name}")
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Only GET and DELETE are allowed on /vector/indexes/{name}")
 	}
 }
 
@@ -158,7 +176,7 @@ func (s *Server) handleKV(w http.ResponseWriter, r *http.Request) {
 	// estrae la chiave dall'URL. es. /kv/mia_chiave
 	key := strings.TrimPrefix(r.URL.Path, "/kv/")
 	if key == "" {
-		s.writeHTTPError(w, http.StatusBadRequest, "La chiave non può essere vuota")
+		s.writeHTTPError(w, http.StatusBadRequest, "Key cannot be empty")
 		return
 	}
 
@@ -170,37 +188,36 @@ func (s *Server) handleKV(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		s.handleKVDelete(w, r, key)
 	default:
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Metodo non supportato")
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Method not supported")
 	}
 }
 
 func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request, key string) {
 	value, found := s.db.GetKVStore().Get(key)
 	if !found {
-		s.writeHTTPError(w, http.StatusNotFound, "Chiave non trovata")
+		s.writeHTTPError(w, http.StatusNotFound, "Key not found")
 		return
 	}
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"key": key, "value": string(value)})
 }
 
-// 1. Definiamo una struct per la richiesta di SET
+// Define a struct for the SET request
 type KVSetRequest struct {
 	Value string `json:"value"`
 }
 
 func (s *Server) handleKVSet(w http.ResponseWriter, r *http.Request, key string) {
-	// 2. Leggiamo e decodifichiamo il corpo JSON
+	// Read and decode the JSON body.
 	var req KVSetRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeHTTPError(w, http.StatusBadRequest, "JSON invalido, atteso un oggetto con la chiave 'value'")
+		s.writeHTTPError(w, http.StatusBadRequest, "Invalid JSON, expected an object with a 'value' key")
 		return
 	}
 
-	// Ora il valore è req.Value
 	valueBytes := []byte(req.Value)
 
-	// 3. La logica AOF e di store rimane la stessa
-	// aofCommand := fmt.Sprintf("SET %s %s\n", key, req.Value) // Usiamo req.Value
+	// The AOF and store logic remains the same.
+	// aofCommand := fmt.Sprintf("SET %s %s\n", key, req.Value)
 
 	aofCommand := formatCommandAsRESP("SET", []byte(key), []byte(req.Value))
 	s.aofMutex.Lock()
@@ -209,13 +226,12 @@ func (s *Server) handleKVSet(w http.ResponseWriter, r *http.Request, key string)
 
 	s.db.GetKVStore().Set(key, valueBytes)
 
-	atomic.AddInt64(&s.dirtyCounter, 1) // <-- INCREMENTA IL CONTATORE
+	atomic.AddInt64(&s.dirtyCounter, 1) // <-- INCREMENT THE COUNTER
 
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK"})
 }
 
 func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, key string) {
-	// aofCommand := fmt.Sprintf("DEL %s\n", key)
 	aofCommand := formatCommandAsRESP("DEL", []byte(key))
 	s.aofMutex.Lock()
 	s.aofFile.WriteString(aofCommand)
@@ -223,15 +239,14 @@ func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request, key stri
 
 	s.db.GetKVStore().Delete(key)
 
-	atomic.AddInt64(&s.dirtyCounter, 1) // <-- INCREMENTA IL CONTATORE
+	atomic.AddInt64(&s.dirtyCounter, 1) // <-- INCREMENT THE COUNTER
 
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK"})
 }
 
-// 2. Implementa l'handler per la lista di indici
 func (s *Server) handleListIndexes(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo GET")
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use the GET method")
 		return
 	}
 
@@ -242,22 +257,22 @@ func (s *Server) handleListIndexes(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonBytes, _ := json.Marshal(info)
-	log.Printf("[DEBUG JSON] Risposta per /vector/indexes: %s", string(jsonBytes))
+	log.Printf("[DEBUG JSON] Response for /vector/indexes: %s", string(jsonBytes))
 
 	s.writeHTTPResponse(w, http.StatusOK, info)
 }
 
-// 3. Implementa l'handler per il singolo indice
+// Implement the handler for a single index.
 func (s *Server) handleGetIndex(w http.ResponseWriter, r *http.Request, indexName string) {
 	if r.Method != http.MethodGet {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo GET")
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use the GET method")
 		return
 	}
 
 	info, err := s.db.GetSingleVectorIndexInfoAPI(indexName)
 	if err != nil {
-		// Se l'errore è "non trovato", restituisci 404
-		if strings.Contains(err.Error(), "non trovato") {
+		// If the error is "not found", return 404.
+		if strings.Contains(err.Error(), "not found") {
 			s.writeHTTPError(w, http.StatusNotFound, err.Error())
 		} else {
 			s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
@@ -269,19 +284,17 @@ func (s *Server) handleGetIndex(w http.ResponseWriter, r *http.Request, indexNam
 }
 
 func (s *Server) handleDeleteIndex(w http.ResponseWriter, r *http.Request, indexName string) {
-	// --- LOGICA AOF ---
-	// Registra il comando PRIMA di eseguire l'operazione.
-	// Creeremo un nuovo comando "VDROP" o "VDELETEINDEX" per l'AOF.
-	// aofCommand := fmt.Sprintf("VDROP %s\n", indexName)
+	// --- AOF LOGIC ---
+	// Record the command BEFORE executing the operation.
 	aofCommand := formatCommandAsRESP("VDROP", []byte(indexName))
 	s.aofMutex.Lock()
 	s.aofFile.WriteString(aofCommand)
 	s.aofMutex.Unlock()
 
-	// Esegui l'eliminazione
+	// Execute the deletion.
 	err := s.db.DeleteVectorIndex(indexName)
 	if err != nil {
-		if strings.Contains(err.Error(), "non trovato") {
+		if strings.Contains(err.Error(), "not found") {
 			s.writeHTTPError(w, http.StatusNotFound, err.Error())
 		} else {
 			s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
@@ -289,17 +302,16 @@ func (s *Server) handleDeleteIndex(w http.ResponseWriter, r *http.Request, index
 		return
 	}
 
-	atomic.AddInt64(&s.dirtyCounter, 1) // <-- INCREMENTA IL CONTATORE
+	atomic.AddInt64(&s.dirtyCounter, 1) // <-- INCREMENT THE COUNTER
 
-	// Per DELETE, una risposta 204 No Content è spesso appropriata
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// --- Handler per Vettori (VCREATE, VADD, VSEARCH, VDEL) ---
+// --- Vector Handlers (VCREATE, VADD, VSEARCH, VDEL) ---
 type VectorCreateRequest struct {
 	IndexName string `json:"index_name"`
-	// omitempty per il campo metric così se il client non lo invia non sarà
-	// presente nel json permettendo l'uso di un default
+	// omitempty for the metric field so if the client doesn't send it, it won't be
+	// present in the json, allowing a default to be used.
 	Metric         string `json:"metric,omitempty"`
 	M              int    `json:"m,omitempty"`
 	EfConstruction int    `json:"ef_construction,omitempty"`
@@ -309,22 +321,22 @@ type VectorCreateRequest struct {
 
 func (s *Server) handleVectorCreate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST")
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use the POST method")
 		return
 	}
 
 	var req VectorCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeHTTPError(w, http.StatusBadRequest, "JSON invalido")
+		s.writeHTTPError(w, http.StatusBadRequest, "Invalid JSON")
 		return
 	}
 
 	if req.IndexName == "" {
-		s.writeHTTPError(w, http.StatusBadRequest, "index_name è obbligatorio")
+		s.writeHTTPError(w, http.StatusBadRequest, "index_name is required")
 		return
 	}
 
-	// Se la metrica non è specificata, usiamo Euclidean come default.
+	// If the metric is not specified, we use Euclidean as the default.
 	metric := distance.DistanceMetric(req.Metric)
 	if metric == "" {
 		metric = distance.Euclidean
@@ -332,14 +344,13 @@ func (s *Server) handleVectorCreate(w http.ResponseWriter, r *http.Request) {
 
 	precision := distance.PrecisionType(req.Precision)
 	if precision == "" {
-		precision = distance.Float32 // Imposta float32 come default se non specificato
+		precision = distance.Float32 // Set float32 as default if not specified.
 	}
 
-	// Il valore di default è "" (stringa vuota), che significa "nessuna analisi testuale".
+	// The default value is "" (empty string), which means "no text analysis".
 	textLang := req.TextLanguage
 
-	// scrittura AOF per persistenza
-	// aofCommand := fmt.Sprintf("VCREATE %s METRIC %s M %d EF_CONSTRUCTION %d PRECISION %s TEXT_LANGUAGE %s\n", req.IndexName, metric, req.M, req.EfConstruction, precision, textLang)
+	// AOF write for persistence.
 	aofCommand := formatCommandAsRESP("VCREATE",
 		[]byte(req.IndexName),
 		[]byte("METRIC"), []byte(metric),
@@ -350,7 +361,7 @@ func (s *Server) handleVectorCreate(w http.ResponseWriter, r *http.Request) {
 	)
 
 	s.aofMutex.Lock()
-	s.aofFile.WriteString(aofCommand) // gestire l'errore qui in un sistema di produzione
+	s.aofFile.WriteString(aofCommand)
 	s.aofMutex.Unlock()
 
 	err := s.db.CreateVectorIndex(req.IndexName, metric, req.M, req.EfConstruction, precision, textLang)
@@ -359,89 +370,68 @@ func (s *Server) handleVectorCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	atomic.AddInt64(&s.dirtyCounter, 1) // <-- INCREMENTA IL CONTATORE
+	atomic.AddInt64(&s.dirtyCounter, 1)
 
-	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Indice creato"})
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Index created"})
 }
 
 type VectorAddRequest struct {
 	IndexName string         `json:"index_name"`
 	Id        string         `json:"id"`
 	Vector    []float32      `json:"vector"`
-	Metadata  map[string]any `json:"metadata,omitempty"` // omitempty = se il campo è nullo non apparirà nel json
+	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
 func (s *Server) handleVectorAdd(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST")
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use the POST method")
 		return
 	}
 
 	var req VectorAddRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeHTTPError(w, http.StatusBadRequest, "JSON invalido")
+		s.writeHTTPError(w, http.StatusBadRequest, "Invalid JSON")
 		return
 	}
 
-	// Validazione base dell'input
+	// Basic input validation.
 	if req.IndexName == "" || req.Id == "" || len(req.Vector) == 0 {
-		s.writeHTTPError(w, http.StatusBadRequest, "index_name, id, e vector sono campi obbligatori")
+		s.writeHTTPError(w, http.StatusBadRequest, "index_name, id, and vector are required fields")
 		return
 	}
 
 	idx, found := s.db.GetVectorIndex(req.IndexName)
 	if !found {
-		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Indice '%s' non trovato", req.IndexName))
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Index '%s' not found", req.IndexName))
 		return
 	}
-
-	/*
-		// scrittura AOF per persistenza
-		// ricostruisce la stringa del vettore separata da spazi
-		vectorStr := float32SliceToString(req.Vector)
-		aofCommand := fmt.Sprintf("VADD %s %s %s\n", req.IndexName, req.Id, vectorStr)
-		s.aofMutex.Lock()
-		s.aofFile.WriteString(aofCommand)
-		s.aofMutex.Unlock()
-	*/
 
 	internalID, err := idx.Add(req.Id, req.Vector)
 	if err != nil {
-		// Controlla se l'errore è "ID già esistente"
-		// In un'API REST, questo corrisponde a un errore 409 Conflict
-		if strings.Contains(err.Error(), "già esistente") {
+		// Check if the error is "ID already exists".
+		// In a REST API, this corresponds to a 409 Conflict error.
+		if strings.Contains(err.Error(), "already exists") {
 			s.writeHTTPError(w, http.StatusConflict, err.Error())
 		} else {
-			s.writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("errore nell'aggiungere il vettore: %v", err))
+			s.writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("error adding vector: %v", err))
 		}
 		return
 	}
 
-	// se ci sono metadati li indicizza
+	// If metadata exists, index it.
 	if req.Metadata != nil {
 		if err := s.db.AddMetadataUnlocked(req.IndexName, internalID, req.Metadata); err != nil {
-			// operazione critica, se fallisce dovremmo disfare l'aggiunta del vettore (rollback)
-			// --- LOGICA DI ROLLBACK ---
-			log.Printf("ERRORE: Fallimento nell'indicizzare i metadati per '%s'. Avvio rollback.", req.Id)
-			// Rimuovi il nodo appena aggiunto per mantenere la consistenza.
+			// Critical operation, if it fails we should undo the vector addition (rollback).
+			// --- ROLLBACK LOGIC ---
+			log.Printf("ERROR: Failed to index metadata for '%s'. Starting rollback.", req.Id)
+			// Remove the newly added node to maintain consistency.
 			idx.Delete(req.Id)
-			// --- FINE ROLLBACK ---
-			s.writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("errore nell'indicizzare i metadati: %v", err))
+			// --- END ROLLBACK ---
+			s.writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("error indexing metadata: %v", err))
 			return
 		}
 	}
 
-	// --- LOGICA AOF ---
-	/*
-		// Costruisci il comando AOF solo dopo che tutte le validazioni sono passate.
-		aofCommand, err := buildVAddAOFCommand(req.IndexName, req.Id, req.Vector, req.Metadata)
-		if err != nil {
-			// Anche qui, se la creazione del comando fallisce fare il rollback
-			idx.Delete(req.Id)
-			s.writeHTTPError(w, http.StatusInternalServerError, "errore nella creazione del comando AOF")
-			return
-		}
-	*/
 	vectorStr := float32SliceToString(req.Vector)
 	metadataBytes, _ := json.Marshal(req.Metadata)
 
@@ -455,14 +445,12 @@ func (s *Server) handleVectorAdd(w http.ResponseWriter, r *http.Request) {
 	s.aofMutex.Lock()
 	s.aofFile.WriteString(aofCommand)
 	s.aofMutex.Unlock()
-	// --- FINE LOGICA AOF ---
 
-	atomic.AddInt64(&s.dirtyCounter, 1) // <-- INCREMENTA IL CONTATORE
+	atomic.AddInt64(&s.dirtyCounter, 1)
 
-	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Vettore aggiunto"})
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Vector added"})
 }
 
-// Vicino alle altre struct di richiesta
 type VectorAddObject struct {
 	Id       string                 `json:"id"`
 	Vector   []float32              `json:"vector"`
@@ -476,53 +464,49 @@ type BatchAddVectorsRequest struct {
 
 func (s *Server) handleVectorAddBatch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST")
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use the POST method")
 		return
 	}
 
 	var req BatchAddVectorsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeHTTPError(w, http.StatusBadRequest, "JSON invalido")
+		s.writeHTTPError(w, http.StatusBadRequest, "Invalid JSON")
 		return
 	}
 
 	if req.IndexName == "" || len(req.Vectors) == 0 {
-		s.writeHTTPError(w, http.StatusBadRequest, "'index_name' e 'vectors' sono obbligatori")
+		s.writeHTTPError(w, http.StatusBadRequest, "'index_name' and 'vectors' are required")
 		return
 	}
 
 	idx, found := s.db.GetVectorIndex(req.IndexName)
 	if !found {
-		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Indice '%s' non trovato", req.IndexName))
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Index '%s' not found", req.IndexName))
 		return
 	}
 
-	// Iteriamo e aggiungiamo i vettori uno per uno.
-	// La logica di Add, metadati e AOF è la stessa della VADD singola.
+	// iterate and add the vectors one by one.
+	// The Add, metadata, and AOF logic is the same as for a single VADD.
 	var addedCount int
 	for _, vec := range req.Vectors {
-		// Qui potremmo riutilizzare la logica di handleVectorAdd, ma è più pulito
-		// duplicare la parte di business logic.
 		internalID, err := idx.Add(vec.Id, vec.Vector)
 		if err != nil {
-			log.Printf("Errore durante l'inserimento batch per l'ID '%s': %v. Interruzione.", vec.Id, err)
-			// In un'implementazione più avanzata, potremmo restituire errori parziali.
-			s.writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("fallimento all'inserimento di '%s': %v", vec.Id, err))
+			log.Printf("Error during batch insertion for ID '%s': %v. Aborting.", vec.Id, err)
+			s.writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("failed to insert '%s': %v", vec.Id, err))
 			return
 		}
 
 		if len(vec.Metadata) > 0 {
 			if err := s.db.AddMetadataUnlocked(req.IndexName, internalID, vec.Metadata); err != nil {
-				// Esegui il rollback per questo singolo vettore
+				// Perform rollback for this single vector.
 				idx.Delete(vec.Id)
-				log.Printf("Errore metadati per '%s', rollback eseguito. Errore: %v", vec.Id, err)
-				s.writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("fallimento metadati per '%s': %v", vec.Id, err))
+				log.Printf("Metadata error for '%s', rollback performed. Error: %v", vec.Id, err)
+				s.writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("metadata failure for '%s': %v", vec.Id, err))
 				return
 			}
 		}
 
-		// Scrivi sull'AOF per ogni vettore aggiunto con successo
-		// aofCommand, _ := buildVAddAOFCommand(req.IndexName, vec.Id, vec.Vector, vec.Metadata)
+		// Write to AOF for each successfully added vector.
 		vectorStr := float32SliceToString(vec.Vector)
 		metadataBytes, _ := json.Marshal(vec.Metadata)
 
@@ -539,7 +523,7 @@ func (s *Server) handleVectorAddBatch(w http.ResponseWriter, r *http.Request) {
 		addedCount++
 	}
 
-	// Incrementa il contatore globale del numero di vettori effettivamente aggiunti.
+	// Increment the global counter by the number of vectors actually added.
 	if addedCount > 0 {
 		atomic.AddInt64(&s.dirtyCounter, int64(addedCount))
 	}
@@ -554,35 +538,35 @@ type VectorSearchRequest struct {
 	IndexName   string    `json:"index_name"`
 	K           int       `json:"k"`
 	QueryVector []float32 `json:"query_vector"`
-	Filter      string    `json:"filter,omitempty"` // filtro opzionale
+	Filter      string    `json:"filter,omitempty"`
 	EfSearch    int       `json:"ef_search,omitempty"`
 	Alpha       float64   `json:"alpha,omitempty"`
 }
 
-// FusedResult è la struct per l'ordinamento finale, con ID ESTERNO.
+// FusedResult is the struct for the final sorting, with EXTERNAL ID.
 type FusedResult struct {
-	ID    string // ID Esterno
+	ID    string // External ID
 	Score float64
 }
 
-// normalizeVectorScores normalizza le distanze (dove più piccolo è meglio) in un punteggio [0, 1]
-// (dove più grande è meglio).
+// normalizeVectorScores normalizes distances (where smaller is better) into a [0, 1] score
+// (where larger is better).
 func normalizeVectorScores(results []types.SearchResult) {
-	// Una semplice normalizzazione: 1 / (1 + distanza)
-	// Distanza 0 -> Punteggio 1
-	// Distanza grande -> Punteggio vicino a 0
+	// A simple normalization: 1 / (1 + distance)
+	// Distance 0 -> Score 1
+	// Large distance -> Score close to 0
 	for i := range results {
 		results[i].Score = 1.0 / (1.0 + results[i].Score)
 	}
 }
 
-// normalizeTextScores normalizza i punteggi BM25 (dove più grande è meglio) in un range [0, 1].
+// normalizeTextScores normalizes BM25 scores (where larger is better) to a [0, 1] range.
 func normalizeTextScores(results []types.SearchResult) {
 	if len(results) == 0 {
 		return
 	}
-	// Normalizzazione Min-Max: (score - min) / (max - min)
-	// Dato che il minimo score BM25 è > 0, possiamo semplificare a score / max_score
+	// Min-Max normalization: (score - min) / (max - min)
+	// Since the minimum BM25 score is > 0, we can simplify to score / max_score.
 	maxScore := 0.0
 	for _, res := range results {
 		if res.Score > maxScore {
@@ -598,49 +582,49 @@ func normalizeTextScores(results []types.SearchResult) {
 
 func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST")
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use the POST method")
 		return
 	}
 
 	var req VectorSearchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeHTTPError(w, http.StatusBadRequest, "JSON invalido")
+		s.writeHTTPError(w, http.StatusBadRequest, "Invalid JSON")
 		return
 	}
 
 	idx, found := s.db.GetVectorIndex(req.IndexName)
 	if !found {
-		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Indice '%s' non trovato", req.IndexName))
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Index '%s' not found", req.IndexName))
 		return
 	}
-	hnswIndex, ok := idx.(*hnsw.Index) // Assumiamo sia un HNSW
+	hnswIndex, ok := idx.(*hnsw.Index)
 	if !ok {
-		s.writeHTTPError(w, http.StatusInternalServerError, "L'indice non è di tipo HNSW, la ricerca ibrida non è supportata")
+		s.writeHTTPError(w, http.StatusInternalServerError, "Index is not of type HNSW, hybrid search is not supported")
 		return
 	}
 
-	// --- 2. Separazione dei Filtri ---
+	// --- Filter Separation ---
 	booleanFilters, textQuery, textQueryField := parseHybridFilter(req.Filter)
 
-	// --- 3. Esecuzione del Pre-Filtering Booleano ---
+	// --- Boolean Pre-Filtering Execution ---
 	var allowList map[uint32]struct{}
 	var err error
 	if booleanFilters != "" {
 		allowList, err = s.db.FindIDsByFilter(req.IndexName, booleanFilters)
 		if err != nil {
-			s.writeHTTPError(w, http.StatusBadRequest, fmt.Sprintf("Filtro booleano invalido: %v", err))
+			s.writeHTTPError(w, http.StatusBadRequest, fmt.Sprintf("Invalid boolean filter: %v", err))
 			return
 		}
-		// Se i filtri booleani non producono risultati, possiamo terminare subito
+		// If the boolean filters yield no results, we can terminate immediately.
 		if len(allowList) == 0 {
 			s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": []string{}})
 			return
 		}
 	}
 
-	// --- 4. Esecuzione delle Ricerche Parallele ---
+	// --- Parallel Search Execution ---
 
-	// Controlla se la ricerca è puramente testuale
+	// Check if the search is purely text-based.
 	isVectorQueryEmpty := true
 	for _, v := range req.QueryVector {
 		if v != 0 {
@@ -649,7 +633,7 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// CASO A: RICERCA PURAMENTE TESTUALE (o solo filtri booleani senza query vettoriale)
+	// CASE A: PURELY TEXT-BASED SEARCH (or only boolean filters without a vector query).
 	if isVectorQueryEmpty && textQuery != "" {
 		textResults, _ := s.db.FindIDsByTextSearch(req.IndexName, textQueryField, textQuery)
 
@@ -670,28 +654,26 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// CASO B: RICERCA VETTORIALE O IBRIDA
+	// CASE B: VECTOR OR HYBRID SEARCH.
 	var vectorResults []types.SearchResult
 	var textResults []types.SearchResult
 	var wg sync.WaitGroup
 
-	// Ricerca Vettoriale
+	// Vector Search.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		// idx.Search restituisce []string, dobbiamo convertirlo in []SearchResult
-		// Modifichiamo Search per restituire anche le distanze!
 		vectorResults = idx.SearchWithScores(req.QueryVector, req.K, allowList, req.EfSearch)
 	}()
 
-	// Ricerca Testuale (se presente)
+	// Text Search (if present).
 	if textQuery != "" {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// db.findIDsByTextSearch già restituisce []SearchResult
+			// db.findIDsByTextSearch already returns []SearchResult.
 			results, _ := s.db.FindIDsByTextSearch(req.IndexName, textQueryField, textQuery)
-			// Applica l'allow list anche qui
+			// Apply the allow list here as well.
 			if allowList != nil {
 				var filteredTextResults []types.SearchResult
 				for _, res := range results {
@@ -706,10 +688,10 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
-	wg.Wait() // Attendi che entrambe le ricerche finiscano
+	wg.Wait() // Wait for both searches to finish.
 
-	// --- 5. Fase di Fusione (Reciprocal Rank Fusion) ---
-	// Se non c'è stata una ricerca testuale, i risultati sono semplicemente quelli vettoriali.
+	// --- 5. Fusion Phase (Reciprocal Rank Fusion) ---
+	// If there was no text search, the results are simply the vector search results.
 	if textQuery == "" {
 		finalIDs := make([]string, len(vectorResults))
 		for i, res := range vectorResults {
@@ -742,51 +724,51 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	*/
 
-	// Imposta il valore di alpha. Default a 0.5 se non fornito.
+	// Set the alpha value. Defaults to 0.5 if not provided.
 	alpha := req.Alpha
 	if alpha == 0 {
 		alpha = 0.5
 	} else if alpha < 0 || alpha > 1 {
-		s.writeHTTPError(w, http.StatusBadRequest, "alpha deve essere compreso tra 0.1 e 1, 0 = default alpha 0.5")
+		s.writeHTTPError(w, http.StatusBadRequest, "alpha must be between 0.1 and 1, 0 = default alpha 0.5")
 		return
 	}
 
-	// Normalizza entrambi i set di punteggi in un range [0, 1]
+	// Normalize both sets of scores to a [0, 1] range.
 	normalizeVectorScores(vectorResults)
 	normalizeTextScores(textResults)
 
-	// Crea una mappa per unire i risultati in modo efficiente
+	// Create a map to merge the results efficiently.
 	fusedScores := make(map[uint32]float64)
 
-	// Aggiungi punteggi dalla ricerca vettoriale
+	// Add scores from vector search.
 	for _, res := range vectorResults {
 		fusedScores[res.DocID] += alpha * res.Score
 	}
 
-	// Aggiungi punteggi dalla ricerca testuale
+	// Add scores from text search.
 	for _, res := range textResults {
 		fusedScores[res.DocID] += (1 - alpha) * res.Score
 	}
 
-	// --- 6. Ordinamento Finale e Restituzione ---
+	// --- Final Sorting and Response ---
 
-	// Converti la mappa dei punteggi fusi in una slice
+	// Convert the map of fused scores into a slice.
 	finalResults := make([]FusedResult, 0, len(fusedScores))
 	for id, score := range fusedScores {
-		// Dobbiamo convertire l'ID interno in esterno
+		// We need to convert the internal ID to an external one.
 		externalID, found := hnswIndex.GetExternalID(id)
 		if !found {
 			continue
-		} // Sicurezza: ignora se non troviamo la corrispondenza
+		} // Safety check: ignore if we don't find a match.
 		finalResults = append(finalResults, FusedResult{ID: externalID, Score: score})
 	}
 
-	// Ordina per punteggio decrescente
+	// Sort by score in descending order.
 	sort.Slice(finalResults, func(i, j int) bool {
 		return finalResults[i].Score > finalResults[j].Score
 	})
 
-	// Prendi i primi 'k' risultati
+	// Take the top 'k' results.
 	finalIDs := make([]string, 0, req.K)
 	for i := 0; i < req.K && i < len(finalResults); i++ {
 		finalIDs = append(finalIDs, finalResults[i].ID)
@@ -796,29 +778,29 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 
 }
 
-// Definiamo la regex a livello di package per compilarla una sola volta.
+// Define the regex at the package level to compile it only once.
 var containsRegex = regexp.MustCompile(`(?i)\s*CONTAINS\s*\(\s*(\w+)\s*,\s*['"](.+?)['"]\s*\)`)
 
-// parseHybridFilter separa il filtro testuale (CONTAINS) dai filtri booleani.
+// parseHybridFilter separates the text filter (CONTAINS) from the boolean filters.
 func parseHybridFilter(filter string) (booleanFilter, textQuery, textField string) {
-	// Trova la clausola CONTAINS
+	// Find the CONTAINS clause.
 	matches := containsRegex.FindStringSubmatch(filter)
 
 	if len(matches) == 0 {
-		// Nessuna clausola CONTAINS, tutto il filtro è booleano.
+		// No CONTAINS clause, the entire filter is boolean.
 		return filter, "", ""
 	}
 
-	// Estrai le parti della clausola CONTAINS
+	// Extract the parts of the CONTAINS clause.
 	fullMatch := matches[0]
 	textField = matches[1]
 	textQuery = matches[2]
 
-	// Rimuovi la clausola CONTAINS dalla stringa di filtro originale
-	// per ottenere solo i filtri booleani.
+	// Remove the CONTAINS clause from the original filter string
+	// to get only the boolean filters.
 	booleanFilter = strings.Replace(filter, fullMatch, "", 1)
 
-	// Pulisci eventuali "AND" rimasti appesi
+	// Clean up any dangling "AND".
 	booleanFilter = strings.TrimSpace(booleanFilter)
 	booleanFilter = strings.TrimPrefix(booleanFilter, "AND ")
 	booleanFilter = strings.TrimSuffix(booleanFilter, " AND")
@@ -828,79 +810,34 @@ func parseHybridFilter(filter string) (booleanFilter, textQuery, textField strin
 	return booleanFilter, textQuery, textField
 }
 
-/*
-func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST")
-		return
-	}
-
-	var req VectorSearchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeHTTPError(w, http.StatusBadRequest, "JSON invalido")
-		return
-	}
-
-	idx, found := s.db.GetVectorIndex(req.IndexName)
-	if !found {
-		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Indice '%s' non trovato", req.IndexName))
-		return
-	}
-
-	// --- NUOVA LOGICA DI FILTRAGGIO ---
-	var allowList map[uint32]struct{}
-	var err error
-
-	if req.Filter != "" {
-		allowList, err = s.db.FindIDsByFilter(req.IndexName, req.Filter)
-		if err != nil {
-			s.writeHTTPError(w, http.StatusBadRequest, fmt.Sprintf("filtro invalido: %v", err))
-			return
-		}
-
-		// --- LOG DI DEBUG ---
-		log.Printf("[DEBUG FILTER] Filtro: '%s'. ID permessi trovati: %d. Lista: %v", req.Filter, len(allowList), allowList)
-		// --- FINE LOG ---
-		// Se il filtro non produce risultati, può terminare subito
-		if len(allowList) == 0 {
-			s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": []string{}})
-			return
-		}
-	}
-
-	results := idx.Search(req.QueryVector, req.K, allowList, req.EfSearch)
-	s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": results})
-}
-*/
-
-// struct della richiesta batch
+// Batch request struct.
 type BatchGetVectorsRequest struct {
 	IndexName string   `json:"index_name"`
 	IDs       []string `json:"ids"`
 }
 
-// handler per la richiesta batch
+// Handler for the batch request.
 func (s *Server) handleGetVectorsBatch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST")
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use the POST method")
 		return
 	}
 
 	var req BatchGetVectorsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeHTTPError(w, http.StatusBadRequest, "JSON invalido, atteso un oggetto con 'index_name' e 'ids'")
+		s.writeHTTPError(w, http.StatusBadRequest, "Invalid JSON, expected an object with 'index_name' and 'ids'")
 		return
 	}
 
 	if req.IndexName == "" || len(req.IDs) == 0 {
-		s.writeHTTPError(w, http.StatusBadRequest, "'index_name' e 'ids' sono obbligatori")
+		s.writeHTTPError(w, http.StatusBadRequest, "'index_name' and 'ids' are required")
 		return
 	}
 
-	// La logica di chiamata allo store è la stessa
+	// The logic for calling the store
 	vectorData, err := s.db.GetVectors(req.IndexName, req.IDs)
 	if err != nil {
-		if strings.Contains(err.Error(), "non trovato") {
+		if strings.Contains(err.Error(), "not found") {
 			s.writeHTTPError(w, http.StatusNotFound, err.Error())
 		} else {
 			s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
@@ -917,20 +854,20 @@ type VectorDeleteRequest struct {
 }
 
 func (s *Server) handleVectorDelete(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost { // Usiamo POST per coerenza con le altre azioni di modifica
+	if r.Method != http.MethodPost { // POST for consistency with other modification actions.
 		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST")
 		return
 	}
 
 	var req VectorDeleteRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeHTTPError(w, http.StatusBadRequest, "JSON invalido")
+		s.writeHTTPError(w, http.StatusBadRequest, "Invalid JSON")
 		return
 	}
 
 	idx, found := s.db.GetVectorIndex(req.IndexName)
 	if !found {
-		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Indice '%s' non trovato", req.IndexName))
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Index '%s' not found", req.IndexName))
 		return
 	}
 
@@ -944,38 +881,18 @@ func (s *Server) handleVectorDelete(w http.ResponseWriter, r *http.Request) {
 
 	idx.Delete(req.Id)
 
-	atomic.AddInt64(&s.dirtyCounter, 1) // <-- INCREMENTA IL CONTATORE
+	atomic.AddInt64(&s.dirtyCounter, 1)
 
-	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Vettore eliminato"})
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Vector deleted"})
 }
 
-// funzione handler per l'endpoint per compattazione AOF
-/*
-func (s *Server) handleAOFRewriteHTTP(w http.ResponseWriter, r *http.Request) {
-	// Accettiamo solo richieste POST per azioni che modificano lo stato del server.
-	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST per avviare la riscrittura AOF")
-		return
-	}
-
-	err := s.RewriteAOF()
-	if err != nil {
-		log.Printf("ERRORE CRITICO durante la riscrittura AOF via HTTP: %v", err)
-		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("fallimento riscrittura AOF: %v", err))
-		return
-	}
-
-	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Riscrittura AOF completata con successo"})
-}
-*/
-
-// versione async
+// Async version.
 func (s *Server) handleAOFRewriteHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost { /* ... */
 	}
 
 	task := s.taskManager.NewTask()
-	log.Printf("Avvio task di riscrittura AOF asincrono con ID: %s", task.ID)
+	log.Printf("Starting async AOF rewrite task with ID: %s", task.ID)
 
 	go func() {
 		err := s.RewriteAOF()
@@ -991,7 +908,7 @@ func (s *Server) handleAOFRewriteHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSaveHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST per avviare SAVE")
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use the POST method to start SAVE")
 		return
 	}
 
@@ -1000,35 +917,35 @@ func (s *Server) handleSaveHTTP(w http.ResponseWriter, r *http.Request) {
 	// Per ora, omettiamo questa complessità e ci concentriamo sul flusso principale.
 
 	if err := s.Save(); err != nil {
-		log.Printf("ERRORE CRITICO durante SAVE via HTTP: %v", err)
-		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("fallimento processo SAVE: %v", err))
+		log.Printf("CRITICAL ERROR during SAVE via HTTP: %v", err)
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("SAVE process failed: %v", err))
 		return
 	}
 
-	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Snapshot del database creato con successo."})
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Database snapshot created successfully."})
 }
 
 func (s *Server) handleTaskStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo GET")
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use the GET method")
 		return
 	}
 
 	// Estrai il task ID dall'URL
 	taskID := strings.TrimPrefix(r.URL.Path, "/system/tasks/")
 	if taskID == "" {
-		s.writeHTTPError(w, http.StatusBadRequest, "Task ID mancante nell'URL")
+		s.writeHTTPError(w, http.StatusBadRequest, "Task ID missing in URL")
 		return
 	}
 
-	// Recupera il task dal manager
+	// Retrieve the task from the manager.
 	task, found := s.taskManager.GetTask(taskID)
 	if !found {
-		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Task con ID '%s' non trovato", taskID))
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Task with ID '%s' not found", taskID))
 		return
 	}
 
-	// Leggi lo stato del task in modo sicuro e restituiscilo
+	// Read the task status safely and return it.
 	task.mu.RLock()
 	defer task.mu.RUnlock()
 	s.writeHTTPResponse(w, http.StatusOK, task)
@@ -1041,7 +958,7 @@ type VectorCompressRequest struct {
 
 func (s *Server) handleGetVectorizers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo GET")
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use the GET method")
 		return
 	}
 	if s.vectorizerService == nil {
@@ -1054,15 +971,15 @@ func (s *Server) handleGetVectorizers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleTriggerVectorizer(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST")
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use the POST method")
 		return
 	}
 
 	name := strings.TrimPrefix(r.URL.Path, "/system/vectorizers/")
-	name = strings.TrimSuffix(name, "/trigger") // Rimuove il suffisso
+	name = strings.TrimSuffix(name, "/trigger") // Removes the suffix.
 
 	if s.vectorizerService == nil {
-		s.writeHTTPError(w, http.StatusNotFound, "VectorizerService non è attivo")
+		s.writeHTTPError(w, http.StatusNotFound, "VectorizerService is not active")
 		return
 	}
 
@@ -1074,95 +991,57 @@ func (s *Server) handleTriggerVectorizer(w http.ResponseWriter, r *http.Request)
 
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{
 		"status":  "OK",
-		"message": fmt.Sprintf("Sincronizzazione per il vectorizer '%s' avviata in background.", name),
+		"message": fmt.Sprintf("Synchronization for vectorizer '%s' started in the background.", name),
 	})
 }
 
-// compressione di un indice ad una determinata precisione (float16 o int8)
-/*
+// Async version.
 func (s *Server) handleVectorCompress(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST")
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use the POST method")
 		return
 	}
 
 	var req VectorCompressRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeHTTPError(w, http.StatusBadRequest, "JSON invalido")
+		s.writeHTTPError(w, http.StatusBadRequest, "Invalid JSON")
 		return
 	}
 
 	newPrecision := distance.PrecisionType(req.Precision)
 	if newPrecision != distance.Float16 && newPrecision != distance.Int8 {
-		s.writeHTTPError(w, http.StatusBadRequest, "Precisione non valida, usare 'float16' or 'int8'")
+		s.writeHTTPError(w, http.StatusBadRequest, "Invalid precision, use 'float16' or 'int8'")
 		return
 	}
 
-	// Aggiungi all'AOF PRIMA di eseguire l'operazione
-	//aofCommand := fmt.Sprintf("VCOMPRESS %s %s\n", req.IndexName, newPrecision)
-	//s.aofMutex.Lock()
-	//s.aofFile.WriteString(aofCommand)
-	//s.aofMutex.Unlock()
-
-	// Esegui la compressione
-	if err := s.store.Compress(req.IndexName, newPrecision); err != nil {
-		s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	atomic.AddInt64(&s.dirtyCounter, 1) // <-- INCREMENTA IL CONTATORE
-
-	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Indice compresso con successo"})
-}
-*/
-
-// versione async
-func (s *Server) handleVectorCompress(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Usare il metodo POST")
-		return
-	}
-
-	var req VectorCompressRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeHTTPError(w, http.StatusBadRequest, "JSON invalido")
-		return
-	}
-
-	newPrecision := distance.PrecisionType(req.Precision)
-	if newPrecision != distance.Float16 && newPrecision != distance.Int8 {
-		s.writeHTTPError(w, http.StatusBadRequest, "Precisione non valida, usare 'float16' or 'int8'")
-		return
-	}
-
-	// 1. Crea un nuovo task per questa operazione
+	// Create a new task for this operation.
 	task := s.taskManager.NewTask()
-	log.Printf("Avvio task di compressione asincrono con ID: %s", task.ID)
+	log.Printf("Starting async compression task with ID: %s", task.ID)
 
-	// 2. Avvia il lavoro pesante in una nuova goroutine
+	// Start the heavy work in a new goroutine.
 	go func() {
-		// Chiama la logica di compressione esistente
+		// Call the existing compression logic
 		err := s.db.Compress(req.IndexName, newPrecision)
 
-		// 3. Aggiorna lo stato del task in base al risultato
+		// Update the task status based on the result.
 		if err != nil {
-			log.Printf("Task di compressione %s fallito: %v", task.ID, err)
+			log.Printf("Compression task %s failed: %v", task.ID, err)
 			task.SetError(err)
 		} else {
-			log.Printf("Task di compressione %s completato con successo.", task.ID)
+			log.Printf("Compression task %s completed successfully.", task.ID)
 			task.SetStatus(TaskStatusCompleted)
 		}
 	}()
 
-	// 4. Restituisci immediatamente una risposta 202 Accepted con il task ID
+	// Immediately return a 202 Accepted response with the task ID.
 	s.writeHTTPResponse(w, http.StatusAccepted, task)
 }
 
-// 4. Implementa la logica finale in handleGetVector
+// Implement the final logic in handleGetVector.
 func (s *Server) handleGetVector(w http.ResponseWriter, r *http.Request, indexName, vectorID string) {
 	vectorData, err := s.db.GetVector(indexName, vectorID)
 	if err != nil {
-		if strings.Contains(err.Error(), "non trovato") {
+		if strings.Contains(err.Error(), "not found") {
 			s.writeHTTPError(w, http.StatusNotFound, err.Error())
 		} else {
 			s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
@@ -1173,7 +1052,7 @@ func (s *Server) handleGetVector(w http.ResponseWriter, r *http.Request, indexNa
 	s.writeHTTPResponse(w, http.StatusOK, vectorData)
 }
 
-// --- Helper per le Risposte HTTP ---
+// --- HTTP Response Helpers ---
 
 func (s *Server) writeHTTPResponse(w http.ResponseWriter, statusCode int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -1186,21 +1065,20 @@ func (s *Server) writeHTTPError(w http.ResponseWriter, statusCode int, message s
 }
 
 func float32SliceToString(slice []float32) string {
-	// strings.Builder è il modo più efficiente per costruire stringhe in Go
 	var b strings.Builder
 	for i, v := range slice {
 		if i > 0 {
 			b.WriteString(" ")
 		}
-		// 'f' per formato, -1 per la minima precisione necessaria, 32 per float32
+		// 'f' for format, -1 for the minimum necessary precision, 32 for float32.
 		b.WriteString(strconv.FormatFloat(float64(v), 'f', -1, 32))
 	}
 	return b.String()
 }
 
-// Funzione helper per costruire la stringa del comando AOF
+// Helper function to build the AOF command string.
 func buildVAddAOFCommand(indexName, id string, vector []float32, metadata map[string]any) (string, error) {
-	vectorStr := float32SliceToString(vector) // Usiamo la funzione che avevamo già
+	vectorStr := float32SliceToString(vector)
 
 	if len(metadata) == 0 {
 		return fmt.Sprintf("VADD %s %s %s\n", indexName, id, vectorStr), nil
@@ -1211,7 +1089,5 @@ func buildVAddAOFCommand(indexName, id string, vector []float32, metadata map[st
 		return "", err
 	}
 
-	// Racchiudiamo il JSON tra virgolette singole per sicurezza, anche se il nostro
-	// parser TCP attuale non le gestisce (è una buona pratica per il futuro).
 	return fmt.Sprintf("VADD %s %s %s %s\n", indexName, id, vectorStr, string(metadataBytes)), nil
 }

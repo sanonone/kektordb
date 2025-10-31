@@ -1,3 +1,9 @@
+// Package server implements the main KektorDB server logic.
+//
+// This file specifically handles the VectorizerService, which is responsible for
+// managing the lifecycle of all background vectorizer workers. It orchestrates
+// their creation, startup, and graceful shutdown.
+
 package server
 
 import (
@@ -7,27 +13,31 @@ import (
 	"time"
 )
 
-// VectorizerService gestisce il ciclo di vita di tutti i worker Vectorizer.
+// VectorizerService manages the lifecycle of all Vectorizer workers.
+// It holds references to all active vectorizers and coordinates their
+// start and stop operations using a shared WaitGroup.
 type VectorizerService struct {
 	server      *Server
 	vectorizers []*Vectorizer
 	wg          sync.WaitGroup
 }
 
-// NewVectorizerService crea e avvia il servizio principale dei vectorizer.
+// NewVectorizerService creates and initializes the main vectorizer service.
+// It iterates through the loaded vectorizer configurations, creates a worker
+// for each, and prepares the service to manage them.
 func NewVectorizerService(server *Server) (*VectorizerService, error) {
 	service := &VectorizerService{
 		server: server,
-		// Il WaitGroup viene inizializzato automaticamente a zero
+		// The WaitGroup is initialized to zero automatically.
 	}
 
-	// Itera sulle configurazioni caricate e avvia un worker per ciascuna
+	// Iterate over the loaded configurations and start a worker for each one.
 	for _, config := range server.vectorizerConfig.Vectorizers {
-		// passo WaitGroup del servizio ad ogni nuovo worker
+		// Pass the service's WaitGroup to each new worker.
 		vec, err := NewVectorizer(config, server, &service.wg)
 		if err != nil {
-			log.Printf("ERRORE: Impossibile avviare il vectorizer '%s': %v", config.Name, err)
-			continue // Salta questo e passa al prossimo
+			log.Printf("ERROR: Could not start vectorizer '%s': %v", config.Name, err)
+			continue // Skip this one and move to the next.
 		}
 		service.vectorizers = append(service.vectorizers, vec)
 	}
@@ -35,33 +45,37 @@ func NewVectorizerService(server *Server) (*VectorizerService, error) {
 	return service, nil
 }
 
-// Start avvia il ciclo di vita di tutti i worker gestiti dal servizio.
+// Start begins the lifecycle of all workers managed by the service.
+// Each worker is started in its own background goroutine.
 func (vs *VectorizerService) Start() {
 	if vs == nil || len(vs.vectorizers) == 0 {
 		return
 	}
-	log.Println("Avvio del VectorizerService e di tutti i worker in background...")
+	log.Println("Starting VectorizerService and all background workers...")
 	for _, v := range vs.vectorizers {
-		// Diciamo al WaitGroup che una goroutine sta per partire
+		// Tell the WaitGroup that a goroutine is about to start.
 		v.wg.Add(1)
-		// Avvia la goroutine del worker
+		// Start the worker's goroutine.
 		go v.run()
 	}
 }
 
-// Stop ferma tutti i worker gestiti dal servizio.
+// Stop gracefully stops all workers managed by the service.
+// It signals each worker to stop and then waits for them to complete
+// their current tasks and shut down.
 func (vs *VectorizerService) Stop() {
-	log.Println("Stop del VectorizerService in corso... In attesa dei worker...")
+	log.Println("Stopping VectorizerService... Waiting for workers...")
 	for _, v := range vs.vectorizers {
-		v.Stop() // invia segnale di stop
+		v.Stop() // Send the stop signal.
 	}
 
-	// attende che tutte le goroutine che hanno chiamato Add() abbiano chiamato Done()
+	// Wait for all goroutines that have called Add() to call Done().
 	vs.wg.Wait()
-	log.Println("Tutti i worker del Vectorizer sono stati fermati.")
+	log.Println("All Vectorizer workers have been stopped.")
 }
 
-// VectorizerStatus è una struct "pubblica" per l'API, senza campi interni.
+// VectorizerStatus is a public-facing struct for the API, containing no internal fields.
+// It provides a snapshot of a vectorizer's current state.
 type VectorizerStatus struct {
 	Name         string    `json:"name"`
 	IsRunning    bool      `json:"is_running"`
@@ -69,24 +83,26 @@ type VectorizerStatus struct {
 	CurrentState string    `json:"current_state"`
 }
 
-// GetStatuses restituisce lo stato di tutti i vectorizer gestiti.
+// GetStatuses returns the current status of all managed vectorizers.
+// This is used to provide information via the HTTP API.
 func (vs *VectorizerService) GetStatuses() []VectorizerStatus {
 	statuses := make([]VectorizerStatus, 0, len(vs.vectorizers))
 	for _, v := range vs.vectorizers {
-		// Dobbiamo aggiungere un metodo per ottenere lo stato di un singolo Vectorizer
+		// We use a method on the Vectorizer to get its individual status.
 		statuses = append(statuses, v.GetStatus())
 	}
 	return statuses
 }
 
-// Trigger avvia manualmente la sincronizzazione per un vectorizer specifico.
+// Trigger manually starts the synchronization process for a specific vectorizer by name.
+// The synchronization is run in a separate goroutine to avoid blocking the caller.
 func (vs *VectorizerService) Trigger(name string) error {
 	for _, v := range vs.vectorizers {
 		if v.config.Name == name {
-			log.Printf("Trigger manuale ricevuto per il vectorizer '%s'", name)
-			go v.synchronize() // Avvia la sincronizzazione in una goroutine per non bloccare
+			log.Printf("Manual trigger received for vectorizer '%s'", name)
+			go v.synchronize() // Start synchronization in a goroutine to avoid blocking.
 			return nil
 		}
 	}
-	return fmt.Errorf("vectorizer con nome '%s' non trovato", name)
+	return fmt.Errorf("vectorizer with name '%s' not found", name)
 }

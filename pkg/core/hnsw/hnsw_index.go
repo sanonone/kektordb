@@ -1,3 +1,10 @@
+// Package hnsw provides the implementation of the Hierarchical Navigable Small World
+// graph algorithm for efficient approximate nearest neighbor search.
+//
+// This file contains the core Index struct and its associated methods for building,
+// searching, and managing the HNSW graph. It supports multiple distance metrics,
+// data precisions (including float32, float16, and int8 quantization), and
+// concurrent access.
 package hnsw
 
 import (
@@ -14,55 +21,56 @@ import (
 	"time"
 )
 
-// rappresenta l'indice del grafo gerarchico
+// Index represents the hierarchical graph structure.
 type Index struct {
-	// mutex per la concorrenza. Al momento lock globale poi forse gestirò più nel dettaglio
+	// Global mutex for concurrency control. Finer-grained locking may be considered in the future.
 	mu sync.RWMutex
 
-	// parametri dell'algoritmo HNSW
-	m              int // num massimo di connessine per nodo per livello > 0 [default = 16]
-	mMax0          int // numero massimo di connessioni per nodo al livello 0
-	efConstruction int // dimensione della lista dinamica dei candidati durante la costruzione/inserimento [default = 200]
+	// HNSW algorithm parameters
+	m              int // Max number of connections per node per layer > 0 [default = 16]
+	mMax0          int // Max number of connections per node at layer 0
+	efConstruction int // Size of the dynamic candidate list during construction/insertion [default = 200]
 
-	// ml è un fattore di normalizzazione per la distribuzione di probabilità dei livelli
+	// ml is a normalization factor for the level probability distribution
 	ml float64
 
-	// l'ID del primo nnodo inserito, usato come punto di partenza per tutte le ricerche ed inserimenti
+	// The ID of the first node inserted, used as the starting point for all searches and insertions
 	entrypointID uint32
-	// l'attuale massimo livello presente nel grafo
+	// The current highest level present in the graph
 	maxLevel int
 
-	// la mappa che contiene tutti i nodi del grafo.
-	// la chiave è un id interno uint32, non l'id stringa del Node
+	// The map containing all nodes in the graph
+	// The key is an internal uint32 ID, not the string ID from the Node struct
 	nodes map[uint32]*Node
 
-	// mappa separata per tradurre gli id esterni in id interni
+	// Separate maps to translate between external and internal IDs
 	externalToInternalID map[string]uint32
 	internalToExternalID map[uint32]string
 	internalCounter      uint32
 
-	// memorizza se siamo in precisione f32 o f16
+	// Stores the precision of the index (e.g., f32, f16)
 	precision distance.PrecisionType
 
-	// campo per la quantizzaziojne, sarà nil per indici non quantizzati
-	quantizer *distance.Quantizer // puntatore perchè ci serve lo stato condiviso e modificabile da più parti del sistema
+	// Field for quantization; will be nil for non-quantized indexes.
+	// It's a pointer because we need its state to be shared and mutable.
+	quantizer *distance.Quantizer
 
-	// memorizza la funzione che ci serve per il dato indice
-	// any per flessibilità nell'usare le diverse funzioni
+	// Stores the appropriate distance function for this index.
+	// Uses 'any' for flexibility with different function signatures.
 	distanceFunc any
 
-	// generatore num casuali per la selezione del livello
+	// Random number generator for level selection
 	levelRand *rand.Rand
 
-	// per memorizzare il tipo  di metrica
+	// Stores the distance metric type
 	metric distance.DistanceMetric
 
 	textLanguage string
 }
 
-// crea ed inizializza un nuovo indice HNSW
+// New creates and initializes a new HNSW index
 func New(m int, efConstruction int, metric distance.DistanceMetric, precision distance.PrecisionType, textLang string) (*Index, error) {
-	// imposto valori di default se non sono stati passati come parametri dall'utente
+	// Set default values if not provided by the user
 	if m <= 0 {
 		m = 16 // default
 	}
@@ -72,23 +80,23 @@ func New(m int, efConstruction int, metric distance.DistanceMetric, precision di
 
 	h := &Index{
 		m:                    m,
-		mMax0:                m * 2, // è una regola comune raddoppiare m per il livello 0
+		mMax0:                m * 2, // A common heuristic is to double m for layer 0
 		efConstruction:       efConstruction,
 		ml:                   1.0 / math.Log(float64(m)),
 		nodes:                make(map[uint32]*Node),
 		externalToInternalID: make(map[string]uint32),
 		internalToExternalID: make(map[uint32]string),
 		internalCounter:      0,
-		maxLevel:             -1, // all'inizio nessun livello
-		entrypointID:         0,  // inizializzato al primo inserito
+		maxLevel:             -1, // No levels initially
+		entrypointID:         0,  // Initialized on the first insertion
 		levelRand:            rand.New(rand.NewSource(time.Now().UnixNano())),
 		metric:               metric,
 		precision:            precision,
 		textLanguage:         textLang,
 	}
 
-	// --- LOGICA DI SELEZIONE E VALIDAZIONE ---
-	// Seleziona la funzione di distanza corretta in base alla precisione e alla metrica.
+	// --- SELECTION AND VALIDATION LOGIC ---
+	// Select the correct distance function based on precision and metric.
 	var err error
 	switch precision {
 	case distance.Float32:
@@ -99,23 +107,21 @@ func New(m int, efConstruction int, metric distance.DistanceMetric, precision di
 	case distance.Float16:
 		// Per ora, float16 supporta solo Euclidean
 		if metric != distance.Euclidean {
-			return nil, fmt.Errorf("la precisione '%s' supporta solo la metrica '%s'", precision, distance.Euclidean)
+			return nil, fmt.Errorf("precision '%s' only supports the '%s' metric", precision, distance.Euclidean)
 		}
 		h.distanceFunc, err = distance.GetFloat16Func(metric)
 		if err != nil {
 			return nil, err
 		}
 	case distance.Int8:
-		// La quantizzazione int8 ha senso solo per Coseno (prodotto scalare)
 		if metric != distance.Cosine {
-			return nil, fmt.Errorf("la precisione '%s' supporta solo la metrica '%s'", precision, distance.Cosine)
+			return nil, fmt.Errorf("precision '%s' only supports the '%s' metric", precision, distance.Cosine)
 		}
 		h.distanceFunc, err = distance.GetInt8Func(metric)
-		// Per un indice quantizzato, abbiamo bisogno di un quantizzatore.
-		// Verrà "addestrato" e impostato in un secondo momento.
+		// A quantized index requires a quantizer, which will be trained and set later.
 		h.quantizer = &distance.Quantizer{}
 	default:
-		return nil, fmt.Errorf("precisione non supportata: %s", precision)
+		return nil, fmt.Errorf("unsupported precision: %s", precision)
 	}
 
 	if err != nil {
@@ -125,9 +131,9 @@ func New(m int, efConstruction int, metric distance.DistanceMetric, precision di
 	return h, nil
 }
 
-// --- METODI DI CALCOLO AGGIORNATI ---
+// --- UPDATED CALCULATION METHODS ---
 
-// distance calcola la distanza tra due vettori memorizzati dello stesso tipo.
+// distance calculates the distance between two stored vectors of the same type
 func (h *Index) distance(v1, v2 any) (float64, error) {
 	// Usiamo un type switch per chiamare la funzione corretta.
 	switch fn := h.distanceFunc.(type) {
@@ -135,27 +141,26 @@ func (h *Index) distance(v1, v2 any) (float64, error) {
 		vec1, ok1 := v1.([]float32)
 		vec2, ok2 := v2.([]float32)
 		if !ok1 || !ok2 {
-			return 0, fmt.Errorf("tipi di vettore non corrispondenti (atteso float32)")
+			return 0, fmt.Errorf("vector type mismatch (expected float32)")
 		}
 		return fn(vec1, vec2)
 	case distance.DistanceFuncF16:
 		vec1, ok1 := v1.([]uint16)
 		vec2, ok2 := v2.([]uint16)
 		if !ok1 || !ok2 {
-			return 0, fmt.Errorf("tipi di vettore non corrispondenti (atteso uint16)")
+			return 0, fmt.Errorf("vector type mismatch (expected uint16)")
 		}
 		return fn(vec1, vec2)
 	case distance.DistanceFuncI8:
 		vec1, ok1 := v1.([]int8)
 		vec2, ok2 := v2.([]int8)
 		if !ok1 || !ok2 {
-			return 0, fmt.Errorf("tipi di vettore non corrispondenti (atteso int8)")
+			return 0, fmt.Errorf("vector type mismatch (expected int8)")
 		}
 		dot, err := fn(vec1, vec2)
 
-		// --- NUOVA LOGICA DI SCALA ---
-		// Calcola le "norme" dei vettori int8. Non sono vere norme,
-		// ma servono a scalare il risultato.
+		// --- SCALING LOGIC ---
+		// Calculate the "norms" of the int8 vectors to scale the result.
 		var norm1, norm2 int64
 		for i := range vec1 {
 			norm1 += int64(vec1[i]) * int64(vec1[i])
@@ -163,12 +168,12 @@ func (h *Index) distance(v1, v2 any) (float64, error) {
 		}
 
 		if norm1 == 0 || norm2 == 0 {
-			return 1.0, nil // Distanza massima se un vettore è nullo
+			return 1.0, nil // Max distance if a vector is zero
 		}
 
 		similarity := float64(dot) / (math.Sqrt(float64(norm1)) * math.Sqrt(float64(norm2)))
 
-		// Assicurati che la similarità sia nel range [-1, 1] a causa di errori numerici
+		// similarity range [-1, 1]
 		if similarity > 1.0 {
 			similarity = 1.0
 		}
@@ -177,46 +182,44 @@ func (h *Index) distance(v1, v2 any) (float64, error) {
 		}
 		return 1.0 - similarity, err
 	default:
-		return 0, fmt.Errorf("funzione di distanza non valida o non inizializzata")
+		return 0, fmt.Errorf("invalid or uninitialized distance function")
 	}
 }
 
-// distanceToQuery calcola la distanza tra un vettore di query (sempre float32) e un vettore memorizzato.
+// distanceToQuery calculates the distance between a query vector (always float32) and a stored vector
 func (h *Index) distanceToQuery(query []float32, storedVector any) (float64, error) {
 	queryToUse := query // Usa la query originale di default
-	// Se la metrica dell'indice è Coseno, la query DEVE essere normalizzata
-	// prima del confronto per usare la formula 1 - dotProduct.
+	// If the index metric is Cosine, the query MUST be normalized
+	// before the comparison to use the 1 - dotProduct
 	if h.metric == distance.Cosine {
-		// Crea una COPIA della query prima di normalizzarla,
-		// per non modificare la slice originale.
+		// Create a COPY of the query before normalizing to avoid modifying the original slice
 		queryCopy := make([]float32, len(query))
 		copy(queryCopy, query)
 		normalize(queryCopy)
 		queryToUse = queryCopy // Usa la copia normalizzata per i calcoli
 	}
-	// Usiamo un type switch per determinare come gestire la query.
 	switch fn := h.distanceFunc.(type) {
 	case distance.DistanceFuncF32:
 		stored, ok := storedVector.([]float32)
 		if !ok {
-			return 0, fmt.Errorf("tipo di vettore memorizzato non corrispondente (atteso float32)")
+			return 0, fmt.Errorf("stored vector type mismatch (expected float32)")
 		}
 		return fn(queryToUse, stored)
 	case distance.DistanceFuncF16:
-		// Converti la query float32 in float16 al volo
+		// Convert the float32 query to float16
 		queryF16 := make([]uint16, len(queryToUse))
 		for i, v := range query {
 			queryF16[i] = float16.Fromfloat32(v).Bits()
 		}
 		stored, ok := storedVector.([]uint16)
 		if !ok {
-			return 0, fmt.Errorf("tipo di vettore memorizzato non corrispondente (atteso uint16)")
+			return 0, fmt.Errorf("stored vector type mismatch (expected uint16)")
 		}
 		return fn(queryF16, stored)
 	case distance.DistanceFuncI8:
-		// quantizzare la query al volo
+		// Quantize the query on the fly
 		if h.quantizer == nil {
-			return 0, fmt.Errorf("l'indice è quantizzato ma manca il quantizzatore")
+			return 0, fmt.Errorf("index is quantized but quantizer is missing")
 		}
 
 		//log.Printf("[DEBUG SEARCH] Query float32 (prima di quantize, primi 5): %v", queryToUse[:5])
@@ -224,17 +227,17 @@ func (h *Index) distanceToQuery(query []float32, storedVector any) (float64, err
 		queryI8 := h.quantizer.Quantize(queryToUse)
 		stored, ok := storedVector.([]int8)
 		if !ok {
-			return 0, fmt.Errorf("tipo di vettore memorizzato non corrispondente (atteso int8)")
+			return 0, fmt.Errorf("stored vector type mismatch (expected int8)")
 		}
 
-		// La funzione di distanza int8 restituisce un prodotto scalare.
-		// Va convertirlo in una "distanza" dove un valore più piccolo è migliore.
-		// Usa il negativo del prodotto scalare.
+		// The int8 distance function returns a dot product.
+		// Convert this to a "distance," where a smaller value is better.
+		// Use the negative of the dot product.
 		dot, err := fn(queryI8, stored)
 
-		// --- NUOVA LOGICA DI SCALA ---
-		// Calcola le "norme" dei vettori int8. Non sono vere norme,
-		// ma servono a scalare il risultato.
+		// --- SCALING LOGIC ---
+		// Calculate the "norms" of the int8 vectors. These aren't true norms,
+		// but they're used to scale the result.
 		var norm1, norm2 int64
 		for i := range queryI8 {
 			norm1 += int64(queryI8[i]) * int64(queryI8[i])
@@ -242,12 +245,12 @@ func (h *Index) distanceToQuery(query []float32, storedVector any) (float64, err
 		}
 
 		if norm1 == 0 || norm2 == 0 {
-			return 1.0, nil // Distanza massima se un vettore è nullo
+			return 1.0, nil // Maximum distance if a vector is null
 		}
 
 		similarity := float64(dot) / (math.Sqrt(float64(norm1)) * math.Sqrt(float64(norm2)))
 
-		// Assicurati che la similarità sia nel range [-1, 1] a causa di errori numerici
+		// Make sure the similarity is in the range [-1, 1] due to numerical errors
 		if similarity > 1.0 {
 			similarity = 1.0
 		}
@@ -257,139 +260,100 @@ func (h *Index) distanceToQuery(query []float32, storedVector any) (float64, err
 
 		return 1.0 - similarity, err // Minimizzare -dot è come massimizzare dot.
 	default:
-		return 0, fmt.Errorf("funzione di distanza non valida o non inizializzata")
+		return 0, fmt.Errorf("invalid or uninitialized distance function")
 	}
 }
 
-/*
-// implementa il metodo dell'interfaccia VectorIndex
-func (h *Index) Search(query []float32, k int, allowList map[uint32]struct{}, efSearch int) []string {
-	// la logica interna è la vecchia Search, ma deve restituire
-	// solo []string, non ([]string, error).
-
-	// h.mu.Lock()
-	// defer h.mu.RUnlock()
-
-	results, err := h.searchInternal(query, k, allowList, efSearch) // richiama l'effettiva search
-	if err != nil {
-		log.Printf("Errore durante la ricerca HNSW: %v", err)
-		return []string{} // risultato vuoto in caso di errore
-	}
-	return results
-}
-*/
-
-// SearchWithScores è la nuova versione di Search che restituisce i punteggi.
+// SearchWithScores finds the K nearest neighbors to a query vector, returning their scores (distances)
 func (h *Index) SearchWithScores(query []float32, k int, allowList map[uint32]struct{}, efSearch int) []types.SearchResult {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	// searchInternal deve essere modificato per restituire []candidate
 	candidates, err := h.searchInternal(query, k, allowList, efSearch)
 	if err != nil {
-		log.Printf("Errore durante la ricerca HNSW: %v", err)
+		log.Printf("Error during HNSW search: %v", err)
 		return []types.SearchResult{}
 	}
 
 	results := make([]types.SearchResult, len(candidates))
 	for i, c := range candidates {
-		results[i] = types.SearchResult{DocID: c.Id, Score: c.Distance} // Usa i campi pubblici
+		results[i] = types.SearchResult{DocID: c.Id, Score: c.Distance}
 	}
 	return results
 }
 
-// la funzione pubblica per trovare i K vicini più prossimi a un vettore di query
+// searchInternal is the private function for finding the K nearest neighbors
 func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]struct{}, efSearch int) ([]types.Candidate, error) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	// se il grafo è vuoto ritorno senza risultati
+	// if the graph is empty return without results
 	if h.maxLevel == -1 {
 		return []types.Candidate{}, nil
 	}
 
-	// inizia la ricerca dal punto di ingresso globale al livello più alto
+	// start the search from the global entry point at the highest level
 	currentEntryPoint := h.entrypointID
 
-	// --- Selezione Intelligente dell'Entry Point ---
-	// Se l'entry point di default è filtrato, non possiamo usarlo.
-	// Scegliamo un punto di partenza casuale dall'allow list.
+	// --- Smart Entry Point Selection ---
+	// If the default entry point is filtered, we can't use it.
+	// We choose a random starting point from the allow list.
 	if allowList != nil {
 		if _, ok := allowList[currentEntryPoint]; !ok {
-			// Prendi un elemento qualsiasi dalla mappa.
+			// Get any element from the map.
 			foundNewEntryPoint := false
 			for id := range allowList {
 				currentEntryPoint = id
 				foundNewEntryPoint = true
 				break
 			}
-			if !foundNewEntryPoint { // L'allow list era vuota
+			if !foundNewEntryPoint { // The allow list was empty
 				return []types.Candidate{}, nil
 			}
 		}
 	}
 
-	// 1) ricerca top-down iterativa per muovermi verso il layer base
+	// 1) Iterative top-down search to move towards the base layer.
 	for l := h.maxLevel; l > 0; l-- {
-		// Per la ricerca top-down, k=1 è sufficiente, non serve efSearch
-		// Passiamo 0 per usare il default
+		// For top-down search, k=1 is sufficient; efSearch is not needed.
+		// We pass 0 to use the default.
 		nearest, err := h.searchLayer(query, currentEntryPoint, 1, l, allowList, 0)
 		if err != nil {
 			return nil, err
 		}
 		if len(nearest) == 0 {
-			// dovrebbe capitare in casi complessi o errori
-			return []types.Candidate{}, fmt.Errorf("ricerca fallita al livello %d, grafo potenzialmente inconsistente", l)
+			return []types.Candidate{}, fmt.Errorf("search failed at level %d, graph may be inconsistent", l)
 		}
 		currentEntryPoint = nearest[0].Id
 	}
 
-	// 2) ricerca affetiva al livello 0 per trovare i vicini alla query
-	// efConstruction lo usiamo per definire la qualità della ricerca
+	// 2) Actual search at layer 0 to find the query's neighbors.
 	nearestNeighbors, err := h.searchLayer(query, currentEntryPoint, k, 0, allowList, efSearch)
 	if err != nil {
 		return nil, err
 	}
 
-	/*
-		// estrae gli ID esterni (string) dai risultati
-		results := make([]string, 0, len(nearestNeighbors))
-		for _, neighbor := range nearestNeighbors {
-			// check per ignorare i nodi marcati come eliminati
-			if !h.nodes[neighbor.id].Deleted {
-				results = append(results, h.nodes[neighbor.id].Id)
-			}
-		}
-
-		// la lista potrebbe risultare più corta di k se ci sono nodi eliminati
-		// o se il numero totali di nodi è inferiore a k
-		if len(results) > k {
-			return results[:k], nil
-		}
-	*/
-
 	return nearestNeighbors, nil
 }
 
-// inserisce un nuovo vettore nel grafo
+// Add inserts a new vector into the graph
 func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	// controlo tramite mappa string-int se esiste già un
-	// nodo con l'id di quello che voglio inserire
+	// I check via a string-int map whether a node with the id of the one I want to insert already exists.
 	if _, exists := h.externalToInternalID[id]; exists {
-		return 0, fmt.Errorf("ID '%s' già esistente", id)
+		return 0, fmt.Errorf("ID '%s' already exists", id)
 	}
 
-	// Se l'indice usa la metrica Coseno, normalizza il vettore in ingresso.
-	// Questo garantisce che tutti i vettori memorizzati siano a lunghezza unitaria.
+	// If the index uses the Cosine metric, normalize the input vector.
+	// This ensures that all stored vectors are of unit length.
 	if h.metric == distance.Cosine && h.precision == distance.Float32 {
 		normalize(vector)
 	}
 
 	var storedVector interface{}
-	// --- NUOVA LOGICA DI CONVERSIONE/QUANTIZZAZIONE ---
+	// --- CONVERSION/QUANTIZATION LOGIC ---
 	switch h.precision {
 	case distance.Float32:
 		storedVector = vector
@@ -401,9 +365,7 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 		storedVector = f16Vec
 	case distance.Int8:
 		if h.quantizer == nil || h.quantizer.AbsMax == 0 {
-			// Questo è un errore di stato. L'indice quantizzato deve essere
-			// "addestrato" prima di poter aggiungere vettori.
-			return 0, fmt.Errorf("l'indice è in modalità int8 ma il quantizzatore non è addestrato")
+			return 0, fmt.Errorf("index is in int8 mode but the quantizer is not trained")
 		}
 		storedVector = h.quantizer.Quantize(vector)
 	}
@@ -414,27 +376,27 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	//}
 	// --- FINE LOG ---
 
-	// assegnamento ID interno
+	// internal ID assignment
 	h.internalCounter++
 	internalID := h.internalCounter
 
-	// creazione nuovo nodo
+	// create new node
 	node := &Node{
 		Id:     id,
 		Vector: storedVector,
 	}
 
-	// aggiunta nodo all; mappe di tracciamento
+	// add node to tracking maps
 	h.nodes[internalID] = node
 	h.externalToInternalID[id] = internalID
 	h.internalToExternalID[internalID] = id
 
-	// scelta di un livello casuale per il nuovo nodo
+	// choose a random level for the new node
 	level := h.randomLevel()
 
 	node.Connections = make([][]uint32, level+1)
 
-	// se questo è il primo nodo allora fine, diventa l'entrypoint e ritorna
+	// if this is the first node then end, become the entrypoint and return
 	if h.maxLevel == -1 {
 		h.entrypointID = internalID
 		h.maxLevel = 0
@@ -442,33 +404,33 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 		return internalID, nil
 	}
 
-	// 1) --- fase di ricerca top-down per trovare i punti di ingresso a ogni livello ---
+	// 1) --- Top-down search phase to find entry points at each level ---
 
-	// la ricerca inizia dal punto di ingresso globale al livello più alto [entrypointID]
+	// The search starts from the global entry point at the highest level [entrypointID]
 	currentEntryPoint := h.entrypointID
 
-	// scende dal livello più alto fino al livello superiore di quello assegnato al nuovo nodo (ovvero livello del nuovo nodo + 1)
+	// descend from the highest level to the level above that assigned to the new node (i.e., the new node's level + 1)
 	for l := h.maxLevel; l > level; l-- {
 		// trova il vicino più prossimo nel livello attuale e lo usa come entry point per il livello inferiore
 		nearest, err := h.searchLayer(vector, currentEntryPoint, 1, l, nil, 1)
 		if err != nil {
-			return 0, fmt.Errorf("Errore durante linserimento del nodo")
+			return 0, fmt.Errorf("error during node insertion")
 		}
-		// si assime che searchLayer restituisca sempre un risultato se l'entry point è valido
+		// Assume that searchLayer always returns a result if the entry point is valid
 		currentEntryPoint = nearest[0].Id
 	}
 
-	// 2) --- inserimento bottom up e connessione dei vicini ---
-	// per ogni livello dal più basso fino al livello 0
-	// trova i vicini e li connette al nuovo nodo
+	// 2) --- Bottom-up insertion and neighbor connection ---
+	// For each level from the lowest to level 0
+	// Find neighbors and connect them to the new node
 	for l := min(level, h.maxLevel); l >= 0; l-- {
 		// trova gli efConstruction candidati più vicini per questo livello
 		neighbors, err := h.searchLayer(vector, currentEntryPoint, h.efConstruction, l, nil, h.efConstruction)
 		if err != nil {
-			return 0, fmt.Errorf("Errore durante l'inserimento del nodo")
+			return 0, fmt.Errorf("error during node insertion")
 		}
 
-		// seleziona gli M migliori vicini da connettere
+		// select the M best neighbors to connect
 		maxConns := h.m
 		if l == 0 {
 			maxConns = h.mMax0
@@ -476,42 +438,41 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 
 		selectedNeighbors := h.selectNeighbors(neighbors, maxConns)
 
-		// connette il nuovo nodo ai vicini selezionati
+		// connect the new node to the selected neighbors
 		node.Connections[l] = make([]uint32, len(selectedNeighbors))
 		for i, neighborCandidate := range selectedNeighbors {
 			node.Connections[l][i] = neighborCandidate.Id
 		}
 
-		// connette anche i vicini al nuovo nodo (bidirezionale)
+		// also connect neighbors to the new node (bidirectional)
 		for _, neighborCandidate := range selectedNeighbors {
 			neighborNode := h.nodes[neighborCandidate.Id]
 
 			neighborLevel := len(neighborNode.Connections) - 1
-			// se il nostro livello di inserimento 'l' è superiore al livello
-			// massimo del vicino, il vicino non può avere una connessione di ritorno
+			// if our insertion level 'l' is higher than the neighbor's maximum level, the neighbor cannot have a return connection.
 			if l > neighborLevel {
 				continue
 			}
 
-			// prendo la lista dei vicini attuali a quel livello
+			// get the list of current neighbors at that level
 			neighborConnections := neighborNode.Connections[l]
 
-			// controllo che il vicino non superi il suo numero massimo di connessioni
-			if len(neighborConnections) < maxConns { // c'è spazio, aggiunge semplicemente la connessione
+			// check that the neighbor does not exceed its maximum number of connections
+			if len(neighborConnections) < maxConns { // there is space, just add the connection
 				neighborNode.Connections[l] = append(neighborConnections, internalID)
 			} else {
 
-				// --- IMPLEMENTAZIONE DEL PRUNING SEMPLIFICATO ---
-				// Il vicino è pieno. Dobbiamo decidere se il nostro nuovo nodo
-				// è un candidato migliore di uno dei suoi vicini attuali.
+				// --- SIMPLIFIED PRUNING IMPLEMENTATION ---
+				// The neighbor is full. We need to decide if our new node
+				// is a better candidate than one of its current neighbors.
 
-				// Troviamo il vicino più lontano del nostro `neighborNode`.
+				// Let's find the furthest neighbor of our `neighborNode`.
 				maxDist := -1.0
 				//worstNeighborID := uint32(0)
 				worstNeighborIndex := -1
 
 				for i, currentNeighborOfNeighborID := range neighborConnections {
-					// confronto tra due nodi interni, neighborNode e il suo vicino
+					// comparison between two internal nodes, neighborNode and its neighbor
 					dist, _ := h.distance(neighborNode.Vector, h.nodes[currentNeighborOfNeighborID].Vector)
 					if dist > maxDist {
 						maxDist = dist
@@ -520,24 +481,24 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 					}
 				}
 
-				// Calcola la distanza tra il vicino e il nostro nuovo nodo.
+				// Calculate the distance between the neighbor and our new node.
 				distToNewNode, _ := h.distance(neighborNode.Vector, node.Vector)
 
-				// Se il nostro nuovo nodo è più vicino del vicino più lontano,
-				// allora lo sostituiamo.
+				// If our new node is closer than its furthest neighbor,
+				// then we replace it.
 				if distToNewNode < maxDist && worstNeighborIndex != -1 {
 					neighborNode.Connections[l][worstNeighborIndex] = internalID
 				}
 			}
 		}
 
-		// per i livelli sottostanti si usa il vicino più vicino trovato
-		// come punto di ingresso per migliorare l'efficienza
+		// For the underlying levels, the nearest neighbor found is used
+		// as an entry point to improve efficiency
 		currentEntryPoint = neighbors[0].Id
 	}
 
-	// se il nuovo nodo ha un livello più alto di qualsiasi altro,
-	// diventa il nuovo punto di ingresso globale
+	// If the new node has a higher level than any other,
+	// it becomes the new global entry point
 	if level > h.maxLevel {
 		h.maxLevel = level
 		h.entrypointID = internalID
@@ -546,7 +507,7 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 
 }
 
-// GetExternalID è il nuovo metodo che ci serve.
+// GetExternalID retrieves the external string ID for a given internal uint32 ID.
 func (h *Index) GetExternalID(internalID uint32) (string, bool) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -554,90 +515,87 @@ func (h *Index) GetExternalID(internalID uint32) (string, bool) {
 	return externalID, found
 }
 
-// marca un nodo come eliminato (soft delete)
-// [per il momento] non rimuove il nodo dal grafo per mantenere la stabilità
-// della struttura
+// Delete marks a node as deleted (soft delete).
+// It does not remove the node from the graph to maintain structural stability.
 func (h *Index) Delete(id string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	// ricerca ID interno corrispondente all'ID esterno
+	// lookup internal ID matching external ID
 	internalID, ok := h.externalToInternalID[id]
 	if !ok {
-		// non esiste il nodo quindi non fa nulla
 		return
 	}
 
-	// trova il nodo quindi imposta il flag
+	// find the node then set the flag
 	node, ok := h.nodes[internalID]
 	if ok {
 		node.Deleted = true
 	}
 
-	// rimozione ID dalla mappa di lookup esterna per impedire
-	// che lo stesso ID venga riaggiunto in futuro
-	// (si potrebbe anche ermettere)
+	// Remove ID from the external lookup map to prevent
+	// the same ID from being added again in the future
 	delete(h.externalToInternalID, id)
 }
 
-// fa la ricerca dei vicini più prossimi in un singolo livello del grafo
+// searchLayer finds the nearest neighbors in a single layer of the graph
 func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level int, allowList map[uint32]struct{}, efSearch int) ([]types.Candidate, error) {
 	//log.Printf("DEBUG: Inizio searchLayer a livello %d con entrypoint %d\n", level, entrypointID)
-	// si tracciano i nodi già visitati per non entrare in loop
+	// the nodes already visited are traced to avoid entering a loop
 	visited := make(map[uint32]bool)
 
-	// --- LOGICA DI efSearch CORRETTA ---
-	// ef (effective search size) deve essere almeno k
+	// --- CORRECT efSearch LOGIC ---
+	// ef (effective search size) must be at least k
 	var ef int
 	if efSearch > 0 {
-		// L'utente ha specificato un valore, usiamo quello.
+		// The user specified a value, let's use that.
 		ef = efSearch
 	} else {
-		// L'utente non ha specificato un valore.
-		// Il default per la ricerca è k.
+		// The user did not specify a value.
+		// The default for the search is k.
 		ef = k
 	}
 
-	// Assicuriamoci sempre che ef sia almeno grande quanto k.
+	// Let's always make sure that ef is at least as large as k.
 	if ef < k {
-		// Questo caso si verifica se l'utente passa un efSearch < k,
-		// il che non ha senso. Lo correggiamo.
+		// This case occurs if the user passes an efSearch < k,
+		// which doesn't make sense. We'll fix it.
 		ef = k
 	}
 
-	// coda candidati da esplorare (i più vicini prima)
+	// candidate queue to explore (closest first)
 	candidates := newMinHeap(ef)
-	// lista risultati trovati (il più lontano in cima, per rimpiazzarlo velocemente con uno migliore)
+	// list of results found (the furthest one at the top, to quickly replace it with a better one)
 	results := newMaxHeap(ef)
 
-	// clacola la distanza tra la query ed il punto di ingresso
-	// inizia con il punto di ingresso
+	// Calculate the distance between the query and the entry point
+	// Start with the entry point
 	dist, err := h.distanceToQuery(query, h.nodes[entrypointID].Vector)
 	if err != nil {
 		return nil, err
 	}
 
-	// inserisco i nodi nelle heap
+	// insert the nodes into the heaps
 	heap.Push(candidates, types.Candidate{Id: entrypointID, Distance: dist})
 	heap.Push(results, types.Candidate{Id: entrypointID, Distance: dist})
-	visited[entrypointID] = true // setto il nodo come visitato nella mappa
+	visited[entrypointID] = true // set the node as visited in the map
 
 	loopCount := 0
 
 	for candidates.Len() > 0 {
 		loopCount++
-		// estrae l'elemento più vicino dalla coda
+		// pops the closest element from the queue
 		current := heap.Pop(candidates).(types.Candidate)
 
-		// se questo candidato è più lontano del peggiore risultato (ele in cima di results) che
-		// abbiamo trovato finora, possiamo fermare l'esplorazione da questo ramo
+		// If this candidate is further away than the worst result (the top results) that
+		// we've found so far, we can stop exploring this branch.
 		if results.Len() >= ef && current.Distance > (*results)[0].Distance {
 			break
 		}
 
-		// esplora i vicini del candidato corrente
+		// explore the neighbors of the current candidate
 		currentNode := h.nodes[current.Id]
-		// verifica che il nodo abbia connessioni a questo livello
+		// check that the node has connections at this level
 		if level >= len(currentNode.Connections) {
 			continue
 		}
@@ -645,23 +603,23 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 		//log.Printf("DEBUG: Livello %d, esploro i vicini di %d (%d vicini)\n", level, current.id, len(currentNode.connections[level]))
 
 		for _, neighborID := range currentNode.Connections[level] {
-			// CHECK 1: Se c'è una allowList, il vicino DEVE essere in essa.
-			// `allowList != nil` è il check principale.
+			// CHECK 1: If there is an allowList, the neighbor MUST be in it.
+			// `allowList != nil` is the primary check.
 			if allowList != nil {
-				// `_, ok := ...` è un lookup O(1) in una mappa/set.
+				// `_, ok := ...` is an O(1) lookup into a map/set.
 				if _, ok := allowList[neighborID]; !ok {
-					continue // Salta al prossimo vicino, questo è scartato.
+					continue // Jump to the next neighbor, this one is discarded.
 				}
 			}
 
-			// questo vicino non è mai stato visitato? allora vado (previene loop infiniti)
+			// Has this neighbor never been visited? Then I'll go (prevents infinite loops)
 			if !visited[neighborID] {
 				visited[neighborID] = true
 
-				// calcola la distanza tra la query ed il vicino
+				// calculate the distance between the query and the neighbor
 				dist, err := h.distanceToQuery(query, h.nodes[neighborID].Vector)
 				if err != nil {
-					// ignora e continua in caso di errore di calcolo
+					// ignore and continue on calculation error
 					continue
 				}
 
@@ -670,15 +628,15 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 				//	neighborID, h.nodes[neighborID].id, dist)
 				// --- FINE LOG ---
 
-				// se abbiamo ancora spazio nei risultati o se questo vicino
-				// è più vicino del nostro peggior risultato, lo aggiunge
+				// if we still have room in the results or if this neighbor
+				// is closer than our worst result, add it
 				if results.Len() < ef || dist < (*results)[0].Distance {
 					//log.Printf("DEBUG: Livello %d, aggiungo candidato %d con distanza %f\n", level, neighborID, dist)
 
 					heap.Push(candidates, types.Candidate{Id: neighborID, Distance: dist})
 					heap.Push(results, types.Candidate{Id: neighborID, Distance: dist})
 
-					// se non c'è più posto nella lista di risultati allora rimuoviamo il peggiore (che è il primo)
+					// if there is no more space in the result list then we remove the worst one (which is the first one)
 					if results.Len() > ef {
 						heap.Pop(results)
 					}
@@ -690,19 +648,19 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 	}
 	//log.Printf("DEBUG: Fine searchLayer a livello %d dopo %d iterazioni\n", level, loopCount)
 
-	// L'heap non è ordinato, dobbiamo estrarre tutti gli elementi e ordinarli.
+	// if there is no more space in the result list then we remove the worst one (which is the first one)
 	finalResults := make([]types.Candidate, results.Len())
 	for i := results.Len() - 1; i >= 0; i-- {
 		finalResults[i] = heap.Pop(results).(types.Candidate)
 	}
 
-	// Restituisci solo i 'k' migliori. La slice `finalResults` è già ordinata dal migliore al peggiore.
+	// Return only the best 'k' results. The `finalResults` slice is already sorted from best to worst.
 	if len(finalResults) > k {
 		return finalResults[:k], nil
 	}
 
-	// 2. Ordina la slice in modo esplicito e corretto.
-	// Ordina per 'distance' in ordine crescente (dal più piccolo al più grande).
+	// 2. Sort the slice explicitly and correctly.
+	// Sort by 'distance' in ascending order (smallest to largest).
 	sort.Slice(finalResults, func(i, j int) bool {
 		return finalResults[i].Distance < finalResults[j].Distance
 	})
@@ -711,30 +669,18 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 
 }
 
-// sceglie un livello casuale per un nuovo nodo
+// randomLevel selects a random level for a new node based on an exponentially decaying probability distribution.
 func (h *Index) randomLevel() int {
-	// Questo si basa su una distribuzione esponenziale decrescente
+	// This is based on an exponentially decreasing distribution
 	level := 0
-	for h.levelRand.Float64() < 0.5 && level < h.maxLevel+1 { // Aggiungiamo un limite per sicurezza
+	for h.levelRand.Float64() < 0.5 && level < h.maxLevel+1 { // Let's add a limit for safety
 		level++
 	}
 	return level
 }
 
-/*
-// sceglie i migliori vicini da una lista di candidati
-// per ora, implementa l'euristica semplice: prende i più vicini
-func (h *Index) selectNeighbors(candidates []candidate, m int) []candidate {
-	if len(candidates) <= m {
-		return candidates
-	}
-	// la lista di candidati da searchLayer è già ordinata per distanza
-	return candidates[:m]
-}
-*/
-
-// selectNeighbors implementa l'euristica di selezione avanzata del paper HNSW.
-// Seleziona un set diversificato di vicini.
+// selectNeighbors implements the advanced neighbor selection heuristic from the HNSW paper.
+// It aims to select a diverse set of neighbors.
 func (h *Index) selectNeighbors(candidates []types.Candidate, m int) []types.Candidate {
 	if len(candidates) <= m {
 		return candidates
@@ -742,35 +688,35 @@ func (h *Index) selectNeighbors(candidates []types.Candidate, m int) []types.Can
 
 	results := make([]types.Candidate, 0, m)
 
-	// Manteniamo una copia dei candidati di lavoro da cui possiamo "scartare" elementi.
-	// La slice `candidates` è già ordinata per distanza crescente.
+	// We keep a copy of the job candidates from which we can "discard" elements.
+	// The `candidates` slice is already sorted by increasing distance.
 	worklist := candidates
 
 	for len(worklist) > 0 && len(results) < m {
-		// Prendi il candidato migliore (il primo della lista)
+		// Take the best candidate (the first one on the list)
 		e := worklist[0]
-		worklist = worklist[1:] // Rimuovilo dalla worklist
+		worklist = worklist[1:] // Remove it from the worklist
 
-		// Se è il primo risultato, aggiungilo sempre.
+		// If it's the first result, always add it.
 		if len(results) == 0 {
 			results = append(results, e)
 			continue
 		}
 
-		// Condizione di diversità: 'e' deve essere più vicino alla query
-		// di quanto non sia a qualsiasi vicino già selezionato in 'results'.
+		// Diversity condition: 'e' must be closer to the query
+		// than any neighbor already selected in 'results'.
 		isGoodCandidate := true
 		for _, r := range results {
 			dist_e_r, err := h.distance(h.nodes[e.Id].Vector, h.nodes[r.Id].Vector)
 			if err != nil {
-				// In caso di errore, consideriamolo un cattivo candidato per sicurezza
+				// If it fails, consider it a bad candidate for safety.
 				isGoodCandidate = false
 				break
 			}
 
-			// --- MODIFICA SPERIMENTALE ---
-			// Se la metrica è Coseno, usiamo un confronto "minore o uguale"
-			// per essere meno aggressivi nello scartare candidati.
+			// --- EXPERIMENTAL CHANGE ---
+			// If the metric is Cosine, we use a "less than or equal" comparison
+			// to be less aggressive in discarding candidates.
 			var condition bool
 			if h.metric == distance.Cosine {
 				condition = (dist_e_r <= e.Distance)
@@ -778,7 +724,7 @@ func (h *Index) selectNeighbors(candidates []types.Candidate, m int) []types.Can
 				condition = (dist_e_r < e.Distance)
 			}
 
-			if condition { // Se 'e' è vicino o alla stessa distanza da 'r'...
+			if condition { // If 'e' is close to or the same distance from 'r'...
 				isGoodCandidate = false
 				break
 			}
@@ -801,7 +747,7 @@ func (h *Index) selectNeighbors(candidates []types.Candidate, m int) []types.Can
 	return results
 }
 
-// funzione helper min che non c'è in Go
+// min is a helper function for the minimum of two integers.
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -809,53 +755,38 @@ func min(a, b int) int {
 	return b
 }
 
-/*
-// Funzione helper per calcolare la distanza euclidea al quadrato.
-func squaredEuclideanDistance(v1, v2 []float32) (float64, error) {
-	if len(v1) != len(v2) {
-		return 0, fmt.Errorf("vettori di dimensioni diverse: %d vs %d", len(v1), len(v2))
-	}
-	var sum float64
-	for i := range v1 {
-		diff := float64(v1[i] - v2[i])
-		sum += diff * diff
-	}
-	return sum, nil
-}
-*/
-
 // --- Helper ---
-// Iterate itera su tutti i nodi non eliminati e passa l'ID e il vettore
-// (sempre come []float32) a una funzione callback.
+// Iterate loops over all non-deleted nodes and passes the external ID and vector
+// (always as []float32) to a callback function.
 func (h *Index) Iterate(callback func(id string, vector []float32)) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
 	for _, node := range h.nodes {
 		if !node.Deleted {
-			// --- LOGICA DI CONVERSIONE ---
+			// --- CONVERSION LOGIC ---
 			var vectorF32 []float32
 
-			// Controlla il tipo del vettore memorizzato
+			// Check the type of the stored vector
 			switch vec := node.Vector.(type) {
 			case []float32:
 				vectorF32 = vec
 			case []uint16:
-				// Se è float16, dobbiamo de-comprimerlo in float32
+				// If it's float16, we need to unpack it into float32
 				vectorF32 = make([]float32, len(vec))
 				for i, v := range vec {
 					vectorF32[i] = float16.Frombits(v).Float32()
 				}
-			case []int8: // <-- NUOVO CASE
-				// Se è int8, dobbiamo de-quantizzarlo.
+			case []int8:
+				// If it's int8, we need to de-quantize it.
 				if h.quantizer == nil {
-					log.Printf("ATTENZIONE: indice int8 senza quantizzatore per il nodo %s", node.Id)
+					log.Printf("WARNING: int8 index missing quantizer for node %s", node.Id)
 					continue
 				}
 				vectorF32 = h.quantizer.Dequantize(vec)
 			default:
-				// Tipo sconosciuto, saltiamo questo nodo per sicurezza
-				log.Printf("ATTENZIONE: tipo di vettore sconosciuto durante l'iterazione per il nodo %s", node.Id)
+				// Unknown type, let's skip this node to be safe
+				log.Printf("WARNING: Unknown vector type during iteration for node %s", node.Id)
 				continue
 			}
 
@@ -864,8 +795,8 @@ func (h *Index) Iterate(callback func(id string, vector []float32)) {
 	}
 }
 
-// IterateRaw itera sui nodi non eliminati e passa l'ID e il vettore GREZZO
-// (come interface{}) alla callback.
+// IterateRaw iterates over non-deleted nodes and passes the external ID and the RAW vector
+// (as an interface{}) to the callback.
 func (h *Index) IterateRaw(callback func(id string, vector interface{})) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -877,23 +808,25 @@ func (h *Index) IterateRaw(callback func(id string, vector interface{})) {
 	}
 }
 
+// GetInternalID retrieves the internal ID for a given external ID.
 func (h *Index) GetInternalID(externalID string) uint32 {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.externalToInternalID[externalID]
 }
 
+// GetInternalIDUnlocked retrieves the internal ID without locking. Caller must ensure safety.
 func (h *Index) GetInternalIDUnlocked(externalID string) uint32 {
 	return h.externalToInternalID[externalID]
 }
 
-// GetParameters restituisce i parametri di configurazione dell'indice.
+// GetParameters returns the configuration parameters of the index.
 func (h *Index) GetParameters() (distance.DistanceMetric, int, int) {
 	return h.metric, h.m, h.efConstruction
 }
 
-// GetNodeData recupera i dati di un nodo (de-compressi/de-quantizzati)
-// dato il suo ID esterno.
+// GetNodeData retrieves the complete data for a node (decompressed/dequantized)
+// given its external ID.
 func (h *Index) GetNodeData(externalID string) (types.NodeData, bool) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -908,7 +841,7 @@ func (h *Index) GetNodeData(externalID string) (types.NodeData, bool) {
 		return types.NodeData{}, false
 	}
 
-	// Usa la stessa logica di 'Iterate' per de-comprimere/de-quantizzare
+	// Use the same logic as 'Iterate' to de-compress/de-quantize
 	var vectorF32 []float32
 	switch vec := node.Vector.(type) {
 	case []float32:
@@ -920,11 +853,11 @@ func (h *Index) GetNodeData(externalID string) (types.NodeData, bool) {
 		}
 	case []int8:
 		if h.quantizer == nil {
-			return types.NodeData{}, false // Stato inconsistente
+			return types.NodeData{}, false // Inconsistent state
 		}
 		vectorF32 = h.quantizer.Dequantize(vec)
 	default:
-		return types.NodeData{}, false // Tipo sconosciuto
+		return types.NodeData{}, false // Type unknown
 	}
 
 	return types.NodeData{
@@ -934,13 +867,14 @@ func (h *Index) GetNodeData(externalID string) (types.NodeData, bool) {
 	}, true
 }
 
+// TrainQuantizer trains the index's quantizer on a sample of vectors.
 func (h *Index) TrainQuantizer(vectors [][]float32) {
 	if h.quantizer != nil {
 		h.quantizer.Train(vectors)
 	}
 }
 
-// GetInfo restituisce tutti i parametri pubblici e lo stato dell'indice.
+// GetInfo returns all public parameters and the state of the index.
 func (h *Index) GetInfo() (distance.DistanceMetric, int, int, distance.PrecisionType, int, string) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -948,7 +882,7 @@ func (h *Index) GetInfo() (distance.DistanceMetric, int, int, distance.Precision
 	log.Printf("[DEBUG GetInfo] Nome Esterno: (non disponibile qui), Metrica: %s, Precisione: %s", h.metric, h.precision)
 	// --- FINE LOG ---
 
-	// Contiamo solo i nodi non eliminati
+	// We only count the non-deleted nodes
 	count := 0
 	for _, node := range h.nodes {
 		if !node.Deleted {
@@ -959,8 +893,9 @@ func (h *Index) GetInfo() (distance.DistanceMetric, int, int, distance.Precision
 	return h.metric, h.m, h.efConstruction, h.precision, count, h.textLanguage
 }
 
+// GetInfoUnlocked returns index information without acquiring a lock.
 func (h *Index) GetInfoUnlocked() (distance.DistanceMetric, int, int, distance.PrecisionType, int, string) {
-	// Conta nodi non deleted (senza lock, assume chiamante ha RLock)
+	// Count non-deleted nodes (without lock, assumes caller has RLock)
 	count := 0
 	for _, node := range h.nodes {
 		if !node.Deleted {
@@ -970,8 +905,8 @@ func (h *Index) GetInfoUnlocked() (distance.DistanceMetric, int, int, distance.P
 	return h.metric, h.m, h.efConstruction, h.precision, count, h.textLanguage
 }
 
-// normalize normalizza un vettore a lunghezza unitaria (norma L2).
-// Modifica la slice in-place.
+// normalize normalizes a vector to unit length (L2 norm).
+// This method modifies the slice in-place.
 func normalize(v []float32) {
 	// --- LOG DI DEBUG ---
 	// Stampa i primi elementi del vettore PRIMA della normalizzazione
@@ -1005,30 +940,27 @@ func normalize(v []float32) {
 	// --- FINE LOG ---
 }
 
-// Permettono a un chiamante esterno (come lo Store) di orchestrare il locking.
-
+// RLock acquires a read lock on the index. For use by external callers like the DB.
 func (h *Index) RLock() {
-	log.Println("Save chiede lock su index")
 	h.mu.RLock()
-	log.Println("SAVE prende lock su index")
 }
 
+// RUnlock releases a read lock.
 func (h *Index) RUnlock() {
-	log.Println("SAVE lascia lock su index")
 	h.mu.RUnlock()
 }
 
-// GetParametersUnlocked restituisce i parametri SENZA lock.
+// GetParametersUnlocked returns parameters without a lock.
 func (h *Index) GetParametersUnlocked() (distance.DistanceMetric, distance.PrecisionType, int, int) {
 	return h.metric, h.precision, h.m, h.efConstruction
 }
 
-// SnapshotData esporta i dati interni dell'indice per la persistenza.
-// Si aspetta che il chiamante gestisca il locking.
+// SnapshotData exports the internal data of the index for persistence.
+// It expects the caller to handle locking.
 func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uint32, int, *distance.Quantizer) {
-	// Questo metodo si aspetta che il chiamante abbia già acquisito un lock.
+	// This method expects the caller to have already acquired a lock.
 
-	// Prima di salvare, assicuriamoci che ogni nodo abbia il suo InternalID popolato.
+	// Before saving, let's make sure each node has its InternalID populated.
 	for id, node := range h.nodes {
 		node.InternalID = id
 	}
@@ -1036,8 +968,8 @@ func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uin
 	return h.nodes, h.externalToInternalID, h.internalCounter, h.entrypointID, h.maxLevel, h.quantizer
 }
 
-// LoadSnapshotData ripristina lo stato interno dell'indice da una slice di nodi.
-// Si aspetta che l'indice sia vuoto e che il chiamante gestisca il locking.
+// LoadSnapshotData restores the internal state of the index from snapshot data.
+// It expects the index to be empty and the caller to handle locking.
 func (h *Index) LoadSnapshotData(
 	nodes map[uint32]*Node,
 	extToInt map[string]uint32,
@@ -1053,7 +985,7 @@ func (h *Index) LoadSnapshotData(
 	h.maxLevel = maxLevel
 	h.quantizer = quantizer
 
-	// Verifica coerenza
+	// Check consistency
 	if h.nodes == nil {
 		h.nodes = make(map[uint32]*Node)
 	}
@@ -1061,63 +993,62 @@ func (h *Index) LoadSnapshotData(
 		h.externalToInternalID = make(map[string]uint32)
 	}
 
-	// NUOVO: Ricostruisci internalToExternalID dai nodes
-	h.internalToExternalID = make(map[uint32]string) // Inizializza (se non già fatto in New)
+	// Rebuild internalToExternalID from nodes
+	h.internalToExternalID = make(map[uint32]string) // Initialize (if not already done in New)
 	for internalID, node := range h.nodes {
 		if node.Id == "" {
-			return fmt.Errorf("nodo con ID interno %d ha ID esterno vuoto", internalID)
+			return fmt.Errorf("node with internal ID %d has an empty external ID", internalID)
 		}
 		h.internalToExternalID[internalID] = node.Id
 
-		// Opzionale: Assicura coerenza con externalToInternal
+		// Ensure consistency with externalToInternal
 		if existingInternal, ok := h.externalToInternalID[node.Id]; ok && existingInternal != internalID {
-			return fmt.Errorf("inconsistenza ID: esterno '%s' mappato a %d ma nodo ha %d", node.Id, existingInternal, internalID)
+			return fmt.Errorf("ID inconsistency: external '%s' is mapped to %d but node has %d", node.Id, existingInternal, internalID)
 		}
-		h.externalToInternalID[node.Id] = internalID // Sovrascrivi se necessario per sicurezza
+		h.externalToInternalID[node.Id] = internalID // Overwrite if necessary for security
 
-		// Opzionale: Assicura node.InternalID
+		// Ensures node.InternalID
 		node.InternalID = internalID
 	}
 
 	return nil
 }
 
-// Metric restituisce la metrica di distanza usata dall'indice.
+// Metric returns the distance metric used by the index.
 func (h *Index) Metric() distance.DistanceMetric {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.metric
 }
 
-// Precision restituisce la precisione dei dati usata dall'indice.
+// Precision returns the data precision used by the index.
 func (h *Index) Precision() distance.PrecisionType {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.precision
 }
 
-// M restituisce il parametro M di HNSW (massime connessioni per livello > 0).
+// M returns the HNSW M parameter (max connections for layer > 0).
 func (h *Index) M() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.m
 }
 
-// EfConstruction restituisce il parametro efConstruction di HNSW.
+// EfConstruction returns the HNSW efConstruction parameter.
 func (h *Index) EfConstruction() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.efConstruction
 }
 
+// Quantizer returns a pointer to the index's quantizer.
 func (h *Index) Quantizer() *distance.Quantizer {
 	return h.quantizer
 }
 
-// getter TextLanguage
+// TextLanguage returns the language configured for text analysis.
 func (h *Index) TextLanguage() string {
-	// Questo getter non ha bisogno di un lock perché il valore è immutabile
-	// dopo la creazione, ma per coerenza con gli altri lo mettiamo.
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.textLanguage

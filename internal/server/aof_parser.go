@@ -1,3 +1,10 @@
+// Package server implements the main KektorDB server logic.
+//
+// This file provides functions for parsing and formatting a subset of the RESP
+// (Redis Serialization Protocol). It is used for handling client commands from
+// the TCP interface and for serializing commands to the Append-Only File (AOF).
+// The implementation is binary-safe.
+
 package server
 
 import (
@@ -8,14 +15,18 @@ import (
 	"strings"
 )
 
-// rappresenta il comando parsato che è stato inviato dal client
+// Command represents a parsed command sent by a client.
 type Command struct {
-	Name string   // "SET" "GET" ecc
-	Args [][]byte // slice di slice di byte, binary safe cioè posso passare immagini, json cose con \0 o qualsiasi cosa si voglia salvare sul db ecc
+	// Name is the command name, e.g., "SET", "GET".
+	Name string
+	// Args contains the command arguments. It is a slice of byte slices to be
+	// binary-safe, allowing any data (images, JSON, null bytes, etc.) to be
+	// used as an argument.
+	Args [][]byte
 }
 
-// ParseRESP legge un comando in formato RESP-like da un bufio.Reader.
-// NOTA: Questa funzione ora ha bisogno di un `bufio.Reader` perché legge più righe.
+// ParseRESP reads a RESP-formatted command from a bufio.Reader.
+// It requires a bufio.Reader because a single command can span multiple lines.
 func ParseRESP(reader *bufio.Reader) (*Command, error) {
 	line, err := reader.ReadString('\n')
 	if err != nil {
@@ -24,39 +35,39 @@ func ParseRESP(reader *bufio.Reader) (*Command, error) {
 
 	line = strings.TrimSpace(line)
 	if line[0] != '*' {
-		return nil, fmt.Errorf("formato comando non valido, atteso '*'")
+		return nil, fmt.Errorf("invalid command format, expected '*'")
 	}
 
 	numArgs, err := strconv.Atoi(line[1:])
 	if err != nil || numArgs <= 0 {
-		return nil, fmt.Errorf("numero di argomenti non valido")
+		return nil, fmt.Errorf("invalid number of arguments")
 	}
 
 	args := make([][]byte, numArgs)
 	for i := 0; i < numArgs; i++ {
-		// Leggi la lunghezza della bulk string
+		// Read the length of the bulk string.
 		line, err = reader.ReadString('\n')
 		if err != nil {
 			return nil, err
 		}
 		line = strings.TrimSpace(line)
 		if line[0] != '$' {
-			return nil, fmt.Errorf("formato argomento non valido, atteso '$'")
+			return nil, fmt.Errorf("invalid argument format, expected '$'")
 		}
 
 		lenArg, err := strconv.Atoi(line[1:])
 		if err != nil || lenArg < 0 {
-			return nil, fmt.Errorf("lunghezza argomento non valida")
+			return nil, fmt.Errorf("invalid argument length")
 		}
 
-		// Leggi i dati dell'argomento
+		// Read the argument data.
 		argData := make([]byte, lenArg)
 		_, err = io.ReadFull(reader, argData)
 		if err != nil {
 			return nil, err
 		}
 
-		// Leggi i due byte finali \r\n
+		// Read the final two bytes: \r\n
 		crlf := make([]byte, 2)
 		_, err = io.ReadFull(reader, crlf)
 		if err != nil {
@@ -72,20 +83,23 @@ func ParseRESP(reader *bufio.Reader) (*Command, error) {
 	}, nil
 }
 
+// formatCommandAsRESP formats a command name and its arguments into a single
+// RESP-formatted string. It correctly handles nil arguments by writing a RESP
+// null bulk string.
 func formatCommandAsRESP(commandName string, args ...[]byte) string {
 	var b strings.Builder
 
-	// scrive l'header dell'array: num elementi
+	// Write the array header: number of elements.
 	totalArgs := 1 + len(args)
 	b.WriteString(fmt.Sprintf("*%d\r\n", totalArgs))
 
-	// scrive il nome del comando
+	// Write the command name.
 	b.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(commandName), commandName))
 
-	// scrive ogni elemento
+	// Write each argument.
 	for _, arg := range args {
 		if arg == nil {
-			b.WriteString("$-1\r\n") // Rappresentazione RESP per nil
+			b.WriteString("$-1\r\n") // RESP representation for nil
 		} else {
 			b.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(arg), string(arg)))
 		}
@@ -93,56 +107,3 @@ func formatCommandAsRESP(commandName string, args ...[]byte) string {
 
 	return b.String()
 }
-
-/*
-// parsa la stringa grezza ricevuta nel Command struct
-func Parse(raw string) (*Command, error) {
-	cleanRaw := strings.TrimSpace(raw)
-	if len(cleanRaw) == 0 {
-		return nil, fmt.Errorf("comando vuoto")
-	}
-
-	parts := strings.Fields(cleanRaw)
-	cmdName := strings.ToUpper(parts[0])
-
-	cmd := &Command{
-		Name: cmdName,
-		Args: make([][]byte, 0, len(parts)-1), // Inizializza sempre
-	}
-
-	// NESSUNA LOGICA SPECIALE.
-	// Tratta tutti i comandi allo stesso modo: ogni parola è un argomento.
-	// Sarà responsabilità degli handler interpretare gli argomenti.
-	for _, part := range parts[1:] {
-		cmd.Args = append(cmd.Args, []byte(part))
-	}
-
-	return cmd, nil
-}
-*/
-
-/*//vecchia versione che non gestisce metadata
-func Parse(raw string) (*Command, error) {
-	// strings.Fields divide per spazi e ritorna una slice di stringhe già separate
-	// TrimSpace rimuove tab \n \r ecc che potrebbero essere presenti nella stringa ricevuta
-	parts := strings.Fields(strings.TrimSpace(raw))
-
-	if len(parts) == 0{
-		return nil, fmt.Errorf("comando vuoto")
-	}
-
-	cmd := &Command{ // crea Command e restituisce un puntatore a quel Command, quindi cmd è il puntatore alla struct
-		// trasforma i comandi in maiuscolo
-		Name: strings.ToUpper(parts[0]),
-		Args: make([][]byte, 0, len(parts)-1),
-	}
-
-	for _, arg := range parts[1:] { // aggiungo gli argomenti
-		// []byte(arg) converte la stringa in una slice di byte
-		cmd.Args = append(cmd.Args, []byte(arg)) // aggiunge l'argomento convertito in byte alla slice cmd.Args
-	}
-
-	return cmd, nil // ritorno il puntatore alla struct command
-
-}
-*/

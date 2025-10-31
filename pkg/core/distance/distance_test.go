@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// Helper di normalizzazione SOLO per i test
+// Normalization helper
 func normalizeTest(v []float32) {
 	var norm float32
 	for _, val := range v {
@@ -22,19 +22,17 @@ func normalizeTest(v []float32) {
 	}
 }
 
-// Helper per il confronto con tolleranza
+// Helper for tolerance comparison
 func floatsAreEqual(a, b float64) bool {
 	const tolerance = 1e-6
 	return math.Abs(a-b) < tolerance
 }
 
-// --- TEST DI CORRETTEZZA UNIFICATI ---
-// Questi test funzionano sia in modalità Go-pura che Rust,
-// perché usano i getter pubblici che si adattano dinamicamente.
+// --- UNIFIED CORRECTNESS TESTS ---
+// These tests work in both pure Go and Rust,
+// because they use public getters that adapt dynamically.
 
 func TestImplementations(t *testing.T) {
-	// Questi test usano Get...Func(), quindi testano
-	// automaticamente la versione attiva (Go o Rust).
 
 	t.Run("EuclideanF32", func(t *testing.T) {
 		fn, _ := GetFloat32Func(Euclidean)

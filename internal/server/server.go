@@ -1,8 +1,17 @@
+// Package server implements the main KektorDB server logic.
+//
+// This package is responsible for:
+//   - Initializing and running the main application server.
+//   - Handling persistence through Append-Only Files (AOF) and snapshots (.kdb).
+//   - Managing data loading and recovery on startup.
+//   - Running background tasks like automatic saving (SAVE) and AOF rewriting.
+//   - Managing asynchronous, long-running tasks (e.g., compression).
+
 package server
 
 import (
 	"bufio"
-	"context" // per gestire graceful shutdown (ctrl + c)
+	"context" // For graceful shutdown (Ctrl+C)
 	"encoding/json"
 	"fmt"
 	"github.com/google/uuid"
@@ -11,51 +20,52 @@ import (
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"io"
 	"log"
-	"net/http" // per il web server
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic" // per contatore dirty
+	"sync/atomic" // For the dirty counter
 	"time"
 )
 
-// struct server con informazioni necessarie
-
+// Server holds the core components and state for the KektorDB instance.
 type Server struct {
-	db *core.DB // puntatore allo core
+	db *core.DB // Pointer to the core database engine
 
-	aofFile    *os.File     // file aof per persistenza
-	aofMutex   sync.Mutex   // mutex per gestire la scrittura sul file
-	httpServer *http.Server // il server http
+	aofFile    *os.File     // The append-only file for persistence
+	aofMutex   sync.Mutex   // Mutex to manage concurrent writes to the AOF file
+	httpServer *http.Server // The HTTP server instance
 
-	// Stato per il salvataggio automatico
-	dirtyCounter int64 // Contatore atomico per le modifiche
+	// State for automatic saving
+	dirtyCounter int64 // Atomic counter for tracking changes (dirty state)
 	lastSaveTime time.Time
 
-	// Configurazione
+	// Configuration
 	savePolicies         []savePolicy
 	aofRewritePercentage int
-	aofBaseSize          int64 // Dimensione AOF dopo l'ultima riscrittura
+	aofBaseSize          int64 // AOF size after the last rewrite
 	taskManager          *TaskManager
 	vectorizerConfig     *Config
 	vectorizerService    *VectorizerService
 }
 
+// savePolicy defines a rule for triggering an automatic SAVE operation.
 type savePolicy struct {
 	Seconds int
 	Changes int64
 }
 
-// crea una nuova istanza del server
+// NewServer initializes and returns a new Server instance.
+// It sets up the AOF file, parses save policies, and loads vectorizer configurations.
 func NewServer(aofPath string, savePolicyStr string, aofRewritePerc int, vectorizersConfigPath string) (*Server, error) {
-	// aprie o crea il file AOF
-	//0666 sono i permessi del file
+	// open or create the AOF file
+	// 0666 are the file permissions
 	file, err := os.OpenFile(aofPath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
-		log.Fatalf("Impossibile aprire il file AOF: %v", err)
+		log.Fatalf("Failed to open AOF file: %v", err)
 	}
 
 	policies, err := parseSavePolicies(savePolicyStr)
@@ -63,18 +73,18 @@ func NewServer(aofPath string, savePolicyStr string, aofRewritePerc int, vectori
 		return nil, err
 	}
 
-	// --- Carica la configurazione dei Vectorizer ---
+	// --- Load Vectorizer Configuration ---
 	vecConfig, err := LoadVectorizersConfig(vectorizersConfigPath)
 	if err != nil {
 		return nil, err
 	}
-	// Stampa un log per confermare il caricamento
+	// Print a log to confirm loading
 	if len(vecConfig.Vectorizers) > 0 {
-		log.Printf("Caricate %d configurazioni di Vectorizer dal file '%s'", len(vecConfig.Vectorizers), vectorizersConfigPath)
+		log.Printf("Loaded %d Vectorizer configurations from file '%s'", len(vecConfig.Vectorizers), vectorizersConfigPath)
 	}
 
 	s := &Server{
-		db:                   core.NewDB(), // inizializzo core
+		db:                   core.NewDB(),
 		aofFile:              file,
 		savePolicies:         policies,
 		aofRewritePercentage: aofRewritePerc,
@@ -84,125 +94,127 @@ func NewServer(aofPath string, savePolicyStr string, aofRewritePerc int, vectori
 	}
 	vecService, err := NewVectorizerService(s)
 	if err != nil {
-		// Questo errore non è fatale, il server può partire anche senza vectorizer
-		log.Printf("ATTENZIONE: Il servizio Vectorizer non è partito: %v", err)
+		// This error is not fatal; the server can start even without vectorizers
+		log.Printf("WARNING: Vectorizer service failed to start: %v", err)
 	}
 	s.vectorizerService = vecService
 
 	return s, nil
 }
 
-// avvia i server TCP e HTTP e li mette in ascolto sulle porte specificate
+// Run starts the server. It handles the initial data loading from a snapshot and/or
+// AOF file, starts background tasks, and begins listening for HTTP requests.
 func (s *Server) Run(httpAddr string) error {
-	// Determina i percorsi dei file
+	// Determine the file paths
 	aofPath := s.aofFile.Name()
 	snapshotPath := strings.TrimSuffix(aofPath, ".aof") + ".kdb"
 
-	// 1. Controlla se esiste lo snapshot
+	// Check if a snapshot exists
 	if _, err := os.Stat(snapshotPath); err == nil {
-		// Lo snapshot esiste, caricalo.
-		log.Printf("Trovato file di snapshot '%s', avvio del ripristino da RDB...", snapshotPath)
+		// The snapshot exists, load it.
+		log.Printf("Found snapshot file '%s', starting restore from RDB...", snapshotPath)
 
 		file, errOpen := os.Open(snapshotPath)
 		if errOpen != nil {
-			return fmt.Errorf("impossibile aprire il file di snapshot: %w", err)
+			return fmt.Errorf("could not open snapshot file: %w", err)
 		}
 
 		err = s.db.LoadFromSnapshot(file)
 		file.Close() // Chiudi il file dopo la lettura
 		if err != nil {
-			return fmt.Errorf("errore durante il caricamento dello snapshot: %w", err)
+			return fmt.Errorf("error while loading snapshot: %w", err)
 		}
-		log.Println("Ripristino da snapshot completato.")
+		log.Println("Restore from snapshot completed.")
 
 	} else if !os.IsNotExist(err) {
-		// C'è stato un errore diverso da "file non trovato" nel controllare lo snapshot
-		return fmt.Errorf("errore nel controllare il file di snapshot: %w", err)
+		// An error other than "file not found" occurred while checking the snapshot
+		return fmt.Errorf("error checking snapshot file: %w", err)
 	}
 
-	// 2. Esegui sempre il replay dell'AOF.
-	// Se abbiamo caricato lo snapshot, questo applicherà solo le modifiche successive.
-	// Se non c'era uno snapshot, questo caricherà l'intera cronologia.
-	log.Println("Avvio riproduzione del log AOF per le modifiche recenti...")
+	// Always replay the AOF.
+	// If we loaded the snapshot, this will apply only subsequent changes.
+	// If there was no snapshot, this will load the entire history.
+	log.Println("Starting AOF log replay for recent changes...")
 	if err := s.loadFromAOF(); err != nil {
-		return fmt.Errorf("impossibile caricare da AOF: %w", err)
+		return fmt.Errorf("failed to load from AOF: %w", err)
 	}
 
-	// Ottieni la dimensione iniziale dell'AOF dopo il caricamento
+	// Get the initial AOF size after loading
 	info, _ := s.aofFile.Stat()
 	s.aofBaseSize = info.Size()
 
 	if s.vectorizerService != nil {
-		s.vectorizerService.Start() // Avvia tutti i vectorizer
+		s.vectorizerService.Start() // Start all vectorizers
 	}
 
-	// --- NUOVO: Avvia la goroutine di manutenzione in background ---
+	// --- Start the background maintenance goroutine ---
 	go s.serverCron()
 
-	// --- configurazione ed avvio server HTTP ---
+	// HTTP server configuration and startup
 	mux := http.NewServeMux()
-	s.registerHTTPHandlers(mux) // registra endpoint
+	s.registerHTTPHandlers(mux) // register endpoints
 
 	s.httpServer = &http.Server{
 		Addr:    httpAddr,
 		Handler: mux,
 	}
 
-	log.Printf("Server HTTP in ascolto su %s", httpAddr)
+	log.Printf("HTTP server listening on %s", httpAddr)
 	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return fmt.Errorf("fallimento avvio server HTTP: %w", err)
+		return fmt.Errorf("HTTP server startup failed: %w", err)
 	}
 
 	return nil
 
 }
 
-// serverCron è il nostro "cron job" in background.
+// serverCron runs background maintenance tasks, such as automatic saving
+// and AOF rewriting, at regular intervals.
 func (s *Server) serverCron() {
-	// Esegui un check ogni secondo.
+	// Run a check every second.
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		// Acquisiamo un lock leggero per leggere i contatori in modo sicuro
+		// Acquire a lightweight lock to safely read the counters
 		s.aofMutex.Lock()
 		dirty := atomic.LoadInt64(&s.dirtyCounter)
 		lastSave := s.lastSaveTime
 		s.aofMutex.Unlock()
 
-		// --- Logica di SAVE Automatico ---
+		// --- Automatic SAVE Logic ---
 		for _, policy := range s.savePolicies {
 			if time.Since(lastSave).Seconds() >= float64(policy.Seconds) && dirty >= policy.Changes {
-				log.Println("Condizione di salvataggio automatico raggiunta. Avvio SAVE...")
+				log.Println("Automatic save condition met. Starting SAVE...")
 				if err := s.Save(); err == nil {
-					// Resetta i contatori solo se SAVE ha successo
+					// Reset counters only if SAVE succeeds
 					s.aofMutex.Lock()
 					atomic.StoreInt64(&s.dirtyCounter, 0)
 					s.lastSaveTime = time.Now()
 					s.aofMutex.Unlock()
-					log.Println("SAVE automatico completato.")
+					log.Println("Automatic SAVE completed.")
 				} else {
-					log.Printf("ERRORE durante SAVE automatico: %v", err)
+					log.Printf("ERROR during automatic SAVE: %v", err)
 				}
-				break // Esegui solo la prima policy che matcha
+				break // Execute only the first matching policy
 			}
 		}
 
-		// --- Logica di AOF REWRITE Automatico ---
+		// --- Automatic AOF REWRITE Logic ---
 		if s.aofRewritePercentage > 0 {
 			info, err := s.aofFile.Stat()
 			if err == nil {
 				currentSize := info.Size()
-				// Se la dimensione base è 0, evita divisione per zero. Usa una soglia minima.
+				// If base size is 0, avoid division by zero. Use a minimum threshold.
 				threshold := s.aofBaseSize + (s.aofBaseSize * int64(s.aofRewritePercentage) / 100)
 				if s.aofBaseSize > 0 && currentSize > threshold {
-					log.Println("Condizione di riscrittura AOF automatica raggiunta. Avvio AOF REWRITE...")
+					log.Println("Automatic AOF rewrite condition met. Starting AOF REWRITE...")
 					if err := s.RewriteAOF(); err == nil {
 						newInfo, _ := s.aofFile.Stat()
-						s.aofBaseSize = newInfo.Size() // Aggiorna la dimensione base
-						log.Println("AOF REWRITE automatico completato.")
+						s.aofBaseSize = newInfo.Size() // Update the base size
+						log.Println("Automatic AOF REWRITE completed.")
 					} else {
-						log.Printf("ERRORE durante AOF REWRITE automatico: %v", err)
+						log.Printf("ERROR during automatic AOF REWRITE: %v", err)
 					}
 				}
 			}
@@ -210,7 +222,8 @@ func (s *Server) serverCron() {
 	}
 }
 
-// vectorIndexState contiene lo stato di un singolo indice vettoriale.
+// vectorIndexState holds the aggregated state of a single vector index,
+// used during AOF loading.
 type vectorIndexState struct {
 	metric         distance.DistanceMetric
 	m              int
@@ -220,44 +233,46 @@ type vectorIndexState struct {
 	textLanguage   string
 }
 
-// rappresenta lo stato finale aggregato dopo aver letto l'aof
+// aofState represents the final aggregated state of the database after
+// reading the entire AOF file.
 type aofState struct {
 	kvData        map[string][]byte
 	vectorIndexes map[string]vectorIndexState // map[indexName] -> state
 }
 
-// contiene le informazioni di un singolo vettore
+// vectorEntry holds the information for a single vector.
 type vectorEntry struct {
 	vector   []float32
 	metadata map[string]any
 }
 
-// loadFromAOF è la versione che compatta lo stato prima di caricarlo,
-// supporta soft-delete e separa correttamente vector / metadata.
+// loadFromAOF reads the AOF file, aggregates commands into a final state,
+// and then rebuilds the in-memory database from that state. This approach
+// handles deletions and out-of-order commands correctly.
 func (s *Server) loadFromAOF() error {
 	log.Println("Caricamento e compattazione dati dal file AOF...")
 
-	// Spostiamo il cursore all'inizio del file per la lettura.
+	// Move the cursor to the beginning of the file for reading.
 	if _, err := s.aofFile.Seek(0, 0); err != nil {
 		return fmt.Errorf("seek aof: %w", err)
 	}
 
-	// --- FASE 1 & 2: Lettura e Aggregazione dello Stato ---
+	// --- PHASE 1 & 2: Read and Aggregate State ---
 	state := &aofState{
 		kvData:        make(map[string][]byte),
-		vectorIndexes: make(map[string]vectorIndexState), // Usa la nuova struct
+		vectorIndexes: make(map[string]vectorIndexState),
 	}
 
 	reader := bufio.NewReader(s.aofFile)
 	for {
 		cmd, err := ParseRESP(reader)
 		if err == io.EOF {
-			break // Fine del file, abbiamo finito di leggere
+			break
 		}
 		if err != nil {
-			log.Printf("[AOF] Errore nel leggere comando RESP, potenziale corruzione file: %v. Interruzione.", err)
-			// Con RESP, un errore di parsing è più grave, potrebbe essere meglio interrompere.
-			// Per ora, continuiamo a provare.
+			log.Printf("[AOF] Error reading RESP command, potential file corruption: %v. Aborting.", err)
+			// With RESP, a parsing error is more serious; it might be better to stop.
+			// For now, we continue trying.
 			continue
 		}
 
@@ -266,41 +281,41 @@ func (s *Server) loadFromAOF() error {
 			if len(cmd.Args) == 2 {
 				state.kvData[string(cmd.Args[0])] = cmd.Args[1]
 			} else {
-				log.Printf("[AOF] SET con argomenti inattesi (%d)", len(cmd.Args))
+				log.Printf("[AOF] SET with unexpected arguments (%d)", len(cmd.Args))
 			}
 
 		case "DEL":
 			if len(cmd.Args) == 1 {
 				delete(state.kvData, string(cmd.Args[0]))
 			} else {
-				log.Printf("[AOF] DEL con argomenti inattesi (%d)", len(cmd.Args))
+				log.Printf("[AOF] DEL with unexpected arguments (%d)", len(cmd.Args))
 			}
 
 		case "VDROP":
 			if len(cmd.Args) == 1 {
 				indexName := string(cmd.Args[0])
-				// Rimuovi l'indice dalla nostra mappa di stato temporanea
+				// Remove the index from our temporary state map
 				delete(state.vectorIndexes, indexName)
 			}
 
 		case "VCREATE":
-			// Formato AOF ora atteso: VCREATE <index_name> [METRIC <metric>] [M <m_val>] [EF_CONSTRUCTION <ef_val>] [PRECISION <p>]
+			// Expected AOF format: VCREATE <index_name> [METRIC <metric>] [M <m_val>] [EF_CONSTRUCTION <ef_val>] [PRECISION <p>]
 			if len(cmd.Args) >= 1 {
 				indexName := string(cmd.Args[0])
 
-				// Valori di default
+				// Default values
 				metric := distance.Euclidean
-				precision := distance.Float32 // Default a float32
-				m := 0                        // 0 per usare il default in NewHNSWIndex
+				precision := distance.Float32 // Default float32
+				m := 0                        // 0 to use the default in NewHNSWIndex
 				efConstruction := 0
 				textLang := ""
 
-				// Parsing degli argomenti opzionali
-				i := 1 // Inizia dall'indice del primo argomento possibile
+				// Parsing optional arguments
+				i := 1 // Start at the index of the first possible argument
 				for i < len(cmd.Args) {
-					if i+1 >= len(cmd.Args) { // Parametro incompleto
-						log.Printf("[AOF] Ignorato VCREATE invalido '%s': parametro incompleto", cmd.Name)
-						break // Esci dal loop di parsing degli argomenti
+					if i+1 >= len(cmd.Args) { // Incomplete parameter
+						log.Printf("[AOF] Ignored invalid VCREATE '%s': incomplete parameter", cmd.Name)
+						break
 					}
 
 					key := strings.ToUpper(string(cmd.Args[i]))
@@ -313,23 +328,23 @@ func (s *Server) loadFromAOF() error {
 						val, err := strconv.Atoi(value)
 						if err == nil {
 							m = val
-						} // Ignora se non è un numero valido
+						} // Ignore if not a valid number
 					case "EF_CONSTRUCTION":
 						val, err := strconv.Atoi(value)
 						if err == nil {
 							efConstruction = val
-						} // Ignora se non è un numero valido
+						} // Ignore if not a valid number
 					case "PRECISION":
 						precision = distance.PrecisionType(value)
 					case "TEXT_LANGUAGE":
 						textLang = value
 					default:
-						// Ignora parametri sconosciuti
+						// Ignore unknown parameters
 					}
-					i += 2 // Avanza di 2 per la prossima coppia chiave-valore
+					i += 2 // Advance by 2 for the next key-value pair
 				}
 
-				// Crea lo spazio per questo indice nello stato (se non esiste già)
+				// Create space for this index in the state (if it doesn't already exist)
 				if _, ok := state.vectorIndexes[indexName]; !ok {
 					state.vectorIndexes[indexName] = vectorIndexState{
 						metric:         metric,
@@ -343,10 +358,9 @@ func (s *Server) loadFromAOF() error {
 			}
 
 		case "VADD":
-
-			// Formato RESP atteso: VADD, indexName, vectorID, vectorString, [metadataJSON]
+			// Expected RESP format: VADD, indexName, vectorID, vectorString, [metadataJSON]
 			if len(cmd.Args) < 3 {
-				log.Printf("[AOF] VADD con argomenti insufficienti, saltato.")
+				log.Printf("[AOF] VADD with insufficient arguments, skipped.")
 				continue
 			}
 
@@ -355,21 +369,21 @@ func (s *Server) loadFromAOF() error {
 			vectorStr := string(cmd.Args[2])
 
 			if _, ok := state.vectorIndexes[indexName]; !ok {
-				continue // Indice non creato, ignora
+				continue // Index not created, ignore
 			}
 
 			vector, err := parseVectorFromString(vectorStr)
 			if err != nil {
-				log.Printf("Avviso AOF: VADD per '%s' ha un vettore malformato, saltato. Errore: %v", vectorID, err)
+				log.Printf("AOF Warning: VADD for '%s' has a malformed vector, skipped. Error: %v", vectorID, err)
 				continue
 			}
 
 			entry := vectorEntry{vector: vector}
 
-			// Controlla se l'argomento opzionale dei metadati esiste
+			// Check if the optional metadata argument exists
 			if len(cmd.Args) == 4 && len(cmd.Args[3]) > 0 {
 				metadataJSON := cmd.Args[3]
-				// Ignora il valore 'null' che il client Python potrebbe inviare
+				// Ignore the 'null' value that a Python client might send
 				if string(metadataJSON) != "null" {
 					var metadata map[string]interface{}
 					if json.Unmarshal(metadataJSON, &metadata) == nil {
@@ -380,53 +394,8 @@ func (s *Server) loadFromAOF() error {
 
 			state.vectorIndexes[indexName].entries[vectorID] = entry
 
-			/*
-				// Supportiamo: VADD indexName vectorID <vectorParts...> [metadataJSON]
-				if len(cmd.Args) >= 3 {
-
-					indexName := string(cmd.Args[0])
-					vectorID := string(cmd.Args[1])
-
-					if _, ok := state.vectorIndexes[indexName]; !ok {
-						continue // Ignora se l'indice non è stato creato
-					}
-					vectorStr := string(cmd.Args[2])
-
-					vectorParts := cmd.Args[2:]
-					var metadataJSON []byte
-
-					// Separa i metadati se presenti
-					if len(vectorParts) > 0 {
-						lastArg := vectorParts[len(vectorParts)-1]
-						if len(lastArg) > 1 && lastArg[0] == '{' && lastArg[len(lastArg)-1] == '}' {
-							metadataJSON = lastArg
-							vectorParts = vectorParts[:len(vectorParts)-1]
-						}
-					}
-
-					if len(vectorParts) == 0 {
-						continue
-					} // Vettore mancante
-
-					vector, err := parseVectorFromString(vectorStr)
-					if err == nil {
-						entry := vectorEntry{vector: vector}
-						if len(metadataJSON) > 0 {
-							var metadata map[string]interface{}
-							if json.Unmarshal(metadataJSON, &metadata) == nil {
-								entry.metadata = metadata
-							}
-						}
-						state.vectorIndexes[indexName].entries[vectorID] = entry
-					} else {
-						log.Printf("Avviso AOF: impossibile parsare il vettore per '%s', saltato. Errore: %v", vectorID, err)
-					}
-				}
-			*/
-
 		case "VDEL":
-			// Soft-delete: marca l'entry come deleted (non rimuovere l'entry dallo state)
-			// Se vuoi hard-delete, usa delete(index, vectorID)
+			// Hard delete by removing the entry from the state map
 			if len(cmd.Args) == 2 {
 				indexName := string(cmd.Args[0])
 				vectorID := string(cmd.Args[1])
@@ -436,44 +405,42 @@ func (s *Server) loadFromAOF() error {
 			}
 
 		default:
-			// ignora altri comandi o loggali se servono
-			// log.Printf("[AOF] riga %d: comando ignorato: %s", lineNo, cmd.Name)
+			// ignore other commands or log them if needed
+			// log.Printf("[AOF] line %d: ignored command: %s", lineNo, cmd.Name)
 		}
 	}
 
-	// --- FASE 3: Ricostruzione dello Stato nello core ---
-	log.Println("Ricostruzione dello stato compattato in memoria...")
+	// --- PHASE 3: Rebuild the State in the Core Engine ---
+	log.Println("Rebuilding compacted state in memory...")
 
-	// Ricostruisci il KV core
+	// Rebuild the KV store
 	for key, value := range state.kvData {
 		s.db.GetKVStore().Set(key, value)
 	}
 
-	// Ricostruisci gli indici vettoriali
+	// Rebuild the vector indexes
 	totalVectors := 0
 	addedVectors := 0
 	skippedDeleted := 0
 	for indexName, indexState := range state.vectorIndexes {
-		log.Printf("[AOF] Ricostruzione indice '%s' (Metrica: %s, Precisione: %s) - Vettori: %d",
+		log.Printf("[AOF] Rebuilding index '%s' (Metric: %s, Precision: %s) - Vectors: %d",
 			indexName, indexState.metric, indexState.precision, len(indexState.entries))
-		// --- CHIAMATA CORRETTA ---
-		// Ora passiamo la metrica che abbiamo salvato nello stato
+
 		err := s.db.CreateVectorIndex(indexName, indexState.metric, indexState.m, indexState.efConstruction, indexState.precision, indexState.textLanguage)
 		if err != nil {
-			log.Printf("[AOF] ERRORE: impossibile creare l'indice '%s' con metrica %s, M=%d, EF=%d: %v",
+			log.Printf("[AOF] ERROR: failed to create index '%s' with metric %s, M=%d, EF=%d: %v",
 				indexName, indexState.metric, indexState.m, indexState.efConstruction, err)
 			continue
 		}
 		idx, found := s.db.GetVectorIndex(indexName)
 		if !found {
-			log.Printf("[AOF] impossibile ottenere indice '%s'", indexName)
+			log.Printf("[AOF] failed to get index '%s'", indexName)
 			continue
 		}
 
 		for vectorID, entry := range indexState.entries {
 			totalVectors++
 
-			// Se è marcata come soft-deleted, salta l'aggiunta al grafo
 			if entry.metadata != nil {
 				if vdel, ok := entry.metadata["__deleted"]; ok {
 					if b, ok := vdel.(bool); ok && b {
@@ -483,20 +450,20 @@ func (s *Server) loadFromAOF() error {
 				}
 			}
 
-			// Se non c'è il vettore (placeholder) non possiamo aggiungerlo
+			// If vector data is missing, we can't add it
 			if entry.vector == nil || len(entry.vector) == 0 {
-				log.Printf("[AOF] indice '%s' id '%s': vettore mancante -> skip", indexName, vectorID)
+				log.Printf("[AOF] index '%s' id '%s': missing vector -> skip", indexName, vectorID)
 				continue
 			}
 
 			internalID, err := idx.Add(vectorID, entry.vector)
 			if err != nil {
-				log.Printf("[AOF] Errore durante la ricostruzione HNSW per '%s' (indice '%s'): %v", vectorID, indexName, err)
+				log.Printf("[AOF] Error during HNSW reconstruction for '%s' (index '%s'): %v", vectorID, indexName, err)
 				continue
 			}
 			addedVectors++
 
-			// aggiungi metadata (se presenti)
+			// add metadata (if present)
 			if len(entry.metadata) > 0 {
 				// rimuoviamo il flag interno prima di salvare i metadata, se presente
 				if _, ok := entry.metadata["__deleted"]; ok {
@@ -508,47 +475,43 @@ func (s *Server) loadFromAOF() error {
 			}
 		}
 
-		log.Printf("[AOF] indice '%s' ricostruito: aggiunti=%d, skippati_deleted=%d", indexName, addedVectors, skippedDeleted)
+		log.Printf("[AOF] index '%s' builded: added=%d, skipped=%d", indexName, addedVectors, skippedDeleted)
 	}
 
-	log.Printf("Caricamento AOF completato. vettori_totali=%d aggiunti=%d skippati_deleted=%d", totalVectors, addedVectors, skippedDeleted)
+	log.Printf("AOF loading completed. totalVectors=%d addedVectors=%d skippedDeleted=%d", totalVectors, addedVectors, skippedDeleted)
 	return nil
 }
 
-// RewriteAOF compatta il file AOF riscrivendolo con lo stato attuale.
+// RewriteAOF compacts the AOF file by writing the current database state
+// into a new temporary file and then atomically replacing the old one.
 func (s *Server) RewriteAOF() error {
-	log.Println("Avvio riscrittura AOF...")
+	log.Println("Starting AOF rewrite...")
 
-	// Usa i metodi di lock pubblici dello core.
+	// Use the public lock methods of the core DB.
 	s.db.Lock()
 	defer s.db.Unlock()
 
-	// il percorso della directory del file AOF originale
+	// the path to the directory of the original AOF file
 	aofDir := filepath.Dir(s.aofFile.Name())
 
-	// Usa os.CreateTemp invece del deprecato ioutil.TempFile
 	tempFile, err := os.CreateTemp(aofDir, "kektordb-aof-rewrite-*.aof")
 	if err != nil {
-		return fmt.Errorf("impossibile creare il file AOF temporaneo in '%s': %w", aofDir, err)
+		return fmt.Errorf("could not create temporary AOF file in '%s': %w", aofDir, err)
 	}
-	defer os.Remove(tempFile.Name()) // Assicura la pulizia in caso di errore
+	defer os.Remove(tempFile.Name()) // Ensure cleanup on error
 
-	// --- FASE 1: Scrittura dei Comandi di Creazione Stato ---
+	// --- PHASE 1: Write State Creation Commands ---
 
-	// 1a. Scrivi i comandi SET per il KV core
+	// 1a. Write SET commands for the KV store
 	s.db.IterateKVUnlocked(func(pair core.KVPair) {
-		// Dobbiamo gestire correttamente valori che potrebbero contenere spazi.
-		// Per ora il nostro protocollo è semplice, ma in futuro potremmo
-		// dover "quotare" il valore.
 		cmd := formatCommandAsRESP("SET", []byte(pair.Key), pair.Value)
 		tempFile.WriteString(cmd)
 	})
 
-	// 1b. Scrivi i comandi VCREATE per ogni indice vettoriale
-	// Otteniamo prima le informazioni su tutti gli indici.
+	// 1b. Write VCREATE commands for each vector index
 	vectorIndexInfo, err := s.db.GetVectorIndexInfoUnlocked()
 	if err != nil {
-		return fmt.Errorf("impossibile ottenere informazioni sugli indici vettoriali: %w", err)
+		return fmt.Errorf("could not get vector index info: %w", err)
 	}
 
 	for _, info := range vectorIndexInfo {
@@ -563,7 +526,7 @@ func (s *Server) RewriteAOF() error {
 		tempFile.WriteString(cmd)
 	}
 
-	// 1c. Scrivi i comandi VADD per ogni vettore in ogni indice
+	// 1c. Write VADD commands for each vector in each index
 	s.db.IterateVectorIndexesUnlocked(func(indexName string, index *hnsw.Index, data core.VectorData) {
 		vectorStr := float32SliceToString(data.Vector)
 		var metadataBytes []byte
@@ -575,175 +538,140 @@ func (s *Server) RewriteAOF() error {
 			[]byte(indexName),
 			[]byte(data.ID),
 			[]byte(vectorStr),
-			metadataBytes, // Sarà nil se non ci sono metadati, gestito da formatCommandAsRESP
+			metadataBytes, // Will be nil if no metadata, handled by formatCommandAsRESP
 		)
 		tempFile.WriteString(cmd)
 	})
 
-	// --- FASE 2: Sostituzione Atomica del File ---
+	// --- PHASE 2: Atomic File Replacement ---
 
 	if err := tempFile.Close(); err != nil {
-		return fmt.Errorf("impossibile chiudere il file AOF temporaneo: %w", err)
+		return fmt.Errorf("could not close temporary AOF file: %w", err)
 	}
 
 	s.aofMutex.Lock()
 	defer s.aofMutex.Unlock()
 
-	// Il percorso del file AOF originale
+	// The path of the original AOF file
 	aofPath := s.aofFile.Name()
 
-	// Chiudi il file AOF corrente prima di sostituirlo.
+	// Close the current AOF file before replacing it.
 	if err := s.aofFile.Close(); err != nil {
-		// Cerchiamo di riaprirlo per non lasciare il server in uno stato inconsistente.
+		// Try to reopen it to not leave the server in an inconsistent state.
 		s.aofFile, _ = os.OpenFile(aofPath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
-		return fmt.Errorf("impossibile chiudere il file AOF originale prima della riscrittura: %w", err)
+		return fmt.Errorf("could not close original AOF file before rewrite: %w", err)
 	}
 
 	if err := os.Rename(tempFile.Name(), aofPath); err != nil {
 		s.aofFile, _ = os.OpenFile(aofPath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
-		return fmt.Errorf("fallimento nella sostituzione del file AOF: %w", err)
+		return fmt.Errorf("failed to replace AOF file: %w", err)
 	}
 
 	newAOFFile, err := os.OpenFile(aofPath, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
-		// Questo è un errore grave, il server potrebbe non poter più persistere i dati.
-		return fmt.Errorf("impossibile riaprire il nuovo file AOF dopo la riscrittura: %w", err)
+		// This is a serious error; the server might no longer be able to persist data.
+		return fmt.Errorf("failed to reopen new AOF file after rewrite: %w", err)
 	}
 	s.aofFile = newAOFFile
 
-	log.Println("Riscrittura AOF completata con successo.")
+	log.Println("AOF rewrite completed successfully.")
 	return nil
 }
 
-// Save esegue uno snapshot "stop-the-world" dello stato del database
-// su disco e poi tronca il file AOF.
+// Save performs a "stop-the-world" snapshot of the database state to disk
+// and then truncates the AOF file.
 func (s *Server) Save() error {
-	log.Println("Avvio processo di snapshot (SAVE)...")
+	log.Println("Starting snapshot process (SAVE)...")
 
-	// Usiamo un Lock() di scrittura per garantire che lo stato del database
-	// sia completamente "congelato" durante l'operazione di snapshot.
-	// s.store.Lock()
-	// defer s.store.Unlock()
-
-	// 2. Creazione del file temporaneo
+	// 2. Create the temporary file
 	aofPath := s.aofFile.Name()
 	snapshotPath := strings.TrimSuffix(aofPath, ".aof") + ".kdb"
 	tempSnapshotPath := snapshotPath + ".tmp"
 
 	file, err := os.Create(tempSnapshotPath)
 	if err != nil {
-		return fmt.Errorf("impossibile creare il file di snapshot temporaneo: %w", err)
+		return fmt.Errorf("could not create temporary snapshot file: %w", err)
 	}
 	defer file.Close()
-	defer os.Remove(tempSnapshotPath) // Pulisci in caso di errore
+	defer os.Remove(tempSnapshotPath) // Clean up on error
 
-	// 3. Scrivi lo snapshot sul file temporaneo
-	log.Println("Scrittura dello stato in memoria sullo snapshot...")
+	// 3. Write the snapshot to the temporary file
+	log.Println("Writing in-memory state to snapshot...")
 	if err := s.db.Snapshot(file); err != nil {
-		return fmt.Errorf("fallimento durante la scrittura dello snapshot: %w", err)
+		return fmt.Errorf("failed during snapshot write: %w", err)
 	}
-	log.Println("Scrittura snapshot completata.")
+	log.Println("Snapshot write completed.")
 
-	// 4. Sostituzione Atomica
+	// 4. Atomic Replacement
 	if err := os.Rename(tempSnapshotPath, snapshotPath); err != nil {
-		return fmt.Errorf("fallimento nella sostituzione del file di snapshot: %w", err)
+		return fmt.Errorf("failed to replace snapshot file: %w", err)
 	}
 
-	// 5. Troncare il file AOF
-	// Questa è la parte più delicata. Dobbiamo bloccare le scritture AOF,
-	// troncare il file e poi sbloccare.
-	log.Println("Troncamento del file AOF...")
+	// 5. Truncate the AOF file
+	// This is the most delicate part. We must lock AOF writes,
+	// truncate the file, and then unlock.
+	log.Println("Truncating AOF file...")
 	s.aofMutex.Lock()
 	defer s.aofMutex.Unlock()
 
-	// Troncamento del file a dimensione 0
+	// Truncate the file to size 0
 	if err := s.aofFile.Truncate(0); err != nil {
-		return fmt.Errorf("fallimento nel troncamento del file AOF: %w", err)
+		return fmt.Errorf("failed to truncate AOF file: %w", err)
 	}
-	// Riporta il cursore all'inizio per le nuove scritture
+	// Move the cursor back to the start for new writes
 	if _, err := s.aofFile.Seek(0, 0); err != nil {
-		return fmt.Errorf("fallimento nel riposizionare il cursore AOF: %w", err)
+		return fmt.Errorf("failed to reset AOF cursor: %w", err)
 	}
 
-	log.Println("Processo di snapshot (SAVE) completato con successo.")
+	log.Println("Snapshot process (SAVE) completed successfully.")
 	return nil
 }
 
-// looksLikeJSON rileva se un []byte inizia con '{' o '[' (semplice heuristic).
-func looksLikeJSON(b []byte) bool {
-	if len(b) == 0 {
-		return false
-	}
-	first := b[0]
-	// Ignora spazi iniziali
-	i := 0
-	for i < len(b) && (b[i] == ' ' || b[i] == '\t' || b[i] == '\n' || b[i] == '\r') {
-		i++
-	}
-	if i >= len(b) {
-		return false
-	}
-	first = b[i]
-	return first == '{' || first == '['
-}
-
-// per comando ctrl + c
+// Shutdown performs a graceful shutdown of the server, closing the HTTP listener
+// and the AOF file.
 func (s *Server) Shutdown() {
-	log.Println("Avvio graceful shutdown...")
+	log.Println("Starting graceful shutdown...")
 
-	// Ferma il server HTTP
+	// Stop the HTTP server
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := s.httpServer.Shutdown(ctx); err != nil {
-		log.Printf("Errore shutdown server HTTP: %v", err)
+		log.Printf("HTTP server shutdown error: %v", err)
 	} else {
-		log.Println("Server HTTP fermato.")
+		log.Println("HTTP server stopped.")
 	}
 
-	// Chiude il file AOF
+	// Close the AOF file
 	if s.aofFile != nil {
 		s.aofFile.Close()
 	}
 
-	// ferma il vectorizer service
+	// Stop the vectorizer service
 	if s.vectorizerService != nil {
 		s.vectorizerService.Stop()
 	}
 
-	log.Println("Shutdown completato.")
+	log.Println("Shutdown complete.")
 }
 
-// per chiudere le risorse in modo pulito
+// Close cleans up server resources, like closing the AOF file.
 func (s *Server) Close() {
 	if s.aofFile != nil {
 		s.aofFile.Close()
 	}
 }
 
-// Nuova funzione helper super-efficiente
-func parseVectorFromByteParts(parts [][]byte) ([]float32, error) {
-	vector := make([]float32, len(parts))
-	for i, part := range parts {
-		val, err := strconv.ParseFloat(string(part), 32)
-		if err != nil {
-			return nil, err
-		}
-		vector[i] = float32(val)
-	}
-	return vector, nil
-}
-
-// parseVectorFromString analizza una singola stringa contenente numeri separati da spazi.
+// parseVectorFromString parses a single string containing space-separated numbers.
 func parseVectorFromString(s string) ([]float32, error) {
 	parts := strings.Fields(s)
 	if len(parts) == 0 {
-		return nil, fmt.Errorf("la stringa del vettore è vuota")
+		return nil, fmt.Errorf("vector string is empty")
 	}
 	vector := make([]float32, len(parts))
 	for i, part := range parts {
 		val, err := strconv.ParseFloat(part, 32)
 		if err != nil {
-			// Restituisci l'errore originale per un debug migliore
+			// Return the original error for better debugging
 			return nil, err
 		}
 		vector[i] = float32(val)
@@ -751,33 +679,33 @@ func parseVectorFromString(s string) ([]float32, error) {
 	return vector, nil
 }
 
-// parseSavePolicies analizza la stringa della policy di salvataggio (es. "60 1000 300 10")
-// e la converte in una slice di struct savePolicy.
+// parseSavePolicies parses the save policy string (e.g., "60 1000 300 10")
+// and converts it into a slice of savePolicy structs.
 func parseSavePolicies(policyStr string) ([]savePolicy, error) {
 	policyStr = strings.TrimSpace(policyStr)
 	if policyStr == "" {
-		return nil, nil // Nessuna policy, è un caso valido.
+		return nil, nil // No policy is a valid case.
 	}
 
 	parts := strings.Fields(policyStr)
 	if len(parts)%2 != 0 {
-		return nil, fmt.Errorf("formato policy di salvataggio non valido: numero di argomenti dispari")
+		return nil, fmt.Errorf("invalid save policy format: odd number of arguments")
 	}
 
 	var policies []savePolicy
 	for i := 0; i < len(parts); i += 2 {
 		seconds, err := strconv.Atoi(parts[i])
 		if err != nil {
-			return nil, fmt.Errorf("secondi non validi nella policy di salvataggio: '%s'", parts[i])
+			return nil, fmt.Errorf("invalid seconds in save policy: '%s'", parts[i])
 		}
 
 		changes, err := strconv.ParseInt(parts[i+1], 10, 64)
 		if err != nil {
-			return nil, fmt.Errorf("numero di modifiche non valido nella policy di salvataggio: '%s'", parts[i+1])
+			return nil, fmt.Errorf("invalid number of changes in save policy: '%s'", parts[i+1])
 		}
 
 		if seconds <= 0 || changes <= 0 {
-			return nil, fmt.Errorf("secondi e modifiche devono essere maggiori di zero")
+			return nil, fmt.Errorf("seconds and changes must be greater than zero")
 		}
 
 		policies = append(policies, savePolicy{
@@ -786,7 +714,7 @@ func parseSavePolicies(policyStr string) ([]savePolicy, error) {
 		})
 	}
 
-	// Ordina le policy dalla più stringente alla meno stringente (per tempo)
+	// Sort policies from the most stringent to the least stringent (by time)
 	sort.Slice(policies, func(i, j int) bool {
 		return policies[i].Seconds < policies[j].Seconds
 	})
@@ -794,9 +722,9 @@ func parseSavePolicies(policyStr string) ([]savePolicy, error) {
 	return policies, nil
 }
 
-// --- NUOVE STRUCT PER LA GESTIONE DEI TASK ASINCRONI ---
+// --- ASYNCHRONOUS TASK MANAGEMENT STRUCTS ---
 
-// TaskStatus definisce i possibili stati di un task.
+// TaskStatus defines the possible states of a task.
 type TaskStatus string
 
 const (
@@ -806,7 +734,7 @@ const (
 	TaskStatusFailed    TaskStatus = "failed"
 )
 
-// Task rappresenta un'operazione a lunga esecuzione.
+// Task represents a long-running operation.
 type Task struct {
 	ID              string     `json:"id"`
 	Status          TaskStatus `json:"status"`
@@ -815,33 +743,33 @@ type Task struct {
 	mu              sync.RWMutex
 }
 
-// TaskManager tiene traccia di tutti i task in esecuzione.
+// TaskManager tracks all running asynchronous tasks.
 type TaskManager struct {
 	tasks map[string]*Task
 	mu    sync.RWMutex
 }
 
-// NewTaskManager crea un nuovo gestore di task.
+// NewTaskManager creates a new task manager.
 func NewTaskManager() *TaskManager {
 	return &TaskManager{
 		tasks: make(map[string]*Task),
 	}
 }
 
-// NewTask crea un nuovo task, lo registra e lo restituisce.
+// NewTask creates a new task, registers it, and returns it.
 func (tm *TaskManager) NewTask() *Task {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
 	task := &Task{
-		ID:     uuid.New().String(), // Genera un ID univoco
+		ID:     uuid.New().String(), // Generate a unique ID
 		Status: TaskStatusStarted,
 	}
 	tm.tasks[task.ID] = task
 	return task
 }
 
-// GetTask recupera un task in modo sicuro.
+// GetTask safely retrieves a task by its ID.
 func (tm *TaskManager) GetTask(id string) (*Task, bool) {
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
@@ -849,15 +777,17 @@ func (tm *TaskManager) GetTask(id string) (*Task, bool) {
 	return task, found
 }
 
-// --- Metodi di aggiornamento per un Task ---
-// (Questi metodi verranno chiamati dalla goroutine in background)
+// --- Methods for updating a Task ---
+// (These methods will be called by the background goroutine)
 
+// SetStatus updates the status of the task.
 func (t *Task) SetStatus(status TaskStatus) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.Status = status
 }
 
+// SetError marks the task as failed and records the error message.
 func (t *Task) SetError(err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -865,6 +795,7 @@ func (t *Task) SetError(err error) {
 	t.Error = err.Error()
 }
 
+// SetProgress updates the progress message for the task.
 func (t *Task) SetProgress(message string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

@@ -1,7 +1,13 @@
+// Package core provides the fundamental data structures and logic for the KektorDB engine.
+//
+// This file defines the VectorIndex interface, which establishes the contract for all
+// vector index implementations within the database. It also includes a basic
+// BruteForceIndex implementation, which serves as a simple, unoptimized baseline
+// for vector search operations.
+
 package core
 
 import (
-	//"math"
 	"errors"
 	"fmt"
 	"github.com/sanonone/kektordb/pkg/core/distance"
@@ -10,24 +16,33 @@ import (
 	"sync"
 )
 
-// --- interfaccia ---
+// --- VectorIndex Interface ---
 
-// definisce le operazioni che un indice vettoriale deve supportare
+// VectorIndex defines the operations that a vector index must support.
+// This interface allows for different index implementations (e.g., Brute Force, HNSW)
+// to be used interchangeably within the database.
 type VectorIndex interface {
+	// Add inserts a new vector with a unique external ID into the index.
+	// It returns an internal ID used for efficient lookups.
 	Add(id string, vector []float32) (uint32, error)
-	// Search(query []float32, k int, allowlist map[uint32]struct{}, efSearch int) []string
+	// Delete removes a vector from the index using its external ID.
 	Delete(id string)
-	// metodo che restituisce anche i punteggi (distanze)
+	// SearchWithScores finds the K nearest neighbors to a query vector,
+	// returning their internal IDs and scores (distances).
+	// It supports pre-filtering with an allowList and index-specific search parameters like efSearch.
 	SearchWithScores(query []float32, k int, allowList map[uint32]struct{}, efSearch int) []types.SearchResult
 
-	// Aggiungiamo anche i metodi getter che sono comuni a tutti gli indici
+	// Metric returns the distance metric used by the index (e.g., Euclidean, Cosine).
 	Metric() distance.DistanceMetric
+	// Precision returns the data type precision used for storing vectors (e.g., float32, int8).
 	Precision() distance.PrecisionType
 }
 
-// --- implementazione Brute Force Index ---
-// memorizza tutti i vettori e durante la ricerca calcola la distanza
-// rispetto ad ognuno
+// --- BruteForceIndex Implementation ---
+
+// BruteForceIndex is a simple implementation of VectorIndex that stores all vectors
+// and calculates the distance to every one of them during a search. It is not
+// optimized for performance but is useful for testing and small datasets.
 type BruteForceIndex struct {
 	mu          sync.RWMutex
 	vectors     map[string][]float32
@@ -35,7 +50,7 @@ type BruteForceIndex struct {
 	counter     uint32
 }
 
-// crea un nuovo indice di brute force
+// NewBruteForceIndex creates and returns a new, empty BruteForceIndex.
 func NewBruteForceIndex() *BruteForceIndex {
 	return &BruteForceIndex{
 		vectors:     make(map[string][]float32),
@@ -43,19 +58,19 @@ func NewBruteForceIndex() *BruteForceIndex {
 	}
 }
 
-// aggiunge un vettore all'indice
+// Add adds a vector to the index
 func (idx *BruteForceIndex) Add(id string, vector []float32) (uint32, error) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
 	if _, exists := idx.vectors[id]; exists {
-		return 0, fmt.Errorf("ID '%s' già esistente", id)
+		return 0, fmt.Errorf("ID '%s' already exists", id)
 	}
 
 	idx.vectors[id] = vector
 
-	// Anche se l'indice brute-force non usa veramente gli ID interni
-	// per la navigazione, li generiamo per coerenza con l'interfaccia.
+	// Although the brute-force index doesn't strictly use internal IDs
+	// for graph navigation, we generate them for interface consistency.
 	idx.counter++
 	internalID := idx.counter
 	idx.internalIDs[id] = internalID
@@ -63,13 +78,13 @@ func (idx *BruteForceIndex) Add(id string, vector []float32) (uint32, error) {
 	return internalID, nil
 }
 
-// per l'ordinamento dei risultati
+// searchResult is a helper struct for sorting search candidates.
 type searchResult struct {
 	id       string
 	distance float64
 }
 
-// cerca i K vettori più vicini al vettore di query
+// SearchWithScores finds the K nearest vectors to the query vector.
 func (idx *BruteForceIndex) SearchWithScores(query []float32, k int, allowList map[uint32]struct{}, efSearch int) []types.SearchResult {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
@@ -77,23 +92,23 @@ func (idx *BruteForceIndex) SearchWithScores(query []float32, k int, allowList m
 	results := make([]searchResult, 0, len(idx.vectors))
 
 	for id, vec := range idx.vectors {
-		// per il momento uso la distanza Euclidea al quadrato, è più veloce
-		// perché evita la radice quadrata e l'ordine non cambia
+		// Currently uses squared Euclidean distance for performance, as it avoids
+		// the square root calculation and does not change the relative order of results.
 		dist, err := squaredEuclideanDistance(query, vec)
-		if err == nil { // ignora vettori di dimensione diversa
+		if err == nil { // ignore vectors of different dimensions
 			results = append(results, searchResult{id: id, distance: dist})
 
 		}
 	}
 
-	// ordina i risultati per distanza crescente
+	// sort results by increasing distance
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].distance < results[j].distance
 	})
 
 	var finalResults []types.SearchResult
 	count := 0
-	for _, res := range results { // 'results' è la tua slice ordinata di candidati
+	for _, res := range results { // 'results' is the sorted slice of candidates
 		if count >= k {
 			break
 		}
@@ -109,15 +124,16 @@ func (idx *BruteForceIndex) SearchWithScores(query []float32, k int, allowList m
 
 }
 
+// Delete removes a vector by its ID.
 func (idx *BruteForceIndex) Delete(id string) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 	delete(idx.vectors, id)
 }
 
-// funzione helper per calcolare la distanza euclidea al quadrato
+// squaredEuclideanDistance is a helper function to calculate the squared Euclidean distance.
 func squaredEuclideanDistance(v1, v2 []float32) (float64, error) {
-	// la distanza Euclidea è definita solo per vettori della stessa dimensione
+	// Euclidean distance is only defined for vectors of the same dimension.
 	if len(v1) != len(v2) {
 		// return 0, math.ErrUnsupported
 		return 0, errors.New("squaredEuclideanDistance: vectors must have the same length")

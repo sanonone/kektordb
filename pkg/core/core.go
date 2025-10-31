@@ -1,10 +1,16 @@
+// Package core provides the fundamental data structures and logic for the KektorDB engine.
+//
+// This file defines the main DB struct, which orchestrates all data storage, including
+// the KV store, vector indexes, and secondary indexes for metadata (inverted, B-Tree, and text).
+// It also implements core functionalities like snapshotting, filtering, full-text search,
+// and index management.
 package core
 
 import (
 	"encoding/gob"
 	"fmt"
-	"github.com/sanonone/kektordb/pkg/core/distance" // Importa distance
-	"github.com/sanonone/kektordb/pkg/core/hnsw"     // Importa hnsw
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/core/types"
 	"github.com/sanonone/kektordb/pkg/textanalyzer"
 	"github.com/tidwall/btree"
@@ -19,22 +25,23 @@ import (
 	"sync"
 )
 
-// --- Gestione compattazione AOF ---
+// --- AOF Compaction Management ---
 
-// una struct per restituire coppie chiave-valore
+// KVPair is a struct for returning key-value pairs.
 type KVPair struct {
 	Key   string
 	Value []byte
 }
 
-// struct per restituire i dati completi di un vettore
+// VectorData is a struct for returning the complete data of a single vector.
 type VectorData struct {
 	ID       string         `json:"id"`
 	Vector   []float32      `json:"vector"`
 	Metadata map[string]any `json:"metadata"`
 }
 
-// struct pubblica che verrà serializzata in JSON per l'API per restituire le info dei vettori
+// IndexInfo models the public-facing information about a vector index,
+// intended for serialization in API responses.
 type IndexInfo struct {
 	Name           string                  `json:"name"`
 	Metric         distance.DistanceMetric `json:"metric"`
@@ -45,112 +52,74 @@ type IndexInfo struct {
 	TextLanguage   string                  `json:"text_language"`
 }
 
-/*
-// VectorIndexInfo è una struct per trasportare i metadati di un indice.
-type VectorIndexInfo struct {
-	Name           string
-	Metric         distance.DistanceMetric
-	M              int
-	EfConstruction int
-	Precision      distance.PrecisionType
-	TextLanguage   string
-}
-*/
-
 // --- SNAPSHOTTING ---
 
-// rappresenta lo stato salvabile del database, questa conterrà tutto
+// Snapshot represents the complete serializable state of the database.
 type Snapshot struct {
 	KVData     map[string][]byte
 	VectorData map[string]*IndexSnapshot
 }
 
-// rappresenta lo stato salvabile di un singolo vettore, cintiene la configurazione IndexConfig e i dati Nodes di un singolo indice HNSW
+// IndexSnapshot represents the serializable state of a single vector index.
+// It includes the index configuration and all its node data.
 type IndexSnapshot struct {
 	Config             IndexConfig
-	Nodes              map[uint32]*NodeSnapshot // Salveremo i nodi del grafo ed i metadata. È map perché più semplice da serializzare e deserializzare
+	Nodes              map[uint32]*NodeSnapshot // Using a map for simpler serialization/deserialization.
 	ExternalToInternal map[string]uint32
 	InternalCounter    uint32
 	EntrypointID       uint32
 	MaxLevel           int
-	QuantizerState     *distance.Quantizer // Salva lo stato del quantizzatore
-	// Aggiungeremo altri campi se necessario (es. stato del quantizzatore)
+	QuantizerState     *distance.Quantizer // Saves the quantizer's state.
 }
 
-// NodeSnapshot contiene tutti i dati necessari per ripristinare un singolo nodo.
+// NodeSnapshot contains all the necessary data to restore a single node.
 type NodeSnapshot struct {
-	NodeData *hnsw.Node             // I dati del grafo (ID, connessioni, etc.)
-	Metadata map[string]interface{} // I metadati associati
+	NodeData *hnsw.Node             // The graph data (ID, connections, etc.)
+	Metadata map[string]interface{} // The associated metadata
 
-	// dati del vettore tipizzati esplicitamente (altrimenti fa conversione a float64 in decode gob)
+	// Explicitly typed vector data to prevent gob from converting to float64 on decode.
 	VectorF32 []float32 `json:"vector_f32,omitempty"`
 	VectorF16 []uint16  `json:"vector_f16,omitempty"`
 	VectorI8  []int8    `json:"vector_i8,omitempty"`
 }
 
-// contine le configurazioni di vector index,
+// IndexConfig holds the configuration parameters for a vector index.
 type IndexConfig struct {
 	Metric         distance.DistanceMetric
 	Precision      distance.PrecisionType
 	M              int
 	EfConstruction int
-	TextLanguage   string // "english" "italian" o "" per disabilitare
+	TextLanguage   string // e.g., "english", "italian", or "" to disable
 }
 
-// Registriamo i nostri tipi custom con gob in modo che sappia come gestirli
-// fondamentale quando si usano interfacce. Gob ha bisogno di sapere in anticipo quali tipi concreti potrebbero essere memorizzati in un ampo any o interface{}
-/*
-func init() {
-	gob.Register([]float32{})
-	gob.Register([]uint16{})
-	gob.Register([]int8{})
-}
-*/
-
-// Snapshot serializza lo stato corrente dello store in formato gob su un io.Writer.
-// Questa funzione si aspetta che il chiamante gestisca il locking.
+// Snapshot serializes the current state of the store in gob format to an io.Writer.
+// This function expects the caller to handle locking.
 func (s *DB) Snapshot(writer io.Writer) error {
-	// snapshot assume che il chiamante abbia già il lock di scrittura
-	/*
-		s.mu.RLock() // Usiamo RLock perché stiamo solo leggendo lo stato.
-		defer s.mu.RUnlock()
-	*/
+	// --- PHASE 1: Acquire all necessary READ locks ---
 
-	/*
-		s.mu.Lock()
-		defer s.mu.Unlock()
-
-		snapshot := Snapshot{
-			KVData:     s.kvStore.data,
-			VectorData: make(map[string]*IndexSnapshot),
-		}*/
-
-	// --- FASE 1: Acquisisci tutti i lock di LETTURA necessari ---
-
-	// 1a. Blocca lo Store per ottenere una lista stabile di indici.
+	// 1a. Lock the DB to get a stable list of indexes.
 	s.mu.RLock()
 
-	// 1b. Blocca il KV store.
+	// 1b. Lock the KV store.
 	s.kvStore.RLock()
 
-	// 1c. Blocca ogni singolo indice HNSW.
-	// Creiamo una lista degli indici per poterli sbloccare dopo.
+	// 1c. Lock each individual HNSW index.
+	// Create a list of indexes to unlock later.
 	indexesToUnlock := make([]*hnsw.Index, 0, len(s.vectorIndexes))
 	for name, idx := range s.vectorIndexes {
 		if hnswIndex, ok := idx.(*hnsw.Index); ok {
 			hnswIndex.RLock()
-			log.Printf("In snapshot è stato preso il lock su index %s", name)
+			log.Printf("Snapshot acquired read lock on index %s", name)
 			indexesToUnlock = append(indexesToUnlock, hnswIndex)
 		}
 	}
 
-	// --- FASE 2: Rilascia il lock di più alto livello ---
-	// Ora che abbiamo bloccato tutte le strutture dati "figlie", possiamo rilasciare
-	// il lock sulla lista "genitore", permettendo ad alcune operazioni
-	// (come GetVectorIndex) di procedere.
+	// --- PHASE 2: Release the highest-level lock ---
+	// Now that we have locked all child data structures, we can release the lock
+	// on the parent list, allowing some operations (like GetVectorIndex) to proceed.
 	s.mu.RUnlock()
 
-	// --- FASE 3: Assicura lo sblocco finale di tutto il resto ---
+	// --- PHASE 3: Ensure final unlocking of everything else ---
 	defer func() {
 		s.kvStore.RUnlock()
 		for _, idx := range indexesToUnlock {
@@ -158,12 +127,12 @@ func (s *DB) Snapshot(writer io.Writer) error {
 		}
 	}()
 
-	// --- FASE 4: Esegui lo Snapshot (ora è 100% sicuro) ---
-	// A questo punto, possediamo un RLock su KVStore e su ogni HNSWIndex.
-	// Nessuna scrittura (`SET`, `VADD`) può avvenire. Possiamo leggere tutto.
+	// --- PHASE 4: Execute the Snapshot (now 100% safe) ---
+	// At this point, we hold an RLock on the KVStore and on each HNSWIndex.
+	// No write operations (`SET`, `VADD`) can occur. We can safely read everything.
 
 	snapshot := Snapshot{
-		KVData:     s.kvStore.data, // Sicuro, perché abbiamo il RLock
+		KVData:     s.kvStore.data, // Safe because we hold the RLock
 		VectorData: make(map[string]*IndexSnapshot),
 	}
 
@@ -171,18 +140,17 @@ func (s *DB) Snapshot(writer io.Writer) error {
 		if hnswIndex, ok := idx.(*hnsw.Index); ok {
 			nodes, extToInt, counter, entrypoint, maxLevel, quantizer := hnswIndex.SnapshotData()
 
-			// Chiama le versioni "Unlocked" dei getter (che dobbiamo creare).
 			metric, m, efc, precision, _, textLang := hnswIndex.GetInfoUnlocked()
 
 			nodeSnapshots := make(map[uint32]*NodeSnapshot, len(nodes))
 			for internalID, node := range nodes {
-				// Crea lo snapshot del nodo
+				// Create the node snapshot
 				snap := &NodeSnapshot{
 					NodeData: node,
 					Metadata: s.getMetadataForNodeUnlocked(name, internalID),
 				}
 
-				// Esegui un type switch per popolare il campo corretto del vettore
+				// Use a type switch to populate the correct vector field
 				switch vec := node.Vector.(type) {
 				case []float32:
 					snap.VectorF32 = vec
@@ -191,8 +159,8 @@ func (s *DB) Snapshot(writer io.Writer) error {
 				case []int8:
 					snap.VectorI8 = vec
 				default:
-					// Logga un avviso se troviamo un tipo inaspettato
-					log.Printf("ATTENZIONE: tipo di vettore sconosciuto '%T' durante lo snapshot del nodo %d", vec, internalID)
+					// Log a warning if we encounter an unexpected type
+					log.Printf("WARNING: Unknown vector type '%T' during snapshot of node %d", vec, internalID)
 				}
 				nodeSnapshots[internalID] = snap
 			}
@@ -205,7 +173,7 @@ func (s *DB) Snapshot(writer io.Writer) error {
 					EfConstruction: efc,
 					TextLanguage:   textLang,
 				},
-				Nodes:              nodeSnapshots, // Usa la nuova mappa
+				Nodes:              nodeSnapshots,
 				ExternalToInternal: extToInt,
 				InternalCounter:    counter,
 				EntrypointID:       entrypoint,
@@ -217,22 +185,22 @@ func (s *DB) Snapshot(writer io.Writer) error {
 
 	encoder := gob.NewEncoder(writer)
 	if err := encoder.Encode(snapshot); err != nil {
-		return fmt.Errorf("impossibile codificare lo snapshot: %w", err)
+		return fmt.Errorf("failed to encode snapshot: %w", err)
 	}
 
 	return nil
 }
 
-// LoadFromSnapshot deserializza uno snapshot gob da un io.Reader e ripristina
-// lo stato dello store. Svuota lo store prima di caricare.
+// LoadFromSnapshot deserializes a gob snapshot from an io.Reader and restores
+// the store's state. It clears the current store state before loading.
 func (s *DB) LoadFromSnapshot(reader io.Reader) error {
 	decoder := gob.NewDecoder(reader)
 	var snapshot Snapshot
 	if err := decoder.Decode(&snapshot); err != nil {
-		return fmt.Errorf("impossibile decodificare lo snapshot: %w", err)
+		return fmt.Errorf("failed to decode snapshot: %w", err)
 	}
 
-	// Svuota lo stato corrente per un caricamento pulito
+	// Clear the current state for a clean load
 	s.kvStore.data = snapshot.KVData
 	if s.kvStore.data == nil {
 		s.kvStore.data = make(map[string][]byte)
@@ -240,24 +208,24 @@ func (s *DB) LoadFromSnapshot(reader io.Reader) error {
 	s.vectorIndexes = make(map[string]VectorIndex)
 	s.invertedIndex = make(map[string]map[string]map[string]map[uint32]struct{})
 	s.bTreeIndex = make(map[string]map[string]*btree.BTreeG[BTreeItem])
-	s.textIndex = make(InvertedIndex) // Svuota l'indice testuale
+	s.textIndex = make(InvertedIndex)
 	s.textIndexStats = make(map[string]map[string]*TextIndexStats)
 
-	// Itera sugli indici presenti nello snapshot
+	// Iterate over the indexes in the snapshot
 	for name, indexSnap := range snapshot.VectorData {
-		// Crea un nuovo indice vuoto con la configurazione salvata
+		// Create a new empty index with the saved configuration
 		idx, err := hnsw.New(indexSnap.Config.M, indexSnap.Config.EfConstruction, indexSnap.Config.Metric, indexSnap.Config.Precision, indexSnap.Config.TextLanguage)
 		if err != nil {
-			return fmt.Errorf("impossibile ricreare l'indice '%s' dallo snapshot: %w", name, err)
+			return fmt.Errorf("failed to recreate index '%s' from snapshot: %w", name, err)
 		}
 
-		// Prepara la mappa di nodi da caricare in HNSW
+		// Prepare the map of nodes to load into HNSW
 		nodesToLoad := make(map[uint32]*hnsw.Node)
 
-		// --- NUOVA LOGICA: Ricostruzione del campo 'Vector' ---
+		// --- Reconstruct the 'Vector' field ---
 		for id, nodeSnap := range indexSnap.Nodes {
-			// Ricostruisci il campo generico 'Vector' (interface{})
-			// basandoti su quale dei campi tipizzati è popolato.
+			// Reconstruct the generic 'Vector' (interface{}) field
+			// based on which of the typed fields is populated.
 			if nodeSnap.VectorF32 != nil {
 				nodeSnap.NodeData.Vector = nodeSnap.VectorF32
 			} else if nodeSnap.VectorF16 != nil {
@@ -265,26 +233,25 @@ func (s *DB) LoadFromSnapshot(reader io.Reader) error {
 			} else if nodeSnap.VectorI8 != nil {
 				nodeSnap.NodeData.Vector = nodeSnap.VectorI8
 			} else {
-				log.Printf("ATTENZIONE: Nessun dato vettoriale trovato per il nodo %d nello snapshot", id)
+				log.Printf("WARNING: No vector data found for node %d in snapshot", id)
 			}
 			nodesToLoad[id] = nodeSnap.NodeData
 		}
-		// --- FINE NUOVA LOGICA ---
 
-		// Carica i dati del grafo HNSW
+		// Load the HNSW graph data
 		if err := idx.LoadSnapshotData(nodesToLoad, indexSnap.ExternalToInternal, indexSnap.InternalCounter, indexSnap.EntrypointID, indexSnap.MaxLevel, indexSnap.QuantizerState); err != nil {
-			return fmt.Errorf("impossibile caricare i dati HNSW per l'indice '%s': %w", name, err)
+			return fmt.Errorf("failed to load HNSW data for index '%s': %w", name, err)
 		}
 
 		s.vectorIndexes[name] = idx
 
-		// Inizializza gli spazi per gli indici secondari
+		// Initialize spaces for secondary indexes
 		s.invertedIndex[name] = make(map[string]map[string]map[uint32]struct{})
 		s.bTreeIndex[name] = make(map[string]*btree.BTreeG[BTreeItem])
 		s.textIndex[name] = make(map[string]map[string]PostingList)
 		s.textIndexStats[name] = make(map[string]*TextIndexStats)
 
-		// Ricostruisci gli indici secondari (metadati)
+		// Rebuild secondary indexes (metadata)
 		for _, nodeSnap := range indexSnap.Nodes {
 			if len(nodeSnap.Metadata) > 0 {
 				s.AddMetadataUnlocked(name, nodeSnap.NodeData.InternalID, nodeSnap.Metadata)
@@ -295,8 +262,8 @@ func (s *DB) LoadFromSnapshot(reader io.Reader) error {
 	return nil
 }
 
-// itera su tutte le coppie chiave-valore nello store e le passa a una funzione
-// di callback. L'iterazione avviene in un read lock
+// IterateKV iterates over all key-value pairs in the store, passing each to a callback function.
+// The iteration is performed under a read lock.
 func (s *DB) IterateKV(callback func(pair KVPair)) {
 	s.kvStore.mu.RLock()
 	defer s.kvStore.mu.RUnlock()
@@ -306,20 +273,21 @@ func (s *DB) IterateKV(callback func(pair KVPair)) {
 	}
 }
 
-// iterateKVUnlocked esegue l'iterazione senza acquisire lock
+// iterateKVUnlocked performs the iteration without acquiring locks.
+// The caller is responsible for ensuring thread safety.
 func (s *DB) IterateKVUnlocked(callback func(pair KVPair)) {
 	for key, value := range s.kvStore.data {
 		callback(KVPair{Key: key, Value: value})
 	}
 }
 
-// itera su tutti gli indici vettoriali e i loro contenuti
+// IterateVectorIndexes iterates over all vector indexes and their contents.
+// The caller is responsible for locking.
 func (s *DB) IterateVectorIndexes(callback func(indexName string, index *hnsw.Index, data VectorData)) {
 	s.mu.RUnlock()
 	defer s.mu.RUnlock()
 
 	for name, idx := range s.vectorIndexes {
-		// deve accedere ai dati interni di HNSW
 		if hnswIndex, ok := idx.(*hnsw.Index); ok {
 			hnswIndex.Iterate(func(id string, vector []float32) {
 				// recupera i dati dallo store principale
@@ -336,14 +304,12 @@ func (s *DB) IterateVectorIndexes(callback func(indexName string, index *hnsw.In
 	}
 }
 
-// iterateVectorIndexesUnlocked esegue l'iterazione senza acquisire lock.
+// iterateVectorIndexesUnlocked performs the iteration without acquiring locks.
+// The caller is responsible for ensuring thread safety.
 func (s *DB) IterateVectorIndexesUnlocked(callback func(indexName string, index *hnsw.Index, data VectorData)) {
 	for name, idx := range s.vectorIndexes {
 		if hnswIndex, ok := idx.(*hnsw.Index); ok {
 			hnswIndex.Iterate(func(id string, vector []float32) {
-				// ... (logica per recuperare i metadati, che a sua volta non deve lockare!)
-				// Per ora, la lasciamo così, ma in un refactoring più profondo
-				// anche getMetadataForNode avrebbe una versione unlocked.
 				internalID := hnswIndex.GetInternalID(id)
 				metadata := s.getMetadataForNodeUnlocked(name, internalID)
 
@@ -357,8 +323,8 @@ func (s *DB) IterateVectorIndexesUnlocked(callback func(indexName string, index 
 	}
 }
 
-// GetVectorIndexInfo restituisce una slice con le informazioni di configurazione
-// di tutti gli indici vettoriali presenti.
+// GetVectorIndexInfo returns a slice containing the configuration and status
+// of all existing vector indexes.
 func (s *DB) GetVectorIndexInfo() ([]IndexInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -378,12 +344,13 @@ func (s *DB) GetVectorIndexInfo() ([]IndexInfo, error) {
 				TextLanguage:   textLang,
 			})
 		}
-		// Potremmo gestire altri tipi di indici qui in futuro.
 	}
 
 	return infoList, nil
 }
 
+// GetVectorIndexInfoUnlocked returns index information without acquiring a lock.
+// The caller is responsible for ensuring thread safety.
 func (s *DB) GetVectorIndexInfoUnlocked() ([]IndexInfo, error) {
 	infoList := make([]IndexInfo, 0, len(s.vectorIndexes))
 	for name, idx := range s.vectorIndexes {
@@ -403,8 +370,8 @@ func (s *DB) GetVectorIndexInfoUnlocked() ([]IndexInfo, error) {
 	return infoList, nil
 }
 
-// GetVectorIndexInfo restituisce le informazioni di configurazione e stato
-// per tutti gli indici vettoriali.
+// GetVectorIndexInfoAPI returns configuration and status information for all vector indexes,
+// suitable for an API response.
 func (s *DB) GetVectorIndexInfoAPI() ([]IndexInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -426,7 +393,7 @@ func (s *DB) GetVectorIndexInfoAPI() ([]IndexInfo, error) {
 		}
 	}
 
-	// Ordina la lista per nome per una risposta API consistente
+	// Sort the list by name for a consistent API response.
 	sort.Slice(infoList, func(i, j int) bool {
 		return infoList[i].Name < infoList[j].Name
 	})
@@ -434,14 +401,14 @@ func (s *DB) GetVectorIndexInfoAPI() ([]IndexInfo, error) {
 	return infoList, nil
 }
 
-// GetSingleVectorIndexInfo restituisce le informazioni per un singolo indice.
+// GetSingleVectorIndexInfoAPI returns information for a single index by name.
 func (s *DB) GetSingleVectorIndexInfoAPI(name string) (IndexInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	idx, ok := s.vectorIndexes[name]
 	if !ok {
-		return IndexInfo{}, fmt.Errorf("indice '%s' non trovato", name)
+		return IndexInfo{}, fmt.Errorf("index '%s' not found", name)
 	}
 
 	if hnswIndex, ok := idx.(*hnsw.Index); ok {
@@ -457,35 +424,29 @@ func (s *DB) GetSingleVectorIndexInfoAPI(name string) (IndexInfo, error) {
 		}, nil
 	}
 
-	return IndexInfo{}, fmt.Errorf("tipo di indice non supportato per l'introspezione")
+	return IndexInfo{}, fmt.Errorf("index type not supported for introspection")
 }
 
-// GetVector recupera i dati completi per un singolo vettore dato il suo ID esterno.
+// GetVector retrieves the complete data for a single vector given its external ID.
 func (s *DB) GetVector(indexName, vectorID string) (VectorData, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// 1. Controlla che l'indice esista
 	idx, ok := s.vectorIndexes[indexName]
 	if !ok {
-		return VectorData{}, fmt.Errorf("indice '%s' non trovato", indexName)
+		return VectorData{}, fmt.Errorf("index '%s' not found", indexName)
 	}
 
 	hnswIndex, ok := idx.(*hnsw.Index)
 	if !ok {
-		return VectorData{}, fmt.Errorf("tipo di indice non supportato per il recupero dati")
+		return VectorData{}, fmt.Errorf("index type not supported for data retrieval")
 	}
 
-	// 2. Ottieni il nodo dall'indice HNSW
-	// Dobbiamo creare un nuovo metodo in HNSW per questo.
 	nodeData, found := hnswIndex.GetNodeData(vectorID)
 	if !found {
-		return VectorData{}, fmt.Errorf("vettore con ID '%s' non trovato nell'indice '%s'", vectorID, indexName)
+		return VectorData{}, fmt.Errorf("vector with ID '%s' not found in index '%s'", vectorID, indexName)
 	}
 
-	// 3. Recupera i metadati associati
-	// La funzione getMetadataForNodeUnlocked è perfetta per questo,
-	// dato che abbiamo già un RLock.
 	metadata := s.getMetadataForNodeUnlocked(indexName, nodeData.InternalID)
 
 	return VectorData{
@@ -495,21 +456,19 @@ func (s *DB) GetVector(indexName, vectorID string) (VectorData, error) {
 	}, nil
 }
 
-// GetVectors recupera i dati completi per una slice di ID di vettori in parallelo.
-// Restituisce una slice di VectorData. Se un ID non viene trovato,
-// semplicemente non sarà presente nella slice di ritorno.
+// GetVectors retrieves the complete data for a slice of vector IDs in parallel.
+// If an ID is not found, it is simply omitted from the returned slice.
 func (s *DB) GetVectors(indexName string, vectorIDs []string) ([]VectorData, error) {
-	// Acquisiamo il lock di lettura una sola volta per l'intera operazione.
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	idx, ok := s.vectorIndexes[indexName]
 	if !ok {
-		return nil, fmt.Errorf("indice '%s' non trovato", indexName)
+		return nil, fmt.Errorf("index '%s' not found", indexName)
 	}
 	hnswIndex, ok := idx.(*hnsw.Index)
 	if !ok {
-		return nil, fmt.Errorf("tipo di indice non supportato")
+		return nil, fmt.Errorf("unsupported index type")
 	}
 
 	// --- LOGICA DI PARALLELISMO ---
@@ -573,8 +532,8 @@ func (s *DB) GetVectors(indexName string, vectorIDs []string) ([]VectorData, err
 
 // --- Fine compattazione AOF ---
 
-// funzione helper per IterateVectorIndexes
-// nota: logica inefficiente, in futuro si dovranno legare i metadata più strettamente ai nodi HNSW
+// getMetadataForNode is a helper function to retrieve metadata for a given node ID.
+// Note: This implementation is inefficient as it scans the entire inverted index.
 func (s *DB) getMetadataForNode(indexName string, nodeID uint32) map[string]any {
 	metadata := make(map[string]any)
 
@@ -596,7 +555,7 @@ func (s *DB) getMetadataForNode(indexName string, nodeID uint32) map[string]any 
 	return metadata
 }
 
-// versione senza lock
+// getMetadataForNodeUnlocked is the lock-free version of getMetadataForNode.
 func (s *DB) getMetadataForNodeUnlocked(indexName string, nodeID uint32) map[string]any {
 	metadata := make(map[string]any)
 
@@ -618,27 +577,27 @@ func (s *DB) getMetadataForNodeUnlocked(indexName string, nodeID uint32) map[str
 	return metadata
 }
 
-// è una struttura dati che userà il b tree per associare a un valore (metadato) un ID di nodo
+// BTreeItem is a struct used by the B-Tree to associate a numerical metadata value with a node ID.
 type BTreeItem struct {
 	Value  float64
 	NodeID uint32
 }
 
-// contiene la frequenza del termine (TF) e ID.
+// PostingEntry contains the document ID and term frequency for an entry in a posting list.
 type PostingEntry struct {
 	DocID         uint32
 	TermFrequency int
 }
 
-// una slice di PostingEntry
+// PostingList is a slice of PostingEntry structs.
 type PostingList []PostingEntry
 
-// struttura dati per la ricerca testuale
-// mappa un token (parola) a una lista di documenti che la contengono
-// struttura: map[nome_indice_vettoriale] -> map[chiave_metadato] -> map[token] -> PostingList
+// InvertedIndex is the data structure for full-text search.
+// It maps a token (word) to a list of documents containing it.
+// Structure: map[vector_index_name] -> map[metadata_key] -> map[token] -> PostingList
 type InvertedIndex map[string]map[string]map[string]PostingList
 
-// nuova struttura per le statistiche dell'indice testuale
+// TextIndexStats holds statistics for a text index, used by ranking algorithms like BM25.
 type TextIndexStats struct {
 	// Numero totale di documenti in un campo indicizzato
 	TotalDocs int
@@ -648,26 +607,28 @@ type TextIndexStats struct {
 	DocLengths map[uint32]int
 }
 
-// store è il contenitore principale che contiene tutti i tipi di dato di kektorDB
+// DB is the main container for all KektorDB data types. It orchestrates the KV store,
+// vector indexes, and all secondary indexes for metadata.
 type DB struct {
 	mu            sync.RWMutex
 	kvStore       *KVStore
 	vectorIndexes map[string]VectorIndex
 
-	// indice invertito per i metadata
-	// struttura = map[nome indice vettoriale] -> map[chiave metadato] -> map[valore meta] -> set[ID interni nodi]
-	// es. invertedIndex["my_images"]["tags"]["gatto"]={1: {}, 5: {}, 34:{}}
-	// cioè nell'indice my_images i nodi con ID 1,5 e 34 hanno il metadato "tags" con valore "gatto"
+	// invertedIndex for metadata filtering.
+	// structure: map[vector index name] -> map[metadata key] -> map[metadata value] -> set[internal node IDs]
+	// e.g., invertedIndex["my_images"]["tags"]["cat"]={1: {}, 5: {}, 34:{}}
+	// meaning that in the "my_images" index, nodes with internal IDs 1, 5, and 34 have the metadata "tags" with the value "cat".
 	invertedIndex map[string]map[string]map[string]map[uint32]struct{}
 
-	// indice B-Tree per i metadati numerici
-	// strutture: map[nome indice vettoriale]->map[chiave metadato]->BTree
-	// B-Tree memorizzerà BTreeItem, permettendo ricerche di range veloci
+	// bTreeIndex for numerical metadata.
+	// structure: map[vector index name] -> map[metadata key] -> BTree
+	// The B-Tree stores BTreeItems, allowing for fast range queries.
 	bTreeIndex     map[string]map[string]*btree.BTreeG[BTreeItem]
 	textIndex      InvertedIndex
 	textIndexStats map[string]map[string]*TextIndexStats // map[indexName][fieldName] -> stats
 }
 
+// NewDB creates and returns a new, initialized DB instance.
 func NewDB() *DB {
 	return &DB{
 		kvStore:       NewKVStore(),
@@ -682,22 +643,20 @@ func NewDB() *DB {
 	}
 }
 
-// restituisce lo store KVStore
+// GetKVStore returns the underlying key-value store
 func (s *DB) GetKVStore() *KVStore {
 	return s.kvStore
 }
 
-// crea un nuovo indice vettoriale
+// CreateVectorIndex creates a new vector index with the specified configuration.
 func (s *DB) CreateVectorIndex(name string, metric distance.DistanceMetric, m, efConstruction int, precision distance.PrecisionType, textLang string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if _, ok := s.vectorIndexes[name]; ok {
-		return fmt.Errorf("indice '%s' già esistente", name)
+		return fmt.Errorf("index '%s' already exists", name)
 	}
 
-	// parametri che dovrebbero essere configurabili ma al
-	// momento uso come valori di default
 	const (
 		defaultM       = 16
 		defaultEfConst = 200
@@ -709,7 +668,7 @@ func (s *DB) CreateVectorIndex(name string, metric distance.DistanceMetric, m, e
 
 	s.vectorIndexes[name] = idx
 
-	// Inizializziamo lo spazio per i metadati di questo nuovo indice.
+	// Initialize the metadata space for this new index.
 	s.invertedIndex[name] = make(map[string]map[string]map[uint32]struct{})
 	s.bTreeIndex[name] = make(map[string]*btree.BTreeG[BTreeItem])
 	s.textIndex[name] = make(map[string]map[string]PostingList)
@@ -718,7 +677,7 @@ func (s *DB) CreateVectorIndex(name string, metric distance.DistanceMetric, m, e
 	return nil
 }
 
-// recupera un indice vettoriale per nome
+// GetVectorIndex retrieves a vector index by its name.
 func (s *DB) GetVectorIndex(name string) (VectorIndex, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -727,69 +686,48 @@ func (s *DB) GetVectorIndex(name string) (VectorIndex, bool) {
 	return idx, found
 }
 
-// rimuove un intero indice vettoriale e tutti i suoi dati associati
+// DeleteVectorIndex removes an entire vector index and all of its associated data.
 func (s *DB) DeleteVectorIndex(name string) error {
-	s.mu.Lock() // Usiamo un Lock() esclusivo perché stiamo modificando tutte le strutture
+	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Controlla che l'indice esista
 	_, ok := s.vectorIndexes[name]
 	if !ok {
-		return fmt.Errorf("indice '%s' non trovato", name)
+		return fmt.Errorf("index '%s' not found", name)
 	}
 
-	// Rimuovi l'indice HNSW dalla mappa principale
 	delete(s.vectorIndexes, name)
 
-	// Rimuovi i dati associati dall'indice invertito
 	delete(s.invertedIndex, name)
 
-	// Rimuovi i dati associati dall'indice B-Tree
 	delete(s.bTreeIndex, name)
 
-	// rimuove i dati associati all'indice testuale
 	delete(s.textIndex, name)
 
 	delete(s.textIndexStats, name)
 
-	log.Printf("Indice '%s' e tutti i dati associati sono stati eliminati.", name)
+	log.Printf("Index '%s' and all associated data have been deleted.", name)
 	return nil
 }
 
-// Compress converte un indice esistente in una nuova precisione.
+// Compress converts an existing index to a new precision
 func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) error {
-	s.mu.Lock() // Usiamo un Lock() esclusivo perché modifichiamo la struttura dello store
+	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// 1. Controlla che l'indice esista
 	oldIndex, ok := s.vectorIndexes[indexName]
 	if !ok {
-		return fmt.Errorf("indice '%s' non trovato", indexName)
+		return fmt.Errorf("index '%s' not found", indexName)
 	}
 
 	// Controlla che sia un indice HNSW
 	oldHNSWIndex, ok := oldIndex.(*hnsw.Index)
 	if !ok {
-		return fmt.Errorf("la compressione è supportata solo per indici HNSW")
+		return fmt.Errorf("compression is only supported for HNSW indexes")
 	}
 
-	/*
-		// 2. Raccogli tutti i dati "vivi" dall'indice esistente
-		var allVectors []hnsw.NodeData // Creiamo una nuova struct per trasportare i dati
-		oldHNSWIndex.Iterate(func(id string, vector []float32) {
-			internalID := oldHNSWIndex.GetInternalID(id)
-			metadata := s.getMetadataForNodeUnlocked(indexName, internalID)
-			allVectors = append(allVectors, hnsw.NodeData{
-				ID:       id,
-				Vector:   vector,
-				Metadata: metadata,
-			})
-		})
-	*/
-
-	// --- CORREZIONE CHIAVE ---
-	// Raccogliamo i dati GREZZI. Ci aspettiamo che siano []float32
-	// perché comprimiamo solo da float32.
+	// We collect RAW data. We expect them to be []float32
+	// because we only compress from float32
 	type rawData struct {
 		ID       string
 		Vector   []float32
@@ -798,9 +736,9 @@ func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) err
 	var allVectors []rawData
 
 	oldHNSWIndex.IterateRaw(func(id string, vector interface{}) {
-		// Facciamo un type assertion per essere sicuri
+		// We make a type assertion to be sure
 		if vecF32, ok := vector.([]float32); ok {
-			internalID := oldHNSWIndex.GetInternalID(id) // Necessario un metodo unlocked
+			internalID := oldHNSWIndex.GetInternalID(id)
 			metadata := s.getMetadataForNodeUnlocked(indexName, internalID)
 			allVectors = append(allVectors, rawData{
 				ID:       id,
@@ -809,81 +747,40 @@ func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) err
 			})
 		}
 	})
-	// --- FINE CORREZIONE ---
 
 	if len(allVectors) == 0 {
-		return fmt.Errorf("impossibile comprimere un indice vuoto")
+		return fmt.Errorf("Cannot compress an empty index '%s'. Operation skipped.")
 	}
 
-	// 3. Crea e "addestra" il nuovo indice
 	metric, m, efConst := oldHNSWIndex.GetParameters()
 
 	textLang := oldHNSWIndex.TextLanguage()
 
 	newIndex, err := hnsw.New(m, efConst, metric, newPrecision, textLang)
 	if err != nil {
-		return fmt.Errorf("impossibile creare il nuovo indice compresso: %w", err)
+		return fmt.Errorf("failed to create new compressed index: %w", err)
 	}
 
-	// Se la nuova precisione è int8, dobbiamo addestrare il quantizzatore
 	if newPrecision == distance.Int8 {
-		// Estrai solo i vettori per il training
 		floatVectors := make([][]float32, len(allVectors))
 		for i, data := range allVectors {
 			floatVectors[i] = data.Vector
 		}
 
-		newIndex.TrainQuantizer(floatVectors) // Dobbiamo creare questo metodo
+		newIndex.TrainQuantizer(floatVectors)
 
-		// --- NUOVO: ANALISI DELLA DISTRIBUZIONE ---
-		/*
-			log.Println("Analisi della distribuzione dei dati quantizzati...")
-
-			// Crea un istogramma per contare le occorrenze di ogni valore int8
-			histogram := make(map[int8]int)
-			totalValues := 0
-
-			for _, vec := range floatVectors {
-				quantizedVec := newIndex.Quantizer().Quantize(vec) // Dobbiamo esporre il quantizzatore
-				for _, val := range quantizedVec {
-					histogram[val]++
-					totalValues++
-				}
-			}
-
-			// Stampa l'istogramma
-			log.Println("--- Istogramma Valori Int8 ---")
-			// Ordina le chiavi per una stampa pulita
-			keys := make([]int, 0, len(histogram))
-			for k := range histogram {
-				keys = append(keys, int(k))
-			}
-			sort.Ints(keys)
-
-			for _, k := range keys {
-				count := histogram[int8(k)]
-				percentage := float64(count) / float64(totalValues) * 100
-				log.Printf("Valore: %4d | Conteggio: %8d | Percentuale: %.2f%%", k, count, percentage)
-			}
-			log.Println("-----------------------------")
-			// --- FINE ANALISI ---
-		*/
 	}
 
-	// --- CORREZIONE CHIAVE: Pulisci i vecchi indici secondari ---
-	log.Printf("[DEBUG COMPRESS] Pulizia indici secondari per '%s'", indexName)
+	log.Printf("[DEBUG COMPRESS] Clearing secondary indexes for '%s'", indexName)
 	s.invertedIndex[indexName] = make(map[string]map[string]map[uint32]struct{})
 	s.bTreeIndex[indexName] = make(map[string]*btree.BTreeG[BTreeItem])
 	//    s.metadataStore[indexName] = make(map[uint32]map[string]interface{})
-	// --- FINE CORREZIONE ---
 
-	// Popola il nuovo indice e ri-popola gli indici secondari da zero
-	log.Printf("[DEBUG COMPRESS] Ripopolamento del nuovo indice e degli indici secondari...")
-	// 4. Popola il nuovo indice con i dati
+	log.Printf("[DEBUG COMPRESS] Repopulating new index and secondary indexes...")
 	for _, data := range allVectors {
 		internalID, err := newIndex.Add(data.ID, data.Vector)
 		if err != nil {
-			log.Printf("ATTENZIONE: Fallimento nell'aggiungere il vettore %s durante la compressione: %v", data.ID, err)
+			log.Printf("WARNING: Failed to add vector %s during compression: %v", data.ID, err)
 			continue
 		}
 		// Ri-associa i metadati
@@ -892,14 +789,13 @@ func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) err
 		}
 	}
 
-	// 5. Sostituisci atomicamente il vecchio indice con quello nuovo
 	s.vectorIndexes[indexName] = newIndex
 
-	log.Printf("Indice '%s' compresso con successo a precisione '%s'", indexName, newPrecision)
+	log.Printf("Index '%s' successfully compressed to precision '%s'", indexName, newPrecision)
 	return nil
 }
 
-// AddMetadata associa i metadati a un ID di nodo e aggiorna gli indici secondari.
+// AddMetadata associates metadata with a node ID and updates the secondary indexes.
 func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -916,7 +812,7 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 	}
 
 	var analyzer textanalyzer.Analyzer
-	switch hnswIndex.TextLanguage() { // Dobbiamo creare questo metodo getter
+	switch hnswIndex.TextLanguage() {
 	case "english":
 		analyzer = textanalyzer.NewEnglishStemmer()
 	case "italian":
@@ -942,26 +838,6 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 			indexMetadata[key][v][nodeID] = struct{}{}
 
 			// --- Indicizzazione Full-Text (con analyzer) ---
-			/*
-				if analyzer != nil {
-					tokens := analyzer.Analyze(v)                                         // Usa il tuo analizzatore!
-					log.Printf("[DEBUG TEXT INDEX] Testo: '%s' -> Tokens: %v", v, tokens) // <-- LOG 1
-
-					if _, ok := s.textIndex[indexName][key]; !ok {
-						s.textIndex[indexName][key] = make(map[string]PostingList)
-					}
-
-					for _, token := range tokens {
-						log.Printf("[DEBUG TEXT INDEX] Indicizzazione token '%s' per nodo %d", token, nodeID) // <-- LOG 2
-						list := s.textIndex[indexName][key][token]
-						if len(list) == 0 || list[len(list)-1] != nodeID {
-							s.textIndex[indexName][key][token] = append(list, nodeID)
-						}
-					}
-				} else {
-					log.Printf("[DEBUG TEXT INDEX] Analyzer è nil per l'indice '%s'", indexName) // <-- LOG 3
-				}
-			*/
 			if analyzer != nil {
 				tokens := analyzer.Analyze(v)
 
@@ -1041,6 +917,7 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 
 }
 
+// AddMetadataUnlocked adds metadata without acquiring a lock. The caller must ensure thread safety.
 func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[string]any) error {
 
 	// Ottiene la configurazione dell'indice per sapere quale analizzatore usare
@@ -1081,26 +958,6 @@ func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[s
 			indexMetadata[key][v][nodeID] = struct{}{}
 
 			// --- Indicizzazione Full-Text (con analyzer) ---
-			/*
-				if analyzer != nil {
-					tokens := analyzer.Analyze(v)                                         // Usa il tuo analizzatore!
-					log.Printf("[DEBUG TEXT INDEX] Testo: '%s' -> Tokens: %v", v, tokens) // <-- LOG 1
-
-					if _, ok := s.textIndex[indexName][key]; !ok {
-						s.textIndex[indexName][key] = make(map[string]PostingList)
-					}
-
-					for _, token := range tokens {
-						log.Printf("[DEBUG TEXT INDEX] Indicizzazione token '%s' per nodo %d", token, nodeID) // <-- LOG 2
-						list := s.textIndex[indexName][key][token]
-						if len(list) == 0 || list[len(list)-1] != nodeID {
-							s.textIndex[indexName][key][token] = append(list, nodeID)
-						}
-					}
-				} else {
-					log.Printf("[DEBUG TEXT INDEX] Analyzer è nil per l'indice '%s'", indexName) // <-- LOG 3
-				}
-			*/
 			if analyzer != nil {
 				tokens := analyzer.Analyze(v)
 
@@ -1179,7 +1036,8 @@ func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[s
 	return nil
 }
 
-// Nuova funzione helper
+// recalculateAvgFieldLengths updates the average field length statistic for text indexes.
+// This is necessary for BM25 ranking.
 func (s *DB) recalculateAvgFieldLengths(indexName string) {
 	if indexStats, ok := s.textIndexStats[indexName]; ok {
 		for _, fieldStats := range indexStats {
@@ -1194,25 +1052,25 @@ func (s *DB) recalculateAvgFieldLengths(indexName string) {
 	}
 }
 
-// FindIDsByFilter funge da query planner per i filtri.
-// Supporta OR e AND. OR ha precedenza più bassa (prima si scompone sugli OR,
-// ogni blocco OR è valutato come AND di sottofiltri).
+// FindIDsByFilter acts as a query planner for metadata filters.
+// It supports AND and OR logic. OR has lower precedence (the filter is first split
+// by OR, and each resulting block is evaluated as an AND of its sub-filters).
 func (s *DB) FindIDsByFilter(indexName string, filter string) (map[uint32]struct{}, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	filter = strings.TrimSpace(filter)
 	if filter == "" {
-		return nil, fmt.Errorf("filtro vuoto")
+		return nil, fmt.Errorf("empty filter")
 	}
 
-	// Split case-insensitive per "OR" senza alterare il resto della stringa
+	// Case-insensitive split for "OR" without altering the rest of the string.
 	reOr := regexp.MustCompile(`(?i)\s+OR\s+`)
 	orBlocks := reOr.Split(filter, -1)
 
 	finalIDSet := make(map[uint32]struct{})
 
-	// regex per AND (case-insensitive)
+	// Case-insensitive regex for "AND".
 	reAnd := regexp.MustCompile(`(?i)\s+AND\s+`)
 
 	for _, orBlock := range orBlocks {
@@ -1221,7 +1079,7 @@ func (s *DB) FindIDsByFilter(indexName string, filter string) (map[uint32]struct
 			continue
 		}
 
-		// ogni orBlock può contenere più sottofiltri separati da AND
+		// Each orBlock can contain multiple sub-filters separated by AND.
 		andFilters := reAnd.Split(orBlock, -1)
 
 		var blockIDSet map[uint32]struct{}
@@ -1235,31 +1093,31 @@ func (s *DB) FindIDsByFilter(indexName string, filter string) (map[uint32]struct
 
 			currentIDSet, err := s.evaluateBooleanFilter(indexName, subFilter)
 			if err != nil {
-				return nil, fmt.Errorf("errore nel filtro '%s': %w", subFilter, err)
+				return nil, fmt.Errorf("error in filter '%s': %w", subFilter, err)
 			}
 
 			if isFirst {
-				// copia per sicurezza (in modo che non si aliasi)
+				// Defensive copy to prevent aliasing.
 				blockIDSet = make(map[uint32]struct{}, len(currentIDSet))
 				for id := range currentIDSet {
 					blockIDSet[id] = struct{}{}
 				}
 				isFirst = false
 			} else {
+				// Intersect the current block's results with the new results.
 				blockIDSet = intersectSets(blockIDSet, currentIDSet)
 			}
 
-			// ottimizzazione
+			// Optimization: if the intersection is empty, no need to continue this AND block.
 			if len(blockIDSet) == 0 {
 				break
 			}
 		}
 
-		// unione (OR) col risultato finale
+		// Union (OR) with the final result set.
 		finalIDSet = unionSets(finalIDSet, blockIDSet)
 	}
 
-	// se non ci sono risultati, ritorniamo empty map (coerente).
 	if len(finalIDSet) == 0 {
 		return make(map[uint32]struct{}), nil
 	}
@@ -1270,12 +1128,12 @@ func (s *DB) FindIDsByFilter(indexName string, filter string) (map[uint32]struct
 // regex per parsare la funzione CONTAINS
 var containsRegex = regexp.MustCompile(`(?i)CONTAINS\s*\(\s*(\w+)\s*,\s*['"](.+?)['"]\s*\)`)
 
-// evaluateBooleanFilter valuta una singola espressione come "price>=10" o "name=Alice".
-// Restituisce un set di ID (map[uint32]struct{}) e un errore.
+// evaluateBooleanFilter evaluates a single expression like "price >= 10" or "name = 'Alice'".
+// It returns a set of matching node IDs (map[uint32]struct{}) and an error.
 func (s *DB) evaluateBooleanFilter(indexName string, filter string) (map[uint32]struct{}, error) {
 	filter = strings.TrimSpace(filter)
 
-	// Trova operatore (ordinale per lunghezza per gestire <= e >=)
+	// Find the operator (ordered by length to handle <= and >= correctly).
 	var op string
 	opIndex := -1
 	for _, operator := range []string{"<=", ">=", "=", "<", ">"} {
@@ -1286,33 +1144,33 @@ func (s *DB) evaluateBooleanFilter(indexName string, filter string) (map[uint32]
 		}
 	}
 	if opIndex == -1 {
-		return nil, fmt.Errorf("formato filtro invalido, operatore non trovato (usare =, <, >, <=, >=)")
+		return nil, fmt.Errorf("invalid filter format, operator not found (use =, <, >, <=, >=)")
 	}
 
 	key := strings.TrimSpace(filter[:opIndex])
 	valueStr := strings.TrimSpace(filter[opIndex+len(op):])
 
-	// set risultato
+	// Result set
 	idSet := make(map[uint32]struct{})
 
-	// Preleva il mapping dei B-Tree (se esiste) e l'indice invertito se necessario.
+	// Fetch the B-Tree and inverted index mappings if they exist
 	indexBTree, hasBTree := s.bTreeIndex[indexName]
 	indexInv, hasInv := s.invertedIndex[indexName]
 
-	// Dispatch sugli operatori
+	// Dispatch based on the operator
 	switch op {
 	case "=":
-		// Provo a trattare valueStr come numero
+		// Try to treat the value as a number first
 		numValue, err := strconv.ParseFloat(valueStr, 64)
 		if err == nil && hasBTree {
-			// è un numero -> uso BTree per la chiave
+			// It's a number -> use the B-Tree for this key
 			tree, ok := indexBTree[key]
 			if !ok {
-				// chiave non indicizzata: risultato vuoto
+				// The key is not indexed: return an empty result
 				return make(map[uint32]struct{}), nil
 			}
 
-			// cerchiamo gli elementi esattamente uguali a numValue
+			// Search for elements exactly equal to numValue
 			pivot := BTreeItem{Value: numValue}
 			tree.Ascend(pivot, func(item BTreeItem) bool {
 				if item.Value != numValue {
@@ -1324,9 +1182,9 @@ func (s *DB) evaluateBooleanFilter(indexName string, filter string) (map[uint32]
 			return idSet, nil
 		}
 
-		// altrimenti trattiamo come stringa -> inverted index
+		// Otherwise, treat it as a string -> use the inverted index
 		if !hasInv {
-			return nil, fmt.Errorf("indice invertito '%s' non trovato", indexName)
+			return nil, fmt.Errorf("inverted index for '%s' not found", indexName)
 		}
 		keyMetadata, ok := indexInv[key]
 		if !ok {
@@ -1336,31 +1194,31 @@ func (s *DB) evaluateBooleanFilter(indexName string, filter string) (map[uint32]
 		if !ok {
 			return make(map[uint32]struct{}), nil
 		}
-		// copia difensiva
+		// Defensive copy.
 		for id := range valSet {
 			idSet[id] = struct{}{}
 		}
 		return idSet, nil
 
 	case "<", "<=", ">", ">=":
-		// Questi operatori sono numeric-only
+		// These operators are numeric-only
 		numValue, err := strconv.ParseFloat(valueStr, 64)
 		if err != nil {
-			return nil, fmt.Errorf("il valore per l'operatore '%s' deve essere numerico: '%s'", op, valueStr)
+			return nil, fmt.Errorf("value for operator '%s' must be numeric: '%s'", op, valueStr)
 		}
 		if !hasBTree {
-			return nil, fmt.Errorf("indice numerico '%s' non trovato", indexName)
+			return nil, fmt.Errorf("numeric index for '%s' not found", indexName)
 		}
 
 		tree, ok := indexBTree[key]
 		if !ok {
-			// chiave non indicizzata: risultato vuoto
+			// The key is not indexed: return an empty result
 			return make(map[uint32]struct{}), nil
 		}
 
 		switch op {
 		case "<":
-			// ascend dagli -inf e prendi fino a < numValue
+			// Ascend from -inf and take all values < numValue
 			tree.Ascend(BTreeItem{Value: math.Inf(-1)}, func(item BTreeItem) bool {
 				if item.Value >= numValue {
 					return false
@@ -1377,7 +1235,7 @@ func (s *DB) evaluateBooleanFilter(indexName string, filter string) (map[uint32]
 				return true
 			})
 		case ">":
-			// descend dal +inf e prendi > numValue
+			// Descend from +inf and take all values > numValue
 			tree.Descend(BTreeItem{Value: math.Inf(+1)}, func(item BTreeItem) bool {
 				if item.Value <= numValue {
 					return false
@@ -1398,16 +1256,16 @@ func (s *DB) evaluateBooleanFilter(indexName string, filter string) (map[uint32]
 		return idSet, nil
 
 	default:
-		return nil, fmt.Errorf("operatore '%s' non supportato", op)
+		return nil, fmt.Errorf("operator '%s' not supported", op)
 	}
 }
 
-// intersectSets calcola l'intersezione dei due set (a ∩ b).
+// intersectSets calculates the intersection of two sets (a ∩ b)
 func intersectSets(a, b map[uint32]struct{}) map[uint32]struct{} {
 	if a == nil || b == nil {
 		return make(map[uint32]struct{})
 	}
-	// itera sul più piccolo per efficienza
+	// Iterate over the smaller set for efficiency
 	if len(a) > len(b) {
 		a, b = b, a
 	}
@@ -1420,7 +1278,7 @@ func intersectSets(a, b map[uint32]struct{}) map[uint32]struct{} {
 	return res
 }
 
-// unionSets calcola l'unione dei due set (a ∪ b).
+// unionSets calculates the union of two sets (a ∪ b)
 func unionSets(a, b map[uint32]struct{}) map[uint32]struct{} {
 	res := make(map[uint32]struct{}, len(a)+len(b))
 	for id := range a {
@@ -1432,52 +1290,8 @@ func unionSets(a, b map[uint32]struct{}) map[uint32]struct{} {
 	return res
 }
 
-/*
-// interroga l'indice invertito e restituisce un set di ID dei nodi che corrispondono al filtro.
-// al momento supporta solo il singolo filtro '=', poi si aggiungeranno altri
-func (s *Store) FindIDsByFilter(indexName string, filter string) (map[uint32]struct{}, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	// 1) parsa il filtro '='
-	parts := strings.SplitN(filter, "=", 2)
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("formato filtro invalido, usare 'chiave=valore'")
-	}
-	key := strings.TrimSpace(parts[0])
-	value := strings.TrimSpace(parts[1])
-
-	// 2) controlla l'esistenza dell'indice
-	indexMetadata, ok := s.invertedIndex[indexName]
-	if !ok {
-		return nil, fmt.Errorf("indice '%s' non trovato", indexName)
-	}
-
-	// 3) cerca nell'indice invertito
-	keyMetadata, ok := indexMetadata[key]
-	if !ok {
-		// se non trova la chiave allora nessun risultato
-		return make(map[uint32]struct{}), nil
-	}
-
-	idSet, ok := keyMetadata[value]
-	if !ok {
-		// se non trova il risultato allora nessun risultato
-		return make(map[uint32]struct{}), nil
-	}
-
-	// 4) restituisce una copia del set per sicurezza
-	idSetCopy := make(map[uint32]struct{}, len(idSet))
-	for id := range idSet {
-		idSetCopy[id] = struct{}{}
-	}
-
-	return idSetCopy, nil
-
-}
-*/
-
-// funzione Less per BTree items. Ordinerà gli item sul value float64
+// btreeItemLess is the less function for BTree items. It sorts items by their float64 value,
+// using NodeID as a tie-breaker to ensure distinct items
 func btreeItemLess(a, b BTreeItem) bool {
 	if a.Value < b.Value {
 		return true
@@ -1485,49 +1299,43 @@ func btreeItemLess(a, b BTreeItem) bool {
 	if a.Value > b.Value {
 		return false
 	}
-	// se il valore è uguale, ordina tramite NodeID per mantenere gli items distinti
+	// If values are equal, sort by NodeID to keep items distinct.
 	return a.NodeID < b.NodeID
 }
 
-// RLock acquisisce un read lock sullo store.
+// RLock acquires a read lock on the store.
 func (s *DB) RLock() {
 	s.mu.RLock()
 }
 
-// RUnlock rilascia il read lock.
+// RUnlock releases the read lock.
 func (s *DB) RUnlock() {
 	s.mu.RUnlock()
 }
 
-// Lock acquisisce un write lock sullo store.
+// Lock acquires a write lock on the store.
 func (s *DB) Lock() {
 	s.mu.Lock()
 }
 
-// Unlock rilascia il write lock.
+// Unlock releases the write lock.
 func (s *DB) Unlock() {
 	s.mu.Unlock()
 }
 
-// Parametri standard per l'algoritmo BM25
+// Standard parameters for the BM25 algorithm.
 const (
 	bm25k1 = 1.2
 	bm25b  = 0.75
 )
 
-/*
-type types.SearchResult struct {
-	DocID uint32
-	Score float64
-}
-*/
-
-// helper esegue una ricerca sull'indice testuale
+// FindIDsByTextSearch performs a search on the text index for a given query.
+// It uses the BM25 ranking algorithm to score and sort documents based on relevance.
 func (db *DB) FindIDsByTextSearch(indexName, fieldName, queryText string) ([]types.SearchResult, error) {
 	// Ottieni l'analizzatore corretto per questo indice
 	idx, ok := db.vectorIndexes[indexName]
 	if !ok {
-		return nil, fmt.Errorf("indice '%s' non trovato", indexName)
+		return nil, fmt.Errorf("index '%s' not found", indexName)
 	}
 
 	hnswIndex, _ := idx.(*hnsw.Index)
@@ -1538,21 +1346,21 @@ func (db *DB) FindIDsByTextSearch(indexName, fieldName, queryText string) ([]typ
 	case "italian":
 		analyzer = textanalyzer.NewItalianStemmer()
 	default:
-		return nil, fmt.Errorf("l'indice '%s' non ha un analizzatore di testo configurato", indexName)
+		return nil, fmt.Errorf("index '%s' does not have a configured text analyzer", indexName)
 	}
 
-	// 1. Analizza la query per ottenere i token da cercare
+	// 1. Analyze the query to get the search tokens.
 	queryTokens := analyzer.Analyze(queryText)
 	if len(queryTokens) == 0 {
-		return nil, nil // Query vuota, nessun risultato
+		return nil, nil // Empty query, no results.
 	}
 
 	stats, ok := db.textIndexStats[indexName][fieldName]
 	if !ok || stats.TotalDocs == 0 {
-		return nil, nil // Nessun documento indicizzato per questo campo
+		return nil, nil // No documents indexed for this field
 	}
 
-	// 1. Raccogli tutti i documenti candidati (unione delle posting list)
+	// 2. Gather all candidate documents (union of posting lists)
 	candidateDocs := make(map[uint32]map[string]int) // map[docID] -> map[token] -> termFrequency
 	// postingLists := make(map[string]PostingList) // Mappa di token -> lista
 	textIndexForField, ok := db.textIndex[indexName][fieldName]
@@ -1572,84 +1380,27 @@ func (db *DB) FindIDsByTextSearch(indexName, fieldName, queryText string) ([]typ
 		}
 	}
 
-	// 2. Calcola lo score BM25 per ogni documento candidato
+	// 3. Calculate the BM25 score for each candidate document.
 	results := make([]types.SearchResult, 0, len(candidateDocs))
 	for docID, termFreqs := range candidateDocs {
 		score := 0.0
 		for _, token := range queryTokens {
-			// Calcola il punteggio di questo token per questo documento
-			tf := termFreqs[token] // Sarà 0 se il token non è nel documento
+			// Calculate the score of this token for this document.
+			tf := termFreqs[token] // Will be 0 if the token is not in the document.
 			score += db.calculateBM25TermScore(token, docID, tf, stats, textIndexForField)
 		}
 		results = append(results, types.SearchResult{DocID: docID, Score: score})
 	}
 
-	// 3. Ordina i risultati per score decrescente
+	// 4. Sort the results by score in descending order
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Score > results[j].Score
 	})
 
 	return results, nil
-
-	/*
-		// 2. Recupera le "posting list" per ogni token
-		var postingLists [][]uint32
-		textIndexForField, ok := db.textIndex[indexName][fieldName]
-		if !ok {
-			log.Printf("[DEBUG TEXT SEARCH] Campo '%s' non trovato nell'indice testuale.", fieldName)
-			return make(map[uint32]struct{}), nil // Il campo non è mai stato indicizzato
-		}
-
-		for _, token := range queryTokens {
-			list, found := textIndexForField[token]
-			if !found {
-				log.Printf("[DEBUG TEXT SEARCH] Token '%s' non trovato nell'indice.", token)
-				// Se anche solo un token non viene trovato, la ricerca AND fallisce.
-				return make(map[uint32]struct{}), nil
-			}
-			log.Printf("[DEBUG TEXT SEARCH] Trovata posting list per il token '%s': %v", token, list)
-			postingLists = append(postingLists, list)
-		}
-
-		// 3. Calcola l'intersezione delle posting list
-		// (Questa è l'operazione chiave per la ricerca "boolean AND")
-		if len(postingLists) == 1 {
-			// Se c'è un solo token, non serve l'intersezione
-			resultSet := make(map[uint32]struct{})
-			for _, id := range postingLists[0] {
-				resultSet[id] = struct{}{}
-			}
-			return resultSet, nil
-		}
-
-		// Ordina le liste per lunghezza per un'intersezione più efficiente
-		sort.Slice(postingLists, func(i, j int) bool {
-			return len(postingLists[i]) < len(postingLists[j])
-		})
-
-		// Inizia l'intersezione
-		resultSet := make(map[uint32]struct{})
-		for _, id := range postingLists[0] {
-			resultSet[id] = struct{}{}
-		}
-
-		for _, list := range postingLists[1:] {
-			intersection := make(map[uint32]struct{})
-			for _, id := range list {
-				if _, ok := resultSet[id]; ok {
-					intersection[id] = struct{}{}
-				}
-			}
-			resultSet = intersection
-			if len(resultSet) == 0 {
-				break
-			} // Ottimizzazione
-		}
-
-		return resultSet, nil
-	*/
 }
 
+// calculateBM25TermScore computes the BM25 relevance score for a single term within a single document.
 func (db *DB) calculateBM25TermScore(token string, docID uint32, tf int, stats *TextIndexStats, textIndexForField map[string]PostingList) float64 {
 	// list, ok := postingLists[token]
 	list, ok := textIndexForField[token]
@@ -1661,11 +1412,11 @@ func (db *DB) calculateBM25TermScore(token string, docID uint32, tf int, stats *
 		return 0.0
 	}
 
-	// Calcola IDF (Inverse Document Frequency)
+	// Calculate IDF (Inverse Document Frequency).
 	docFreq := len(list)
 	idf := math.Log(1 + (float64(stats.TotalDocs)-float64(docFreq)+0.5)/(float64(docFreq)+0.5))
 
-	// Calcola il punteggio del termine
+	// Calculate the term score component.
 	docLen := float64(stats.DocLengths[docID])
 	avgLen := stats.AvgFieldLength
 

@@ -1,5 +1,12 @@
 //go:build rust
 
+// Package distance provides hardware-accelerated functions for calculating vector distances using a Rust core via CGO.
+//
+// This implementation is enabled with the 'rust' build tag. It leverages Rust's performance
+// and SIMD capabilities for significant speed improvements over the pure Go version,
+// especially for float16 and long int8/float32 vectors.
+//
+// Critical dependency: This package requires a pre-compiled Rust static library (`libkektordb_compute.a`).
 package distance
 
 /*
@@ -24,8 +31,11 @@ func init() {
 	log.Printf("  - Cosine (int8):       Smart Dispatch (Go/Rust)")
 }
 
-// --- Tipi Pubblici ---
-// Ridefiniamo questi tipi qui perché il file distance_go.go è escluso dalla build.
+// --- Public Types ---
+// These types are redefined here because the distance_go.go file is excluded
+// when the 'rust' build tag is active.
+
+// DistanceMetric defines the type of distance calculation to perform.
 type DistanceMetric string
 type PrecisionType string
 
@@ -37,17 +47,22 @@ const (
 	Int8      PrecisionType  = "int8"
 )
 
+// DistanceFuncF32 is a function type for distance calculations on float32 vectors.
 type DistanceFuncF32 func(v1, v2 []float32) (float64, error)
+
+// DistanceFuncF16 is a function type for distance calculations on float16 (uint16) vectors.
 type DistanceFuncF16 func(v1, v2 []uint16) (float64, error)
+
+// DistanceFuncI8 is a function type for distance calculations on int8 vectors.
 type DistanceFuncI8 func(v1, v2 []int8) (int32, error)
 
-// --- Wrapper Go che chiamano il codice Rust ---
+// --- Go Wrappers for Rust Functions ---
 
 // -- Float32 --
 func squaredEuclideanRustF32(v1, v2 []float32) (float64, error) {
 	n := len(v1)
 	if n != len(v2) {
-		return 0, errors.New("vettori di lunghezza diversa")
+		return 0, errors.New("vectors must have the same length")
 	}
 	if n == 0 {
 		return 0, nil
@@ -64,7 +79,7 @@ func squaredEuclideanRustF32(v1, v2 []float32) (float64, error) {
 func dotProductRustF32(v1, v2 []float32) (float64, error) {
 	n := len(v1)
 	if n != len(v2) {
-		return 0, errors.New("vettori di lunghezza diversa")
+		return 0, errors.New("vectors must have the same length")
 	}
 	if n == 0 {
 		return 0, nil
@@ -82,7 +97,7 @@ func dotProductRustF32(v1, v2 []float32) (float64, error) {
 func squaredEuclideanRustF16(v1, v2 []uint16) (float64, error) {
 	n := len(v1)
 	if n != len(v2) {
-		return 0, errors.New("vettori di lunghezza diversa")
+		return 0, errors.New("vectors must have the same length")
 	}
 	if n == 0 {
 		return 0, nil
@@ -100,7 +115,7 @@ func squaredEuclideanRustF16(v1, v2 []uint16) (float64, error) {
 func dotProductRustI8(v1, v2 []int8) (int32, error) {
 	n := len(v1)
 	if n != len(v2) {
-		return 0, errors.New("vettori di lunghezza diversa")
+		return 0, errors.New("vectors must have the same length")
 	}
 	if n == 0 {
 		return 0, nil
@@ -114,7 +129,7 @@ func dotProductRustI8(v1, v2 []int8) (int32, error) {
 	return int32(res), nil
 }
 
-// --- Implementazioni Go/Gonum necessarie per il dispatch intelligente ---
+// --- Go/Gonum Implementations for Smart Dispatch ---
 var gonumEngine = gonum.Implementation{}
 
 func squaredEuclideanDistanceGo(v1, v2 []float32) (float64, error) {
@@ -132,7 +147,7 @@ func squaredEuclideanDistanceGo(v1, v2 []float32) (float64, error) {
 
 func dotProductAsDistanceGonum(v1, v2 []float32) (float64, error) {
 	if len(v1) != len(v2) {
-		return 0, errors.New("vettori di lunghezza diversa")
+		return 0, errors.New("vectors must have the same length")
 	}
 	dot := gonumEngine.Sdot(len(v1), v1, 1, v2, 1)
 	return 1.0 - float64(dot), nil
@@ -140,7 +155,7 @@ func dotProductAsDistanceGonum(v1, v2 []float32) (float64, error) {
 
 func dotProductGoInt8(v1, v2 []int8) (int32, error) {
 	if len(v1) != len(v2) {
-		return 0, errors.New("i vettori int8 devono avere la stessa lunghezza")
+		return 0, errors.New("int8 vectors must have the same length")
 	}
 	var sum int32
 	for i := range v1 {
@@ -149,61 +164,69 @@ func dotProductGoInt8(v1, v2 []int8) (int32, error) {
 	return sum, nil
 }
 
-// --- Funzioni "Smart Dispatch" ---
+// --- Smart Dispatch Functions ---
 
+// squaredEuclideanSmartF32 chooses the best implementation for float32 squared Euclidean distance.
+// Based on benchmarks, the Rust implementation is faster for longer vectors.
 func squaredEuclideanSmartF32(v1, v2 []float32) (float64, error) {
-	// Basato sui benchmark, Rust è migliore per vettori lunghi
 	if len(v1) >= 256 {
 		return squaredEuclideanRustF32(v1, v2)
 	}
 	return squaredEuclideanDistanceGo(v1, v2)
 }
 
+// dotProductSmartI8 chooses the best implementation for int8 dot product.
+// Based on benchmarks, the Rust implementation is faster for longer vectors.
 func dotProductSmartI8(v1, v2 []int8) (int32, error) {
-	// Basato sui benchmark, Rust è migliore per vettori lunghi
 	if len(v1) >= 256 {
 		return dotProductRustI8(v1, v2)
 	}
 	return dotProductGoInt8(v1, v2)
 }
 
-// --- Cataloghi e Dispatcher (Versione Rust) ---
+// --- Function Catalogs and Dispatcher (Rust Version) ---
 
 var float32Funcs = map[DistanceMetric]DistanceFuncF32{
-	Euclidean: squaredEuclideanSmartF32,  // usa la funzione smart per usare quella più conveniente
-	Cosine:    dotProductAsDistanceGonum, // gonum sempre meglio
+	Euclidean: squaredEuclideanSmartF32,  // Uses the smart dispatch function to select the most performant implementation.
+	Cosine:    dotProductAsDistanceGonum, // Gonum is consistently faster for this operation.
 }
 
 var float16Funcs = map[DistanceMetric]DistanceFuncF16{
-	Euclidean: squaredEuclideanRustF16, // rust sempre meglio
+	Euclidean: squaredEuclideanRustF16, // The Rust implementation is consistently faster for this operation.
 }
 
 var int8Funcs = map[DistanceMetric]DistanceFuncI8{
-	Cosine: dotProductSmartI8, // sceglie la più conveniente
+	Cosine: dotProductSmartI8, // Selects the most performant implementation.
 }
 
-// --- Getters Pubblici (identici a quelli in distance_go.go) ---
+// --- Public Getters (identical to the pure Go version) ---
 
+// GetFloat32Func returns the appropriate distance calculation function for a given
+// metric and float32 precision. It returns an error if the metric is not supported.
 func GetFloat32Func(metric DistanceMetric) (DistanceFuncF32, error) {
 	fn, ok := float32Funcs[metric]
 	if !ok {
-		return nil, fmt.Errorf("metrica '%s' non supportata per precisione float32", metric)
+		return nil, fmt.Errorf("metric '%s' not supported for float32 precision", metric)
 	}
 	return fn, nil
 }
 
+// GetFloat16Func returns the appropriate distance calculation function for a given
+// metric and float16 precision. It returns an error if the metric is not supported.
 func GetFloat16Func(metric DistanceMetric) (DistanceFuncF16, error) {
 	fn, ok := float16Funcs[metric]
 	if !ok {
-		return nil, fmt.Errorf("metrica '%s' non supportata per precisione float16", metric)
+		return nil, fmt.Errorf("metric '%s' not supported for float16 precision", metric)
 	}
 	return fn, nil
 }
 
+// GetInt8Func returns the appropriate distance calculation function for a given
+// metric and int8 precision. It returns an error if the metric is not supported.
 func GetInt8Func(metric DistanceMetric) (DistanceFuncI8, error) {
 	fn, ok := int8Funcs[metric]
 	if !ok {
-		return nil, fmt.Errorf("metrica '%s' non supportata per precisione int8", metric)
+		return nil, fmt.Errorf("metric '%s' not supported for int8 precision", metric)
 	}
 	return fn, nil
 }

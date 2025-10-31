@@ -1,20 +1,28 @@
+// Package types defines shared data structures used across the KektorDB application.
+//
+// This includes common types for search results, internal candidates for algorithms like HNSW,
+// and data transfer objects (DTOs) for API responses, such as IndexInfo.
+
 package types
 
-import "github.com/sanonone/kektordb/pkg/core/distance" // Importa distance
+import "github.com/sanonone/kektordb/pkg/core/distance"
 
-// SearchResult rappresenta un singolo risultato da una query, con il suo punteggio.
+// SearchResult represents a single result from a query, including its score.
+// This is typically used as a public-facing or cross-package result type.
 type SearchResult struct {
 	DocID uint32
 	Score float64
 }
 
-// Candidate è la struct interna di HNSW per i risultati, con ID interno e punteggio.
+// Candidate is the internal struct used by the HNSW algorithm to manage potential
+// results, containing an internal ID and a distance score.
 type Candidate struct {
 	Id       uint32
 	Distance float64
 }
 
-// NodeData è una struct per trasportare i dati di un nodo fuori dal package HNSW.
+// NodeData is a data transfer object (DTO) used to transport the data of a single
+// node out of the HNSW package in a structured way.
 type NodeData struct {
 	ID         string
 	InternalID uint32
@@ -22,7 +30,8 @@ type NodeData struct {
 	Metadata   map[string]interface{}
 }
 
-// IndexInfo modella le informazioni di un indice per l'API.
+// IndexInfo models the public-facing information about a vector index,
+// typically for use in API responses.
 type IndexInfo struct {
 	Name           string                  `json:"name"`
 	Metric         distance.DistanceMetric `json:"metric"`
