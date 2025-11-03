@@ -157,7 +157,7 @@ class KektorDBClient:
 
     # --- Vector Index Management Methods ---
 
-    def vcreate(self, index_name: str, metric: str = "euclidean", precision: str = "float32", m: int = 0, ef_construction: int = 0) -> None:
+    def vcreate(self, index_name: str, metric: str = "euclidean", precision: str = "float32", m: int = 0, ef_construction: int = 0, text_language: str = "") -> None:
         """
         Creates a new vector index.
 
@@ -175,6 +175,8 @@ class KektorDBClient:
         payload = {"index_name": index_name, "metric": metric, "precision": precision}
         if m > 0: payload["m"] = m
         if ef_construction > 0: payload["ef_construction"] = ef_construction
+        if text_language:
+            payload["text_language"] = text_language
         self._request("POST", "/vector/actions/create", json=payload)
 
     def list_indexes(self) -> List[Dict[str, Any]]:
@@ -322,7 +324,7 @@ class KektorDBClient:
         payload = {
             "index_name": index_name,
             "k": k,
-            "query_vector": query_vector
+            "query_vector": query_vector,
         }
         if filter_str:
             payload["filter"] = filter_str

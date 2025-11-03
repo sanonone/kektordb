@@ -1,50 +1,55 @@
-# KektorDB
+# KektorDB 
+
+<p align="center">
+  <img src="docs/images/logo.png" alt="KektorDB Logo" width="250">
+</p>
 
 [![PyPI version](https://badge.fury.io/py/kektordb-client.svg)](https://badge.fury.io/py/kektordb-client)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-English | [Italiano](README.it.md)
+[English](README.md) | [Italiano](README.it.md)
 
-KektorDB is a high-performance, in-memory vector database built from scratch in Go. It provides an HNSW-based engine for approximate nearest neighbor search, advanced metadata filtering, and modern access via a REST API.
+**KektorDB is a high-performance, in-memory vector/Key-Value database built from scratch in Go. It provides a powerful HNSW engine for vector search, a hybrid search system with BM25 ranking, advanced metadata filtering, and a modern REST API.**
 
 ### Motivation and Philosophy
 
-This project began as a personal learning endeavor to dive deep into complex software engineering topics, from low-level performance optimization to database architecture. While the primary goal was learning, the project has been developed with the rigor of a professional tool.
+This project began as a personal learning endeavor to dive deep into complex software engineering topics. The goal was to build a robust, self-contained, and dependency-conscious search engine, embodying the **"SQLite of Vector DBs"** philosophy.
 
-The architectural mission is to be the **"SQLite of Vector DBs"**: a powerful, self-contained, and dependency-free search engine. It is available both as a standalone server and as an embeddable Go library (`pkg/core`), making it perfect for Go developers, AI/ML applications, and anyone needing fast vector search without the complexity of a large-scale database setup.
+KektorDB is available both as a standalone server and as an embeddable Go library (`pkg/core`), making it a flexible tool for Go developers and AI/ML applications that require fast, local vector search capabilities.
 
 ---
 
-### Core Features
+### ✨ Core Features
 
-*   **Custom HNSW Engine:** A from-scratch implementation of the HNSW algorithm for high-recall ANN search, featuring an advanced neighbor selection heuristic for superior graph quality.
+*   **Custom HNSW Engine:** A from-scratch implementation of the HNSW algorithm with an advanced neighbor selection heuristic for high-quality graphs.
 *   **Hybrid Search Engine:**
-    *   **Full-Text Search:** A built-in text analysis engine (tokenizer, stemmer) and inverted index powers keyword search.
+    *   **Full-Text Search:** A built-in text analysis engine (supporting English and Italian) and inverted index for keyword search.
     *   **BM25 Ranking:** Text search results are ranked by relevance using the industry-standard BM25 algorithm.
-    *   **Score Fusion:** Hybrid queries combine vector similarity and text relevance scores using a configurable `alpha` parameter for a single, unified ranking.
-*   **Advanced Metadata Filtering:** High-performance pre-filtering on metadata. Supports equality (`tag="cat"`), range (`price<100`), and compound (`AND`/`OR`) filters.
-*   **Multiple Distance Metrics & Precision:**
-    *   Supports **Euclidean (L2)** and **Cosine Similarity**, configurable per index.
-    *   **Float16 Compression:** Compresses Euclidean indexes by **50%**.
-    *   **Int8 Quantization:** Quantizes Cosine indexes by **75%**.
-*   **Asynchronous, High-Performance API:**
-    *   A clean, consistent **REST API** using JSON.
-    *   **Batch Operations:** Efficiently add and retrieve thousands of vectors in single requests.
-    *   **Async Task Management:** Long-running operations like index compression are handled asynchronously, with a polling endpoint to check task status.
-*   **Reliable Persistence:** A hybrid **AOF + Snapshot** system ensures durability and provides near-instantaneous restarts. Features automatic, configurable background maintenance.
-*   **Ecosystem:** Official clients for **Python** and **Go**.
-
+    *   **Score Fusion:** Hybrid queries combine vector and text scores using a configurable `alpha` parameter for a unified ranking.
+*   **Automatic Embedding Synchronization (Vectorizer):** A background service that monitors data sources (like filesystem directories), automatically generates embeddings via external APIs (like Ollama), and keeps the search index continuously up-to-date.
+*   **Advanced Metadata Filtering:** High-performance pre-filtering on metadata. Supports equality, range (`price<100`), and compound (`AND`/`OR`) filters.
+*   **Vector Compression & Quantization:**
+    *   **Float16:** Compresses Euclidean indexes by **50%**.
+    *   **Int8:** Quantizes Cosine indexes by **75%**.
+*   **High-Performance API & Ecosystem:**
+    *   A clean REST API with batch operations, async task management, and dynamic search tuning.
+    *   Official clients for **Python** and **Go**.
+*   **Reliable Persistence:** A hybrid **AOF + Snapshot** system with automatic background maintenance ensures durability and near-instantaneous restarts.
+*   **Dual Compute Engine (Go-native vs. Rust-accelerated):**
+    *   **Default Build:** A pure Go version that leverages `gonum` and `avo` for SIMD-acceleration, ensuring maximum portability and simple compilation (`go build`).
+    *   **Performance Build:** An optional build mode (`-tags rust`) that links a Rust library via CGO for highly optimized SIMD distance calculations.
 
 ---
 
 ### Performance Benchmarks
 
-Benchmarks were performed on a `12th Gen Intel(R) Core(TM) i5-12500` CPU.
+Benchmarks were performed on a `12th Gen Intel(R) Core(TM) i5-12500` CPU. KektorDB can be compiled in two modes: a **Pure Go** version for maximum portability and a **Rust-accelerated** version (`-tags rust`) for maximum performance.
 
-#### End-to-End Search Performance
+#### End-to-End Search Performance (QPS & Recall)
 
-These benchmarks measure the complete system performance, including API overhead, on real-world datasets.
+These benchmarks measure the complete system performance (Queries Per Second) and accuracy (Recall@10) on real-world datasets.
 
+**Go-Pure Build (`gonum`-accelerated)**
 | Dataset / Configuration                | Vectors     | Dimensions | Recall@10 | QPS (Queries/sec) |
 |----------------------------------------|-------------|------------|-----------|-------------------|
 | SIFT / Euclidean `float32`             | 1,000,000   | 128        | **0.9960**  | `~344`            |
@@ -52,25 +57,43 @@ These benchmarks measure the complete system performance, including API overhead
 | GloVe / Cosine `float32`               | 400,000     | 100        | **0.9650**  | `~279`            |
 | GloVe / Cosine `int8` (Quantized)      | 400,000     | 100        | **0.9330**  | `~147`            |
 
+**Rust-Accelerated Build (`-tags rust`)**
+| Dataset / Configuration                | Vectors     | Dimensions | Recall@10 | QPS (Queries/sec) |
+|----------------------------------------|-------------|------------|-----------|-------------------|
+| SIFT / Euclidean `float32`             | 1,000,000   | 128        | **0.9960**  | `~344`            |
+| SIFT / Euclidean `float16` (Compressed)  | 1,000,000   | 128        | **0.9960**  | `~298`            |
+| GloVe / Cosine `float32`               | 400,000     | 100        | **0.9700**  | `~285`            |
+| GloVe / Cosine `int8` (Quantized)      | 400,000     | 100        | **0.9550**  | `~151`            |
+
 *Parameters: `M=16`, `efConstruction=200`, `efSearch=100` (`efSearch=200` for `int8`).*
 
-#### Low-Level Distance Calculation Performance
+#### Low-Level Distance Calculation Performance (Time per Operation)
 
-These benchmarks measure the speed of the core distance functions for vectors of 128 dimensions.
+These benchmarks measure the raw speed of the core distance functions across different vector dimensions. Lower is better.
 
-| Function                          | Implementation         | Time per Operation |
-|-----------------------------------|------------------------|--------------------|
-| **Euclidean (`float32`)**         | Pure Go (Compiler Opt.)| `~27 ns/op`        |
-| **Cosine (`float32`)**            | `gonum` (SIMD)         | `~10 ns/op`        |
-| **Euclidean (`float16`)**         | Pure Go (Fallback)     | `~320 ns/op`       |
-| **Euclidean (`float16`)**         | Avo     (SIMD)         | `~118 ns/op`       |
-| **Cosine (`int8`)**               | Pure Go (Fallback)     | `~27 ns/op`        |
+**Go-Pure Build (`gonum & avo`-accelerated)** `(ns/op)`
+| Dimensions                | 64D   | 128D  | 256D  | 512D  | 1024D | 1536D |
+|---------------------------|-------|-------|-------|-------|-------|-------|
+| **Euclidean (`float32`)** | 18.16 | 41.96 | 95.69 | 209.8 | 437.0 | 662.3 |
+| **Cosine (`float32` `gonum`)**    | 5.981  | 8.465  | 14.13 | 27.74 | 61.19 | 89.89 |
+| **Euclidean (`float16` `avo`)** | 109.5 | 117.6 | 138.7 | 172.7  | 250.7  | 314.5  |
+| **Cosine (`int8`)**       | 22.72 | 57.09 | 95.08 | 178.3 | 336.8 | -     |
 
-*(Note: The performance for compressed/quantized searches (`float16`/`int8`) is currently limited by the pure Go fallback for distance calculations. A key area for future improvement is replacing these with SIMD-accelerated versions.)*
+**Rust-Accelerated Build (`-tags rust`)** `(ns/op)`
+| Dimensions                | 64D   | 128D  | 256D  | 512D  | 1024D | 1536D |
+|---------------------------|-------|-------|-------|-------|-------|-------|
+| **Euclidean (`float32`)** | 18.37 | 43.69 | 61.55 | 104.0 | 168.9 | 242.9 |
+| **Cosine (`float32`)**    | 5.932 | 10.24 | 14.10 | 28.20 | 53.88 | 82.73 |
+| **Euclidean (`float16`)** | 51.63 | 54.01 | 68.00 | 98.57 | 185.8 | 254.3 |
+| **Cosine (`int8`)**       | 21.13 | 47.59 | 46.81 | 50.40 | 65.39 | -     |
+
+*(Note: The "Smart Dispatch" logic in the Rust-accelerated build automatically selects the best implementation—Go, Gonum, or Rust—for each operation based on vector dimensions. The pure Go `float16` and `int8` versions serve as portable fallbacks.)*
 
 ---
 
 ### 🚀 Quick Start (Python)
+
+This example demonstrates a complete workflow: creating multiple indexes, batch-inserting data with metadata, and performing a powerful hybrid search.
 
 1.  **Run the KektorDB Server:**
     ```bash
@@ -78,47 +101,86 @@ These benchmarks measure the speed of the core distance functions for vectors of
     ./kektordb -http-addr=":9091"
     ```
 
-2.  **Install the Python Client:**
+2.  **Install the Python Client and Dependencies:**
     ```bash
-    pip install kektordb-client
+    pip install kektordb-client sentence-transformers
     ```
 
-3.  **Use KektorDB:**
-    ```python
-    from kektordb_client import KektorDBClient
+3.  **Use KektorDB in your Python script:**
 
+    ```python
+    from kektordb_client import KektorDBClient, APIError
+    from sentence_transformers import SentenceTransformer
+
+    # 1. Initialize client and embedding model
     client = KektorDBClient(port=9091)
-    index_name = "knowledge_base"
-    
+    model = SentenceTransformer('all-MiniLM-L6-v2') 
+    index_name = "quickstart_index"
+
+    # 2. Create a fresh index for the demo
+    try:
+        client.delete_index(index_name)
+        print(f"Removed old index '{index_name}'.")
+    except APIError:
+        pass # Index didn't exist, which is fine.
+
     client.vcreate(
         index_name, 
         metric="cosine", 
-        precision="int8", 
-        text_language="english" # Enable text indexing
+        text_language="english"
     )
+    print(f"Index '{index_name}' created.")
+    
+    # 3. Prepare and index some documents in a single batch
+    documents = [
+        {"id": "doc_go", "text": "Go is a language designed at Google for efficient software.", "year": 2012},
+        {"id": "doc_rust", "text": "Rust is a language focused on safety and concurrency.", "year": 2015},
+        {"id": "doc_python", "text": "Python is a high-level, general-purpose programming language. Its design philosophy emphasizes code readability.", "year": 1991},
+    ]
+    
+    batch_payload = []
+    for doc in documents:
+        batch_payload.append({
+            "id": doc["id"],
+            "vector": model.encode(doc["text"]).tolist(),
+            "metadata": {"content": doc["text"], "year": doc["year"]}
+        })
+    client.vadd_batch(index_name, batch_payload)
+    print(f"{len(batch_payload)} documents indexed.")
+    
+    
+    # 4. Perform a hybrid search
+    query = "a safe and concurrent language"
+    print(f"\nSearching for: '{query}'")
 
-    client.vadd(
-        index_name=index_name,
-        item_id="doc1",
-        vector=[0.1, 0.8, 0.3],
-        metadata={"content": "KektorDB supports hybrid search.", "year": 2025}
-    )
-
-    # Perform a hybrid search
     results = client.vsearch(
         index_name=index_name,
         k=1,
-        query_vector=[0.15, 0.75, 0.35],
-        filter_str='CONTAINS(content, "hybrid") AND year>2023',
-        alpha=0.5 # Balance between vector and text relevance
+        query_vector=model.encode(query).tolist(),
+        # Find documents containing "language" but only those after 2010
+        filter_str='CONTAINS(content, "language") AND year > 2010',
+        alpha=0.7 # Give more weight to vector similarity
     )
 
     print(f"Found results: {results}")
+
+    # 5. Verify the result
+    if results and results[0] == "doc_rust":
+        print("\nQuick Start successful! The most relevant document was found correctly.")
+    else:
+        print("\nQuick Start failed. The expected document was not the top result.")
+
+    # 6. Retrieve the full data for the top result
+    if results:
+        top_result_data = client.vget(index_name, results[0])
+        print("\n--- Top Result Data ---")
+        print(f"ID: {top_result_data.get('id')}")
+        print(f"Metadata: {top_result_data.get('metadata')}")
+        print("-----------------------")
     ```
 
 ---
-
-### 📚 API Reference
+### API Reference
 
 #### Key-Value Store
 - `GET /kv/{key}`: Retrieves a value.
@@ -155,16 +217,34 @@ These benchmarks measure the speed of the core distance functions for vectors of
 - `GET /system/tasks/{id}`: Gets the status of an asynchronous task.
 - `GET /debug/pprof/*`: Exposes Go pprof profiling endpoints.
 
+---
+
+### Documentation
+
+For a complete guide to all features and API endpoints, please see the **[Full Documentation](https://github.com/sanonone/kektordb/blob/main/DOCUMENTATION.md)**.
 
 ---
 
 ### 🛣️ Roadmap & Future Work
 
-KektorDB is an ongoing project. The next steps will focus on:
+KektorDB is under active development. The roadmap is divided into near-term priorities for the next major release and long-term ambitions.
 
--   **Automatic Embedding Synchronization (Vectorizer):** Introducing a "vectorizer" feature inspired by tools like pgai. This will allow users to declaratively link source data to vector embeddings. KektorDB will automatically monitor for changes in the source (e.g., text files, database rows) and update the corresponding vectors in the background, ensuring the search index never becomes stale. This is a crucial feature for building robust, self-maintaining RAG (Retrieval-Augmented Generation) systems.
--   **Performance Optimizations:** Replace the pure Go fallbacks for `float16` and `int8` distance calculations with high-performance SIMD implementations (likely via `avo` or `cgo`).
--   **Mobile/Edge Deployment:** Exploring a build mode that compiles KektorDB as a shared library for integration with mobile frameworks like Flutter.
+#### **Near-Term Goals**
+
+These are the highest priority features and improvements planned for upcoming releases:
+
+*   **Enhanced KV Store:** Expanding the simple key-value store into a more feature-rich component with support for advanced data types and transactions.
+*   **gRPC API:** Introducing a gRPC interface alongside REST for high-performance, low-latency communication in microservice environments.
+*   **Stability and Hardening:** A development cycle dedicated to improving the overall robustness of the database. This will involve extensive testing, refining error handling, and ensuring transactional consistency for critical operations.
+
+#### **Long-Term Vision (Exploratory Ideas)**
+
+These are ambitious features that are being considered for the long-term evolution of the project.
+
+*   **Modular Architecture:** Refactoring the system to support a plugin-based architecture, allowing new features (like different index types or data sources) to be added as modules.
+*   **Performance Enhancements:** A focused effort to optimize the core engine.
+*   **On-Device & Embedded Strategy:** Investigating the compilation of KektorDB's core engine into a portable native library. The goal is to provide simple bindings for various mobile and edge ecosystems, allowing developers to embed a powerful, private, and offline-capable vector search engine directly into their applications.
+*   **Horizontal Scaling (Read Replicas):** Implementing a simple, primary-replica replication model. 
 
 ---
 

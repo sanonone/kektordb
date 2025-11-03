@@ -1,0 +1,250 @@
+# KektorDB 
+
+[![PyPI version](https://badge.fury.io/py/kektordb-client.svg)](https://badge.fury.io/py/kektordb-client)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
+[English](README.md) | [Italiano](README.it.md)
+
+**KektorDB is a high-performance, in-memory vector database built from scratch in Go. It provides a powerful HNSW engine for vector search, a hybrid search system with BM25 ranking, advanced metadata filtering, and a modern REST API.**
+
+### Motivation and Philosophy
+
+This project began as a personal learning endeavor to dive deep into complex software engineering topics. The goal was to build a robust, self-contained, and dependency-conscious search engine, embodying the **"SQLite of Vector DBs"** philosophy.
+
+KektorDB is available both as a standalone server and as an embeddable Go library (`pkg/core`), making it a flexible tool for Go developers and AI/ML applications that require fast, local vector search capabilities.
+
+---
+
+### ✨ Core Features
+
+*   **Custom HNSW Engine:** A from-scratch implementation of the HNSW algorithm with an advanced neighbor selection heuristic for high-quality graphs.
+*   **Hybrid Search Engine:**
+    *   **Full-Text Search:** A built-in text analysis engine (supporting English and Italian) and inverted index for keyword search.
+    *   **BM25 Ranking:** Text search results are ranked by relevance using the industry-standard BM25 algorithm.
+    *   **Score Fusion:** Hybrid queries combine vector and text scores using a configurable `alpha` parameter for a unified ranking.
+*   **Automatic Embedding Synchronization (Vectorizer):** A background service that monitors data sources (like filesystem directories), automatically generates embeddings via external APIs (like Ollama), and keeps the search index continuously up-to-date.
+*   **Advanced Metadata Filtering:** High-performance pre-filtering on metadata. Supports equality, range (`price<100`), and compound (`AND`/`OR`) filters.
+*   **Vector Compression & Quantization:**
+    *   **Float16:** Compresses Euclidean indexes by **50%**.
+    *   **Int8:** Quantizes Cosine indexes by **75%**.
+*   **High-Performance API & Ecosystem:**
+    *   A clean REST API with batch operations, async task management, and dynamic search tuning.
+    *   Official clients for **Python** and **Go**.
+*   **Reliable Persistence:** A hybrid **AOF + Snapshot** system with automatic background maintenance ensures durability and near-instantaneous restarts.
+*   **Dual Compute Engine (Go-native vs. Rust-accelerated):**
+    *   **Default Build:** A pure Go version that leverages `gonum` and `avo` for SIMD-acceleration, ensuring maximum portability and simple compilation (`go build`).
+    *   **Performance Build:** An optional build mode (`-tags rust`) that links a Rust library via CGO for highly optimized SIMD distance calculations.
+
+---
+
+### Performance Benchmarks
+
+Benchmarks were performed on a `12th Gen Intel(R) Core(TM) i5-12500` CPU. KektorDB can be compiled in two modes: a **Pure Go** version for maximum portability and a **Rust-accelerated** version (`-tags rust`) for maximum performance.
+
+#### End-to-End Search Performance (QPS & Recall)
+
+These benchmarks measure the complete system performance (Queries Per Second) and accuracy (Recall@10) on real-world datasets.
+
+**Go-Pure Build (`gonum`-accelerated)**
+| Dataset / Configuration                | Vectors     | Dimensions | Recall@10 | QPS (Queries/sec) |
+|----------------------------------------|-------------|------------|-----------|-------------------|
+| SIFT / Euclidean `float32`             | 1,000,000   | 128        | **0.9960**  | `~344`            |
+| SIFT / Euclidean `float16` (Compressed)  | 1,000,000   | 128        | **0.9910**  | `~266`            |
+| GloVe / Cosine `float32`               | 400,000     | 100        | **0.9650**  | `~279`            |
+| GloVe / Cosine `int8` (Quantized)      | 400,000     | 100        | **0.9330**  | `~147`            |
+
+**Rust-Accelerated Build (`-tags rust`)**
+| Dataset / Configuration                | Vectors     | Dimensions | Recall@10 | QPS (Queries/sec) |
+|----------------------------------------|-------------|------------|-----------|-------------------|
+| SIFT / Euclidean `float32`             | 1,000,000   | 128        | **0.9930**  | `~343`            |
+| SIFT / Euclidean `float16` (Compressed)  | 1,000,000   | 128        | **0.9960**  | `~298`            |
+| GloVe / Cosine `float32`               | 400,000     | 100        | **0.9700**  | `~285`            |
+| GloVe / Cosine `int8` (Quantized)      | 400,000     | 100        | **0.9550**  | `~151`            |
+
+*Parameters: `M=16`, `efConstruction=200`, `efSearch=100` (`efSearch=200` for `int8`).*
+
+#### Low-Level Distance Calculation Performance (Time per Operation)
+
+These benchmarks measure the raw speed of the core distance functions across different vector dimensions. Lower is better.
+
+**Go-Pure Build (`gonum & avo`-accelerated)** `(ns/op)`
+| Dimensions                | 64D   | 128D  | 256D  | 512D  | 1024D | 1536D |
+|---------------------------|-------|-------|-------|-------|-------|-------|
+| **Euclidean (`float32`)** | 18.16 | 41.96 | 95.69 | 209.8 | 437.0 | 662.3 |
+| **Cosine (`float32` `gonum`)**    | 5.981  | 8.465  | 14.13 | 27.74 | 61.19 | 89.89 |
+| **Euclidean (`float16` `avo`)** | 109.5 | 117.6 | 138.7 | 172.7  | 250.7  | 314.5  |
+| **Cosine (`int8`)**       | 22.72 | 57.09 | 95.08 | 178.3 | 336.8 | -     |
+
+**Rust-Accelerated Build (`-tags rust`)** `(ns/op)`
+| Dimensions                | 64D   | 128D  | 256D  | 512D  | 1024D | 1536D |
+|---------------------------|-------|-------|-------|-------|-------|-------|
+| **Euclidean (`float32`)** | 18.37 | 43.69 | 61.55 | 104.0 | 168.9 | 242.9 |
+| **Cosine (`float32`)**    | 5.932 | 10.24 | 14.10 | 28.20 | 53.88 | 82.73 |
+| **Euclidean (`float16`)** | 51.63 | 54.01 | 68.00 | 98.57 | 185.8 | 254.3 |
+| **Cosine (`int8`)**       | 21.13 | 47.59 | 46.81 | 50.40 | 65.39 | -     |
+
+*(Note: The "Smart Dispatch" logic in the Rust-accelerated build automatically selects the best implementation—Go, Gonum, or Rust—for each operation based on vector dimensions. The pure Go `float16` and `int8` versions serve as portable fallbacks.)*
+
+---
+
+### 🚀 Quick Start (Python)
+
+This example demonstrates a complete workflow: creating multiple indexes, batch-inserting data with metadata, and performing a powerful hybrid search.
+
+1.  **Run the KektorDB Server:**
+    ```bash
+    # Download the latest binary from the Releases page
+    ./kektordb -http-addr=":9091"
+    ```
+
+2.  **Install the Python Client and Dependencies:**
+    ```bash
+    pip install kektordb-client sentence-transformers
+    ```
+
+3.  **Use KektorDB in your Python script:**
+
+    ```python
+    from kektordb_client import KektorDBClient, APIError
+    from sentence_transformers import SentenceTransformer
+
+    # 1. Initialize client and embedding model
+    client = KektorDBClient(port=9091)
+    model = SentenceTransformer('all-MiniLM-L6-v2') 
+    index_name = "quickstart_index"
+
+    # 2. Create a fresh index for the demo
+    try:
+        client.delete_index(index_name)
+        print(f"Removed old index '{index_name}'.")
+    except APIError:
+        pass # Index didn't exist, which is fine.
+
+    client.vcreate(
+        index_name, 
+        metric="cosine", 
+        text_language="english"
+    )
+    print(f"Index '{index_name}' created.")
+    
+    # 3. Prepare and index some documents in a single batch
+    documents = [
+        {"id": "doc_go", "text": "Go is a language designed at Google for efficient software.", "year": 2012},
+        {"id": "doc_rust", "text": "Rust is a language focused on safety and concurrency.", "year": 2015},
+        {"id": "doc_python", "text": "Python is a high-level, general-purpose programming language. Its design philosophy emphasizes code readability.", "year": 1991},
+    ]
+    
+    batch_payload = []
+    for doc in documents:
+        batch_payload.append({
+            "id": doc["id"],
+            "vector": model.encode(doc["text"]).tolist(),
+            "metadata": {"content": doc["text"], "year": doc["year"]}
+        })
+    client.vadd_batch(index_name, batch_payload)
+    print(f"{len(batch_payload)} documents indexed.")
+    
+    
+    # 4. Perform a hybrid search
+    query = "a safe and concurrent language"
+    print(f"\nSearching for: '{query}'")
+
+    results = client.vsearch(
+        index_name=index_name,
+        k=1,
+        query_vector=model.encode(query).tolist(),
+        # Find documents containing "language" but only those after 2010
+        filter_str='CONTAINS(content, "language") AND year > 2010',
+        alpha=0.7 # Give more weight to vector similarity
+    )
+
+    print(f"Found results: {results}")
+
+    # 5. Verify the result
+    if results and results[0] == "doc_rust":
+        print("\nQuick Start successful! The most relevant document was found correctly.")
+    else:
+        print("\nQuick Start failed. The expected document was not the top result.")
+
+    # 6. Retrieve the full data for the top result
+    if results:
+        top_result_data = client.vget(index_name, results[0])
+        print("\n--- Top Result Data ---")
+        print(f"ID: {top_result_data.get('id')}")
+        print(f"Metadata: {top_result_data.get('metadata')}")
+        print("-----------------------")
+    ```
+
+---
+### API Reference
+
+#### Key-Value Store
+- `GET /kv/{key}`: Retrieves a value.
+- `POST /kv/{key}`: Sets a value. Body: `{"value": "..."}`.
+- `DELETE /kv/{key}`: Deletes a key.
+
+#### Index Management
+- `GET /vector/indexes`: Lists all indexes.
+- `GET /vector/indexes/{name}`: Gets detailed info for a single index.
+- `DELETE /vector/indexes/{name}`: Deletes an index.
+
+#### Vector Actions (RPC-Style)
+- `POST /vector/actions/create`: Creates a new vector index.
+  - Body: `{"index_name": "...", "metric": "...", "precision": "...", "text_language": "...", "m": ..., "ef_construction": ...}`
+- `POST /vector/actions/add`: Adds a single vector.
+  - Body: `{"index_name": "...", "id": "...", "vector": [...], "metadata": {...}}`
+- `POST /vector/actions/add-batch`: Adds multiple vectors.
+  - Body: `{"index_name": "...", "vectors": [{"id": ..., "vector": ...}, ...]}`
+- `POST /vector/actions/search`: Performs a hybrid vector search.
+  - Body: `{"index_name": "...", "k": ..., "query_vector": [...], "filter": "...", "ef_search": ..., "alpha": ...}`
+- `POST /vector/actions/delete_vector`: Deletes a single vector.
+  - Body: `{"index_name": "...", "id": "..."}`
+- `POST /vector/actions/get-vectors`: Retrieves data for multiple vectors by ID.
+  - Body: `{"index_name": "...", "ids": ["...", "..."]}`
+- `POST /vector/actions/compress`: Asynchronously compresses an index.
+  - Body: `{"index_name": "...", "precision": "..."}`
+
+#### Data Retrieval
+- `GET /vector/indexes/{name}/vectors/{id}`: Retrieves data for a single vector.
+
+#### System
+- `POST /system/save`: Triggers a database snapshot.
+- `POST /system/aof-rewrite`: Triggers an asynchronous AOF compaction.
+- `GET /system/tasks/{id}`: Gets the status of an asynchronous task.
+- `GET /debug/pprof/*`: Exposes Go pprof profiling endpoints.
+
+---
+
+### Documentation
+
+For a complete guide to all features and API endpoints, please see the **[Full Documentation](https://github.com/sanonone/kektordb/blob/main/DOCUMENTATION.md)**.
+
+---
+
+### 🛣️ Roadmap & Future Work
+
+KektorDB is under active development. The roadmap is divided into near-term priorities for the next major release and long-term ambitions.
+
+#### **Near-Term Goals**
+
+These are the highest priority features and improvements planned for upcoming releases:
+
+*   **Enhanced KV Store:** Expanding the simple key-value store into a more feature-rich component with support for advanced data types and transactions.
+*   **gRPC API:** Introducing a gRPC interface alongside REST for high-performance, low-latency communication in microservice environments.
+*   **Stability and Hardening:** A development cycle dedicated to improving the overall robustness of the database. This will involve extensive testing, refining error handling, and ensuring transactional consistency for critical operations.
+
+#### **Long-Term Vision (Exploratory Ideas)**
+
+These are ambitious features that are being considered for the long-term evolution of the project.
+
+*   **Modular Architecture:** Refactoring the system to support a plugin-based architecture, allowing new features (like different index types or data sources) to be added as modules.
+*   **Performance Enhancements:** A focused effort to optimize the core engine.
+*   **On-Device & Embedded Strategy:** Investigating the compilation of KektorDB's core engine into a portable native library. The goal is to provide simple bindings for various mobile and edge ecosystems, allowing developers to embed a powerful, private, and offline-capable vector search engine directly into their applications.
+*   **Horizontal Scaling (Read Replicas):** Implementing a simple, primary-replica replication model. 
+
+---
+
+### License
+
+Licensed under the Apache 2.0 License. See the `LICENSE` file for details.
+

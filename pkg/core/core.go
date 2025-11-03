@@ -749,7 +749,7 @@ func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) err
 	})
 
 	if len(allVectors) == 0 {
-		return fmt.Errorf("Cannot compress an empty index '%s'. Operation skipped.")
+		return fmt.Errorf("Cannot compress an empty index '%s'. Operation skipped.", indexName)
 	}
 
 	metric, m, efConst := oldHNSWIndex.GetParameters()
