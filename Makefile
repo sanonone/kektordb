@@ -56,6 +56,8 @@ release: clean
 # Target helper per una singola build di release 
 release-build: build-rust-target
 	@echo "==> Cross-compiling KektorDB for $(GOOS)/$(GOARCH)..."
+	# target al percorso del linker LDFLAGS.
+	@CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/$(TARGET)/release" \
 	# la variabile ZIG_TARGET per il compilatore C
 	@CC="zig cc -target $(ZIG_TARGET)" CXX="zig c++ -target $(ZIG_TARGET)" \
 	GOOS=$(GOOS) GOARCH=$(GOARCH) CGO_ENABLED=1 \
