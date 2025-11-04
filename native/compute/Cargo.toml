@@ -11,3 +11,6 @@ crate-type = ["staticlib"] # Compila come .a
 mem = "0.5.0"
 transmute = "0.1.1"
 half = "2.1.0"
+
+[profile.release]  # Aggiungi questa sezione
+panic = "abort"    # Cambia da unwind (default) a abort
