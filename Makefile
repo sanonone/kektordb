@@ -1,5 +1,3 @@
-# Makefile per KektorDB
-
 # --- Variabili di Configurazione ---
 VERSION ?= $(shell git describe --tags --abbrev=0 || echo "v0.0.0")
 BINARY_NAME=kektordb
@@ -48,18 +46,21 @@ generate-avo:
 release: clean
 	@echo "Building releases for all targets..."
 	@mkdir -p $(RELEASE_DIR)
-	@make release-build TARGET=x86_64-unknown-linux-gnu GOOS=linux GOARCH=amd64
-	@make release-build TARGET=aarch64-unknown-linux-gnu GOOS=linux GOARCH=arm64
-	@make release-build TARGET=x86_64-pc-windows-gnu GOOS=windows GOARCH=amd64 EXT=.exe
-	@make release-build TARGET=x86_64-apple-darwin GOOS=darwin GOARCH=amd64
-	@make release-build TARGET=aarch64-apple-darwin GOOS=darwin GOARCH=arm64
+	# sia il target per Rust/Cargo che quello per Zig
+	@make release-build TARGET=x86_64-unknown-linux-gnu ZIG_TARGET=x86_64-linux-gnu GOOS=linux GOARCH=amd64
+	@make release-build TARGET=aarch64-unknown-linux-gnu ZIG_TARGET=aarch64-linux-gnu GOOS=linux GOARCH=arm64
+	@make release-build TARGET=x86_64-pc-windows-gnu ZIG_TARGET=x86_64-windows-gnu GOOS=windows GOARCH=amd64 EXT=.exe
+	@make release-build TARGET=x86_64-apple-darwin ZIG_TARGET=x86_64-macos-none GOOS=darwin GOARCH=amd64
+	@make release-build TARGET=aarch64-apple-darwin ZIG_TARGET=aarch64-macos-none GOOS=darwin GOARCH=arm64
 
-# Target helper per una singola build di release
+# Target helper per una singola build di release 
 release-build: build-rust-target
 	@echo "==> Cross-compiling KektorDB for $(GOOS)/$(GOARCH)..."
-	@CC="zig cc -target $(TARGET)" CXX="zig c++ -target $(TARGET)" \
+	# la variabile ZIG_TARGET per il compilatore C
+	@CC="zig cc -target $(ZIG_TARGET)" CXX="zig c++ -target $(ZIG_TARGET)" \
 	GOOS=$(GOOS) GOARCH=$(GOARCH) CGO_ENABLED=1 \
 	go build -tags rust -ldflags="-s -w" -o "$(RELEASE_DIR)/$(BINARY_NAME)-$(GOOS)-$(GOARCH)$(EXT)" ./cmd/kektordb
+
 
 
 # --- Target di Pulizia ---
