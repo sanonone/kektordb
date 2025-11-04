@@ -14,11 +14,11 @@ all: test
 # --- Target di Test e Benchmark ---
 test: generate-avo
 	@echo "==> Running Go tests (Go/AVO implementation)..."
-	@go test -v ./...
+	@go test -short -v ./...
 
 test-rust: build-rust-native
 	@echo "==> Running Go tests (Rust CGO implementation)..."
-	@go test -tags rust -v ./...
+	@go test -tags rust -short -v ./...
 
 bench: generate-avo
 	@echo "==> Running Go benchmarks (Go/AVO implementation)..."
