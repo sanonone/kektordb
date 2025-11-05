@@ -12,7 +12,7 @@ package distance
 import (
 	"errors"
 	"fmt"
-	"github.com/klauspost/cpuid/v2"
+	// "github.com/klauspost/cpuid/v2"
 	"github.com/x448/float16"
 	"gonum.org/v1/gonum/blas/gonum"
 	"log"
@@ -24,9 +24,9 @@ func init() {
 	// Gonum handles SIMD dispatch internally.
 	float32Funcs[Cosine] = dotProductAsDistanceGonum
 
-	if cpuid.CPU.Has(cpuid.AVX2) && cpuid.CPU.Has(cpuid.F16C) {
-		float16Funcs[Euclidean] = squaredEuclideanF16AVX2Wrapper // Use the wrapper
-	}
+	// if cpuid.CPU.Has(cpuid.AVX2) && cpuid.CPU.Has(cpuid.F16C) {
+	// float16Funcs[Euclidean] = squaredEuclideanF16AVX2Wrapper // Use the wrapper
+	// }
 	log.Println("KektorDB compute engine: using PURE GO / GONUM implementation.")
 	log.Printf("  - Euclidean (float32): Pure Go")
 	log.Printf("  - Cosine (float32):    Gonum (SIMD)")
@@ -78,6 +78,7 @@ var diffWorkspace = sync.Pool{
 	},
 }
 
+/*
 // squaredEuclideanF16AVX2Wrapper orchestrates the call to the AVX2-accelerated function.
 func squaredEuclideanF16AVX2Wrapper(v1, v2 []uint16) (float64, error) {
 	if len(v1) != len(v2) {
@@ -89,6 +90,7 @@ func squaredEuclideanF16AVX2Wrapper(v1, v2 []uint16) (float64, error) {
 	res := SquaredEuclideanFloat16AVX2(v1, v2)
 	return float64(res), nil
 }
+*/
 
 // --- REFERENCE IMPLEMENTATIONS (PURE GO) ---
 

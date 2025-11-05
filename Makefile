@@ -96,17 +96,24 @@ release: clean
 	GOOS=windows GOARCH=amd64 EXT=.exe \
 	CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/x86_64-pc-windows-gnu/release -lkektordb_compute -lws2_32 -luserenv -ladvapi32 -lbcrypt -lntdll -lgcc_s"
 
+	# --- macOS (Go Puro) ---
+	# target release-build-pure. 
+	@make release-build-pure GOOS=darwin GOARCH=amd64
+	@make release-build-pure GOOS=darwin GOARCH=arm64
+
 	# macOS AMD64
-	@make release-build TARGET=x86_64-apple-darwin ZIG_TARGET=x86_64-macos-none \
-	GOOS=darwin GOARCH=amd64 \
-	CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/x86_64-apple-darwin/release -lkektordb_compute -ldl -lm"
+	# @make release-build TARGET=x86_64-apple-darwin ZIG_TARGET=x86_64-macos-none \
+	# GOOS=darwin GOARCH=amd64 \
+	# CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/x86_64-apple-darwin/release -lkektordb_compute -ldl -lm"
 
 	# macOS ARM64
-	@make release-build TARGET=aarch64-apple-darwin ZIG_TARGET=aarch64-macos-none \
-	GOOS=darwin GOARCH=arm64 \
-	CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/aarch64-apple-darwin/release -lkektordb_compute -ldl -lm"
+	# @make release-build TARGET=aarch64-apple-darwin ZIG_TARGET=aarch64-macos-none \
+	# GOOS=darwin GOARCH=arm64 \
+	# CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/aarch64-apple-darwin/release -lkektordb_compute -ldl -lm"
 
 
+
+# Build ottimizzata con Rust (per Linux e Windows)
 release-build: build-rust-target
 	@echo "==> Cross-compiling KektorDB for $(GOOS)/$(GOARCH)..."
 	@echo "Using Linker Flags: $(CGO_LDFLAGS)"
@@ -118,10 +125,19 @@ release-build: build-rust-target
 	go build -tags "rust netgo" -ldflags="-s -w" -o "$(RELEASE_DIR)/$(BINARY_NAME)-$(GOOS)-$(GOARCH)$(EXT)" ./cmd/kektordb
 
 
+# Build pura Go (per macOS)
+release-build-pure:
+	@echo "==> Compiling pure-Go KektorDB for $(GOOS)/$(GOARCH)..."
+	@CGO_ENABLED=0 \
+	GOOS=$(GOOS) GOARCH=$(GOARCH) \
+	go build -ldflags="-s -w" -o "$(RELEASE_DIR)/$(BINARY_NAME)-$(GOOS)-$(GOARCH)$(EXT)" ./cmd/kektordb
+
+
+
 # --- Target di Pulizia ---
 clean:
 	@echo "==> Aggressively cleaning all caches and artifacts..."
-	@rm -f pkg/core/distance/distance_avo.s pkg/core/distance/stubs_avo.go
+	@rm -f pkg/core/distance/distance_avo_amd64.s pkg/core/distance/stubs_avo_amd64.go
 	@rm -rf native/compute/target
 	@rm -rf $(RELEASE_DIR)
 	@go clean -cache -modcache -testcache

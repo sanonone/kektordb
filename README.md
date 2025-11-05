@@ -178,6 +178,7 @@ This example demonstrates a complete workflow: creating multiple indexes, batch-
         print(f"Metadata: {top_result_data.get('metadata')}")
         print("-----------------------")
     ```
+**Note for macOS users:** The pre-compiled binaries for macOS utilize the pure Go compute engine for maximum compatibility. For performance-critical use cases requiring SIMD acceleration on macOS, we recommend building from source locally: `make build-rust-native && go build -tags rust ./cmd/kektordb`
 
 ---
 ### API Reference

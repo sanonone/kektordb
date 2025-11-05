@@ -179,6 +179,8 @@ Questo esempio dimostra un workflow completo: creazione di più indici, inserime
         print("-----------------------")
     ```
 
+    **Nota per gli utenti macOS:** I binari pre-compilati per macOS utilizzano l'engine di calcolo puramente Go per massima compatibilità. Per i casi d'uso critici per le prestazioni che richiedono l'accelerazione SIMD su macOS, consigliamo di costruire dalla sorgente localmente: `make build-rust-native && go build -tags rust ./cmd/kektordb`.
+
 ---
 ### Riferimento API
 
