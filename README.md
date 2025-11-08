@@ -9,7 +9,7 @@
 
 [English](README.md) | [Italiano](README.it.md)
 
-**KektorDB is a high-performance, in-memory vector/Key-Value database built from scratch in Go. It provides a powerful HNSW engine for vector search, a hybrid search system with BM25 ranking, advanced metadata filtering, and a modern REST API.**
+**KektorDB is an in-memory vector and Key-Value database built in Go. It features an HNSW engine for vector search, a hybrid search system including BM25 ranking, metadata filtering, and a modern REST API.**
 
 ### Motivation and Philosophy
 
@@ -21,20 +21,20 @@ KektorDB is available both as a standalone server and as an embeddable Go librar
 
 ### ✨ Core Features
 
-*   **Custom HNSW Engine:** A from-scratch implementation of the HNSW algorithm with an advanced neighbor selection heuristic for high-quality graphs.
+*   **Custom HNSW Engine:** A from-scratch implementation of the HNSW algorithm with neighbor selection heuristic for high-quality graphs.
 *   **Hybrid Search Engine:**
     *   **Full-Text Search:** A built-in text analysis engine (supporting English and Italian) and inverted index for keyword search.
     *   **BM25 Ranking:** Text search results are ranked by relevance using the industry-standard BM25 algorithm.
     *   **Score Fusion:** Hybrid queries combine vector and text scores using a configurable `alpha` parameter for a unified ranking.
 *   **Automatic Embedding Synchronization (Vectorizer):** A background service that monitors data sources (like filesystem directories), automatically generates embeddings via external APIs (like Ollama), and keeps the search index continuously up-to-date.
-*   **Advanced Metadata Filtering:** High-performance pre-filtering on metadata. Supports equality, range (`price<100`), and compound (`AND`/`OR`) filters.
+*   **Metadata Filtering:** High-performance pre-filtering on metadata. Supports equality, range (`price<100`), and compound (`AND`/`OR`) filters.
 *   **Vector Compression & Quantization:**
     *   **Float16:** Compresses Euclidean indexes by **50%**.
     *   **Int8:** Quantizes Cosine indexes by **75%**.
-*   **High-Performance API & Ecosystem:**
+*   **API:**
     *   A clean REST API with batch operations, async task management, and dynamic search tuning.
     *   Official clients for **Python** and **Go**.
-*   **Reliable Persistence:** A hybrid **AOF + Snapshot** system with automatic background maintenance ensures durability and near-instantaneous restarts.
+*   **Persistence:** A hybrid **AOF + Snapshot** system with automatic background maintenance ensures durability and near-instantaneous restarts.
 *   **Dual Compute Engine (Go-native vs. Rust-accelerated):**
     *   **Default Build:** A pure Go version that leverages `gonum` and `avo` for SIMD-acceleration, ensuring maximum portability and simple compilation (`go build`).
     *   **Performance Build:** An optional build mode (`-tags rust`) that links a Rust library via CGO for highly optimized SIMD distance calculations.
@@ -234,6 +234,9 @@ KektorDB is under active development. The roadmap is divided into near-term prio
 
 These are the highest priority features and improvements planned for upcoming releases:
 
+*   **Memory & CPU Optimization for Search:** Profiling has identified two key areas for improvement during graph traversal. Future work will focus on:
+    1.  **Reducing GC Pressure:** Minimizing temporary memory allocations by implementing memory reuse patterns for data structures like priority queues.
+    2.  **Optimizing Visited Node Tracking:** Replacing the current `map`-based tracking, which shows overhead in CPU profiling, with a more direct and efficient data structure like a bitset.
 *   **Enhanced KV Store:** Expanding the simple key-value store into a more feature-rich component with support for advanced data types and transactions.
 *   **gRPC API:** Introducing a gRPC interface alongside REST for high-performance, low-latency communication in microservice environments.
 *   **Stability and Hardening:** A development cycle dedicated to improving the overall robustness of the database. This will involve extensive testing, refining error handling, and ensuring transactional consistency for critical operations.

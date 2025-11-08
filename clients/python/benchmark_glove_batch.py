@@ -90,6 +90,7 @@ def main(args):
     client = KektorDBClient()
 
     try:
+        
         # 2. Prepara KektorDB
         print(f"\n--- Fase di Indicizzazione (BATCH, {METRIC}, float32) ---")
         try:
@@ -118,6 +119,7 @@ def main(args):
         indexing_duration = end_time-start_time
         print(f"Indicizzazione completata in {indexing_duration:.2f} secondi.")
         print(f"Velocità di inserimento: {num_vectors / indexing_duration:.2f} vettori/secondo.")
+        
 
         # 4. Fase di Test
         print(f"\n--- Fase di Test: Recall e QPS ---")

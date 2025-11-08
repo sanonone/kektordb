@@ -9,13 +9,13 @@
 
 [English](README.md) | [Italiano](README.it.md)
 
-**KektorDB è un database vettoriale/chiave-valore ad alte prestazioni, in-memory, costruito da zero in Go. Fornisce un potente motore HNSW per la ricerca vettoriale, un sistema di ricerca ibrido con ranking BM25, filtraggio avanzato dei metadati e una moderna API REST.**
+**KektorDB è un database vettoriale/chiave-valore, in-memory, costruito in Go. Fornisce un motore HNSW per la ricerca vettoriale, un sistema di ricerca ibrido con ranking BM25, filtraggio dei metadati e una moderna API REST.**
 
 ### Motivazione e Filosofia
 
 Questo progetto è nato come un'impresa personale di apprendimento per approfondire argomenti complessi di ingegneria del software. L'obiettivo era costruire un motore di ricerca robusto, autonomo e consapevole delle dipendenze, incarnando la filosofia del **"SQLite dei Database Vettoriali"**.
 
-KektorDB è disponibile sia come server standalone che come libreria Go incorporabile (`pkg/core`), rendendolo uno strumento flessibile per sviluppatori Go e applicazioni AI/ML che richiedono capacità di ricerca vettoriale veloce e locale.
+KektorDB è disponibile sia come server standalone che come libreria Go (`pkg/core`), rendendolo uno strumento flessibile per sviluppatori Go e applicazioni AI/ML che richiedono capacità di ricerca vettoriale veloce e locale.
 
 ---
 
@@ -27,14 +27,14 @@ KektorDB è disponibile sia come server standalone che come libreria Go incorpor
     *   **Ranking BM25:** I risultati della ricerca testuale sono classificati per rilevanza utilizzando l'algoritmo standard del settore BM25.
     *   **Fusione dei Punteggi:** Le query ibride combinano punteggi vettoriali e testuali utilizzando un parametro `alpha` configurabile per una classifica unificata.
 *   **Sincronizzazione Automatica degli Embedding (Vectorizer):** Un servizio in background che monitora le fonti di dati (come directory del filesystem), genera automaticamente embedding tramite API esterne (come Ollama) e mantiene l'indice di ricerca continuamente aggiornato.
-*   **Filtraggio Avanzato dei Metadati:** Pre-filtraggio ad alte prestazioni sui metadati. Supporta uguaglianza, intervalli (`price<100`) e filtri composti (`AND`/`OR`).
+*   **Filtraggio dei Metadati:** Pre-filtraggio ad alte prestazioni sui metadati. Supporta uguaglianza, intervalli (`price<100`) e filtri composti (`AND`/`OR`).
 *   **Compressione e Quantizzazione dei Vettori:**
     *   **Float16:** Comprime gli indici Euclidei del **50%**.
     *   **Int8:** Quantizza gli indici Cosine del **75%**.
-*   **API ad Alte Prestazioni ed Ecosistema:**
+*   **API:**
     *   Una API REST pulita con operazioni batch, gestione asincrona delle task e tuning dinamico della ricerca.
     *   Client ufficiali per **Python** e **Go**.
-*   **Persistenza Affidabile:** Un sistema ibrido **AOF + Snapshot** con manutenzione automatica in background garantisce durabilità e riavvii quasi istantanei.
+*   **Persistenza:** Un sistema ibrido **AOF + Snapshot** con manutenzione automatica in background garantisce durabilità e riavvii quasi istantanei.
 *   **Motore di Calcolo Doppio (Go-nativo vs. Rust-accelerato):**
     *   **Build Predefinita:** Una versione pura in Go che sfrutta `gonum` e `avo` per l'accelerazione SIMD, garantendo massima portabilità e compilazione semplice (`go build`).
     *   **Build Prestazionale:** Una modalità di build opzionale (`-tags rust`) che collega una libreria Rust tramite CGO per calcoli di distanza SIMD altamente ottimizzati.
@@ -235,6 +235,9 @@ KektorDB è in sviluppo attivo. La roadmap è divisa in priorità a breve termin
 
 Queste sono le funzionalità e i miglioramenti di priorità più alta pianificati per le prossime release:
 
+*   **Ottimizzazione di Memoria e CPU per la Ricerca:** Il profiling ha identificato due aree chiave per un miglioramento durante l'attraversamento del grafo. Il lavoro futuro si concentrerà su:
+    1.  **Riduzione della Pressione sul GC:** Minimizzare le allocazioni di memoria temporanee implementando modelli di riutilizzo della memoria per strutture dati come code prioritarie.
+    2.  **Ottimizzazione del Tracciamento dei Nodi Visitati:** Sostituire l'attuale tracciamento basato su `map`, che mostra sovraccarichi nel profiling della CPU, con una struttura dati più diretta ed efficiente come bitset.
 *   **Archivio KV Migliorato:** Espansione del semplice archivio key-value in un componente più ricco di funzionalità con supporto per tipi di dati avanzati e transazioni.
 *   **API gRPC:** Introduzione di un'interfaccia gRPC accanto a REST per comunicazioni ad alte prestazioni e bassa latenza in ambienti microservizi.
 *   **Stabilità e Rafforzamento:** Un ciclo di sviluppo dedicato al miglioramento della robustezza complessiva del database. Questo coinvolgerà test estensivi, raffinamento della gestione degli errori e garanzia di consistenza transazionale per operazioni critiche.

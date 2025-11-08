@@ -64,7 +64,9 @@ func (s *Server) router(w http.ResponseWriter, r *http.Request) {
 		case path == "/debug/pprof/trace":
 			pprof.Trace(w, r)
 		default:
-			s.writeHTTPError(w, http.StatusNotFound, "pprof endpoint not found")
+			handlerName := strings.TrimPrefix(path, "/debug/pprof/")
+			pprof.Handler(handlerName).ServeHTTP(w, r)
+			//s.writeHTTPError(w, http.StatusNotFound, "pprof endpoint not found")
 		}
 		return
 	}
@@ -484,6 +486,8 @@ func (s *Server) handleVectorAddBatch(w http.ResponseWriter, r *http.Request) {
 		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Index '%s' not found", req.IndexName))
 		return
 	}
+	s.db.RLock()
+	defer s.db.RUnlock()
 
 	// iterate and add the vectors one by one.
 	// The Add, metadata, and AOF logic is the same as for a single VADD.
