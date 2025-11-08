@@ -91,7 +91,7 @@ class TestKektorDBEndToEnd(unittest.TestCase):
             self.client.vget(INDEX_COSINE, vec_id)
         error_message = cm.exception.args[0]
         self.assertIn("KektorDB API Error", error_message)
-        self.assertIn("vettore con ID 'test-vec-01' non trovato", error_message)
+        self.assertIn("vector with ID 'test-vec-01' not found", error_message)
         
         print(" -> vdelete OK (con verifica dell'errore 404)")        
     def test_03_search_and_filtering(self):
