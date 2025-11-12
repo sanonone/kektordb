@@ -66,6 +66,8 @@ type Index struct {
 	metric distance.DistanceMetric
 
 	textLanguage string
+
+	visitedPool sync.Pool
 }
 
 // New creates and initializes a new HNSW index
@@ -93,6 +95,12 @@ func New(m int, efConstruction int, metric distance.DistanceMetric, precision di
 		metric:               metric,
 		precision:            precision,
 		textLanguage:         textLang,
+	}
+
+	h.visitedPool = sync.Pool{
+		New: func() any {
+			return NewBitSet(256)
+		},
 	}
 
 	// --- SELECTION AND VALIDATION LOGIC ---
@@ -412,7 +420,7 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	// descend from the highest level to the level above that assigned to the new node (i.e., the new node's level + 1)
 	for l := h.maxLevel; l > level; l-- {
 		// trova il vicino più prossimo nel livello attuale e lo usa come entry point per il livello inferiore
-		nearest, err := h.searchLayer(vector, currentEntryPoint, 1, l, nil, 1)
+		nearest, err := h.searchLayerUnlocked(vector, currentEntryPoint, 1, l, nil, 1, h.internalCounter)
 		if err != nil {
 			return 0, fmt.Errorf("error during node insertion")
 		}
@@ -425,7 +433,7 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	// Find neighbors and connect them to the new node
 	for l := min(level, h.maxLevel); l >= 0; l-- {
 		// trova gli efConstruction candidati più vicini per questo livello
-		neighbors, err := h.searchLayer(vector, currentEntryPoint, h.efConstruction, l, nil, h.efConstruction)
+		neighbors, err := h.searchLayerUnlocked(vector, currentEntryPoint, h.efConstruction, l, nil, h.efConstruction, h.internalCounter)
 		if err != nil {
 			return 0, fmt.Errorf("error during node insertion")
 		}
@@ -538,11 +546,31 @@ func (h *Index) Delete(id string) {
 	delete(h.externalToInternalID, id)
 }
 
-// searchLayer finds the nearest neighbors in a single layer of the graph
 func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level int, allowList map[uint32]struct{}, efSearch int) ([]types.Candidate, error) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	// Passa h.internalCounter come maxID
+	return h.searchLayerUnlocked(query, entrypointID, k, level, allowList, efSearch, h.internalCounter)
+}
+
+// searchLayerUnlocked finds the nearest neighbors in a single layer of the graph
+func (h *Index) searchLayerUnlocked(query []float32, entrypointID uint32, k int, level int, allowList map[uint32]struct{}, efSearch int, maxID uint32) ([]types.Candidate, error) {
 	//log.Printf("DEBUG: Inizio searchLayer a livello %d con entrypoint %d\n", level, entrypointID)
 	// the nodes already visited are traced to avoid entering a loop
-	visited := make(map[uint32]bool)
+	// visited := make(map[uint32]bool)
+	visited := h.visitedPool.Get().(*BitSet)
+
+	defer func() {
+		visited.Clear()
+		h.visitedPool.Put(visited)
+	}()
+
+	// h.mu.RLock()
+	// maxID := h.internalCounter
+	// h.mu.RUnlock()
+
+	visited.EnsureCapacity(maxID)
 
 	// --- CORRECT efSearch LOGIC ---
 	// ef (effective search size) must be at least k
@@ -578,7 +606,8 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 	// insert the nodes into the heaps
 	heap.Push(candidates, types.Candidate{Id: entrypointID, Distance: dist})
 	heap.Push(results, types.Candidate{Id: entrypointID, Distance: dist})
-	visited[entrypointID] = true // set the node as visited in the map
+	// visited[entrypointID] = true // set the node as visited in the map
+	visited.Add(entrypointID)
 
 	loopCount := 0
 
@@ -613,8 +642,8 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 			}
 
 			// Has this neighbor never been visited? Then I'll go (prevents infinite loops)
-			if !visited[neighborID] {
-				visited[neighborID] = true
+			if !visited.Has(neighborID) {
+				visited.Add(neighborID)
 
 				// calculate the distance between the query and the neighbor
 				dist, err := h.distanceToQuery(query, h.nodes[neighborID].Vector)
