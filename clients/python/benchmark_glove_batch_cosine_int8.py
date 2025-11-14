@@ -169,7 +169,7 @@ def main(args):
             
             # Cerca con KektorDB
             search_start = time.time()
-            results = client.vsearch(INDEX_NAME, query_vec.tolist(), k=K_SEARCH, ef_search=200)
+            results = client.vsearch(INDEX_NAME, query_vec.tolist(), k=K_SEARCH, ef_search=100)
             search_end = time.time()
             total_search_time += (search_end - search_start)
             
