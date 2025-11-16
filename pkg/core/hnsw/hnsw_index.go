@@ -16,10 +16,20 @@ import (
 	"log"
 	"math"
 	"math/rand"
+	"runtime"
 	"sort"
 	"sync"
-	"time"
+	"sync/atomic"
 )
+
+// LinkRequest rappresenta una singola operazione di modifica delle connessioni
+// da applicare al grafo in modo atomico. Sarà usata dalla AddBatch concorrente
+// e in futuro potrà essere estesa per la riparazione del grafo.
+type LinkRequest struct {
+	NodeID       uint32
+	Level        int
+	NewNeighbors []uint32
+}
 
 // Index represents the hierarchical graph structure.
 type Index struct {
@@ -46,7 +56,7 @@ type Index struct {
 	// Separate maps to translate between external and internal IDs
 	externalToInternalID map[string]uint32
 	internalToExternalID map[uint32]string
-	internalCounter      uint32
+	nodeCounter          atomic.Uint64
 
 	// Stores the precision of the index (e.g., f32, f16)
 	precision distance.PrecisionType
@@ -59,15 +69,16 @@ type Index struct {
 	// Uses 'any' for flexibility with different function signatures.
 	distanceFunc any
 
-	// Random number generator for level selection
-	levelRand *rand.Rand
-
 	// Stores the distance metric type
 	metric distance.DistanceMetric
 
 	textLanguage string
 
 	visitedPool sync.Pool
+
+	minHeapPool         sync.Pool
+	maxHeapPool         sync.Pool
+	candidateObjectPool sync.Pool
 }
 
 // New creates and initializes a new HNSW index
@@ -88,19 +99,30 @@ func New(m int, efConstruction int, metric distance.DistanceMetric, precision di
 		nodes:                make(map[uint32]*Node),
 		externalToInternalID: make(map[string]uint32),
 		internalToExternalID: make(map[uint32]string),
-		internalCounter:      0,
 		maxLevel:             -1, // No levels initially
 		entrypointID:         0,  // Initialized on the first insertion
-		levelRand:            rand.New(rand.NewSource(time.Now().UnixNano())),
 		metric:               metric,
 		precision:            precision,
 		textLanguage:         textLang,
 	}
 
+	h.nodeCounter.Store(0)
+
 	h.visitedPool = sync.Pool{
 		New: func() any {
 			return NewBitSet(256)
 		},
+	}
+
+	h.minHeapPool = sync.Pool{
+		New: func() any { return new(minHeap) },
+	}
+	h.maxHeapPool = sync.Pool{
+		New: func() any { return new(maxHeap) },
+	}
+
+	h.candidateObjectPool = sync.Pool{
+		New: func() any { return new(types.Candidate) },
 	}
 
 	// --- SELECTION AND VALIDATION LOGIC ---
@@ -385,8 +407,9 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	// --- FINE LOG ---
 
 	// internal ID assignment
-	h.internalCounter++
-	internalID := h.internalCounter
+	// h.nodeCounter++
+	// internalID := h.nodeCounter
+	internalID := uint32(h.nodeCounter.Add(1))
 
 	// create new node
 	node := &Node{
@@ -420,7 +443,7 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	// descend from the highest level to the level above that assigned to the new node (i.e., the new node's level + 1)
 	for l := h.maxLevel; l > level; l-- {
 		// trova il vicino più prossimo nel livello attuale e lo usa come entry point per il livello inferiore
-		nearest, err := h.searchLayerUnlocked(vector, currentEntryPoint, 1, l, nil, 1, h.internalCounter)
+		nearest, err := h.searchLayerUnlocked(vector, currentEntryPoint, 1, l, nil, 1, uint32(h.nodeCounter.Load()))
 		if err != nil {
 			return 0, fmt.Errorf("error during node insertion")
 		}
@@ -433,7 +456,7 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	// Find neighbors and connect them to the new node
 	for l := min(level, h.maxLevel); l >= 0; l-- {
 		// trova gli efConstruction candidati più vicini per questo livello
-		neighbors, err := h.searchLayerUnlocked(vector, currentEntryPoint, h.efConstruction, l, nil, h.efConstruction, h.internalCounter)
+		neighbors, err := h.searchLayerUnlocked(vector, currentEntryPoint, h.efConstruction, l, nil, h.efConstruction, uint32(h.nodeCounter.Load()))
 		if err != nil {
 			return 0, fmt.Errorf("error during node insertion")
 		}
@@ -515,6 +538,309 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 
 }
 
+/*
+// BatchObject è un wrapper per i dati di input di AddBatch.
+type BatchObject struct {
+	ID     string
+	Vector []float32
+}
+*/
+
+// AddBatch inserts a large batch of vectors concurrently.
+// It partitions the data, allocates nodes in parallel, finds neighbors
+// in parallel, and then commits all link changes in a final, sequential step.
+// This method is optimized for throughput, not for single-insert latency.
+func (h *Index) AddBatch(objects []types.BatchObject) error {
+	numVectors := len(objects)
+	if numVectors == 0 {
+		return nil
+	}
+
+	numWorkers := runtime.NumCPU()
+	if numVectors < numWorkers {
+		numWorkers = numVectors
+	}
+
+	// --- NUOVA FASE 1: Allocazione Nodi (Sequenziale e Sicura) ---
+	h.mu.Lock()
+
+	// Pre-allocazione ID (ora sicura perché sotto lock).
+	startID := h.nodeCounter.Add(uint64(numVectors)) - uint64(numVectors)
+
+	newNodes := make([]*Node, numVectors)
+	for i, obj := range objects {
+		internalID := uint32(startID + uint64(i))
+
+		// ... (la logica di conversione/quantizzazione rimane la stessa) ...
+		var storedVector interface{}
+		/*
+			if h.metric == distance.Cosine && h.precision == distance.Float32 {
+				normalize(obj.Vector)
+			}
+		*/
+
+		switch h.precision {
+		case distance.Float32:
+			storedVector = obj.Vector
+		case distance.Float16:
+			f16Vec := make([]uint16, len(obj.Vector))
+			for i, v := range obj.Vector {
+				f16Vec[i] = float16.Fromfloat32(v).Bits()
+			}
+			storedVector = f16Vec
+		case distance.Int8:
+			if h.quantizer == nil || h.quantizer.AbsMax == 0 {
+				log.Printf("ERROR: cannot quantize, quantizer not trained.")
+				h.mu.Unlock() // rilascia il lock prima di uscire
+				return fmt.Errorf("quantizer not trained")
+			}
+			storedVector = h.quantizer.Quantize(obj.Vector)
+		}
+
+		node := &Node{
+			Id:         obj.Id,
+			InternalID: internalID,
+			Vector:     storedVector,
+		}
+		newNodes[i] = node
+
+		// Inserisci subito nelle mappe globali.
+		h.nodes[node.InternalID] = node
+		h.externalToInternalID[node.Id] = node.InternalID
+		h.internalToExternalID[node.InternalID] = node.Id
+	}
+
+	h.mu.Unlock() // <-- RILASCIA IL LOCK SUBITO DOPO L'ALLOCAZIONE!
+
+	// --- 2. Setup dei Canali e Goroutine (ora 'newNodes' è la nostra fonte di lavoro) ---
+	linkQueue := make(chan LinkRequest, numVectors*h.mMax0)
+	var wg sync.WaitGroup
+
+	// --- 3. Partizionamento del Lavoro e Avvio dei Worker ---
+	batchSizePerWorker := numVectors / numWorkers
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+
+		start := i * batchSizePerWorker
+		end := start + batchSizePerWorker
+
+		if i == numWorkers-1 {
+			end = numVectors
+		}
+
+		workerBatchNodes := newNodes[start:end]
+		// Passiamo direttamente la slice di *Node ai worker.
+		go h.batchWorker(workerBatchNodes, linkQueue, &wg)
+	}
+
+	// --- 4. Attesa e Commit ---
+	wg.Wait()
+	close(linkQueue)
+
+	h.commitLinks(linkQueue, newNodes)
+
+	return nil
+}
+
+// --- SOSTITUIRE LO STUB 'batchWorker' NEL FILE: hnsw_index.go ---
+
+// batchWorker è la funzione eseguita da ogni goroutine. Gestisce un sotto-batch
+// Ora accetta una slice di *Node invece di AddBatchObject.
+func (h *Index) batchWorker(nodesToProcess []*Node, linkQueue chan<- LinkRequest, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	// La Fase di Allocazione è stata spostata. Iniziamo direttamente con la Ricerca.
+
+	// --- FASE 3: Ricerca dei Vicini (Parallela con RLock) ---
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	for _, node := range nodesToProcess {
+		// Estrai il vettore originale per la ricerca. Dobbiamo de-quantizzarlo se necessario.
+		// Questa parte è inefficiente, ma per ora la correttezza è più importante.
+		// In futuro, potremmo passare il float32 originale ai worker.
+		var originalVector []float32
+		switch vec := node.Vector.(type) {
+		case []float32:
+			originalVector = vec
+		case []uint16:
+			originalVector = make([]float32, len(vec))
+			for i, v := range vec {
+				originalVector[i] = float16.Frombits(v).Float32()
+			}
+		case []int8:
+			if h.quantizer != nil {
+				originalVector = h.quantizer.Dequantize(vec)
+			} else {
+				continue
+			}
+		default:
+			continue
+		}
+
+		if h.metric == distance.Cosine {
+			// Esegui la normalizzazione qui, in parallelo
+			normalize(originalVector)
+		}
+
+		// Il resto della logica è identico a prima.
+		level := h.randomLevel()
+		node.Connections = make([][]uint32, level+1)
+
+		if h.maxLevel == -1 {
+			continue
+		}
+
+		currentEntryPoint := h.entrypointID
+
+		for l := h.maxLevel; l > level; l-- {
+			nearest, err := h.searchLayerUnlocked(originalVector, currentEntryPoint, 1, l, nil, 1, uint32(h.nodeCounter.Load()))
+			if err != nil || len(nearest) == 0 {
+				currentEntryPoint = h.entrypointID
+				continue
+			}
+			currentEntryPoint = nearest[0].Id
+		}
+
+		for l := min(level, h.maxLevel); l >= 0; l-- {
+			candidates, err := h.searchLayerUnlocked(originalVector, currentEntryPoint, h.efConstruction, l, nil, h.efConstruction, uint32(h.nodeCounter.Load()))
+			if err != nil || len(candidates) == 0 {
+				log.Printf("WARNING: batch worker search failed for node %d at level %d", node.InternalID, l)
+				break
+			}
+
+			maxConns := h.m
+			if l == 0 {
+				maxConns = h.mMax0
+			}
+
+			selectedNeighbors := h.selectNeighbors(candidates, maxConns)
+
+			neighborIDs := make([]uint32, len(selectedNeighbors))
+			for i, neighbor := range selectedNeighbors {
+				neighborIDs[i] = neighbor.Id
+			}
+			linkQueue <- LinkRequest{
+				NodeID:       node.InternalID,
+				Level:        l,
+				NewNeighbors: neighborIDs,
+			}
+
+			currentEntryPoint = candidates[0].Id
+		}
+	}
+}
+
+// commitLinks esegue la fase finale di scrittura. Acquisisce un lock esclusivo
+// e applica tutte le richieste di collegamento generate dai worker, costruendo
+// i link bidirezionali e gestendo la potatura.
+// --- SOSTITUIRE la vecchia 'commitLinks' con QUESTA versione ---
+
+func (h *Index) commitLinks(linkQueue <-chan LinkRequest, newNodes []*Node) {
+	// --- Fase Preliminare (Lock-Free): Raccogli e aggrega tutti i link ---
+
+	// map[NodeID] -> map[Level] -> lista di candidati vicini per quel livello
+	linkCandidates := make(map[uint32]map[int][]uint32)
+
+	// Aggiungi le richieste in uscita generate dai worker
+	for req := range linkQueue {
+		if _, ok := linkCandidates[req.NodeID]; !ok {
+			linkCandidates[req.NodeID] = make(map[int][]uint32)
+		}
+		linkCandidates[req.NodeID][req.Level] = append(linkCandidates[req.NodeID][req.Level], req.NewNeighbors...)
+	}
+
+	// Ora, calcola e aggiungi i link in entrata per garantire la bidirezionalità
+	for nodeID, levels := range linkCandidates {
+		for level, neighbors := range levels {
+			for _, neighborID := range neighbors {
+				if _, ok := linkCandidates[neighborID]; !ok {
+					linkCandidates[neighborID] = make(map[int][]uint32)
+				}
+				// Aggiungi il link di ritorno
+				linkCandidates[neighborID][level] = append(linkCandidates[neighborID][level], nodeID)
+			}
+		}
+	}
+
+	// --- Fase di Commit (sotto Write Lock) ---
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// Applica i link potati a ogni nodo che è stato toccato
+	for nodeID, levels := range linkCandidates {
+		node := h.nodes[nodeID]
+		if node == nil {
+			continue
+		}
+
+		for level, candidates := range levels {
+			if level >= len(node.Connections) {
+				// Questo nodo non esisteva a questo livello, espandi le sue connessioni
+				newConnections := make([][]uint32, level+1)
+				copy(newConnections, node.Connections)
+				node.Connections = newConnections
+			}
+
+			maxConns := h.m
+			if level == 0 {
+				maxConns = h.mMax0
+			}
+
+			currentNeighbors := node.Connections[level]
+
+			// Unisci i candidati (vecchi + nuovi) e rimuovi i duplicati
+			candidateSet := make(map[uint32]struct{})
+			for _, id := range currentNeighbors {
+				candidateSet[id] = struct{}{}
+			}
+			for _, id := range candidates {
+				candidateSet[id] = struct{}{}
+			}
+
+			if len(candidateSet) <= maxConns {
+				// Non serve potare, basta assegnare
+				finalNeighbors := make([]uint32, 0, len(candidateSet))
+				for id := range candidateSet {
+					finalNeighbors = append(finalNeighbors, id)
+				}
+				node.Connections[level] = finalNeighbors
+				continue
+			}
+
+			// Dobbiamo potare. Costruiamo la lista di types.Candidate
+			allCandidates := make([]types.Candidate, 0, len(candidateSet))
+			for id := range candidateSet {
+				dist, _ := h.distance(node.Vector, h.nodes[id].Vector)
+				allCandidates = append(allCandidates, types.Candidate{Id: id, Distance: dist})
+			}
+
+			// Ordina e seleziona
+			sort.Slice(allCandidates, func(i, j int) bool { return allCandidates[i].Distance < allCandidates[j].Distance })
+			prunedNeighbors := h.selectNeighbors(allCandidates, maxConns)
+
+			prunedIDs := make([]uint32, len(prunedNeighbors))
+			for i, p := range prunedNeighbors {
+				prunedIDs[i] = p.Id
+			}
+			node.Connections[level] = prunedIDs
+		}
+	}
+
+	// Aggiorna lo stato globale alla fine, una sola volta
+	var overallMaxLevel = h.maxLevel
+	var bestEntryPoint = h.entrypointID
+	for _, node := range newNodes {
+		nodeLevel := len(node.Connections) - 1
+		if nodeLevel > overallMaxLevel {
+			overallMaxLevel = nodeLevel
+			bestEntryPoint = node.InternalID
+		}
+	}
+	h.maxLevel = overallMaxLevel
+	h.entrypointID = bestEntryPoint
+}
+
 // GetExternalID retrieves the external string ID for a given internal uint32 ID.
 func (h *Index) GetExternalID(internalID uint32) (string, bool) {
 	h.mu.RLock()
@@ -551,7 +877,7 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 	defer h.mu.RUnlock()
 
 	// Passa h.internalCounter come maxID
-	return h.searchLayerUnlocked(query, entrypointID, k, level, allowList, efSearch, h.internalCounter)
+	return h.searchLayerUnlocked(query, entrypointID, k, level, allowList, efSearch, uint32(h.nodeCounter.Load()))
 }
 
 // searchLayerUnlocked finds the nearest neighbors in a single layer of the graph
@@ -560,10 +886,28 @@ func (h *Index) searchLayerUnlocked(query []float32, entrypointID uint32, k int,
 	// the nodes already visited are traced to avoid entering a loop
 	// visited := make(map[uint32]bool)
 	visited := h.visitedPool.Get().(*BitSet)
+	candidates := h.minHeapPool.Get().(*minHeap)
+	results := h.maxHeapPool.Get().(*maxHeap)
+
+	// 'recycledCandidates' è un array temporaneo che useremo per tenere traccia
+	// di tutti gli oggetti Candidate che prendiamo dal pool, in modo da poterli
+	// restituire tutti alla fine.
+	recycledCandidates := make([]*types.Candidate, 0, efSearch+1)
 
 	defer func() {
 		visited.Clear()
 		h.visitedPool.Put(visited)
+
+		// Svuota le slice mantenendo la capacità per il riutilizzo.
+		*candidates = (*candidates)[:0]
+		*results = (*results)[:0]
+		h.minHeapPool.Put(candidates)
+		h.maxHeapPool.Put(results)
+
+		// Rimetti tutti gli oggetti Candidate nel loro pool.
+		for _, c := range recycledCandidates {
+			h.candidateObjectPool.Put(c)
+		}
 	}()
 
 	// h.mu.RLock()
@@ -592,9 +936,9 @@ func (h *Index) searchLayerUnlocked(query []float32, entrypointID uint32, k int,
 	}
 
 	// candidate queue to explore (closest first)
-	candidates := newMinHeap(ef)
+	// candidates := newMinHeap(ef)
 	// list of results found (the furthest one at the top, to quickly replace it with a better one)
-	results := newMaxHeap(ef)
+	// results := newMaxHeap(ef)
 
 	// Calculate the distance between the query and the entry point
 	// Start with the entry point
@@ -604,8 +948,14 @@ func (h *Index) searchLayerUnlocked(query []float32, entrypointID uint32, k int,
 	}
 
 	// insert the nodes into the heaps
-	heap.Push(candidates, types.Candidate{Id: entrypointID, Distance: dist})
-	heap.Push(results, types.Candidate{Id: entrypointID, Distance: dist})
+	// Prendi il primo candidato dal pool.
+	entrypointCandidate := h.candidateObjectPool.Get().(*types.Candidate)
+	entrypointCandidate.Id = entrypointID
+	entrypointCandidate.Distance = dist
+	recycledCandidates = append(recycledCandidates, entrypointCandidate)
+
+	heap.Push(candidates, entrypointCandidate)
+	heap.Push(results, entrypointCandidate)
 	// visited[entrypointID] = true // set the node as visited in the map
 	visited.Add(entrypointID)
 
@@ -614,7 +964,7 @@ func (h *Index) searchLayerUnlocked(query []float32, entrypointID uint32, k int,
 	for candidates.Len() > 0 {
 		loopCount++
 		// pops the closest element from the queue
-		current := heap.Pop(candidates).(types.Candidate)
+		current := heap.Pop(candidates).(*types.Candidate)
 
 		// If this candidate is further away than the worst result (the top results) that
 		// we've found so far, we can stop exploring this branch.
@@ -662,8 +1012,14 @@ func (h *Index) searchLayerUnlocked(query []float32, entrypointID uint32, k int,
 				if results.Len() < ef || dist < (*results)[0].Distance {
 					//log.Printf("DEBUG: Livello %d, aggiungo candidato %d con distanza %f\n", level, neighborID, dist)
 
-					heap.Push(candidates, types.Candidate{Id: neighborID, Distance: dist})
-					heap.Push(results, types.Candidate{Id: neighborID, Distance: dist})
+					// Prendi un nuovo oggetto candidato riciclato.
+					neighborCandidate := h.candidateObjectPool.Get().(*types.Candidate)
+					neighborCandidate.Id = neighborID
+					neighborCandidate.Distance = dist
+					recycledCandidates = append(recycledCandidates, neighborCandidate)
+
+					heap.Push(candidates, neighborCandidate)
+					heap.Push(results, neighborCandidate)
 
 					// if there is no more space in the result list then we remove the worst one (which is the first one)
 					if results.Len() > ef {
@@ -680,7 +1036,9 @@ func (h *Index) searchLayerUnlocked(query []float32, entrypointID uint32, k int,
 	// if there is no more space in the result list then we remove the worst one (which is the first one)
 	finalResults := make([]types.Candidate, results.Len())
 	for i := results.Len() - 1; i >= 0; i-- {
-		finalResults[i] = heap.Pop(results).(types.Candidate)
+		// Pop restituisce un *types.Candidate. Lo de-referenziamo (*c) per copiare il valore.
+		c := heap.Pop(results).(*types.Candidate)
+		finalResults[i] = *c
 	}
 
 	// Return only the best 'k' results. The `finalResults` slice is already sorted from best to worst.
@@ -702,7 +1060,7 @@ func (h *Index) searchLayerUnlocked(query []float32, entrypointID uint32, k int,
 func (h *Index) randomLevel() int {
 	// This is based on an exponentially decreasing distribution
 	level := 0
-	for h.levelRand.Float64() < 0.5 && level < h.maxLevel+1 { // Let's add a limit for safety
+	for rand.Float64() < 0.5 && level < h.maxLevel+1 { // Let's add a limit for safety
 		level++
 	}
 	return level
@@ -936,16 +1294,8 @@ func (h *Index) GetInfoUnlocked() (distance.DistanceMetric, int, int, distance.P
 
 // normalize normalizes a vector to unit length (L2 norm).
 // This method modifies the slice in-place.
-func normalize(v []float32) {
-	// --- LOG DI DEBUG ---
-	// Stampa i primi elementi del vettore PRIMA della normalizzazione
-	// (stampiamo solo i primi 5 per non inondare il log)
-	//limit := 5
-	//if len(v) < 5 {
-	//	limit = len(v)
-	//}
-	//log.Printf("[DEBUG NORMALIZE] Vettore INGRESSO (primi %d elementi): %v", limit, v[:limit])
-	// --- FINE LOG ---
+func normalizeOld(v []float32) {
+
 	var norm float32
 	for _, val := range v {
 		norm += val * val
@@ -957,16 +1307,34 @@ func normalize(v []float32) {
 		}
 	}
 
-	// --- LOG DI DEBUG ---
-	// Stampa i primi elementi del vettore DOPO la normalizzazione
-	//log.Printf("[DEBUG NORMALIZE] Vettore USCITA (primi %d elementi): %v", limit, v[:limit])
 	// Calcoliamo la nuova lunghezza per verifica
 	var finalNorm float32
 	for _, val := range v {
 		finalNorm += val * val
 	}
-	//log.Printf("[DEBUG NORMALIZE] Lunghezza (norma L2) calcolata DOPO: %f", math.Sqrt(float64(finalNorm)))
-	// --- FINE LOG ---
+
+}
+
+// Funzione helper per l'inverse square root (puoi trovarne implementazioni
+// in Go online o usare math.Float32bits e una traduzione diretta dall'originale in C).
+// Per semplicità, usiamo una versione leggermente ottimizzata.
+func invSqrt(n float32) float32 {
+	return 1.0 / float32(math.Sqrt(float64(n)))
+}
+
+func normalize(v []float32) {
+	var normSq float32
+	for _, val := range v {
+		normSq += val * val
+	}
+	if normSq > 0 {
+		// Calcola 1 / norm invece di norm, in un solo passaggio.
+		invNorm := invSqrt(normSq)
+		for i := range v {
+			// Moltiplicazione invece di divisione.
+			v[i] *= invNorm
+		}
+	}
 }
 
 // RLock acquires a read lock on the index. For use by external callers like the DB.
@@ -994,7 +1362,7 @@ func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uin
 		node.InternalID = id
 	}
 
-	return h.nodes, h.externalToInternalID, h.internalCounter, h.entrypointID, h.maxLevel, h.quantizer
+	return h.nodes, h.externalToInternalID, uint32(h.nodeCounter.Load()), h.entrypointID, h.maxLevel, h.quantizer
 }
 
 // LoadSnapshotData restores the internal state of the index from snapshot data.
@@ -1009,7 +1377,7 @@ func (h *Index) LoadSnapshotData(
 ) error {
 	h.nodes = nodes
 	h.externalToInternalID = extToInt
-	h.internalCounter = counter
+	h.nodeCounter.Store(uint64(counter))
 	h.entrypointID = entrypoint
 	h.maxLevel = maxLevel
 	h.quantizer = quantizer

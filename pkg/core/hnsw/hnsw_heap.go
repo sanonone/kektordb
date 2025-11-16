@@ -16,7 +16,7 @@ import (
 // with the smallest distance (the nearest neighbor) is always at the top.
 // This heap is used to store nodes that are yet to be visited during a search,
 // ensuring that the algorithm always explores the most promising candidate next.
-type minHeap []types.Candidate
+type minHeap []*types.Candidate
 
 // Len returns the size of the heap.
 func (h minHeap) Len() int { return len(h) }
@@ -28,7 +28,7 @@ func (h minHeap) Less(i, j int) bool { return h[i].Distance < h[j].Distance }
 func (h minHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
 
 // Push adds an element to the heap. It uses a pointer receiver to modify the underlying slice.
-func (h *minHeap) Push(x any) { *h = append(*h, x.(types.Candidate)) }
+func (h *minHeap) Push(x any) { *h = append(*h, x.(*types.Candidate)) }
 
 // Pop removes and returns the element with the highest priority (the smallest distance) from the heap.
 func (h *minHeap) Pop() any {
@@ -44,7 +44,7 @@ func (h *minHeap) Pop() any {
 // This heap is used to maintain the set of the k best nodes found so far.
 // The root element is the "worst" of the best, making it easy to replace
 // when a closer neighbor is discovered.
-type maxHeap []types.Candidate
+type maxHeap []*types.Candidate
 
 // Len returns the size of the heap.
 func (h maxHeap) Len() int { return len(h) }
@@ -56,7 +56,7 @@ func (h maxHeap) Less(i, j int) bool { return h[i].Distance > h[j].Distance } //
 func (h maxHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
 
 // Push adds an element to the heap. It uses a pointer receiver to modify the underlying slice.
-func (h *maxHeap) Push(x any) { *h = append(*h, x.(types.Candidate)) }
+func (h *maxHeap) Push(x any) { *h = append(*h, x.(*types.Candidate)) }
 
 // Pop removes and returns the element with the highest priority (the largest distance) from the heap.
 func (h *maxHeap) Pop() any {

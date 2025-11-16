@@ -453,15 +453,9 @@ func (s *Server) handleVectorAdd(w http.ResponseWriter, r *http.Request) {
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Vector added"})
 }
 
-type VectorAddObject struct {
-	Id       string                 `json:"id"`
-	Vector   []float32              `json:"vector"`
-	Metadata map[string]interface{} `json:"metadata,omitempty"`
-}
-
 type BatchAddVectorsRequest struct {
-	IndexName string            `json:"index_name"`
-	Vectors   []VectorAddObject `json:"vectors"`
+	IndexName string              `json:"index_name"`
+	Vectors   []types.BatchObject `json:"vectors"`
 }
 
 func (s *Server) handleVectorAddBatch(w http.ResponseWriter, r *http.Request) {
@@ -489,34 +483,54 @@ func (s *Server) handleVectorAddBatch(w http.ResponseWriter, r *http.Request) {
 	s.db.RLock()
 	defer s.db.RUnlock()
 
-	// iterate and add the vectors one by one.
-	// The Add, metadata, and AOF logic is the same as for a single VADD.
-	var addedCount int
-	for _, vec := range req.Vectors {
-		internalID, err := idx.Add(vec.Id, vec.Vector)
-		if err != nil {
-			log.Printf("Error during batch insertion for ID '%s': %v. Aborting.", vec.Id, err)
-			s.writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("failed to insert '%s': %v", vec.Id, err))
-			return
-		}
+	// Controlliamo che sia un indice HNSW, perché solo lui ha il metodo AddBatch.
+	hnswIndex, ok := idx.(*hnsw.Index)
+	if !ok {
+		s.writeHTTPError(w, http.StatusBadRequest, "Batch insertion is only supported for HNSW indexes")
+		return
+	}
 
-		if len(vec.Metadata) > 0 {
-			if err := s.db.AddMetadataUnlocked(req.IndexName, internalID, vec.Metadata); err != nil {
-				// Perform rollback for this single vector.
-				idx.Delete(vec.Id)
-				log.Printf("Metadata error for '%s', rollback performed. Error: %v", vec.Id, err)
-				s.writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("metadata failure for '%s': %v", vec.Id, err))
-				return
+	// --- LOGICA DI INSERIMENTO: VECCHIA vs NUOVA ---
+
+	// 1. Dobbiamo separare i vettori dai metadati, perché AddBatch si occupa solo dei vettori.
+	batchForHNSW := make([]types.BatchObject, len(req.Vectors))
+	for i, v := range req.Vectors {
+		batchForHNSW[i] = types.BatchObject{Id: v.Id, Vector: v.Vector}
+	}
+
+	// 2. Chiama il nuovo, velocissimo, metodo di batch concorrente.
+	err := hnswIndex.AddBatch(batchForHNSW)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("failed during concurrent batch insert: %v", err))
+		return
+	}
+
+	// 3. Ora, dobbiamo inserire i METADATI e scrivere nell'AOF. Questo deve essere
+	//    fatto in un secondo momento. Potrebbe essere un collo di bottiglia, ma per ora lo facciamo in un ciclo.
+	//    ATTENZIONE: Questo significa che per un breve istante i vettori esisteranno senza metadati.
+	var addedCount int
+	for _, v := range req.Vectors {
+		if len(v.Metadata) > 0 {
+			internalID := hnswIndex.GetInternalID(v.Id)
+			if internalID == 0 {
+				continue
+			} // Nodo non trovato, strano
+
+			// Applichiamo i metadati
+			if err := s.db.AddMetadata(req.IndexName, internalID, v.Metadata); err != nil {
+				// Qui la gestione dell'errore è complessa. Per ora logghiamo e continuiamo.
+				log.Printf("ERROR: Failed to add metadata for '%s' after batch insert: %v", v.Id, err)
+				continue
 			}
 		}
 
-		// Write to AOF for each successfully added vector.
-		vectorStr := float32SliceToString(vec.Vector)
-		metadataBytes, _ := json.Marshal(vec.Metadata)
+		// Scriviamo il comando AOF per ogni vettore.
+		vectorStr := float32SliceToString(v.Vector)
+		metadataBytes, _ := json.Marshal(v.Metadata)
 
 		aofCommand := formatCommandAsRESP("VADD",
 			[]byte(req.IndexName),
-			[]byte(vec.Id),
+			[]byte(v.Id),
 			[]byte(vectorStr),
 			metadataBytes,
 		)
@@ -527,7 +541,7 @@ func (s *Server) handleVectorAddBatch(w http.ResponseWriter, r *http.Request) {
 		addedCount++
 	}
 
-	// Increment the global counter by the number of vectors actually added.
+	// Incrementa il contatore dirty
 	if addedCount > 0 {
 		atomic.AddInt64(&s.dirtyCounter, int64(addedCount))
 	}

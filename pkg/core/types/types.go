@@ -41,3 +41,10 @@ type IndexInfo struct {
 	VectorCount    int                     `json:"vector_count"`
 	TextLanguage   string                  `json:"text_language"`
 }
+
+// BatchObject definisce la struttura per un singolo elemento in un inserimento batch.
+type BatchObject struct {
+	Id       string                 `json:"id"`
+	Vector   []float32              `json:"vector"`
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
+}
