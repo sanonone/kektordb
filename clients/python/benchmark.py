@@ -147,7 +147,7 @@ class KektorDBRunner(DBRunner):
         start_time = time.time()
         all_objs = [{"id": str(i), "vector": v.tolist()} for i, v in enumerate(vectors)]
         
-        BATCH_SIZE = 1024 
+        BATCH_SIZE = 5120
         for i in tqdm(range(0, num_vectors, BATCH_SIZE), desc=f"Indicizzazione {self.name()}"):
             self.client.vadd_batch(index_name, all_objs[i : i + BATCH_SIZE])
         
@@ -181,7 +181,7 @@ class QdrantRunner(DBRunner):
         subprocess.run(["docker", "rm", "-f", self.container_name], capture_output=True)
         subprocess.run(["docker", "run", "-d", "--name", self.container_name, "-p", f"{self.port}:6333", "qdrant/qdrant"], check=True)
         print(f"[{self.name()}] Attesa di 10s per l'avvio del server...")
-        time.sleep(10)
+        time.sleep(5)
         self.client = QdrantClient(host=self.host, port=self.port, timeout=60)
     def index_vectors(self, index_name, vectors, metric, config):
         num_vectors, dims = vectors.shape
@@ -246,7 +246,7 @@ class ChromaDBRunner(DBRunner):
         ]
         subprocess.run(docker_command, check=True)
         print(f"[{self.name()}] Attesa di 15s per l'avvio del server...")
-        time.sleep(15)  # Aumentato da 10 a 15 secondi
+        time.sleep(5)  # Aumentato da 10 a 15 secondi
         
         # Inizializza il client e verifica la connessione
         self.client = chromadb.HttpClient(

@@ -556,7 +556,26 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 		return nil
 	}
 
-	numWorkers := runtime.NumCPU()
+	numWorkers := runtime.NumCPU() * 2
+
+	// --- NUOVA LOGICA DI "COLD START" / INNESCO ---
+	h.mu.RLock()
+	currentSize := h.nodeCounter.Load()
+	h.mu.RUnlock()
+
+	// Se il grafo è troppo piccolo per supportare un'efficace costruzione parallela,
+	// usiamo l'inserimento sequenziale per creare un "nucleo" solido.
+	// Una buona soglia è un numero di nodi pari a efConstruction.
+	if currentSize < uint64(h.efConstruction) {
+		// Usa Add() single-threaded, che è di alta qualità.
+		for _, obj := range objects {
+			// Ignoriamo l'errore per semplicità (es. ID duplicati)
+			h.Add(obj.Id, obj.Vector)
+		}
+		return nil // Inserimento completato in modalità sequenziale.
+	}
+	// --- FINE NUOVA LOGICA ---
+
 	if numVectors < numWorkers {
 		numWorkers = numVectors
 	}
@@ -573,11 +592,10 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 
 		// ... (la logica di conversione/quantizzazione rimane la stessa) ...
 		var storedVector interface{}
-		/*
-			if h.metric == distance.Cosine && h.precision == distance.Float32 {
-				normalize(obj.Vector)
-			}
-		*/
+
+		if h.metric == distance.Cosine && h.precision == distance.Float32 {
+			normalize(obj.Vector)
+		}
 
 		switch h.precision {
 		case distance.Float32:
@@ -706,18 +724,24 @@ func (h *Index) batchWorker(nodesToProcess []*Node, linkQueue chan<- LinkRequest
 			candidates, err := h.searchLayerUnlocked(originalVector, currentEntryPoint, h.efConstruction, l, nil, h.efConstruction, uint32(h.nodeCounter.Load()))
 			if err != nil || len(candidates) == 0 {
 				log.Printf("WARNING: batch worker search failed for node %d at level %d", node.InternalID, l)
-				break
+				// Non fare 'break'. Resetta l'entry point a quello globale
+				// in modo che il prossimo livello (l-1) abbia una possibilità.
+				currentEntryPoint = h.entrypointID
+				continue // Salta al prossimo livello (l-1)
+
 			}
 
-			maxConns := h.m
-			if l == 0 {
-				maxConns = h.mMax0
-			}
+			/*
+				maxConns := h.m
+				if l == 0 {
+					maxConns = h.mMax0
+				}
 
-			selectedNeighbors := h.selectNeighbors(candidates, maxConns)
+				selectedNeighbors := h.selectNeighbors(candidates, maxConns)
+			*/
 
-			neighborIDs := make([]uint32, len(selectedNeighbors))
-			for i, neighbor := range selectedNeighbors {
+			neighborIDs := make([]uint32, len(candidates))
+			for i, neighbor := range candidates {
 				neighborIDs[i] = neighbor.Id
 			}
 			linkQueue <- LinkRequest{
@@ -762,6 +786,15 @@ func (h *Index) commitLinks(linkQueue <-chan LinkRequest, newNodes []*Node) {
 			}
 		}
 	}
+
+	// --- NUOVO: Crea un Set degli ID dei nodi nuovi ---
+	// Questo ci serve per un lookup O(1) per sapere se un nodo
+	// è nuovo (dal batch) o vecchio (già nel grafo).
+	newNodeIDSet := make(map[uint32]struct{}, len(newNodes))
+	for _, node := range newNodes {
+		newNodeIDSet[node.InternalID] = struct{}{}
+	}
+	// --- FINE NUOVO ---
 
 	// --- Fase di Commit (sotto Write Lock) ---
 	h.mu.Lock()
@@ -811,13 +844,41 @@ func (h *Index) commitLinks(linkQueue <-chan LinkRequest, newNodes []*Node) {
 			// Dobbiamo potare. Costruiamo la lista di types.Candidate
 			allCandidates := make([]types.Candidate, 0, len(candidateSet))
 			for id := range candidateSet {
+				// Gestione di un caso limite: un candidato potrebbe essere se stesso
+				// (raro, ma possibile con logiche di ritorno complesse).
+				if id == nodeID {
+					continue
+				}
+
+				// Gestione di un caso limite: il nodo candidato non esiste più?
+				if h.nodes[id] == nil {
+					continue
+				}
 				dist, _ := h.distance(node.Vector, h.nodes[id].Vector)
 				allCandidates = append(allCandidates, types.Candidate{Id: id, Distance: dist})
 			}
 
 			// Ordina e seleziona
 			sort.Slice(allCandidates, func(i, j int) bool { return allCandidates[i].Distance < allCandidates[j].Distance })
-			prunedNeighbors := h.selectNeighbors(allCandidates, maxConns)
+			// prunedNeighbors := h.selectNeighbors(allCandidates, maxConns)
+
+			// --- QUESTA È LA CORREZIONE CHIAVE ---
+			var prunedNeighbors []types.Candidate
+
+			if _, isNewNode := newNodeIDSet[nodeID]; isNewNode {
+				// CASO 1: Questo è un NODO NUOVO.
+				// Stiamo scegliendo i suoi collegamenti *iniziali*.
+				// Usiamo l'euristica di diversità 'selectNeighbors'.
+				prunedNeighbors = h.selectNeighbors(allCandidates, maxConns)
+			} else {
+				// CASO 2: Questo è un NODO VECCHIO.
+				// Stiamo aggiornando i suoi collegamenti.
+				// Dobbiamo *sempre* tenere i 'maxConns' vicini PIÙ VICINI.
+				// Dato che 'allCandidates' è già ordinata,
+				// basta prendere i primi 'maxConns' elementi.
+				prunedNeighbors = allCandidates[:maxConns]
+			}
+			// --- FINE CORREZIONE ---
 
 			prunedIDs := make([]uint32, len(prunedNeighbors))
 			for i, p := range prunedNeighbors {
@@ -1101,7 +1162,6 @@ func (h *Index) selectNeighbors(candidates []types.Candidate, m int) []types.Can
 				break
 			}
 
-			// --- EXPERIMENTAL CHANGE ---
 			// If the metric is Cosine, we use a "less than or equal" comparison
 			// to be less aggressive in discarding candidates.
 			var condition bool

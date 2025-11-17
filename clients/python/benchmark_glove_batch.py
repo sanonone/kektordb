@@ -15,8 +15,8 @@ DATASET_TXT_FILE = "glove.6B.100d.txt" # Useremo i vettori a 50 dimensioni
 
 METRIC = "cosine" # GloVe è tipicamente usato con la similarità del coseno
 K_SEARCH = 10
-NUM_QUERIES = 100
-BATCH_SIZE = 256 # Dimensione del batch per l'inserimento
+NUM_QUERIES = 1000
+BATCH_SIZE = 5120# Dimensione del batch per l'inserimento
 
 def download_and_extract_dataset():
     """Scarica e de-comprime il dataset se non è presente in locale."""
@@ -94,7 +94,7 @@ def main(args):
         # 2. Prepara KektorDB
         print(f"\n--- Fase di Indicizzazione (BATCH, {METRIC}, float32) ---")
         try:
-            client.vcreate(INDEX_NAME, metric=METRIC, precision="float32", ef_construction=200, m=16)
+            client.vcreate(INDEX_NAME, metric=METRIC, precision="float32", ef_construction=400, m=16)
         except APIError as e:
             if "already exists" in str(e):
                 print(f"Indice '{INDEX_NAME}' probabilmente già esistente.")
