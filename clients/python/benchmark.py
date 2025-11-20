@@ -56,63 +56,60 @@ def fvecs_read(filename, c_contiguous=True):
     return fv
 
 def get_dataset(name: str, size: int):
-    """Scarica, prepara e restituisce il dataset specificato, tagliato alla dimensione richiesta."""
-    print(f"\n--- Preparazione del dataset: {name} ---")
+    print(f"\n--- Preparazione dataset: {name} ---")
+    base_dir = "./datasets"
+    os.makedirs(base_dir, exist_ok=True)
     
     if name == "glove-100d":
         url = "https://nlp.stanford.edu/data/glove.6B.zip"
-        zip_file = "glove.6B.zip"
-        txt_file = "glove.6B.100d.txt"
-        if not os.path.exists(txt_file):
-            if not os.path.exists(zip_file):
-                print(f"Download di {url}...")
-                urllib.request.urlretrieve(url, zip_file)
-            print(f"Estrazione di {zip_file}...")
-            with zipfile.ZipFile(zip_file, 'r') as zf:
-                zf.extract(txt_file)
+        zip_path = os.path.join(base_dir, "glove.6B.zip")
+        txt_path = os.path.join(base_dir, "glove.6B.100d.txt")
         
-        print(f"Caricamento di {txt_file}...")
+        if not os.path.exists(txt_path):
+            if not os.path.exists(zip_path):
+                print(f"Download {url}...")
+                urllib.request.urlretrieve(url, zip_path)
+            print("Estrazione...")
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                zf.extract("glove.6B.100d.txt", path=base_dir)
+        
+        print("Parsing vettori...")
         vectors = []
-        with open(txt_file, 'r', encoding='utf-8') as f:
+        with open(txt_path, 'r', encoding='utf-8') as f:
             for line in f:
                 parts = line.split()
                 try:
                     vec = np.array(parts[1:], dtype=np.float32)
-                    if len(vec) == 100: # Assicura la dimensione corretta
-                        vectors.append(vec)
-                except (ValueError, IndexError): continue
+                    if len(vec) == 100: vectors.append(vec)
+                except: continue
         all_vectors = np.array(vectors)
         metric = "cosine"
 
     elif name == "sift-1m":
         url = "ftp://ftp.irisa.fr/local/texmex/corpus/sift.tar.gz"
-        tar_file = "sift.tar.gz"
-        fvecs_file = "sift/sift_base.fvecs"
-        npy_file = "sift_base.npy"
-        if not os.path.exists(npy_file):
-            if not os.path.exists(fvecs_file):
-                if not os.path.exists(tar_file):
-                    print(f"Download di {url}...")
-                    urllib.request.urlretrieve(url, tar_file)
-                print(f"Estrazione di {tar_file}...")
-                with tarfile.open(tar_file, "r:gz") as tf:
-                    tf.extractall()
-            print(f"Conversione di {fvecs_file} in .npy...")
-            vectors = fvecs_read(fvecs_file)
-            np.save(npy_file, vectors)
+        tar_path = os.path.join(base_dir, "sift.tar.gz")
+        fvecs_path = os.path.join(base_dir, "sift/sift_base.fvecs")
+        npy_path = os.path.join(base_dir, "sift_base.npy")
         
-        all_vectors = np.load(npy_file)
+        if not os.path.exists(npy_path):
+            if not os.path.exists(fvecs_path):
+                if not os.path.exists(tar_path):
+                    print(f"Download {url}...")
+                    urllib.request.urlretrieve(url, tar_path)
+                print("Estrazione...")
+                with tarfile.open(tar_path, "r:gz") as tf:
+                    tf.extractall(path=base_dir)
+            print("Conversione npy...")
+            vectors = fvecs_read(fvecs_path)
+            np.save(npy_path, vectors)
+        else:
+            all_vectors = np.load(npy_path)
         metric = "euclidean"
-    
     else:
-        raise ValueError(f"Dataset '{name}' non riconosciuto.")
+        raise ValueError("Dataset sconosciuto")
 
-    # Taglia il dataset alla dimensione richiesta
-    if size > 0 and size < len(all_vectors):
-        print(f"Utilizzo di un subset di {size} vettori su {len(all_vectors)} totali.")
+    if 0 < size < len(all_vectors):
         return all_vectors[:size], metric
-    
-    print(f"Utilizzo dell'intero dataset di {len(all_vectors)} vettori.")
     return all_vectors, metric
 
 # ==============================================================================
@@ -440,7 +437,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Benchmark unificato per database vettoriali.")
     parser.add_argument(
-        "--dataset", type=str, required=True, choices=["glove-100d", "sift-1m"],
+        "--dataset", type=str, required=True, choices=["glove-100d", "glove-300d", "sift-1m"],
         help="Nome del dataset da usare (es. 'glove-100d')."
     )
     parser.add_argument(

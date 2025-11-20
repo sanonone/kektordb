@@ -2,85 +2,159 @@
 // graph algorithm for efficient approximate nearest neighbor search.
 //
 // This file defines the min-heap and max-heap data structures used extensively
-// during the graph traversal and construction phases of the HNSW algorithm. These
-// heaps are built on Go's standard container/heap package and are specialized
-// for managing search candidates.
+// during the graph traversal and construction phases of the HNSW algorithm.
+// OPTIMIZED VERSION: Uses value semantics (no pointers) for CPU Cache locality and zero GC overhead.
 package hnsw
 
 import (
-	"container/heap"
 	"github.com/sanonone/kektordb/pkg/core/types"
 )
 
-// minHeap is a min-heap of candidates, ordered by distance. The candidate
-// with the smallest distance (the nearest neighbor) is always at the top.
-// This heap is used to store nodes that are yet to be visited during a search,
-// ensuring that the algorithm always explores the most promising candidate next.
-type minHeap []*types.Candidate
+// --- MIN HEAP (Coda di priorità: il più vicino è in cima) ---
+// Usato per gestire la lista dei candidati da esplorare.
 
-// Len returns the size of the heap.
+// minHeap is a specialized heap for candidates.
+// NOTE: Stores values directly, not pointers.
+type minHeap []types.Candidate
+
 func (h minHeap) Len() int { return len(h) }
 
-// Less returns true if the candidate at index i has a smaller distance than the one at index j.
-func (h minHeap) Less(i, j int) bool { return h[i].Distance < h[j].Distance }
+// Peek returns the top element without removing it.
+// Returns a copy of the struct (cheap, ~16 bytes).
+// If empty, returns a zero-value Candidate (check Len() before calling if unsure).
+func (h minHeap) Peek() types.Candidate {
+	if len(h) == 0 {
+		return types.Candidate{}
+	}
+	return h[0]
+}
 
-// Swap swaps the elements at indices i and j.
-func (h minHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+// Push adds an element by value.
+func (h *minHeap) Push(x types.Candidate) {
+	*h = append(*h, x)
+	h.up(len(*h) - 1)
+}
 
-// Push adds an element to the heap. It uses a pointer receiver to modify the underlying slice.
-func (h *minHeap) Push(x any) { *h = append(*h, x.(*types.Candidate)) }
-
-// Pop removes and returns the element with the highest priority (the smallest distance) from the heap.
-func (h *minHeap) Pop() any {
+// Pop removes the top element. Returns types.Candidate value.
+func (h *minHeap) Pop() types.Candidate {
 	old := *h
 	n := len(old)
-	x := old[n-1]
-	old[n-1] = nil
+	x := old[0]       // Save the root (min)
+	old[0] = old[n-1] // Move last to root
+
+	// Non serve impostare a nil old[n-1] perché non sono puntatori!
+	// Il GC ignora i dati primitivi sovrascritti o fuori slice.
+
 	*h = old[0 : n-1]
+
+	if len(*h) > 0 {
+		h.down(0, len(*h))
+	}
 	return x
 }
 
-// maxHeap is a max-heap of candidates, ordered by distance. The candidate
-// with the largest distance (the farthest neighbor) is always at the top.
-// This heap is used to maintain the set of the k best nodes found so far.
-// The root element is the "worst" of the best, making it easy to replace
-// when a closer neighbor is discovered.
-type maxHeap []*types.Candidate
-
-// Len returns the size of the heap.
-func (h maxHeap) Len() int { return len(h) }
-
-// Less returns true if the candidate at index i has a larger distance than the one at index j,
-// giving it a higher priority in the max-heap.
-func (h maxHeap) Less(i, j int) bool { return h[i].Distance > h[j].Distance } // distanza più grande = priorità maggiore quindi deve salire in cima
-// Swap swaps the elements at indices i and j.
-func (h maxHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
-
-// Push adds an element to the heap. It uses a pointer receiver to modify the underlying slice.
-func (h *maxHeap) Push(x any) { *h = append(*h, x.(*types.Candidate)) }
-
-// Pop removes and returns the element with the highest priority (the largest distance) from the heap.
-func (h *maxHeap) Pop() any {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	old[n-1] = nil
-	*h = old[0 : n-1]
-	return x
+func (h minHeap) up(j int) {
+	for {
+		i := (j - 1) / 2 // parent
+		if i == j || !(h[j].Distance < h[i].Distance) {
+			break
+		}
+		h[i], h[j] = h[j], h[i]
+		j = i
+	}
 }
 
-// newMinHeap creates a new min-heap with a specified initial capacity.
+func (h minHeap) down(i0, n int) {
+	i := i0
+	for {
+		j1 := 2*i + 1
+		if j1 >= n || j1 < 0 {
+			break
+		}
+		j := j1 // left child
+		j2 := j1 + 1
+		if j2 < n && h[j2].Distance < h[j1].Distance {
+			j = j2 // right child
+		}
+		if !(h[j].Distance < h[i].Distance) {
+			break
+		}
+		h[i], h[j] = h[j], h[i]
+		i = j
+	}
+}
+
+// newMinHeap initializes a heap with capacity.
 func newMinHeap(capacity int) *minHeap {
-	// Create a slice with length 0 but the given capacity to pre-allocate memory.
 	h := make(minHeap, 0, capacity)
-	// Initialize the slice as a heap. While it starts empty.
-	heap.Init(&h)
 	return &h
 }
 
-// newMaxHeap creates a new max-heap with a specified initial capacity.
+// --- MAX HEAP (Mantiene i k migliori: il peggiore è in cima) ---
+// Usato per mantenere i risultati finali e decidere chi scartare.
+
+type maxHeap []types.Candidate
+
+func (h maxHeap) Len() int { return len(h) }
+
+func (h maxHeap) Peek() types.Candidate {
+	if len(h) == 0 {
+		return types.Candidate{}
+	}
+	return h[0]
+}
+
+func (h *maxHeap) Push(x types.Candidate) {
+	*h = append(*h, x)
+	h.up(len(*h) - 1)
+}
+
+func (h *maxHeap) Pop() types.Candidate {
+	old := *h
+	n := len(old)
+	x := old[0]       // Save root (max)
+	old[0] = old[n-1] // Move last to root
+	// Nessun azzeramento puntatori necessario qui
+	*h = old[0 : n-1]
+
+	if len(*h) > 0 {
+		h.down(0, len(*h))
+	}
+	return x
+}
+
+func (h maxHeap) up(j int) {
+	for {
+		i := (j - 1) / 2
+		if i == j || !(h[j].Distance > h[i].Distance) { // Greater than for MaxHeap
+			break
+		}
+		h[i], h[j] = h[j], h[i]
+		j = i
+	}
+}
+
+func (h maxHeap) down(i0, n int) {
+	i := i0
+	for {
+		j1 := 2*i + 1
+		if j1 >= n || j1 < 0 {
+			break
+		}
+		j := j1
+		j2 := j1 + 1
+		if j2 < n && h[j2].Distance > h[j1].Distance { // Greater than
+			j = j2
+		}
+		if !(h[j].Distance > h[i].Distance) {
+			break
+		}
+		h[i], h[j] = h[j], h[i]
+		i = j
+	}
+}
+
 func newMaxHeap(capacity int) *maxHeap {
 	h := make(maxHeap, 0, capacity)
-	heap.Init(&h)
 	return &h
 }

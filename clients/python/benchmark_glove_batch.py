@@ -16,7 +16,7 @@ DATASET_TXT_FILE = "glove.6B.100d.txt" # Useremo i vettori a 50 dimensioni
 METRIC = "cosine" # GloVe è tipicamente usato con la similarità del coseno
 K_SEARCH = 10
 NUM_QUERIES = 1000
-BATCH_SIZE = 5120# Dimensione del batch per l'inserimento
+BATCH_SIZE = 4096# Dimensione del batch per l'inserimento
 
 def download_and_extract_dataset():
     """Scarica e de-comprime il dataset se non è presente in locale."""
