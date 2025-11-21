@@ -1,11 +1,9 @@
-// Package server implements the main KektorDB server logic.
-//
 // This file provides functions for parsing and formatting a subset of the RESP
 // (Redis Serialization Protocol). It is used for handling client commands from
 // the TCP interface and for serializing commands to the Append-Only File (AOF).
 // The implementation is binary-safe.
 
-package server
+package persistence
 
 import (
 	"bufio"
@@ -25,9 +23,9 @@ type Command struct {
 	Args [][]byte
 }
 
-// ParseRESP reads a RESP-formatted command from a bufio.Reader.
+// ParseCommand reads a RESP-formatted command from a bufio.Reader.
 // It requires a bufio.Reader because a single command can span multiple lines.
-func ParseRESP(reader *bufio.Reader) (*Command, error) {
+func ParseCommand(reader *bufio.Reader) (*Command, error) {
 	line, err := reader.ReadString('\n')
 	if err != nil {
 		return nil, err
@@ -83,10 +81,10 @@ func ParseRESP(reader *bufio.Reader) (*Command, error) {
 	}, nil
 }
 
-// formatCommandAsRESP formats a command name and its arguments into a single
+// FormatCommand formats a command name and its arguments into a single
 // RESP-formatted string. It correctly handles nil arguments by writing a RESP
 // null bulk string.
-func formatCommandAsRESP(commandName string, args ...[]byte) string {
+func FormatCommand(commandName string, args ...[]byte) string {
 	var b strings.Builder
 
 	// Write the array header: number of elements.

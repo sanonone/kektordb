@@ -920,6 +920,10 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 // AddMetadataUnlocked adds metadata without acquiring a lock. The caller must ensure thread safety.
 func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[string]any) error {
 
+	// --- LOG DEBUG ---
+	log.Printf("[DEBUG METADATA] Adding for Index: %s, NodeID: %d, Data: %+v", indexName, nodeID, metadata)
+	// -----------------
+
 	// Ottiene la configurazione dell'indice per sapere quale analizzatore usare
 	idx, ok := s.vectorIndexes[indexName]
 	if !ok {
