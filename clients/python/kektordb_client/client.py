@@ -261,6 +261,32 @@ class KektorDBClient:
         }
         return self._request("POST", "/vector/actions/add-batch", json=payload)
 
+    def vimport(self, index_name: str, vectors: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Importa massivamente vettori in un indice (Bulk Load).
+        Questa operazione è ottimizzata per la velocità: non scrive sull'AOF riga per riga,
+        ma costruisce l'indice in memoria e forza uno snapshot alla fine.
+        
+        Args:
+            index_name: Il nome dell'indice.
+            vectors: Una lista di dizionari (stesso formato di vadd_batch).
+
+        Returns:
+            Un dizionario con lo stato e il numero di vettori importati.
+        """
+        payload = {
+            "index_name": index_name,
+            "vectors": vectors
+        }
+        # Nota: Aumentiamo il timeout perché l'import massivo può richiedere tempo
+        # prima di rispondere (specialmente durante lo snapshot finale).
+        original_timeout = self.timeout
+        self.timeout = 300 # 5 minuti di timeout per sicurezza
+        try:
+            return self._request("POST", "/vector/actions/import", json=payload)
+        finally:
+            self.timeout = original_timeout
+
     def vdelete(self, index_name: str, item_id: str) -> None:
         """
         Deletes a vector from an index (soft delete).

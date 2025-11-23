@@ -1,3 +1,7 @@
+// This file implements the operational methods of the Engine, wrapping core
+// database actions (KV set/get, Vector add/search) with persistence logic.
+// It ensures that every modification is written to the Append-Only File (AOF)
+// before or after being applied to the in-memory state, maintaining data durability.
 package engine
 
 import (
@@ -118,19 +122,11 @@ func (e *Engine) VDelete(indexName, id string) error {
 
 // VSearch is read-only, so no AOF interaction.
 func (e *Engine) VSearch(indexName string, query []float32, k int, filter string, efSearch int, alpha float64) ([]string, error) {
-	// Logica copiata/adattata dall'handler search
-	// Per ora ritorniamo solo gli ID stringa per semplicità,
-	// ma in futuro potremmo ritornare struct complete
-
 	idx, ok := e.DB.GetVectorIndex(indexName)
 	if !ok {
 		return nil, fmt.Errorf("index not found")
 	}
 	hnswIdx := idx.(*hnsw.Index)
-
-	// ... (Logica ibrida semplificata per brevità) ...
-	// Qui dovresti chiamare idx.SearchWithScores o l'hybrid search di DB
-	// Per ora facciamo solo vector search diretta per far compilare
 
 	results := idx.SearchWithScores(query, k, nil, efSearch)
 	ids := make([]string, len(results))
@@ -140,6 +136,7 @@ func (e *Engine) VSearch(indexName string, query []float32, k int, filter string
 	return ids, nil
 }
 
+// VAddBatch inserts multiple vectors concurrently into an index.
 func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 	idx, ok := e.DB.GetVectorIndex(indexName)
 	if !ok {
@@ -170,11 +167,49 @@ func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 		}
 
 		cmd := persistence.FormatCommand("VADD", []byte(indexName), []byte(item.Id), []byte(vecStr), meta)
-		// Nota: questo scrive N volte su disco. Non efficientissimo, ma sicuro.
+		// Note: This writes N times to disk. Not highly efficient, but safe.
 		// Future optimization: Buffered AOF writer.
 		e.AOF.Write(cmd)
 	}
 
 	atomic.AddInt64(&e.dirtyCounter, int64(len(items)))
+	return nil
+}
+
+// VImport performs a bulk import of vectors and immediately triggers a snapshot.
+// This is more efficient for large initial loads as it bypasses individual AOF writes.
+func (e *Engine) VImport(indexName string, items []types.BatchObject) error {
+	idx, ok := e.DB.GetVectorIndex(indexName)
+	if !ok {
+		return fmt.Errorf("index '%s' not found", indexName)
+	}
+	hnswIdx, ok := idx.(*hnsw.Index)
+	if !ok {
+		return fmt.Errorf("index is not HNSW")
+	}
+
+	// Block administrative operations (like other saves/rewrites) during import
+	e.adminMu.Lock()
+	defer e.adminMu.Unlock()
+
+	// 1. Mass insertion in memory (HNSW)
+	if err := hnswIdx.AddBatch(items); err != nil {
+		return err
+	}
+
+	// 2. Add Metadata
+	for _, item := range items {
+		if len(item.Metadata) > 0 {
+			id := hnswIdx.GetInternalID(item.Id)
+			e.DB.AddMetadataUnlocked(indexName, id, item.Metadata)
+		}
+	}
+
+	// 3. Immediate Snapshot (Bulk Persistence)
+	// Uses the private version that assumes adminMu is already held.
+	if err := e.saveSnapshotLocked(); err != nil {
+		return fmt.Errorf("import memory success but snapshot failed: %w", err)
+	}
+
 	return nil
 }

@@ -169,7 +169,11 @@ func (e *Engine) replayAOF() error {
 func (e *Engine) SaveSnapshot() error {
 	e.adminMu.Lock()
 	defer e.adminMu.Unlock()
+	return e.saveSnapshotLocked()
+}
 
+// saveSnapshotLocked creates a .kdb snapshot and truncates the AOF.
+func (e *Engine) saveSnapshotLocked() error {
 	tempSnap := e.snapPath + ".tmp"
 	f, err := os.Create(tempSnap)
 	if err != nil {

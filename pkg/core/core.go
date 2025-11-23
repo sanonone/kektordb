@@ -106,10 +106,10 @@ func (s *DB) Snapshot(writer io.Writer) error {
 	// 1c. Lock each individual HNSW index.
 	// Create a list of indexes to unlock later.
 	indexesToUnlock := make([]*hnsw.Index, 0, len(s.vectorIndexes))
-	for name, idx := range s.vectorIndexes {
+	for _, idx := range s.vectorIndexes {
 		if hnswIndex, ok := idx.(*hnsw.Index); ok {
 			hnswIndex.RLock()
-			log.Printf("Snapshot acquired read lock on index %s", name)
+			// log.Printf("Snapshot acquired read lock on index %s", name)
 			indexesToUnlock = append(indexesToUnlock, hnswIndex)
 		}
 	}
@@ -471,16 +471,16 @@ func (s *DB) GetVectors(indexName string, vectorIDs []string) ([]VectorData, err
 		return nil, fmt.Errorf("unsupported index type")
 	}
 
-	// --- LOGICA DI PARALLELISMO ---
+	// --- PARALLELISM LOGIC ---
 
-	// Canale per distribuire il "lavoro" (gli ID da cercare)
+	// Channel to distribute work (IDs to fetch)
 	jobs := make(chan string, len(vectorIDs))
-	// Canale per raccogliere i risultati
+	// Channel to collect results
 	resultsChan := make(chan VectorData, len(vectorIDs))
-	// WaitGroup per sapere quando tutti i worker hanno finito
+	// WaitGroup to know when all workers are done
 	var wg sync.WaitGroup
 
-	// Determina il numero di worker. Usiamo il numero di CPU disponibili come limite ragionevole.
+	// Determine the number of workers. number of available CPUs as a reasonable limit.
 	numWorkers := runtime.NumCPU()
 	if len(vectorIDs) < numWorkers {
 		numWorkers = len(vectorIDs)
@@ -489,12 +489,12 @@ func (s *DB) GetVectors(indexName string, vectorIDs []string) ([]VectorData, err
 		return []VectorData{}, nil
 	}
 
-	// 1. Avvia i Worker
+	// Start Workers
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// Ogni worker prende un ID dal canale `jobs`, lavora e invia il risultato.
+			// Each worker takes an ID from the jobs channel, processes it, and sends the result
 			for vectorID := range jobs {
 				nodeData, found := hnswIndex.GetNodeData(vectorID)
 				if !found {
@@ -511,17 +511,17 @@ func (s *DB) GetVectors(indexName string, vectorIDs []string) ([]VectorData, err
 		}()
 	}
 
-	// 2. Invia i Lavori
+	// Send Jobs
 	for _, id := range vectorIDs {
 		jobs <- id
 	}
-	close(jobs) // Chiudi il canale per segnalare ai worker che non ci sono più lavori
+	close(jobs) // Close the channel to signal workers that there are no more jobs
 
-	// 3. Attendi che tutti i worker finiscano
+	// Wait for all workers to finish
 	wg.Wait()
-	close(resultsChan) // Chiudi il canale dei risultati
+	close(resultsChan)
 
-	// 4. Raccogli tutti i risultati
+	// Collect all results
 	finalResults := make([]VectorData, 0, len(resultsChan))
 	for result := range resultsChan {
 		finalResults = append(finalResults, result)
@@ -529,8 +529,6 @@ func (s *DB) GetVectors(indexName string, vectorIDs []string) ([]VectorData, err
 
 	return finalResults, nil
 }
-
-// --- Fine compattazione AOF ---
 
 // getMetadataForNode is a helper function to retrieve metadata for a given node ID.
 // Note: This implementation is inefficient as it scans the entire inverted index.
@@ -559,7 +557,7 @@ func (s *DB) getMetadataForNode(indexName string, nodeID uint32) map[string]any 
 func (s *DB) getMetadataForNodeUnlocked(indexName string, nodeID uint32) map[string]any {
 	metadata := make(map[string]any)
 
-	// fa la scansione dell'indice invertito
+	// Scan the inverted index
 	if invIdx, ok := s.invertedIndex[indexName]; ok {
 		for key, valueMap := range invIdx {
 			for value, idSet := range valueMap {
@@ -571,8 +569,6 @@ func (s *DB) getMetadataForNodeUnlocked(indexName string, nodeID uint32) map[str
 
 		}
 	}
-
-	// fare scansione b tree simile a sopra
 
 	return metadata
 }
@@ -599,11 +595,11 @@ type InvertedIndex map[string]map[string]map[string]PostingList
 
 // TextIndexStats holds statistics for a text index, used by ranking algorithms like BM25.
 type TextIndexStats struct {
-	// Numero totale di documenti in un campo indicizzato
+	// Total number of documents in an indexed field
 	TotalDocs int
-	// Lunghezza media di un campo in tutti i documenti
+	// Average length of a field across all documents
 	AvgFieldLength float64
-	// Mappa di DocID -> lunghezza del campo
+	// Map of DocID -> field length
 	DocLengths map[uint32]int
 }
 
@@ -631,11 +627,8 @@ type DB struct {
 // NewDB creates and returns a new, initialized DB instance.
 func NewDB() *DB {
 	return &DB{
-		kvStore:       NewKVStore(),
-		vectorIndexes: make(map[string]VectorIndex),
-
-		// iniziizza la mappa principale dell'indice, le mappe interne
-		// saranno create on demand quando necessario
+		kvStore:        NewKVStore(),
+		vectorIndexes:  make(map[string]VectorIndex),
 		invertedIndex:  make(map[string]map[string]map[string]map[uint32]struct{}),
 		bTreeIndex:     make(map[string]map[string]*btree.BTreeG[BTreeItem]),
 		textIndex:      make(InvertedIndex),
@@ -771,19 +764,19 @@ func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) err
 
 	}
 
-	log.Printf("[DEBUG COMPRESS] Clearing secondary indexes for '%s'", indexName)
+	// log.Printf("[DEBUG COMPRESS] Clearing secondary indexes for '%s'", indexName)
 	s.invertedIndex[indexName] = make(map[string]map[string]map[uint32]struct{})
 	s.bTreeIndex[indexName] = make(map[string]*btree.BTreeG[BTreeItem])
 	//    s.metadataStore[indexName] = make(map[uint32]map[string]interface{})
 
-	log.Printf("[DEBUG COMPRESS] Repopulating new index and secondary indexes...")
+	// log.Printf("[DEBUG COMPRESS] Repopulating new index and secondary indexes...")
 	for _, data := range allVectors {
 		internalID, err := newIndex.Add(data.ID, data.Vector)
 		if err != nil {
 			log.Printf("WARNING: Failed to add vector %s during compression: %v", data.ID, err)
 			continue
 		}
-		// Ri-associa i metadati
+		// Re-associate metadata
 		if len(data.Metadata) > 0 {
 			s.AddMetadataUnlocked(indexName, internalID, data.Metadata)
 		}
@@ -800,7 +793,6 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Ottiene la configurazione dell'indice per sapere quale analizzatore usare
 	idx, ok := s.vectorIndexes[indexName]
 	if !ok {
 		return nil
@@ -818,16 +810,14 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 	case "italian":
 		analyzer = textanalyzer.NewItalianStemmer()
 	default:
-		// Nessun analizzatore se la lingua non è impostata o non è supportata
 	}
 
 	for key, value := range metadata {
-		switch v := value.(type) { // controlla il tipo della variabile any
+		switch v := value.(type) {
 		case string:
-			// --- LOGICA INDICE INVERTITO (invariata) ---
 			indexMetadata, ok := s.invertedIndex[indexName]
 			if !ok {
-				return fmt.Errorf("indice di metadati per '%s' non trovato", indexName)
+				return fmt.Errorf("metadata index for '%s' not found", indexName)
 			}
 			if _, ok := indexMetadata[key]; !ok {
 				indexMetadata[key] = make(map[string]map[uint32]struct{})
@@ -837,11 +827,9 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 			}
 			indexMetadata[key][v][nodeID] = struct{}{}
 
-			// --- Indicizzazione Full-Text (con analyzer) ---
 			if analyzer != nil {
 				tokens := analyzer.Analyze(v)
 
-				// Inizializza le mappe se non esistono
 				if _, ok := s.textIndex[indexName][key]; !ok {
 					s.textIndex[indexName][key] = make(map[string]PostingList)
 				}
@@ -853,25 +841,19 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 
 				stats := s.textIndexStats[indexName][key]
 
-				// --- NUOVA LOGICA BM25 ---
-
-				// 1. Aggiorna le statistiche del documento
 				if _, docExists := stats.DocLengths[nodeID]; !docExists {
 					stats.TotalDocs++
 				}
 				stats.DocLengths[nodeID] = len(tokens)
 
-				// 2. Calcola le frequenze dei termini (TF) per questo documento
 				termFrequencies := make(map[string]int)
 				for _, token := range tokens {
 					termFrequencies[token]++
 				}
 
-				// 3. Aggiorna l'indice invertido con TF
 				for token, freq := range termFrequencies {
 					list := s.textIndex[indexName][key][token]
 
-					// Controlla se il docID è già nella lista per evitare duplicati
 					found := false
 					for _, entry := range list {
 						if entry.DocID == nodeID {
@@ -892,25 +874,20 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 			// --- NUOVA LOGICA B-TREE ---
 			indexBTree, ok := s.bTreeIndex[indexName]
 			if !ok {
-				return fmt.Errorf("indice b-tree per '%s' non trovato", indexName)
+				return fmt.Errorf("b-tree index for '%s' not found", indexName)
 			}
 
-			// Controlla se un B-Tree per questa chiave esiste già, altrimenti crealo.
 			if _, ok := indexBTree[key]; !ok {
 				indexBTree[key] = btree.NewBTreeG[BTreeItem](btreeItemLess)
 			}
 
-			// Inserisci l'item nel B-Tree.
 			indexBTree[key].Set(BTreeItem{Value: v, NodeID: nodeID})
 
 		default:
-			// Per ora ignoriamo altri tipi (bool, etc.)
 			continue
 		}
 	}
 
-	// Dobbiamo ricalcolare la lunghezza media del campo, che è costoso.
-	// Potremmo farlo qui o in un processo separato. Per ora, lo facciamo qui.
 	s.recalculateAvgFieldLengths(indexName)
 
 	return nil
@@ -920,15 +897,11 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 // AddMetadataUnlocked adds metadata without acquiring a lock. The caller must ensure thread safety.
 func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[string]any) error {
 
-	// --- LOG DEBUG ---
-	log.Printf("[DEBUG METADATA] Adding for Index: %s, NodeID: %d, Data: %+v", indexName, nodeID, metadata)
-	// -----------------
-
-	// Ottiene la configurazione dell'indice per sapere quale analizzatore usare
+	// Get the index configuration to determine which text analyzer to use.
 	idx, ok := s.vectorIndexes[indexName]
 	if !ok {
 		return nil
-	} // L'indice non esiste, non fare nulla
+	}
 
 	hnswIndex, ok := idx.(*hnsw.Index)
 	if !ok {
@@ -936,22 +909,22 @@ func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[s
 	}
 
 	var analyzer textanalyzer.Analyzer
-	switch hnswIndex.TextLanguage() { // Dobbiamo creare questo metodo getter
+	switch hnswIndex.TextLanguage() {
 	case "english":
 		analyzer = textanalyzer.NewEnglishStemmer()
 	case "italian":
 		analyzer = textanalyzer.NewItalianStemmer()
 	default:
-		// Nessun analizzatore se la lingua non è impostata o non è supportata
+
 	}
 
 	for key, value := range metadata {
-		switch v := value.(type) { // controlla il tipo della variabile any
+		switch v := value.(type) { // Check the type of the 'any' variable
 		case string:
 			// --- LOGICA INDICE INVERTITO (invariata) ---
 			indexMetadata, ok := s.invertedIndex[indexName]
 			if !ok {
-				return fmt.Errorf("indice di metadati per '%s' non trovato", indexName)
+				return fmt.Errorf("metadata index for '%s' not found", indexName)
 			}
 			if _, ok := indexMetadata[key]; !ok {
 				indexMetadata[key] = make(map[string]map[uint32]struct{})
@@ -961,11 +934,11 @@ func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[s
 			}
 			indexMetadata[key][v][nodeID] = struct{}{}
 
-			// --- Indicizzazione Full-Text (con analyzer) ---
+			// --- FULL-TEXT INDEXING (with analyzer) ---
 			if analyzer != nil {
 				tokens := analyzer.Analyze(v)
 
-				// Inizializza le mappe se non esistono
+				// Initialize maps if they don't exist
 				if _, ok := s.textIndex[indexName][key]; !ok {
 					s.textIndex[indexName][key] = make(map[string]PostingList)
 				}
@@ -977,25 +950,25 @@ func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[s
 
 				stats := s.textIndexStats[indexName][key]
 
-				// --- NUOVA LOGICA BM25 ---
+				// --- BM25 LOGIC ---
 
-				// 1. Aggiorna le statistiche del documento
+				// Update document statistics
 				if _, docExists := stats.DocLengths[nodeID]; !docExists {
 					stats.TotalDocs++
 				}
 				stats.DocLengths[nodeID] = len(tokens)
 
-				// 2. Calcola le frequenze dei termini (TF) per questo documento
+				// 2. Calculate term frequencies (TF) for this document
 				termFrequencies := make(map[string]int)
 				for _, token := range tokens {
 					termFrequencies[token]++
 				}
 
-				// 3. Aggiorna l'indice invertido con TF
+				// 3. Update the inverted index with TF
 				for token, freq := range termFrequencies {
 					list := s.textIndex[indexName][key][token]
 
-					// Controlla se il docID è già nella lista per evitare duplicati
+					// Check if the docID is already in the list to avoid duplicates
 					found := false
 					for _, entry := range list {
 						if entry.DocID == nodeID {
@@ -1013,28 +986,27 @@ func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[s
 			}
 
 		case float64:
-			// --- NUOVA LOGICA B-TREE ---
+			// --- B-TREE LOGIC (for numerical data) ---
 			indexBTree, ok := s.bTreeIndex[indexName]
 			if !ok {
-				return fmt.Errorf("indice b-tree per '%s' non trovato", indexName)
+				return fmt.Errorf("b-tree index for '%s' not found", indexName)
 			}
 
-			// Controlla se un B-Tree per questa chiave esiste già, altrimenti crealo.
+			// Check if a B-Tree for this key already exists; otherwise, create it
 			if _, ok := indexBTree[key]; !ok {
 				indexBTree[key] = btree.NewBTreeG[BTreeItem](btreeItemLess)
 			}
 
-			// Inserisci l'item nel B-Tree.
+			// Insert the item into the B-Tree
 			indexBTree[key].Set(BTreeItem{Value: v, NodeID: nodeID})
 
 		default:
-			// Per ora ignoriamo altri tipi (bool, etc.)
+			// For now, we ignore other types (bool, etc.)
 			continue
 		}
 	}
 
-	// Dobbiamo ricalcolare la lunghezza media del campo, che è costoso.
-	// Potremmo farlo qui o in un processo separato. Per ora, lo facciamo qui.
+	// Recalculate the average field length
 	s.recalculateAvgFieldLengths(indexName)
 
 	return nil

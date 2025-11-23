@@ -133,10 +133,12 @@ class KektorDBRunner(DBRunner):
         
         start = time.time()
         all_objs = [{"id": str(i), "vector": v.tolist()} for i, v in enumerate(vectors)]
-        BATCH_SIZE = 2000 # Batch size ragionevole per HTTP JSON
+        BATCH_SIZE = 10000 # Batch size ragionevole per HTTP JSON
         
         for i in tqdm(range(0, len(vectors), BATCH_SIZE), desc="Index KektorDB"):
-            self.client.vadd_batch(index_name, all_objs[i : i + BATCH_SIZE])
+            # self.client.vadd_batch(index_name, all_objs[i : i + BATCH_SIZE])
+            chunk = all_objs[i : i + BATCH_SIZE]
+            self.client.vimport(index_name, chunk)
             
         indexing_time = time.time() - start
         

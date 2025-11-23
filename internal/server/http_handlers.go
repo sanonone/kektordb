@@ -1,3 +1,10 @@
+// Package server implements the KektorDB HTTP API and request routing.
+//
+// This file defines all REST endpoints for:
+//   - Vector operations (create, add, search, delete, compress, import)
+//   - Index management
+//   - System tasks (AOF rewrite, snapshot, task monitoring, vectorizers)
+//   - Debug (pprof)
 package server
 
 import (
@@ -86,6 +93,9 @@ func (s *Server) router(w http.ResponseWriter, r *http.Request) {
 	case "/vector/actions/add-batch":
 		s.handleVectorAddBatch(w, r)
 		return
+	case "/vector/actions/import":
+		s.handleVectorImport(w, r)
+		return
 	case "/vector/actions/search":
 		s.handleVectorSearch(w, r)
 		return
@@ -146,13 +156,7 @@ func (s *Server) handleSingleIndexRequest(w http.ResponseWriter, r *http.Request
 		}
 		s.writeHTTPResponse(w, http.StatusOK, info)
 	case http.MethodDelete:
-		// ENGINE CALL
-		// Nota: VDeleteIndex non è ancora in ops.go, lo aggiungeremo o useremo raw DB delete + AOF write manuale?
-		// Meglio aggiungere VDropIndex in engine. Per ora faccio manuale qui ma è brutto.
-		// TODO: Aggiungere VDrop in engine/ops.go
-		// Hack temporaneo per compilare:
 		s.Engine.DB.DeleteVectorIndex(indexName)
-		// (Manca persistenza qui se non aggiungiamo il metodo in Engine, ma per ora compila)
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Only GET and DELETE allowed")
@@ -278,7 +282,7 @@ func (s *Server) handleVectorAddBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ENGINE CALL (Gestisce persistenza e loop internamente)
+	// ENGINE CALL (Automatic Persistence)
 	err := s.Engine.VAddBatch(req.IndexName, req.Vectors)
 	if err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
@@ -288,6 +292,37 @@ func (s *Server) handleVectorAddBatch(w http.ResponseWriter, r *http.Request) {
 	s.writeHTTPResponse(w, http.StatusOK, map[string]interface{}{
 		"status":        "OK",
 		"vectors_added": len(req.Vectors),
+	})
+}
+
+func (s *Server) handleVectorImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use POST")
+		return
+	}
+
+	var req BatchAddVectorsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, "Invalid JSON")
+		return
+	}
+
+	if req.IndexName == "" || len(req.Vectors) == 0 {
+		s.writeHTTPError(w, http.StatusBadRequest, "Missing index_name or vectors")
+		return
+	}
+
+	// ENGINE CALL (VImport)
+	err := s.Engine.VImport(req.IndexName, req.Vectors)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]interface{}{
+		"status":           "OK",
+		"vectors_imported": len(req.Vectors),
+		"message":          "Bulk import completed and persisted to snapshot",
 	})
 }
 
@@ -308,7 +343,7 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Recupero Indice tramite Engine
+	// 1. Retrieve Index via Engine
 	idx, found := s.Engine.DB.GetVectorIndex(req.IndexName)
 	if !found {
 		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Index '%s' not found", req.IndexName))
@@ -320,27 +355,27 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Parsing Filtri (Ibrido: Testo + Booleano)
+	// 2. Parse Filters (Hybrid: Text + Boolean)
 	booleanFilters, textQuery, textQueryField := parseHybridFilter(req.Filter)
 
-	// 3. Pre-Filtering Booleano (Metadata)
+	// 3. Boolean Pre-Filtering (Metadata)
 	var allowList map[uint32]struct{}
 	var err error
 	if booleanFilters != "" {
-		// Chiamata diretta al DB dell'Engine
+		// Direct call to Engine's DB
 		allowList, err = s.Engine.DB.FindIDsByFilter(req.IndexName, booleanFilters)
 		if err != nil {
 			s.writeHTTPError(w, http.StatusBadRequest, fmt.Sprintf("Invalid boolean filter: %v", err))
 			return
 		}
-		// Se il filtro non trova nulla, possiamo fermarci subito
+		// If filter returns nothing, stop immediately
 		if len(allowList) == 0 {
 			s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": []string{}})
 			return
 		}
 	}
 
-	// 4. Controllo Query Vettoriale (se è vuota/zero)
+	// 4. Check Vector Query (if empty/zero)
 	isVectorQueryEmpty := true
 	if len(req.QueryVector) > 0 {
 		for _, v := range req.QueryVector {
@@ -353,7 +388,7 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 		isVectorQueryEmpty = true
 	}
 
-	// --- CASO A: SOLO RICERCA TESTUALE (o solo filtri senza vettore) ---
+	// --- CASE A: TEXT SEARCH ONLY (or only filters without vector) ---
 	if isVectorQueryEmpty && textQuery != "" {
 		textResults, _ := s.Engine.DB.FindIDsByTextSearch(req.IndexName, textQueryField, textQuery)
 
@@ -363,7 +398,7 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 			if count >= req.K {
 				break
 			}
-			// Applica allowList se presente
+			// Apply allowList if present
 			if allowList != nil {
 				if _, ok := allowList[res.DocID]; !ok {
 					continue
@@ -377,27 +412,27 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- CASO B: RICERCA VETTORIALE O IBRIDA ---
+	// --- CASE B: VECTOR OR HYBRID SEARCH ---
 	var vectorResults []types.SearchResult
 	var textResults []types.SearchResult
 	var wg sync.WaitGroup
 
-	// B.1 Ricerca Vettoriale (Parallela)
+	// B.1 Vector Search (Parallel)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		// Chiamata diretta all'indice HNSW
+		// Direct call to HNSW index
 		vectorResults = idx.SearchWithScores(req.QueryVector, req.K, allowList, req.EfSearch)
 	}()
 
-	// B.2 Ricerca Testuale (Parallela, se c'è una query di testo)
+	// B.2 Text Search (Parallel, if text query exists)
 	if textQuery != "" {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			results, _ := s.Engine.DB.FindIDsByTextSearch(req.IndexName, textQueryField, textQuery)
 
-			// Applichiamo l'allowList anche ai risultati testuali
+			// Apply allowList to text results too
 			if allowList != nil {
 				var filteredTextResults []types.SearchResult
 				for _, res := range results {
@@ -412,11 +447,11 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
-	wg.Wait() // Attesa completamento
+	wg.Wait()
 
-	// 5. Fusione Risultati (Reciprocal Rank Fusion o Weighted Sum)
+	// 5. Result Fusion (Reciprocal Rank Fusion or Weighted Sum)
 
-	// Se non c'era testo, ritorniamo solo i risultati vettoriali
+	// If no text query, return only vector results
 	if textQuery == "" {
 		finalIDs := make([]string, len(vectorResults))
 		for i, res := range vectorResults {
@@ -427,7 +462,7 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Logica di Fusione (Weighted Sum) ---
+	// --- Fusion Logic (Weighted Sum) ---
 	alpha := req.Alpha
 	if alpha == 0 {
 		alpha = 0.5 // Default bilanciato
@@ -441,17 +476,17 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 
 	fusedScores := make(map[uint32]float64)
 
-	// Score Vettoriale
+	// Vector Score
 	for _, res := range vectorResults {
 		fusedScores[res.DocID] += alpha * res.Score
 	}
 
-	// Score Testuale
+	// Text Score
 	for _, res := range textResults {
 		fusedScores[res.DocID] += (1 - alpha) * res.Score
 	}
 
-	// 6. Ordinamento Finale e Conversione ID
+	// 6. Final Sorting and ID Conversion
 	finalResults := make([]FusedResult, 0, len(fusedScores))
 	for id, score := range fusedScores {
 		externalID, found := hnswIndex.GetExternalID(id)
@@ -662,24 +697,26 @@ func (s *Server) handleTriggerVectorizer(w http.ResponseWriter, r *http.Request)
 
 // --- HELPER FUNCTIONS FOR SEARCH ---
 
+// containsRegex compiles the regex for extracting CONTAINS clauses.
 var containsRegex = regexp.MustCompile(`(?i)\s*CONTAINS\s*\(\s*(\w+)\s*,\s*['"](.+?)['"]\s*\)`)
 
+// parseHybridFilter separates the textual part (CONTAINS) from the boolean filters.
 func parseHybridFilter(filter string) (booleanFilter, textQuery, textField string) {
 	matches := containsRegex.FindStringSubmatch(filter)
 
 	if len(matches) == 0 {
-		// Nessuna parte testuale, tutto è filtro booleano
+		// No text part found, everything is a boolean filter
 		return filter, "", ""
 	}
 
-	// matches[0] è l'intera stringa "CONTAINS(...)"
+	// matches[0] is the entire "CONTAINS(...)" string
 	textField = matches[1]
 	textQuery = matches[2]
 
-	// Rimuovi la parte CONTAINS dalla stringa originale per lasciare solo i filtri booleani
+	// Remove the CONTAINS part from the original string to leave only boolean filters
 	booleanFilter = strings.Replace(filter, matches[0], "", 1)
 
-	// Pulizia AND/OR residui
+	// Cleanup residual AND/OR tokens
 	booleanFilter = strings.TrimSpace(booleanFilter)
 	booleanFilter = strings.TrimPrefix(booleanFilter, "AND ")
 	booleanFilter = strings.TrimSuffix(booleanFilter, " AND")
