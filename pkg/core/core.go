@@ -70,6 +70,7 @@ type IndexSnapshot struct {
 	EntrypointID       uint32
 	MaxLevel           int
 	QuantizerState     *distance.Quantizer // Saves the quantizer's state.
+	QuantizedNorms     []float32
 }
 
 // NodeSnapshot contains all the necessary data to restore a single node.
@@ -138,7 +139,7 @@ func (s *DB) Snapshot(writer io.Writer) error {
 
 	for name, idx := range s.vectorIndexes {
 		if hnswIndex, ok := idx.(*hnsw.Index); ok {
-			nodes, extToInt, counter, entrypoint, maxLevel, quantizer := hnswIndex.SnapshotData()
+			nodes, extToInt, counter, entrypoint, maxLevel, quantizer, norms := hnswIndex.SnapshotData()
 
 			metric, m, efc, precision, _, textLang := hnswIndex.GetInfoUnlocked()
 
@@ -179,6 +180,7 @@ func (s *DB) Snapshot(writer io.Writer) error {
 				EntrypointID:       entrypoint,
 				MaxLevel:           maxLevel,
 				QuantizerState:     quantizer,
+				QuantizedNorms:     norms,
 			}
 		}
 	}
@@ -239,7 +241,7 @@ func (s *DB) LoadFromSnapshot(reader io.Reader) error {
 		}
 
 		// Load the HNSW graph data
-		if err := idx.LoadSnapshotData(nodesToLoad, indexSnap.ExternalToInternal, indexSnap.InternalCounter, indexSnap.EntrypointID, indexSnap.MaxLevel, indexSnap.QuantizerState); err != nil {
+		if err := idx.LoadSnapshotData(nodesToLoad, indexSnap.ExternalToInternal, indexSnap.InternalCounter, indexSnap.EntrypointID, indexSnap.MaxLevel, indexSnap.QuantizerState, indexSnap.QuantizedNorms); err != nil {
 			return fmt.Errorf("failed to load HNSW data for index '%s': %w", name, err)
 		}
 

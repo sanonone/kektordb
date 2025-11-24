@@ -59,6 +59,8 @@ type Index struct {
 	// Stores the precision of the index (e.g., f32, f16)
 	precision distance.PrecisionType
 
+	quantizedNorms []float32
+
 	// Field for quantization; will be nil for non-quantized indexes.
 	// It's a pointer because we need its state to be shared and mutable.
 	quantizer *distance.Quantizer
@@ -105,6 +107,7 @@ func New(m int, efConstruction int, metric distance.DistanceMetric, precision di
 		metric:               metric,
 		precision:            precision,
 		textLanguage:         textLang,
+		quantizedNorms:       make([]float32, 0),
 	}
 
 	h.nodeCounter.Store(0)
@@ -120,6 +123,11 @@ func New(m int, efConstruction int, metric distance.DistanceMetric, precision di
 	}
 	h.maxHeapPool = sync.Pool{
 		New: func() any { return newMaxHeap(efConstruction) },
+	}
+
+	// Pre-allocazione se sappiamo che è Int8
+	if precision == distance.Int8 {
+		h.quantizedNorms = make([]float32, 0, 10000)
 	}
 
 	// --- SELECTION AND VALIDATION LOGIC ---
@@ -397,7 +405,14 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 
 	internalID := uint32(h.nodeCounter.Add(1))
 	h.growNodes(internalID)
-	node := &Node{Id: id, Vector: storedVector}
+
+	if h.precision == distance.Int8 {
+		if vecI8, ok := storedVector.([]int8); ok {
+			h.quantizedNorms[internalID] = computeInt8Norm(vecI8)
+		}
+	}
+
+	node := &Node{Id: id, InternalID: internalID, Vector: storedVector}
 	h.nodes[internalID] = node
 	h.externalToInternalID[id] = internalID
 	h.internalToExternalID[internalID] = id
@@ -549,6 +564,12 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 				return fmt.Errorf("quantizer not trained")
 			}
 			storedVector = h.quantizer.Quantize(obj.Vector)
+		}
+
+		if h.precision == distance.Int8 {
+			if vecI8, ok := storedVector.([]int8); ok {
+				h.quantizedNorms[internalID] = computeInt8Norm(vecI8)
+			}
 		}
 
 		node := &Node{Id: obj.Id, InternalID: internalID, Vector: storedVector}
@@ -917,6 +938,16 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 		q := query.([]int8)
 		fn := h.distFuncI8
 
+		// Pre-calcola norma query una volta sola
+		var qNormSq int64
+		for _, v := range q {
+			qNormSq += int64(v) * int64(v)
+		}
+		qNorm := float32(math.Sqrt(float64(qNormSq)))
+		if qNorm == 0 {
+			qNorm = 1
+		}
+
 		distFn = func(node *Node) (float64, error) {
 			stored, ok := node.Vector.([]int8)
 			if !ok {
@@ -928,17 +959,25 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 				return 0, err
 			}
 
-			// Scaling logic inline per evitare call overhead
-			var norm1, norm2 int64
-			for i := range q {
-				norm1 += int64(q[i]) * int64(q[i])
-				norm2 += int64(stored[i]) * int64(stored[i])
-			}
-			if norm1 == 0 || norm2 == 0 {
+			storedNorm := h.quantizedNorms[node.InternalID]
+			if storedNorm == 0 {
 				return 1.0, nil
 			}
 
-			similarity := float64(dot) / (math.Sqrt(float64(norm1)) * math.Sqrt(float64(norm2)))
+			/*
+
+				// Scaling logic inline per evitare call overhead
+				var norm1, norm2 int64
+				for i := range q {
+					norm1 += int64(q[i]) * int64(q[i])
+					norm2 += int64(stored[i]) * int64(stored[i])
+				}
+				if norm1 == 0 || norm2 == 0 {
+					return 1.0, nil
+				}
+			*/
+
+			similarity := float64(dot) / (float64(qNorm) * float64(storedNorm))
 			if similarity > 1.0 {
 				similarity = 1.0
 			}
@@ -1154,11 +1193,21 @@ func (h *Index) growNodes(id uint32) {
 		// The "new" part of the slice is nil
 		// Update main slice but set correct length to include new ID.
 		h.nodes = newNodes
+
+		if h.precision == distance.Int8 {
+			newNorms := make([]float32, newCap)
+			copy(newNorms, h.quantizedNorms)
+			h.quantizedNorms = newNorms
+		}
 	}
 
 	// Extend logical length (len) if necessary to cover id
 	if uint32(len(h.nodes)) <= id {
 		h.nodes = h.nodes[:id+1]
+
+		if h.precision == distance.Int8 {
+			h.quantizedNorms = h.quantizedNorms[:id+1]
+		}
 	}
 }
 
@@ -1390,7 +1439,7 @@ func (h *Index) GetParametersUnlocked() (distance.DistanceMetric, distance.Preci
 
 // SnapshotData exports the internal data of the index for persistence.
 // It expects the caller to handle locking.
-func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uint32, int, *distance.Quantizer) {
+func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uint32, int, *distance.Quantizer, []float32) {
 	// This method expects the caller to have already acquired a lock.
 
 	nodesMap := make(map[uint32]*Node, len(h.nodes))
@@ -1402,7 +1451,10 @@ func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uin
 		}
 	}
 
-	return nodesMap, h.externalToInternalID, uint32(h.nodeCounter.Load()), h.entrypointID, h.maxLevel, h.quantizer
+	normsCopy := make([]float32, len(h.quantizedNorms))
+	copy(normsCopy, h.quantizedNorms)
+
+	return nodesMap, h.externalToInternalID, uint32(h.nodeCounter.Load()), h.entrypointID, h.maxLevel, h.quantizer, normsCopy
 }
 
 // LoadSnapshotData restores the internal state of the index from snapshot data.
@@ -1414,6 +1466,7 @@ func (h *Index) LoadSnapshotData(
 	entrypoint uint32,
 	maxLevel int,
 	quantizer *distance.Quantizer,
+	norms []float32,
 ) error {
 	// 1. Reconstruct h.nodes slice from input map.
 	// Capacity must cover up to max ID (counter).
@@ -1474,6 +1527,10 @@ func (h *Index) LoadSnapshotData(
 		node.InternalID = internalID
 	}
 
+	if h.precision == distance.Int8 {
+		h.quantizedNorms = norms
+	}
+
 	return nil
 }
 
@@ -1515,4 +1572,12 @@ func (h *Index) TextLanguage() string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.textLanguage
+}
+
+func computeInt8Norm(vec []int8) float32 {
+	var sum int64
+	for _, v := range vec {
+		sum += int64(v) * int64(v)
+	}
+	return float32(math.Sqrt(float64(sum)))
 }
