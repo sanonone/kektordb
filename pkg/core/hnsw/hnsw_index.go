@@ -794,17 +794,20 @@ func (h *Index) commitLinks(linkQueue <-chan LinkRequest, newNodes []*Node) {
 
 					// Final Selection
 					var prunedNeighbors []types.Candidate
-					if _, isNewNode := newNodeIDSet[job.NodeID]; isNewNode {
-						// Full heuristic for new nodes (better quality)
-						prunedNeighbors = h.selectNeighbors(allCandidates, maxConns)
-					} else {
-						// Keep-Best for existing nodes (faster)
-						limit := maxConns
-						if limit > len(allCandidates) {
-							limit = len(allCandidates)
+					prunedNeighbors = h.selectNeighbors(allCandidates, maxConns)
+					/*
+						if _, isNewNode := newNodeIDSet[job.NodeID]; isNewNode {
+							// Full heuristic for new nodes (better quality)
+							prunedNeighbors = h.selectNeighbors(allCandidates, maxConns)
+						} else {
+							// Keep-Best for existing nodes (faster)
+							limit := maxConns
+							if limit > len(allCandidates) {
+								limit = len(allCandidates)
+							}
+							prunedNeighbors = allCandidates[:limit]
 						}
-						prunedNeighbors = allCandidates[:limit]
-					}
+					*/
 
 					// Final update
 					prunedIDs := make([]uint32, len(prunedNeighbors))
@@ -1124,6 +1127,7 @@ func (h *Index) selectNeighbors(candidates []types.Candidate, m int) []types.Can
 	}
 
 	results := make([]types.Candidate, 0, m)
+	discarded := make([]types.Candidate, 0, m) // Teniamo traccia degli scartati
 	worklist := candidates
 
 	for len(worklist) > 0 && len(results) < m {
@@ -1145,7 +1149,7 @@ func (h *Index) selectNeighbors(candidates []types.Candidate, m int) []types.Can
 
 			var condition bool
 			if h.metric == distance.Cosine {
-				condition = (dist_e_r <= e.Distance)
+				condition = (dist_e_r < e.Distance)
 			} else {
 				condition = (dist_e_r < e.Distance)
 			}
@@ -1158,8 +1162,26 @@ func (h *Index) selectNeighbors(candidates []types.Candidate, m int) []types.Can
 
 		if isGoodCandidate {
 			results = append(results, e)
+		} else {
+			discarded = append(discarded, e)
 		}
 	}
+
+	// 2. Fill-up Strategy (Boosts Recall)
+	// Se l'euristica è stata troppo aggressiva e abbiamo meno di M connessioni,
+	// riempiamo gli slot rimanenti con i migliori candidati scartati.
+	// Questo previene la creazione di nodi isolati o debolmente connessi.
+	if len(results) < m {
+		needed := m - len(results)
+		for _, cand := range discarded {
+			results = append(results, cand)
+			needed--
+			if needed == 0 {
+				break
+			}
+		}
+	}
+
 	return results
 }
 

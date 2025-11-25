@@ -178,7 +178,7 @@ func squaredEuclideanSmartF32(v1, v2 []float32) (float64, error) {
 // dotProductSmartI8 chooses the best implementation for int8 dot product.
 // Based on benchmarks, the Rust implementation is faster for longer vectors.
 func dotProductSmartI8(v1, v2 []int8) (int32, error) {
-	if len(v1) >= 256 {
+	if len(v1) >= 128 {
 		return dotProductRustI8(v1, v2)
 	}
 	return dotProductGoInt8(v1, v2)
