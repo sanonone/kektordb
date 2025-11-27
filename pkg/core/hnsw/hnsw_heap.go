@@ -42,9 +42,6 @@ func (h *minHeap) Pop() types.Candidate {
 	x := old[0]       // Save the root (min)
 	old[0] = old[n-1] // Move last to root
 
-	// Non serve impostare a nil old[n-1] perché non sono puntatori!
-	// Il GC ignora i dati primitivi sovrascritti o fuori slice.
-
 	*h = old[0 : n-1]
 
 	if len(*h) > 0 {
@@ -90,8 +87,8 @@ func newMinHeap(capacity int) *minHeap {
 	return &h
 }
 
-// --- MAX HEAP (Mantiene i k migliori: il peggiore è in cima) ---
-// Usato per mantenere i risultati finali e decidere chi scartare.
+// --- MAX HEAP (Keep the k best: the worst is on top) ---
+// Used to keep the final results and decide which ones to discard.
 
 type maxHeap []types.Candidate
 
@@ -114,7 +111,6 @@ func (h *maxHeap) Pop() types.Candidate {
 	n := len(old)
 	x := old[0]       // Save root (max)
 	old[0] = old[n-1] // Move last to root
-	// Nessun azzeramento puntatori necessario qui
 	*h = old[0 : n-1]
 
 	if len(*h) > 0 {

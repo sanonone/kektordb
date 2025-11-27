@@ -16,7 +16,7 @@ DATASET_TXT_FILE = "glove.6B.100d.txt" # Useremo i vettori a 50 dimensioni
 METRIC = "cosine" # GloVe è tipicamente usato con la similarità del coseno
 K_SEARCH = 10
 NUM_QUERIES = 1000
-BATCH_SIZE = 4096# Dimensione del batch per l'inserimento
+BATCH_SIZE = 10000# Dimensione del batch per l'inserimento
 
 def download_and_extract_dataset():
     """Scarica e de-comprime il dataset se non è presente in locale."""
@@ -127,26 +127,40 @@ def main(args):
         query_indices = np.random.choice(num_vectors, NUM_QUERIES, replace=False)
         query_vectors = vectors_to_index[query_indices]
 
-        total_recall = 0.0
-        total_search_time = 0.0
-
-        print(f"Esecuzione di {NUM_QUERIES} ricerche...")
-        for i, query_vec in enumerate(tqdm(query_vectors, desc="Ricerca")):
-            # Calcola la verità assoluta con numpy
-            vectors_norm = vectors_to_index / np.linalg.norm(vectors_to_index, axis=1, keepdims=True)
+         # --- A. PRE-CALCOLO GROUND TRUTH ---
+        print(f"Calcolo Ground Truth per {NUM_QUERIES} query (Attendere)...")
+        ground_truths = []
+        
+        # Normalizziamo tutto il dataset una volta sola fuori dal loop
+        vectors_norm = vectors_to_index / np.linalg.norm(vectors_to_index, axis=1, keepdims=True)
+        
+        for query_vec in tqdm(query_vectors, desc="Ground Truth"):
             query_norm = query_vec / np.linalg.norm(query_vec)
             similarities = np.dot(vectors_norm, query_norm)
-            
-            true_neighbors_indices = np.argsort(similarities)[::-1][:K_SEARCH]
-            true_neighbor_ids = {words_to_index[idx] for idx in true_neighbors_indices}
-            
-            # Cerca con KektorDB
-            search_start = time.time()
+            true_indices = np.argsort(similarities)[::-1][:K_SEARCH]
+            # Salviamo gli ID (parole) attesi
+            ground_truths.append({words_to_index[idx] for idx in true_indices})
+
+
+        print("Esecuzione Warmup...")
+        for i in range(min(20, len(query_vectors))):
+             client.vsearch(INDEX_NAME, query_vectors[i].tolist(), k=K_SEARCH, ef_search=100)
+
+        print(f"Esecuzione di {NUM_QUERIES} ricerche (Benchmark)...")
+        
+        total_recall = 0.0
+        total_search_time = 0.0
+        
+        # Loop pulito: solo richieste al DB
+        for i, query_vec in enumerate(tqdm(query_vectors, desc="Ricerca")):
+            start_t = time.time()
             results = client.vsearch(INDEX_NAME, query_vec.tolist(), k=K_SEARCH, ef_search=100)
-            search_end = time.time()
-            total_search_time += (search_end - search_start)
+            end_t = time.time()
             
-            intersection = set(results).intersection(true_neighbor_ids)
+            total_search_time += (end_t - start_t)
+            
+            # Calcolo recall (veloce, su set pre-calcolati)
+            intersection = set(results).intersection(ground_truths[i])
             recall = len(intersection) / float(K_SEARCH)
             total_recall += recall
 

@@ -18,9 +18,9 @@ DATASET_NPY_FILE = "sift_base.npy"
 
 METRIC = "euclidean"
 PRECISION = "float32"
-BATCH_SIZE = 256
+BATCH_SIZE = 10000
 K_SEARCH = 10
-NUM_QUERIES = 100
+NUM_QUERIES = 1000
 
 def fvecs_read(filename, c_contiguous=True):
     """Legge dati dal formato .fvecs binario."""
@@ -116,26 +116,35 @@ def main(args):
         query_indices = np.random.choice(num_vectors, NUM_QUERIES, replace=False)
         query_vectors = vectors_to_index[query_indices]
 
-        total_recall = 0.0
-        total_search_time = 0.0
-
-        print(f"Esecuzione di {NUM_QUERIES} ricerche...")
-        for i, query_vec in enumerate(tqdm(query_vectors)):
-            # Calcola la verità assoluta (brute-force)
+        # --- A. PRE-CALCOLO GROUND TRUTH ---
+        print(f"Calcolo Ground Truth per {NUM_QUERIES} query...")
+        ground_truths = []
+        
+        for query_vec in tqdm(query_vectors, desc="Ground Truth"):
             distances = np.sum((vectors_to_index - query_vec)**2, axis=1)
-            true_neighbors_indices = np.argsort(distances)[:K_SEARCH]
-            true_neighbor_ids = {f"sift_{idx}" for idx in true_neighbors_indices}
-            
-            # Cerca con KektorDB
-            search_start = time.time()
+            true_indices = np.argsort(distances)[:K_SEARCH]
+            ground_truths.append({f"sift_{idx}" for idx in true_indices})
+
+        # --- B. WARMUP ---
+        print("Esecuzione Warmup...")
+        for i in range(min(20, len(query_vectors))):
+             client.vsearch(INDEX_NAME, query_vectors[i].tolist(), k=K_SEARCH, ef_search=100)
+
+        # --- C. BENCHMARK PURO ---
+        print(f"Esecuzione di {NUM_QUERIES} ricerche...")
+        total_search_time = 0.0
+        total_recall = 0.0
+
+        for i, query_vec in enumerate(tqdm(query_vectors, desc="Search")):
+            start_t = time.time()
             results = client.vsearch(INDEX_NAME, query_vec.tolist(), k=K_SEARCH, ef_search=100)
-            search_end = time.time()
-            total_search_time += (search_end - search_start)
+            end_t = time.time()
             
-            # Calcola la recall
-            intersection = set(results).intersection(true_neighbor_ids)
-            recall = len(intersection) / float(K_SEARCH)
-            total_recall += recall
+            total_search_time += (end_t - start_t)
+            
+            # Calcolo Recall
+            intersection = set(results).intersection(ground_truths[i])
+            total_recall += len(intersection) / float(K_SEARCH)
 
         average_recall = total_recall / NUM_QUERIES
         qps = NUM_QUERIES / total_search_time

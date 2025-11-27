@@ -4,92 +4,100 @@
   <img src="docs/images/logo.png" alt="KektorDB Logo" width="250">
 </p>
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/sanonone/kektordb.svg)](https://pkg.go.dev/github.com/sanonone/kektordb)
 [![PyPI version](https://badge.fury.io/py/kektordb-client.svg)](https://badge.fury.io/py/kektordb-client)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 [English](README.md) | [Italiano](README.it.md)
 
-**KektorDB is an in-memory vector and Key-Value database built in Go. It features an HNSW engine for vector search, a hybrid search system including BM25 ranking, metadata filtering, and a modern REST API.**
+**KektorDB is an in-memory vector and Key-Value database built in Go. It implements an HNSW engine for vector search, hybrid search with BM25 ranking, metadata filtering, and a JSON-based REST API.**
 
 ### Motivation and Philosophy
 
-This project began as a personal learning endeavor to dive deep into complex software engineering topics. The goal was to build a robust, self-contained, and dependency-conscious search engine, embodying the **"SQLite of Vector DBs"** philosophy.
+This project began as a personal learning endeavor to dive deep into the internals of database systems. The goal was to build a **self-contained and dependency-free** search engine, aiming for the architectural simplicity of the **"SQLite of Vector DBs"**.
 
-KektorDB is available both as a standalone server and as an embeddable Go library (`pkg/core`), making it a flexible tool for Go developers and AI/ML applications that require fast, local vector search capabilities.
+KektorDB runs as a standalone server or can be imported as an embeddable Go library (`pkg/engine`), offering a flexible solution for developers who need local vector search without managing complex infrastructure.
 
 ---
 
 ### ✨ Core Features
 
-*   **Custom HNSW Engine:** A from-scratch implementation of the HNSW algorithm with neighbor selection heuristic for high-quality graphs.
+*   **Custom HNSW Engine:** A from-scratch implementation of the HNSW algorithm with heuristic neighbor selection for graph quality.
 *   **Hybrid Search Engine:**
-    *   **Full-Text Search:** A built-in text analysis engine (supporting English and Italian) and inverted index for keyword search.
-    *   **BM25 Ranking:** Text search results are ranked by relevance using the industry-standard BM25 algorithm.
-    *   **Score Fusion:** Hybrid queries combine vector and text scores using a configurable `alpha` parameter for a unified ranking.
-*   **Automatic Embedding Synchronization (Vectorizer):** A background service that monitors data sources (like filesystem directories), automatically generates embeddings via external APIs (like Ollama), and keeps the search index continuously up-to-date.
-*   **Metadata Filtering:** High-performance pre-filtering on metadata. Supports equality, range (`price<100`), and compound (`AND`/`OR`) filters.
-*   **Vector Compression & Quantization:**
-    *   **Float16:** Compresses Euclidean indexes by **50%**.
+    *   **Full-Text Search:** Built-in text analysis (tokenization/stemming for English and Italian) and inverted index.
+    *   **BM25 Ranking:** Text results are ranked using the standard BM25 algorithm.
+    *   **Score Fusion:** Combines vector and text scores via a configurable `alpha` parameter.
+*   **Automatic Synchronization (Vectorizer):** A background service that watches data sources (filesystem), generates embeddings via external APIs (e.g., Ollama), and updates the index automatically.
+*   **Metadata Filtering:** Support for pre-filtering on metadata using equality, range (`price<100`), and boolean logic (`AND`/`OR`). *(Tolto "High-performance")*
+*   **Vector Compression:**
+    *   **Float16:** Reduces Euclidean index size by **50%**.
     *   **Int8:** Quantizes Cosine indexes by **75%**.
 *   **API:**
-    *   A clean REST API with batch operations, async task management, and dynamic search tuning.
+    *   A JSON REST API supporting batch operations and async task management. *(Tolto "Clean")*
     *   Official clients for **Python** and **Go**.
-*   **Persistence:** A hybrid **AOF + Snapshot** system with automatic background maintenance ensures durability and near-instantaneous restarts.
-*   **Dual Compute Engine (Go-native vs. Rust-accelerated):**
-    *   **Default Build:** A pure Go version that leverages `gonum` and `avo` for SIMD-acceleration, ensuring maximum portability and simple compilation (`go build`).
-    *   **Performance Build:** An optional build mode (`-tags rust`) that links a Rust library via CGO for highly optimized SIMD distance calculations.
+*   **Persistence:** A hybrid **AOF + Snapshot** system ensures durability across restarts. *(Tolto "near-instantaneous", lasciamo che lo scoprano)*
+*   **Dual Compute Engine:**
+    *   **Standard Build:** Uses pure Go with `gonum` assembly for portability.
+    *   **Performance Build:** Optional (`-tags rust`) build that links a Rust library via CGO to leverage specific SIMD instructions. *(Tolto "highly optimized", meglio "specific SIMD instructions")*
 
 ---
 
-### Performance Benchmarks
+### Preliminary Benchmarks
 
-Benchmarks were performed on a `12th Gen Intel(R) Core(TM) i5-12500` CPU. KektorDB can be compiled in two modes: a **Pure Go** version for maximum portability and a **Rust-accelerated** version (`-tags rust`) for maximum performance.
+Benchmarks were performed on a local Linux machine (Consumer Hardware, Intel i5-12500). The comparison runs against **Qdrant** and **ChromaDB** (via Docker with host networking) to ensure a fair baseline.
 
-#### End-to-End Search Performance (QPS & Recall)
+> **Disclaimer:** Benchmarking databases fairly is notoriously difficult. While I have made every effort to configure all engines equitably (e.g., removing network overhead), I am not an expert in configuring Qdrant or ChromaDB, and there may be optimizations I missed. Please treat these numbers as a **directional indicator** of KektorDB's potential in a specific local scenario (single-node, read-heavy), rather than a definitive scientific conclusion.
 
-These benchmarks measure the complete system performance (Queries Per Second) and accuracy (Recall@10) on real-world datasets.
+#### 1. NLP Workload (GloVe-100d, Cosine)
+*400k vectors, float32 precision.*
+KektorDB leverages optimized Go Assembly (Gonum) for Cosine similarity. In this specific setup, it shows very high throughput.
 
-**Go-Pure Build (`gonum`-accelerated)**
-| Dataset / Configuration                | Vectors     | Dimensions | Recall@10 | QPS (Queries/sec) |
-|----------------------------------------|-------------|------------|-----------|-------------------|
-| SIFT / Euclidean `float32`             | 1,000,000   | 128        | **0.9960**  | `~344`            |
-| SIFT / Euclidean `float16` (Compressed)  | 1,000,000   | 128        | **0.9910**  | `~266`            |
-| GloVe / Cosine `float32`               | 400,000     | 100        | **0.9650**  | `~279`            |
-| GloVe / Cosine `int8` (Quantized)      | 400,000     | 100        | **0.9330**  | `~147`            |
+| Database | Recall@10 | **QPS (Queries/sec)** | Indexing Time (s) |
+| :--- | :--- | :--- | :--- |
+| **KektorDB** | 0.971 | **974** | 127s |
+| Qdrant | 0.970 | 807 | **34s** |
+| ChromaDB | 0.955 | 761 | 53s |
 
-**Rust-Accelerated Build (`-tags rust`)**
-| Dataset / Configuration                | Vectors     | Dimensions | Recall@10 | QPS (Queries/sec) |
-|----------------------------------------|-------------|------------|-----------|-------------------|
-| SIFT / Euclidean `float32`             | 1,000,000   | 128        | **0.9960**  | `~344`            |
-| SIFT / Euclidean `float16` (Compressed)  | 1,000,000   | 128        | **0.9960**  | `~298`            |
-| GloVe / Cosine `float32`               | 400,000     | 100        | **0.9700**  | `~285`            |
-| GloVe / Cosine `int8` (Quantized)      | 400,000     | 100        | **0.9550**  | `~151`            |
+#### 2. Computer Vision Workload (SIFT-1M, Euclidean)
+*1 Million vectors, float32 precision.*
+KektorDB uses a hybrid Go/Rust engine (`-tags rust`) for this test. Despite the CGO overhead for 128d vectors, performance is competitive with native C++/Rust engines.
 
-*Parameters: `M=16`, `efConstruction=200`, `efSearch=100` (`efSearch=200` for `int8`).*
+| Database | Recall@10 | **QPS (Queries/sec)** | Indexing Time (s) |
+| :--- | :--- | :--- | :--- |
+| **KektorDB** | 0.990 | 753 | 634s |
+| Qdrant | 0.998 | **852** | **89s** |
+| ChromaDB | 0.994 | 752 | 210s |
 
-#### Low-Level Distance Calculation Performance (Time per Operation)
+> *Note on Indexing Speed:* KektorDB is currently slower at ingestion compared to mature engines. This is partly because it builds the full queryable graph immediately upon insertion, but mostly due to the current single-graph architecture. **Optimizing bulk ingestion speed is the top priority for the next major release.**
 
-These benchmarks measure the raw speed of the core distance functions across different vector dimensions. Lower is better.
+#### Memory Efficiency (Compression & Quantization)
+KektorDB offers significant memory savings through quantization and compression, allowing you to fit larger datasets into RAM with minimal impact on performance or recall.
 
-**Go-Pure Build (`gonum & avo`-accelerated)** `(ns/op)`
-| Dimensions                | 64D   | 128D  | 256D  | 512D  | 1024D | 1536D |
-|---------------------------|-------|-------|-------|-------|-------|-------|
-| **Euclidean (`float32`)** | 18.16 | 41.96 | 95.69 | 209.8 | 437.0 | 662.3 |
-| **Cosine (`float32` `gonum`)**    | 5.981  | 8.465  | 14.13 | 27.74 | 61.19 | 89.89 |
-| **Euclidean (`float16` `avo`)** | 109.5 | 117.6 | 138.7 | 172.7  | 250.7  | 314.5  |
-| **Cosine (`int8`)**       | 22.72 | 57.09 | 95.08 | 178.3 | 336.8 | -     |
+| Scenario | Config | Memory Impact | QPS | Recall |
+| :--- | :--- | :--- | :--- | :--- |
+| **NLP (GloVe-100d)** | Float32 | 100% (Baseline) | ~974 | 0.971 |
+| | **Int8** | **~25%** | ~767 | 0.908 |
+| **Vision (SIFT-1M)** | Float32 | 100% (Baseline) | ~753 | 0.990 |
+| | **Float16** | **~50%** | **~785** | 0.980 |
 
-**Rust-Accelerated Build (`-tags rust`)** `(ns/op)`
-| Dimensions                | 64D   | 128D  | 256D  | 512D  | 1024D | 1536D |
-|---------------------------|-------|-------|-------|-------|-------|-------|
-| **Euclidean (`float32`)** | 18.37 | 43.69 | 61.55 | 104.0 | 168.9 | 242.9 |
-| **Cosine (`float32`)**    | 5.932 | 10.24 | 14.10 | 28.20 | 53.88 | 82.73 |
-| **Euclidean (`float16`)** | 51.63 | 54.01 | 68.00 | 98.57 | 185.8 | 254.3 |
-| **Cosine (`int8`)**       | 21.13 | 47.59 | 46.81 | 50.40 | 65.39 | -     |
+*(The "Smart Dispatch" logic in the Rust-accelerated build automatically selects the best implementation—Go, Gonum, or Rust—for each operation based on vector dimensions. The pure Go `float16` and `int8` versions serve as portable fallbacks.)*
 
-*(Note: The "Smart Dispatch" logic in the Rust-accelerated build automatically selects the best implementation—Go, Gonum, or Rust—for each operation based on vector dimensions. The pure Go `float16` and `int8` versions serve as portable fallbacks.)*
+[Benchmark](BENCHMARKS.md)
 
 ---
+
+### Installation
+
+Download the pre-compiled binary from the [Releases page](https://github.com/sanonone/kektordb/releases).
+
+```bash
+# Linux/macOS
+./kektordb
+```
+
+> **Compatibility Note:** All development and testing were performed on **Linux (x86_64)**.
+> *   **Pure Go Builds:** Expected to run seamlessly on Windows, macOS (Intel/M1), and ARM, though not manually verified yet.
+> *   **Rust-Accelerated Builds:** Leverage CGO and specific SIMD instructions. These builds have currently **only been verified on Linux**.
 
 ### 🚀 Quick Start (Python)
 
@@ -181,6 +189,42 @@ This example demonstrates a complete workflow: creating multiple indexes, batch-
 **Note for macOS users:** The pre-compiled binaries for macOS utilize the pure Go compute engine for maximum compatibility. For performance-critical use cases requiring SIMD acceleration on macOS, we recommend building from source locally: `make build-rust-native && go build -tags rust ./cmd/kektordb`
 
 ---
+
+### Using as an Embedded Go Library
+
+One of KektorDB's main goals is to be easily embeddable. You can import the engine directly into your Go application, removing the need for external services or containers.
+
+```bash
+go get github.com/sanonone/kektordb
+
+package main
+
+import (
+	"fmt"
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/engine"
+)
+
+func main() {
+	// 1. Initialize the Engine (handles persistence automatically)
+	opts := engine.DefaultOptions("./kektor_data")
+	db, err := engine.Open(opts)
+	if err != nil { panic(err) }
+	defer db.Close()
+
+	// 2. Create Index
+	db.VCreate("products", distance.Cosine, 16, 200, distance.Float32, "english")
+
+	// 3. Add Data
+	db.VAdd("products", "p1", []float32{0.1, 0.2}, map[string]any{"category": "electronics"})
+
+	// 4. Search
+	results, _ := db.VSearch("products", []float32{0.1, 0.2}, 10, "category=electronics", 100, 0.5)
+	fmt.Println("Found IDs:", results)
+}
+```
+---
+
 ### API Reference
 
 #### Key-Value Store
@@ -200,6 +244,8 @@ This example demonstrates a complete workflow: creating multiple indexes, batch-
   - Body: `{"index_name": "...", "id": "...", "vector": [...], "metadata": {...}}`
 - `POST /vector/actions/add-batch`: Adds multiple vectors.
   - Body: `{"index_name": "...", "vectors": [{"id": ..., "vector": ...}, ...]}`
+- `POST /vector/actions/import`: High-speed bulk loading (bypasses AOF for speed).
+  - Body: `{"index_name": "...", "vectors": [...]}`
 - `POST /vector/actions/search`: Performs a hybrid vector search.
   - Body: `{"index_name": "...", "k": ..., "query_vector": [...], "filter": "...", "ef_search": ..., "alpha": ...}`
 - `POST /vector/actions/delete_vector`: Deletes a single vector.
@@ -228,27 +274,49 @@ For a complete guide to all features and API endpoints, please see the **[Full D
 
 ### 🛣️ Roadmap & Future Work
 
-KektorDB is under active development. The roadmap is divided into near-term priorities for the next major release and long-term ambitions.
+KektorDB is a young project under active development. Contributions are highly welcome!
 
 #### **Near-Term Goals**
 
 These are the highest priority features and improvements planned for upcoming releases:
 
-*   **Memory & CPU Optimization for Search:** Profiling has identified two key areas for improvement during graph traversal. Future work will focus on:
-    1.  **Reducing GC Pressure:** Minimizing temporary memory allocations by implementing memory reuse patterns for data structures like priority queues.
-    2.  **Optimizing Visited Node Tracking:** Replacing the current `map`-based tracking, which shows overhead in CPU profiling, with a more direct and efficient data structure like a bitset.
-*   **Enhanced KV Store:** Expanding the simple key-value store into a more feature-rich component with support for advanced data types and transactions.
-*   **gRPC API:** Introducing a gRPC interface alongside REST for high-performance, low-latency communication in microservice environments.
-*   **Stability and Hardening:** A development cycle dedicated to improving the overall robustness of the database. This will involve extensive testing, refining error handling, and ensuring transactional consistency for critical operations.
+*   **Advanced Filtering:** Replace Go maps with **Roaring Bitmaps** for lightning-fast metadata filtering and reduced memory usage.
+*   **Graph Healing:** Implement a background worker to repair the HNSW graph after deletions, ensuring long-term index quality without full rebuilds.
+*   **Native Snapshotting:** Improve the snapshot format to be more compact and faster to load (binary serialization optimization).
+*   **Concurrency Polish:** Further optimize the locking strategy for mixed read/write workloads.
 
 #### **Long-Term Vision (Exploratory Ideas)**
 
 These are ambitious features that are being considered for the long-term evolution of the project.
 
-*   **Modular Architecture:** Refactoring the system to support a plugin-based architecture, allowing new features (like different index types or data sources) to be added as modules.
-*   **Performance Enhancements:** A focused effort to optimize the core engine.
-*   **On-Device & Embedded Strategy:** Investigating the compilation of KektorDB's core engine into a portable native library. The goal is to provide simple bindings for various mobile and edge ecosystems, allowing developers to embed a powerful, private, and offline-capable vector search engine directly into their applications.
-*   **Horizontal Scaling (Read Replicas):** Implementing a simple, primary-replica replication model. 
+*   **Disk-Based Indexes:** Explore mmap or disk-based graph traversal to support datasets larger than RAM.
+*   **RAG Pipelines:** Built-in support for chunking and embedding PDF/Text files directly within the engine.
+*   **Replication:** Simple primary-replica replication for high availability.
+
+---
+
+## Contributing
+
+**KektorDB is a personal project born from a desire to learn the internals of vector databases.**
+
+As the sole maintainer, I built this engine to explore CGO, SIMD, and low-level Go optimizations. I am proud of the performance achieved so far, but I know there is always a better way to write code.
+
+If you spot race conditions, missed optimizations, or unidiomatic Go patterns, **please open an Issue or a PR**. I treat every contribution as a learning opportunity and I am looking for people who want to build this together.
+
+### Areas for Contribution
+The project is currently in `v0.2.2`. I would appreciate help with:
+
+1.  **Core Optimization:** Reviewing the HNSW implementation and locking strategies.
+2.  **Features:** Implementing Roaring Bitmaps or Graph Healing (see Roadmap).
+3.  **Clients:** Making the Python/Go clients more idiomatic.
+4.  **Testing:** Adding edge-case tests and fuzzing.
+
+### Development Setup
+1.  Fork the repository.
+2.  Clone your fork.
+3.  Run `make test` to ensure everything is working.
+4.  Create a feature branch.
+5.  Commit and open a **Pull Request**.
 
 ---
 

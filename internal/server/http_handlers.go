@@ -11,14 +11,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/sanonone/kektordb/pkg/core/distance"
-	"github.com/sanonone/kektordb/pkg/core/hnsw"
-	"github.com/sanonone/kektordb/pkg/core/types"
 	"net/http"
 	"net/http/pprof"
-	"regexp"
-	"sort"
 	"strings"
-	"sync"
 )
 
 // registerHTTPHandlers sets up all HTTP routes.
@@ -326,12 +321,6 @@ func (s *Server) handleVectorImport(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// FusedResult is the struct for the final sorting, with EXTERNAL ID.
-type FusedResult struct {
-	ID    string // External ID
-	Score float64
-}
-
 func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use POST")
@@ -343,170 +332,29 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Retrieve Index via Engine
-	idx, found := s.Engine.DB.GetVectorIndex(req.IndexName)
-	if !found {
-		s.writeHTTPError(w, http.StatusNotFound, fmt.Sprintf("Index '%s' not found", req.IndexName))
-		return
-	}
-	hnswIndex, ok := idx.(*hnsw.Index)
-	if !ok {
-		s.writeHTTPError(w, http.StatusInternalServerError, "Index is not of type HNSW, hybrid search is not supported")
-		return
-	}
+	// Defaults handled by Engine, but we can set defaults here for clarity if needed.
+	// Just pass everything to the Engine.
 
-	// 2. Parse Filters (Hybrid: Text + Boolean)
-	booleanFilters, textQuery, textQueryField := parseHybridFilter(req.Filter)
+	results, err := s.Engine.VSearch(
+		req.IndexName,
+		req.QueryVector,
+		req.K,
+		req.Filter,
+		req.EfSearch,
+		req.Alpha,
+	)
 
-	// 3. Boolean Pre-Filtering (Metadata)
-	var allowList map[uint32]struct{}
-	var err error
-	if booleanFilters != "" {
-		// Direct call to Engine's DB
-		allowList, err = s.Engine.DB.FindIDsByFilter(req.IndexName, booleanFilters)
-		if err != nil {
-			s.writeHTTPError(w, http.StatusBadRequest, fmt.Sprintf("Invalid boolean filter: %v", err))
-			return
+	if err != nil {
+		// Distinguish Not Found vs Internal Error
+		if strings.Contains(err.Error(), "not found") {
+			s.writeHTTPError(w, http.StatusNotFound, err.Error())
+		} else {
+			s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
 		}
-		// If filter returns nothing, stop immediately
-		if len(allowList) == 0 {
-			s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": []string{}})
-			return
-		}
-	}
-
-	// 4. Check Vector Query (if empty/zero)
-	isVectorQueryEmpty := true
-	if len(req.QueryVector) > 0 {
-		for _, v := range req.QueryVector {
-			if v != 0 {
-				isVectorQueryEmpty = false
-				break
-			}
-		}
-	} else {
-		isVectorQueryEmpty = true
-	}
-
-	// --- CASE A: TEXT SEARCH ONLY (or only filters without vector) ---
-	if isVectorQueryEmpty && textQuery != "" {
-		textResults, _ := s.Engine.DB.FindIDsByTextSearch(req.IndexName, textQueryField, textQuery)
-
-		finalIDs := make([]string, 0, req.K)
-		count := 0
-		for _, res := range textResults {
-			if count >= req.K {
-				break
-			}
-			// Apply allowList if present
-			if allowList != nil {
-				if _, ok := allowList[res.DocID]; !ok {
-					continue
-				}
-			}
-			externalID, _ := hnswIndex.GetExternalID(res.DocID)
-			finalIDs = append(finalIDs, externalID)
-			count++
-		}
-		s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": finalIDs})
 		return
 	}
 
-	// --- CASE B: VECTOR OR HYBRID SEARCH ---
-	var vectorResults []types.SearchResult
-	var textResults []types.SearchResult
-	var wg sync.WaitGroup
-
-	// B.1 Vector Search (Parallel)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		// Direct call to HNSW index
-		vectorResults = idx.SearchWithScores(req.QueryVector, req.K, allowList, req.EfSearch)
-	}()
-
-	// B.2 Text Search (Parallel, if text query exists)
-	if textQuery != "" {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			results, _ := s.Engine.DB.FindIDsByTextSearch(req.IndexName, textQueryField, textQuery)
-
-			// Apply allowList to text results too
-			if allowList != nil {
-				var filteredTextResults []types.SearchResult
-				for _, res := range results {
-					if _, ok := allowList[res.DocID]; ok {
-						filteredTextResults = append(filteredTextResults, res)
-					}
-				}
-				textResults = filteredTextResults
-			} else {
-				textResults = results
-			}
-		}()
-	}
-
-	wg.Wait()
-
-	// 5. Result Fusion (Reciprocal Rank Fusion or Weighted Sum)
-
-	// If no text query, return only vector results
-	if textQuery == "" {
-		finalIDs := make([]string, len(vectorResults))
-		for i, res := range vectorResults {
-			externalID, _ := hnswIndex.GetExternalID(res.DocID)
-			finalIDs[i] = externalID
-		}
-		s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": finalIDs})
-		return
-	}
-
-	// --- Fusion Logic (Weighted Sum) ---
-	alpha := req.Alpha
-	if alpha == 0 {
-		alpha = 0.5 // Default bilanciato
-	} else if alpha < 0 || alpha > 1 {
-		s.writeHTTPError(w, http.StatusBadRequest, "alpha must be between 0 and 1")
-		return
-	}
-
-	normalizeVectorScores(vectorResults)
-	normalizeTextScores(textResults)
-
-	fusedScores := make(map[uint32]float64)
-
-	// Vector Score
-	for _, res := range vectorResults {
-		fusedScores[res.DocID] += alpha * res.Score
-	}
-
-	// Text Score
-	for _, res := range textResults {
-		fusedScores[res.DocID] += (1 - alpha) * res.Score
-	}
-
-	// 6. Final Sorting and ID Conversion
-	finalResults := make([]FusedResult, 0, len(fusedScores))
-	for id, score := range fusedScores {
-		externalID, found := hnswIndex.GetExternalID(id)
-		if !found {
-			continue
-		}
-		finalResults = append(finalResults, FusedResult{ID: externalID, Score: score})
-	}
-
-	sort.Slice(finalResults, func(i, j int) bool {
-		return finalResults[i].Score > finalResults[j].Score
-	})
-
-	// Top K
-	finalIDs := make([]string, 0, req.K)
-	for i := 0; i < req.K && i < len(finalResults); i++ {
-		finalIDs = append(finalIDs, finalResults[i].ID)
-	}
-
-	s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": finalIDs})
+	s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": results})
 }
 
 func (s *Server) handleVectorDelete(w http.ResponseWriter, r *http.Request) {
@@ -693,58 +541,4 @@ func (s *Server) handleTriggerVectorizer(w http.ResponseWriter, r *http.Request)
 		"status":  "OK",
 		"message": fmt.Sprintf("Synchronization for vectorizer '%s' triggered.", name),
 	})
-}
-
-// --- HELPER FUNCTIONS FOR SEARCH ---
-
-// containsRegex compiles the regex for extracting CONTAINS clauses.
-var containsRegex = regexp.MustCompile(`(?i)\s*CONTAINS\s*\(\s*(\w+)\s*,\s*['"](.+?)['"]\s*\)`)
-
-// parseHybridFilter separates the textual part (CONTAINS) from the boolean filters.
-func parseHybridFilter(filter string) (booleanFilter, textQuery, textField string) {
-	matches := containsRegex.FindStringSubmatch(filter)
-
-	if len(matches) == 0 {
-		// No text part found, everything is a boolean filter
-		return filter, "", ""
-	}
-
-	// matches[0] is the entire "CONTAINS(...)" string
-	textField = matches[1]
-	textQuery = matches[2]
-
-	// Remove the CONTAINS part from the original string to leave only boolean filters
-	booleanFilter = strings.Replace(filter, matches[0], "", 1)
-
-	// Cleanup residual AND/OR tokens
-	booleanFilter = strings.TrimSpace(booleanFilter)
-	booleanFilter = strings.TrimPrefix(booleanFilter, "AND ")
-	booleanFilter = strings.TrimSuffix(booleanFilter, " AND")
-	booleanFilter = strings.TrimSpace(booleanFilter)
-
-	return booleanFilter, textQuery, textField
-}
-
-func normalizeVectorScores(results []types.SearchResult) {
-	// Simple normalization: 1 / (1 + distance)
-	for i := range results {
-		results[i].Score = 1.0 / (1.0 + results[i].Score)
-	}
-}
-
-func normalizeTextScores(results []types.SearchResult) {
-	if len(results) == 0 {
-		return
-	}
-	maxScore := 0.0
-	for _, res := range results {
-		if res.Score > maxScore {
-			maxScore = res.Score
-		}
-	}
-	if maxScore > 0 {
-		for i := range results {
-			results[i].Score /= maxScore
-		}
-	}
 }

@@ -2,39 +2,110 @@
 
 ## Overview
 
-**KektorDB** is a high-performance, in-memory vector database built from scratch in Go. It was developed as a software engineering deep-dive project with the goal of creating a powerful, simple, and self-contained tool for semantic search. Its philosophy is to be **"the SQLite of Vector DBs"**: a robust search engine that doesn't require complex infrastructure, making it ideal for integration into Go applications, rapid prototyping in Python, or any scenario needing vector search capabilities without the overhead of distributed systems.
+**KektorDB** is an in-memory vector database built in Go. It is designed to operate as either a standalone server or an embeddable library, aiming to function as **"the SQLite of Vector DBs"**: a self-contained search engine that integrates into applications without requiring complex distributed infrastructure.
 
-KektorDB supports efficient approximate nearest neighbor (ANN) searches using a custom HNSW (Hierarchical Navigable Small World) implementation, advanced metadata filtering, multiple distance metrics, and compression/quantization techniques for memory optimization. It includes a modern REST API (with asynchronous operations), a subset of RESP protocol for AOF persistence, hybrid persistence (AOF + binary snapshots), automatic vectorization from external sources, and official clients for Python and Go.
+It supports approximate nearest neighbor (ANN) searches using the HNSW (Hierarchical Navigable Small World) algorithm, alongside hybrid search capabilities (BM25), metadata filtering, and automatic persistence.
 
-This documentation serves as both a user guide and a technical reference.
+KektorDB is available in two forms:
+1.  **Standalone Server:** A binary exposing a REST API over HTTP.
+2.  **Go Library:** An embeddable module (`pkg/engine`) for direct use within Go applications.
+
+---
+
+## Architecture
+
+The system is structured in three distinct layers:
+
+1.  **Core (`pkg/core`):** Contains the raw in-memory data structures (HNSW graph, KV store, Inverted Index). It handles data logic but is unaware of the file system or network.
+2.  **Engine (`pkg/engine`):** The high-level controller. It manages the Core, handles data persistence (AOF writing/replaying, Snapshots), and coordinates background maintenance tasks. This is the entry point for embedded usage.
+3.  **Server (`internal/server`):** An HTTP wrapper around the Engine. It provides the REST API, Vectorizer background workers, and task management.
+
+---
 
 ## Key Features
 
-- **Custom HNSW Search Engine**: A performant implementation of the HNSW algorithm for ANN searches, with configurable parameters like `M`, `efSearch` and `efConstruction`.
-- **Advanced Metadata Filtering**: Combine vector similarity with complex metadata filters (e.g., equality `tag="cat"`, ranges `price<100`, and logical `AND/OR` combinations) applied via pre-filtering for efficiency.
-- **Multiple Distance Metrics**: Supports **Euclidean (L2)** and **Cosine Similarity**, configurable per index. Optimized implementations include pure Go, Gonum (BLAS/SIMD), and Rust/CGO for hardware acceleration.
-- **Compression and Quantization**: Optimize memory usage with:
-  - **Float16**: Compression for Euclidean indexes (~50% memory savings) using half-precision floats.
-  - **Int8**: Symmetric scalar quantization for Cosine indexes (~75% memory savings), robust against outliers via quantile-based training.
-- **Modern Asynchronous API**: A clean, JSON-based REST API. Long-running operations (e.g., compression, AOF rewrite) are handled asynchronously with task tracking.
-- **Hybrid Persistence**: 
-  - **AOF + Snapshots (RDB)**: An Append-Only File (AOF) ensures durability using a RESP-like protocol subset for binary-safe logging. Binary snapshots (`.kdb`) enable near-instant restarts.
-  - **Automatic Maintenance**: Background processes handle snapshotting and AOF compaction based on configurable policies.
-- **Vectorizer Service**: Background workers for automatic synchronization of embeddings from external sources (e.g., filesystem folders) using embedders like Ollama API. Supports scheduling, chunking strategies, and metadata templating.
-- **Hybrid Search (BM25 Integration)**: Combines keyword and semantic relevance with configurable fusion via `alpha`.
-- **Ready-to-Use Ecosystem**: Official clients for **Python** and **Go**, with automated binary distribution via GitHub Actions. Build variants include pure Go for portability and Rust/CGO for performance.
+-   **HNSW Search Engine:** An implementation of the HNSW algorithm for ANN searches with configurable graph parameters (`M`, `efConstruction`).
+-   **Embedded Mode:** Can be imported directly as a Go library, bypassing network overhead and external process management.
+-   **Hybrid Search:** Combines vector similarity scores with keyword relevance (BM25) using a configurable fusion parameter (`alpha`).
+-   **Metadata Filtering:** Supports pre-filtering on metadata fields using equality, ranges (e.g., `price < 100`), and boolean logic (`AND`/`OR`).
+-   **Distance Metrics:** Supports **Euclidean (L2)** and **Cosine Similarity**. Includes implementations in pure Go (using Gonum) and an optional Rust-accelerated build (via CGO) for SIMD optimization on supported hardware.
+-   **Compression & Quantization:** Reduces memory footprint for large datasets:
+    -   **Float16:** Reduces Euclidean index size by ~50%.
+    -   **Int8:** Symmetric scalar quantization for Cosine indexes (~75% reduction), using pre-computed norms to maintain search speed.
+-   **REST API & Task Management:** A JSON-based API supporting batch operations and asynchronous handling for long-running tasks (like index compression or AOF rewriting).
+-   **Hybrid Persistence:**
+    -   **AOF (Append-Only File):** Logs write operations using a RESP-like protocol for durability.
+    -   **Snapshots:** Periodic binary dumps of the in-memory state for faster restarts.
+-   **Vectorizer Service:** A background worker that monitors external data sources (e.g., filesystem directories), chunks text, and syncs embeddings using external APIs (like Ollama).
 
 ## Installation
 
-KektorDB is distributed as a single executable with no dependencies.
+### As a Server (Binary)
+Download the pre-compiled binary from the [Releases page](https://github.com/sanonone/kektordb/releases).
 
-1. **Download the Binary**: Visit the [Releases page](https://github.com/sanonone/kektordb/releases) on GitHub and download the archive for your OS (e.g., `kektordb-v0.2.0-linux-amd64.tar.gz`).
-2. **Extract the Archive**: Unzip to get the `kektordb` executable.
-3. **Run the Server**: Open a terminal and execute:
-   ```
-   ./kektordb
-   ```
-   The server will start listening on `http://localhost:9091` by default.
+```bash
+# Linux/macOS
+./kektordb
+```
+
+### As a Library (Go Module)
+To use KektorDB inside your own Go application:
+
+```bash
+go get github.com/sanonone/kektordb
+```
+
+---
+
+## Using as a Go Library (Embedded)
+
+This is the most efficient way to use KektorDB if you are writing Go software. You bypass HTTP serialization and network latency entirely.
+
+```go
+package main
+
+import (
+	"fmt"
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/engine"
+)
+
+func main() {
+	// 1. Configure the Engine
+	// Data will be persisted in the "./data" directory
+	opts := engine.DefaultOptions("./data")
+	
+	// 2. Open the Database
+	// This automatically replays the AOF and loads snapshots.
+	db, err := engine.Open(opts)
+	if err != nil {
+		panic(err)
+	}
+	defer db.Close() // Ensures clean shutdown and final save
+
+	// 3. Create an Index (if it doesn't exist)
+	// Metric: Cosine, Precision: Float32, M: 16, efConstruction: 200
+	_ = db.VCreate("products", distance.Cosine, 16, 200, distance.Float32, "english")
+
+	// 4. Add Data (Vector + Metadata)
+	vector := []float32{0.1, 0.2, 0.3}
+	meta := map[string]any{"category": "books", "price": 15.5}
+	
+	err = db.VAdd("products", "item_1", vector, meta)
+	if err != nil {
+		fmt.Println("Error adding vector:", err)
+	}
+
+	// 5. Search
+	// Finds 5 nearest neighbors. Filters for price < 20.
+	// efSearch: 100 (higher = more accurate but slower)
+	results, _ := db.VSearch("products", vector, 5, "price < 20", 100, 0.5)
+	
+	fmt.Println("Results:", results)
+}
+```
+
+---
 
 
 ## Usage Guide
@@ -68,149 +139,105 @@ Example with custom config:
 All operations use HTTP requests (e.g., via `curl`, Python/Go clients, or tools like Postman). 
 #### Key-Value Operations
 
-- **Set a Value** (`POST /kv/{key}`):
-  ```
-  curl -X POST -d '{"value": "important data"}' http://localhost:9091/kv/my-key
-  ```
+A simple persistent store for string data, useful for storing application state or configurations alongside your vectors.
 
-- **Get a Value** (`GET /kv/{key}`):
-  ```
-  curl http://localhost:9091/kv/my-key
-  ```
+*   **Set Value:** `POST /kv/{key}`
+    *   **Body:** `{"value": "your data string"}`
+    *   Stores or updates a value.
+*   **Get Value:** `GET /kv/{key}`
+    *   Returns the stored value for the given key.
+*   **Delete Value:** `DELETE /kv/{key}`
+    *   Removes the key and its value.
 
-- **Delete a Value** (`DELETE /kv/{key}`):
-  ```
-  curl -X DELETE http://localhost:9091/kv/my-key
-  ```
+### Vector Index Lifecycle
 
-#### Vector Index Lifecycle
+Manage the containers (indexes) that hold your vector data.
 
-1. **Create an Index** (`POST /vector/actions/create`):
-   ```
-   curl -X POST -d '{
-     "index_name": "knowledge-base",
-     "metric": "cosine",
-     "text_language": "english"
-   }' http://localhost:9091/vector/actions/create
-   ```
-   - `text_language`: Enables hybrid search (e.g., "english" or "italian").
+*   **Create Index:** `POST /vector/actions/create`
+    *   **Body:**
+        ```json
+        {
+          "index_name": "knowledge-base",
+          "metric": "cosine",       // Options: "cosine", "euclidean"
+          "precision": "float32",   // Options: "float32", "float16", "int8"
+          "text_language": "english", // Options: "english", "italian", or "" (none)
+          "m": 16,                  // HNSW max connections (default: 16)
+          "ef_construction": 200    // HNSW construction depth (default: 200)
+        }
+        ```
+    *   *Note:* `text_language` is required to enable Hybrid Search (BM25) on this index.
+*   **List Indexes:** `GET /vector/indexes`
+    *   Returns a summary of all existing indexes.
+*   **Get Details:** `GET /vector/indexes/{name}`
+    *   Returns configuration and statistics (vector count) for a specific index.
+*   **Delete Index:** `DELETE /vector/indexes/{name}`
+    *   Permanently removes the index and all associated data.
 
-2. **List Indexes** (`GET /vector/indexes`):
-   ```
-   curl http://localhost:9091/vector/indexes
-   ```
+### Vector Ingestion
 
-3. **Get Index Details** (`GET /vector/indexes/{name}`):
-   ```
-   curl http://localhost:9091/vector/indexes/knowledge-base
-   ```
+KektorDB offers three methods for inserting data, depending on your throughput and consistency needs.
 
-4. **Delete an Index** (`DELETE /vector/indexes/{name}`):
-   ```
-   curl -X DELETE http://localhost:9091/vector/indexes/knowledge-base
-   ```
+*   **Single Add:** `POST /vector/actions/add`
+    *   **Body:**
+        ```json
+        {
+          "index_name": "knowledge-base",
+          "id": "doc-123",
+          "vector": [0.1, 0.2, 0.3],
+          "metadata": {"source": "report.pdf", "page": 5}
+        }
+        ```
+    *   Adds a single vector. Changes are immediately written to the AOF log.
+*   **Batch Add (Standard):** `POST /vector/actions/add-batch`
+    *   **Body:** `{"index_name": "...", "vectors": [{...}, {...}]}`
+    *   **Best for:** Live updates and incremental ingestion.
+    *   *Behavior:* Inserts vectors concurrently in memory and appends operations to the AOF log for durability.
+*   **Bulk Import (High Speed):** `POST /vector/actions/import`
+    *   **Body:** `{"index_name": "...", "vectors": [{...}, {...}]}`
+    *   **Best for:** Initial dataset loading or massive restores.
+    *   *Behavior:* Optimized for speed. It **bypasses the AOF log** entirely to reduce I/O overhead and forces a full binary **Snapshot** to disk upon completion.
+    *   *Warning:* If the server crashes during an import, the data in that specific batch is lost (not logged), but the database remains consistent to the last snapshot.
 
-#### Adding and Managing Vectors
+### Data Retrieval & Deletion
 
-- **Add a Vector** (`POST /vector/actions/add`):
-  ```
-  curl -X POST -d '{
-    "index_name": "knowledge-base",
-    "id": "doc-123",
-    "vector": [0.1, 0.2, 0.3],
-    "metadata": {"source": "report.pdf", "page": 5}
-  }' http://localhost:9091/vector/actions/add
-  ```
+*   **Get Single Vector:** `GET /vector/indexes/{name}/vectors/{id}`
+    *   Retrieves the vector and metadata for a specific ID.
+*   **Get Multiple Vectors:** `POST /vector/actions/get-vectors`
+    *   **Body:** `{"index_name": "...", "ids": ["doc-1", "doc-2"]}`
+    *   Retrieves data for multiple IDs in a single request.
+*   **Delete Vector:** `POST /vector/actions/delete_vector`
+    *   **Body:** `{"index_name": "...", "id": "doc-1"}`
+    *   Performs a soft delete. The vector is removed from search results but remains in the graph structure until a rebuild/vacuum (planned feature).
 
-- **Add in Batch** (`POST /vector/actions/add-batch`):
-  ```
-  curl -X POST -d '{
-    "index_name": "knowledge-base",
-    "vectors": [
-      {"id": "doc-124", "vector": [...], "metadata": {...}},
-      {"id": "doc-125", "vector": [...], "metadata": {...}}
-    ]
-  }' http://localhost:9091/vector/actions/add-batch
-  ```
+### Search Engine
 
-- **Get a Vector** (`GET /vector/indexes/{name}/vectors/{id}`):
-  ```
-  curl http://localhost:9091/vector/indexes/knowledge-base/vectors/doc-123
-  ```
+All search operations use a single unified endpoint that supports vector, text, and hybrid queries.
 
-- **Get Vectors in Batch** (`POST /vector/actions/get-vectors`):
-  ```
-  curl -X POST -d '{
-    "index_name": "knowledge-base",
-    "ids": ["doc-123", "doc-124"]
-  }' http://localhost:9091/vector/actions/get-vectors
-  ```
+*   **Execute Search:** `POST /vector/actions/search`
+    *   **Body:**
+        ```json
+        {
+          "index_name": "knowledge-base",
+          "k": 10,                        // Number of results to return
+          "query_vector": [0.1, 0.2, ...], // Required for vector/hybrid search
+          "filter": "category='books' AND price < 50", // Optional metadata filter
+          "ef_search": 100,               // Optional accuracy tuning (default: 100)
+          "alpha": 0.5                    // Optional hybrid fusion weight (default: 0.5)
+        }
+        ```
 
-- **Delete a Vector** (`POST /vector/actions/delete_vector`):
-  ```
-  curl -X POST -d '{"index_name": "knowledge-base", "id": "doc-123"}' http://localhost:9091/vector/actions/delete_vector
-  ```
+#### Search Capabilities:
 
-#### Performing Searches
-
-Use `POST /vector/actions/search` for all searches.
-
-- **Simple Vector Search**:
-  ```
-  curl -X POST -d '{
-    "index_name": "knowledge-base",
-    "k": 5,
-    "query_vector": [0.15, 0.25, 0.35]
-  }' http://localhost:9091/vector/actions/search
-  ```
-
-- **Search with Pre-Filtering**:
-  ```
-  curl -X POST -d '{
-    "index_name": "knowledge-base",
-    "k": 5,
-    "query_vector": [0.15, 0.25, 0.35],
-    "filter": "source=report.pdf AND page>3"
-  }' http://localhost:9091/vector/actions/search
-  ```
-
-- **Control Speed vs. Accuracy** (`ef_search`):
-  Higher `ef_search` improves recall but slows searches.
-  ```
-  curl -X POST -d '{
-    "index_name": "knowledge-base",
-    "k": 5,
-    "query_vector": [...],
-    "ef_search": 200
-  }' http://localhost:9091/vector/actions/search
-  ```
-
-#### Hybrid Search Guide
-
-Hybrid search combines vector similarity with keyword relevance (BM25). Requires `text_language` on index creation.
-
-- **Hybrid Query**:
-  ```
-  curl -X POST -d '{
-    "index_name": "knowledge-base",
-    "k": 5,
-    "query_vector": [0.15, 0.25, 0.35],
-    "filter": "CONTAINS(content, \"database performance\") AND page<10",
-    "alpha": 0.7
-  }' http://localhost:9091/vector/actions/search
-  ```
-  - `CONTAINS(field, "text")`: Activates text search on metadata field `content`.
-  - `alpha` (0.0 to 1.0): Balances fusion (1.0 = 100% vector, 0.0 = 100% text, 0.5 = balanced).
-
-- **Text-Only Search**: Use an empty/zero query vector.
-  ```
-  curl -X POST -d '{
-    "index_name": "knowledge-base",
-    "k": 5,
-    "query_vector": [0,0,0],
-    "filter": "CONTAINS(content, \"database performance\")"
-  }' http://localhost:9091/vector/actions/search
-  ```
+1.  **Vector Search:** Provide `query_vector`. Finds the nearest neighbors based on the index metric.
+2.  **Filtered Search:** Add a `filter` string. Supports operators `=`, `<`, `>`, `<=`, `>=` and logic `AND`, `OR`.
+3.  **Hybrid Search:** Combine vector similarity with keyword relevance.
+    *   Use `CONTAINS(field, 'text')` in the filter string.
+    *   Set `alpha` to control weighting:
+        *   `1.0`: Pure Vector search.
+        *   `0.0`: Pure Keyword (BM25) search.
+        *   `0.5`: Balanced (Reciprocal Rank Fusion / Weighted Sum).
+4.  **Text-Only Search:** Provide an empty or zeroed `query_vector` and use `CONTAINS(...)` in the filter.
+5.  **Accuracy Tuning:** Increase `ef_search` for higher recall (more accurate) at the cost of latency, or decrease it for faster but approximate results.
 
 #### Compression and Quantization
 
@@ -278,38 +305,6 @@ The Vectorizer service runs background workers to sync indexes with external dat
   curl -X POST http://localhost:9091/system/aof-rewrite
   ```
 
-## API Reference
-
-The REST API is organized under `/vector/*` for vector operations and `/system/*` for administrative tasks. All requests/responses are JSON. AOF uses a subset of RESP for binary-safe command logging.
-
-### Vector Endpoints
-
-- `GET /vector/indexes`: List all indexes.
-- `POST /vector/actions/create`: Create index (body: `{ "index_name": "...", "metric": "cosine|euclidean", "text_language": "english|italian" }`).
-- `GET /vector/indexes/{name}`: Get index details.
-- `DELETE /vector/indexes/{name}`: Delete index.
-- `POST /vector/actions/add`: Add single vector.
-- `POST /vector/actions/add-batch`: Add multiple vectors.
-- `POST /vector/actions/search`: Perform search (body includes `query_vector`, `k`, `filter`, `ef_search`, `alpha`).
-- `POST /vector/actions/delete_vector`: Delete vector by ID.
-- `GET /vector/indexes/{name}/vectors/{id}`: Get single vector.
-- `POST /vector/actions/get-vectors`: Get vectors by IDs.
-- `POST /vector/actions/compress`: Start compression (async).
-
-### System Endpoints
-
-- `POST /system/save`: Trigger snapshot.
-- `POST /system/aof-rewrite`: Trigger AOF compaction (async).
-- `GET /system/tasks/{id}`: Check task status.
-- `GET /system/vectorizers`: List vectorizer statuses.
-- `POST /system/vectorizers/{name}/trigger`: Force vectorizer sync.
-
-### KV Endpoints
-
-- `GET /kv/{key}`: Get value.
-- `POST /kv/{key}`: Set value.
-- `DELETE /kv/{key}`: Delete key.
-
 ## Persistence
 
 KektorDB uses a hybrid model:
@@ -321,32 +316,6 @@ On startup:
 1. Load snapshot if available.
 2. Replay AOF for any subsequent changes.
 
-## Architecture
-
-KektorDB is structured around the `core` package for data logic and `server` for runtime management.
-
-### Core Components
-
-- **KVStore** (`kv.go`): Thread-safe in-memory key-value store using `sync.RWMutex`.
-- **VectorIndex Interface** (`vector_index.go`): Defines operations for vector indexes. Includes a basic `BruteForceIndex` for testing.
-- **HNSW Index** (`hnsw_index.go`): Implements the HNSW graph for ANN searches. Supports multiple precisions, metrics, and snapshotting.
-- **DB Struct** (`core.go`): Orchestrates KV, vector indexes, metadata indexes (inverted, B-Tree, text), filtering, full-text search (BM25), and snapshotting.
-- **Distance Calculations** (`distance_go.go`, `distance_rust.go`): Metric and precision-specific functions with smart dispatch (pure Go, Gonum, Rust/CGO). Rust library (`lib.rs`) provides SIMD-optimized implementations for Euclidean (float32/float16) and Cosine (int8) on x86_64/aarch64.
-- **Quantizer** (`quantizer.go`): Symmetric scalar quantization for `int8`, trained with outlier-robust quantiles.
-
-### Server Components
-
-- **Server** (`server.go`): Manages startup, persistence (AOF/snapshots), background tasks (saving, AOF rewrite, task manager), and HTTP serving.
-- **HTTP Handlers** (`http_handlers.go`): Defines REST endpoints and routing.
-- **AOF Parser** (`aof_parser.go`): Parses/formats RESP subset for AOF logging and replay.
-- **Vectorizer Service** (`vectorizer_service.go`, `vectorizer.go`, `embedder.go`, `vectorizer_config.go`): Manages background workers for data sync, embedding (e.g., Ollama API), chunking, and upserting.
-- **Main Entry** (`main.go`): Parses flags, starts server, handles graceful shutdown.
-
-### Concurrency
-
-- Uses `sync.RWMutex` for read-heavy operations.
-- Asynchronous tasks managed via `TaskManager` and goroutines.
-- Vectorizer workers use tickers, channels for stopping, and atomic state.
 
 ## Building from Source
 
@@ -369,7 +338,7 @@ KektorDB uses a `Makefile` for builds, tests, and benchmarks. Supports pure Go (
 - `make test-rust`: Runs tests with Rust integration (`go test -tags rust`).
 - `make bench-rust`: Runs benchmarks with Rust.
 
-### Release Commands (CI/CD)
+### Release Commands
 
 - `make release`: Cross-compiles binaries for Linux, Windows, macOS (amd64/arm64) using Zig. Outputs to `release/`. Requires Rust library built for targets.
 
@@ -390,12 +359,27 @@ KektorDB uses a `Makefile` for builds, tests, and benchmarks. Supports pure Go (
 
 ## Contributing
 
-Contributions are welcome! Please:
-1. Fork the repo.
-2. Create a feature branch.
-3. Submit a pull request with clear descriptions and tests.
+**KektorDB is a personal project born from a desire to learn the internals of vector databases.**
 
-Follow Go best practices. Run `make test` and `make bench` before submitting.
+As the sole maintainer, I built this engine to explore CGO, SIMD, and low-level Go optimizations. I am proud of the performance achieved so far, but I know there is always a better way to write code.
+
+If you spot race conditions, missed optimizations, or unidiomatic Go patterns, **please open an Issue or a PR**. I treat every contribution as a learning opportunity and I am looking for people who want to build this together.
+
+### Areas for Contribution
+The project is currently in `v0.3.0`. I would appreciate help with:
+
+1.  **Core Optimization:** Reviewing the HNSW implementation and locking strategies.
+2.  **Features:** Implementing Roaring Bitmaps or Graph Healing (see Roadmap).
+3.  **Clients:** Making the Python/Go clients more idiomatic.
+4.  **Testing:** Adding edge-case tests and fuzzing.
+
+### Development Setup
+1.  Fork the repository.
+2.  Clone your fork.
+3.  Run `make test` to ensure everything is working.
+4.  Create a feature branch.
+5.  Commit and open a **Pull Request**.
+
 
 ## License
 

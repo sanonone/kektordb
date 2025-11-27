@@ -125,7 +125,7 @@ func New(m int, efConstruction int, metric distance.DistanceMetric, precision di
 		New: func() any { return newMaxHeap(efConstruction) },
 	}
 
-	// Pre-allocazione se sappiamo che è Int8
+	// Pre-allocate if we know it's Int8
 	if precision == distance.Int8 {
 		h.quantizedNorms = make([]float32, 0, 10000)
 	}
@@ -170,7 +170,7 @@ func New(m int, efConstruction int, metric distance.DistanceMetric, precision di
 
 // distance calculates the distance between two stored vectors of the same type
 func (h *Index) distance(v1, v2 any) (float64, error) {
-	// Usiamo un type switch per chiamare la funzione corretta.
+	// type switch to call the correct function
 	switch fn := h.distanceFunc.(type) {
 	case distance.DistanceFuncF32:
 		vec1, ok1 := v1.([]float32)
@@ -381,7 +381,7 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 		return 0, fmt.Errorf("ID '%s' already exists", id)
 	}
 
-	// Pre-processing locale
+	// Local pre-processing
 	if h.metric == distance.Cosine && h.precision == distance.Float32 {
 		normalize(vector)
 	}
@@ -486,7 +486,9 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 				}
 			}
 		}
-		currentEntryPoint = neighbors[0].Id
+		if len(neighbors) > 0 {
+			currentEntryPoint = neighbors[0].Id
+		}
 	}
 
 	if level > h.maxLevel {
@@ -941,7 +943,7 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 		q := query.([]int8)
 		fn := h.distFuncI8
 
-		// Pre-calcola norma query una volta sola
+		// Pre-calculate query norm once
 		var qNormSq int64
 		for _, v := range q {
 			qNormSq += int64(v) * int64(v)
@@ -1009,8 +1011,18 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 	// Create Value Type (on stack)
 	ep := types.Candidate{Id: entrypointID, Distance: dist}
 	candidates.Push(ep)
-	results.Push(ep)
 	visited.Add(entrypointID)
+
+	isEpValid := true
+	if allowList != nil {
+		if _, ok := allowList[entrypointID]; !ok {
+			isEpValid = false
+		}
+	}
+
+	if isEpValid && !entryNode.Deleted {
+		results.Push(ep)
+	}
 
 	// 4. HOT LOOP (The bottleneck)
 	for candidates.Len() > 0 {
@@ -1167,10 +1179,10 @@ func (h *Index) selectNeighbors(candidates []types.Candidate, m int) []types.Can
 		}
 	}
 
-	// 2. Fill-up Strategy (Boosts Recall)
-	// Se l'euristica è stata troppo aggressiva e abbiamo meno di M connessioni,
-	// riempiamo gli slot rimanenti con i migliori candidati scartati.
-	// Questo previene la creazione di nodi isolati o debolmente connessi.
+	// 2. Strategy Boosts Recall
+	// If the heuristic has been too aggressive and there are fewer than M connections,
+	// we fill the remaining slots with the best discarded candidates.
+	// This should prevent the creation of isolated or weakly connected nodes.
 	if len(results) < m {
 		needed := m - len(results)
 		for _, cand := range discarded {
@@ -1416,7 +1428,7 @@ func normalizeOld(v []float32) {
 		}
 	}
 
-	// Calcoliamo la nuova lunghezza per verifica
+	// calculate the new length for verification
 	var finalNorm float32
 	for _, val := range v {
 		finalNorm += val * val
@@ -1424,9 +1436,7 @@ func normalizeOld(v []float32) {
 
 }
 
-// Funzione helper per l'inverse square root (puoi trovarne implementazioni
-// in Go online o usare math.Float32bits e una traduzione diretta dall'originale in C).
-// Per semplicità, usiamo una versione leggermente ottimizzata.
+// inverse square root helper
 func invSqrt(n float32) float32 {
 	return 1.0 / float32(math.Sqrt(float64(n)))
 }

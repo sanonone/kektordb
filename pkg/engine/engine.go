@@ -1,3 +1,17 @@
+// Package engine provides the high-level, embedded interface for KektorDB.
+//
+// It orchestrates the in-memory vector data structures (Core) and the on-disk
+// persistence layer (AOF/Snapshot), providing a thread-safe database instance
+// that can be used directly within Go applications without network overhead.
+//
+// Basic usage:
+//
+//	opts := engine.DefaultOptions("./data")
+//	db, err := engine.Open(opts)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer db.Close()
 package engine
 
 import (
@@ -12,16 +26,40 @@ import (
 	"time"
 )
 
-// Options configures the Engine.
+// Options configures the behavior of the Engine, including persistence paths
+// and automatic maintenance policies.
 type Options struct {
-	DataDir              string // Directory to store .aof and .kdb files
-	AofFilename          string // Default: "kektordb.aof"
-	AutoSaveInterval     time.Duration
-	AutoSaveThreshold    int64 // Number of writes before triggering save
-	AofRewritePercentage int   // 0 to disable
+	// DataDir is the directory where .aof and .kdb files will be stored.
+	// It is created automatically if it does not exist.
+	DataDir string
+
+	// AofFilename is the name of the Append-Only File (default: "kektordb.aof").
+	// The snapshot file will effectively be named <AofFilename>.kdb.
+	AofFilename string
+
+	// AutoSaveInterval defines how much time must pass since the last save
+	// before a new snapshot is triggered (if AutoSaveThreshold is also met).
+	// Set to 0 to disable auto-saving based on time.
+	AutoSaveInterval time.Duration
+
+	// AutoSaveThreshold defines how many write operations must occur
+	// before a new snapshot is triggered (if AutoSaveInterval is also met).
+	// Set to 0 to disable auto-saving based on write count.
+	AutoSaveThreshold int64
+
+	// AofRewritePercentage triggers an automatic AOF compaction (rewrite) when the
+	// AOF file size exceeds the base size by this percentage.
+	// E.g., 100 means rewrite when size doubles. Set to 0 to disable.
+	AofRewritePercentage int
 }
 
-// DefaultOptions returns standard defaults.
+// DefaultOptions returns a standard configuration suitable for most use cases.
+//
+// Defaults:
+//   - DataDir: provided path
+//   - AofFilename: "kektordb.aof"
+//   - AutoSave: Every 60s if at least 1000 changes occurred
+//   - AofRewrite: At 100% growth
 func DefaultOptions(dataDir string) Options {
 	return Options{
 		DataDir:              dataDir,
@@ -32,10 +70,17 @@ func DefaultOptions(dataDir string) Options {
 	}
 }
 
-// Engine is the high-level controller for KektorDB.
+// Engine is the main entry point for KektorDB.
 // It coordinates the in-memory Core and the on-disk Persistence.
+//
+// Use Open() to initialize an Engine and Close() to shut it down gracefully.
 type Engine struct {
-	DB  *core.DB
+	// DB is the underlying in-memory core.
+	// While exported, it is recommended to use Engine methods (e.g., VAdd, VSearch)
+	// to ensure operations are correctly persisted to disk.
+	DB *core.DB
+
+	// AOF handles the append-only log.
 	AOF *persistence.AOFWriter
 
 	opts        Options
@@ -55,8 +100,15 @@ type Engine struct {
 	wg     sync.WaitGroup
 }
 
-// Open initializes the database engine.
-// It loads existing data from snapshot and AOF, and starts background maintenance tasks.
+// Open initializes a new Engine instance using the provided options.
+//
+// It performs the following actions:
+// 1. Creates DataDir if missing.
+// 2. Loads the latest Snapshot (.kdb) if available.
+// 3. Replays the AOF (.aof) to recover recent data.
+// 4. Starts background goroutines for auto-saving and compaction.
+//
+// This method blocks until the database is fully loaded and ready.
 func Open(opts Options) (*Engine, error) {
 	if err := os.MkdirAll(opts.DataDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create data directory: %w", err)
@@ -111,7 +163,11 @@ func Open(opts Options) (*Engine, error) {
 	return e, nil
 }
 
-// Close performs a clean shutdown, syncing data and stopping background tasks.
+// Close performs a clean shutdown of the Engine.
+//
+// It stops background maintenance tasks and closes the AOF file.
+// Note: It does not force a final snapshot, but all data is already persisted
+// in the AOF file, ensuring durability on restart.
 func (e *Engine) Close() error {
 	close(e.closed)
 	e.wg.Wait() // Wait for background tasks to finish
@@ -124,6 +180,7 @@ func (e *Engine) Close() error {
 }
 
 // backgroundTasks handles automatic saving and AOF rewriting.
+// (Unexported: internal use only)
 func (e *Engine) backgroundTasks() {
 	defer e.wg.Done()
 	ticker := time.NewTicker(1 * time.Second)
@@ -139,6 +196,8 @@ func (e *Engine) backgroundTasks() {
 	}
 }
 
+// checkMaintenance evaluates if a snapshot or AOF rewrite is needed.
+// (Unexported: internal use only)
 func (e *Engine) checkMaintenance() {
 	// Lightweight atomic check
 	dirty := atomic.LoadInt64(&e.dirtyCounter)

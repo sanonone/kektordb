@@ -169,7 +169,7 @@ func dotProductGoInt8(v1, v2 []int8) (int32, error) {
 // squaredEuclideanSmartF32 chooses the best implementation for float32 squared Euclidean distance.
 // Based on benchmarks, the Rust implementation is faster for longer vectors.
 func squaredEuclideanSmartF32(v1, v2 []float32) (float64, error) {
-	if len(v1) >= 256 {
+	if len(v1) >= 128 {
 		return squaredEuclideanRustF32(v1, v2)
 	}
 	return squaredEuclideanDistanceGo(v1, v2)

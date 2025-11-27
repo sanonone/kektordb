@@ -232,7 +232,6 @@ func (e *Engine) RewriteAOF() error {
 		f.WriteString(cmd)
 	}
 
-	// Firma callback corretta: (string, *hnsw.Index, core.VectorData)
 	e.DB.IterateVectorIndexesUnlocked(func(idxName string, _ *hnsw.Index, data core.VectorData) {
 		vecStr := float32SliceToString(data.Vector)
 		var meta []byte

@@ -7,16 +7,21 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/sanonone/kektordb/pkg/core"
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/core/types"
 	"github.com/sanonone/kektordb/pkg/persistence"
+	"sort"
 	"strconv"
+	"sync"
 	"sync/atomic"
 )
 
 // --- KV Operations ---
 
+// KVSet stores a key-value pair in the database.
+// The operation is persisted to the AOF log.
 func (e *Engine) KVSet(key string, value []byte) error {
 	// 1. AOF
 	cmd := persistence.FormatCommand("SET", []byte(key), value)
@@ -31,10 +36,14 @@ func (e *Engine) KVSet(key string, value []byte) error {
 	return nil
 }
 
+// KVGet retrieves a value from the key-value store.
+// Returns the value and a boolean indicating if the key was found.
 func (e *Engine) KVGet(key string) ([]byte, bool) {
 	return e.DB.GetKVStore().Get(key)
 }
 
+// KVDelete removes a key from the key-value store.
+// The operation is persisted to the AOF log.
 func (e *Engine) KVDelete(key string) error {
 	cmd := persistence.FormatCommand("DEL", []byte(key))
 	if err := e.AOF.Write(cmd); err != nil {
@@ -47,6 +56,13 @@ func (e *Engine) KVDelete(key string) error {
 
 // --- Vector Operations ---
 
+// VCreate initializes a new vector index with the specified configuration.
+//
+// 'metric' defines the distance function (e.g., distance.Cosine, distance.Euclidean).
+// 'prec' defines the storage precision (float32, float16, int8).
+// 'lang' enables hybrid search features (e.g., "english", "italian") or "" to disable.
+//
+// Returns an error if an index with the same name already exists.
 func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int, prec distance.PrecisionType, lang string) error {
 	cmd := persistence.FormatCommand("VCREATE",
 		[]byte(name),
@@ -67,6 +83,29 @@ func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int
 	return err
 }
 
+// VDeleteIndex completely removes an index and all its data.
+// The operation is persisted to the AOF log as a VDROP command.
+func (e *Engine) VDeleteIndex(name string) error {
+	cmd := persistence.FormatCommand("VDROP", []byte(name))
+	if err := e.AOF.Write(cmd); err != nil {
+		return err
+	}
+
+	err := e.DB.DeleteVectorIndex(name)
+	if err == nil {
+		atomic.AddInt64(&e.dirtyCounter, 1)
+	}
+	return err
+}
+
+// --- Vector Data Operations ---
+
+// VAdd inserts or updates a single vector in the specified index.
+//
+// This operation updates the in-memory graph immediately and appends the operation
+// to the AOF (Append-Only File) for durability.
+//
+// 'metadata' can be nil. If provided, it enables filtering and hybrid search.
 func (e *Engine) VAdd(indexName, id string, vector []float32, metadata map[string]any) error {
 	idx, ok := e.DB.GetVectorIndex(indexName)
 	if !ok {
@@ -101,6 +140,8 @@ func (e *Engine) VAdd(indexName, id string, vector []float32, metadata map[strin
 	return nil
 }
 
+// VDelete marks a vector as deleted in the specified index.
+// The node remains in the graph but is excluded from search results.
 func (e *Engine) VDelete(indexName, id string) error {
 	idx, ok := e.DB.GetVectorIndex(indexName)
 	if !ok {
@@ -120,23 +161,170 @@ func (e *Engine) VDelete(indexName, id string) error {
 	return nil
 }
 
-// VSearch is read-only, so no AOF interaction.
+// VGet retrieves the full data (vector + metadata) for a single ID.
+func (e *Engine) VGet(indexName, id string) (core.VectorData, error) {
+	return e.DB.GetVector(indexName, id)
+}
+
+// VGetMany retrieves data for multiple IDs in parallel.
+func (e *Engine) VGetMany(indexName string, ids []string) ([]core.VectorData, error) {
+	return e.DB.GetVectors(indexName, ids)
+}
+
+// VSearch performs a vector, text, or hybrid search.
+//
+// 'k': number of results to return.
+// 'filter': supports SQL-like metadata filtering and "CONTAINS(field, 'text')".
+// 'efSearch': tuning parameter for HNSW accuracy (0 = default).
+// 'alpha': weight for hybrid fusion (1.0 = vector only, 0.0 = text only, 0.5 = balanced).
+//
+// Returns a list of external IDs sorted by relevance.
 func (e *Engine) VSearch(indexName string, query []float32, k int, filter string, efSearch int, alpha float64) ([]string, error) {
 	idx, ok := e.DB.GetVectorIndex(indexName)
 	if !ok {
-		return nil, fmt.Errorf("index not found")
+		return nil, fmt.Errorf("index '%s' not found", indexName)
 	}
-	hnswIdx := idx.(*hnsw.Index)
+	hnswIndex, ok := idx.(*hnsw.Index)
+	if !ok {
+		return nil, fmt.Errorf("index is not HNSW, hybrid search not supported")
+	}
 
-	results := idx.SearchWithScores(query, k, nil, efSearch)
-	ids := make([]string, len(results))
-	for i, r := range results {
-		ids[i], _ = hnswIdx.GetExternalID(r.DocID)
+	// 1. Parse Filters
+	booleanFilters, textQuery, textQueryField := parseHybridFilter(filter)
+
+	// 2. Boolean Pre-Filtering
+	var allowList map[uint32]struct{}
+	var err error
+	if booleanFilters != "" {
+		allowList, err = e.DB.FindIDsByFilter(indexName, booleanFilters)
+		if err != nil {
+			return nil, fmt.Errorf("invalid filter: %w", err)
+		}
+		if len(allowList) == 0 {
+			return []string{}, nil // No matches
+		}
 	}
+
+	// 3. Check if Vector Query is empty
+	isVectorQueryEmpty := true
+	if len(query) > 0 {
+		for _, v := range query {
+			if v != 0 {
+				isVectorQueryEmpty = false
+				break
+			}
+		}
+	}
+
+	// --- CASE A: TEXT ONLY (or Filter Only) ---
+	if isVectorQueryEmpty && textQuery != "" {
+		textResults, _ := e.DB.FindIDsByTextSearch(indexName, textQueryField, textQuery)
+
+		finalIDs := make([]string, 0, k)
+		count := 0
+		for _, res := range textResults {
+			if count >= k {
+				break
+			}
+			if allowList != nil {
+				if _, ok := allowList[res.DocID]; !ok {
+					continue
+				}
+			}
+			extID, _ := hnswIndex.GetExternalID(res.DocID)
+			finalIDs = append(finalIDs, extID)
+			count++
+		}
+		return finalIDs, nil
+	}
+
+	// --- CASE B: HYBRID / VECTOR SEARCH ---
+	var vectorResults []types.SearchResult
+	var textResults []types.SearchResult
+	var wg sync.WaitGroup
+
+	// Vector Search
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		vectorResults = idx.SearchWithScores(query, k, allowList, efSearch)
+	}()
+
+	// Text Search (if applicable)
+	if textQuery != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results, _ := e.DB.FindIDsByTextSearch(indexName, textQueryField, textQuery)
+
+			// Apply allowList to text results too
+			if allowList != nil {
+				var filtered []types.SearchResult
+				for _, res := range results {
+					if _, ok := allowList[res.DocID]; ok {
+						filtered = append(filtered, res)
+					}
+				}
+				textResults = filtered
+			} else {
+				textResults = results
+			}
+		}()
+	}
+	wg.Wait()
+
+	// 4. Fusion
+	if textQuery == "" {
+		// Pure Vector Search return
+		ids := make([]string, len(vectorResults))
+		for i, r := range vectorResults {
+			ids[i], _ = hnswIndex.GetExternalID(r.DocID)
+		}
+		return ids, nil
+	}
+
+	// Hybrid Fusion (Weighted Sum)
+	if alpha < 0 || alpha > 1 {
+		alpha = 0.5 // Default safe fallback
+	}
+
+	normalizeVectorScores(vectorResults)
+	normalizeTextScores(textResults)
+
+	fusedScores := make(map[uint32]float64)
+	for _, res := range vectorResults {
+		fusedScores[res.DocID] += alpha * res.Score
+	}
+	for _, res := range textResults {
+		fusedScores[res.DocID] += (1 - alpha) * res.Score
+	}
+
+	// 5. Sort & Format
+	finalResults := make([]fusedResult, 0, len(fusedScores))
+	for id, score := range fusedScores {
+		extID, found := hnswIndex.GetExternalID(id)
+		if !found {
+			continue
+		}
+		finalResults = append(finalResults, fusedResult{id: extID, score: score})
+	}
+
+	sort.Slice(finalResults, func(i, j int) bool {
+		return finalResults[i].score > finalResults[j].score
+	})
+
+	// Top K
+	ids := make([]string, 0, k)
+	for i := 0; i < k && i < len(finalResults); i++ {
+		ids = append(ids, finalResults[i].id)
+	}
+
 	return ids, nil
 }
 
 // VAddBatch inserts multiple vectors concurrently into an index.
+// It writes to the AOF log for each vector, ensuring durability but with higher I/O overhead.
+// Use VImport for faster initial loading.
 func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 	idx, ok := e.DB.GetVectorIndex(indexName)
 	if !ok {
@@ -176,8 +364,13 @@ func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 	return nil
 }
 
-// VImport performs a bulk import of vectors and immediately triggers a snapshot.
-// This is more efficient for large initial loads as it bypasses individual AOF writes.
+// VImport performs a high-speed bulk insertion of vectors.
+//
+// Unlike VAddBatch, this method bypasses the AOF log to maximize throughput.
+// It creates a full database Snapshot (.kdb) upon completion.
+//
+// Use this method for initial dataset loading or massive restores.
+// Note: This operation acquires a global administrative lock to ensure consistency during the snapshot.
 func (e *Engine) VImport(indexName string, items []types.BatchObject) error {
 	idx, ok := e.DB.GetVectorIndex(indexName)
 	if !ok {
@@ -212,4 +405,12 @@ func (e *Engine) VImport(indexName string, items []types.BatchObject) error {
 	}
 
 	return nil
+}
+
+// VCompress changes the precision of an existing index (e.g., float32 -> int8).
+// This operation rebuilds the index in memory.
+func (e *Engine) VCompress(indexName string, newPrecision distance.PrecisionType) error {
+	// Acquisisce il lock sul DB tramite il metodo esposto da Core, se necessario,
+	// oppure delega a DB.Compress che gestisce i suoi lock.
+	return e.DB.Compress(indexName, newPrecision)
 }

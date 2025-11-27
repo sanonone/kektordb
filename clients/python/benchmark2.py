@@ -49,27 +49,47 @@ def get_dataset(name: str, size: int):
     base_dir = "./datasets"
     os.makedirs(base_dir, exist_ok=True)
     
-    if name == "glove-100d":
+    # Mappatura nome dataset -> file txt
+    glove_files = {
+        "glove-100d": "glove.6B.100d.txt",
+        "glove-200d": "glove.6B.200d.txt",
+        "glove-300d": "glove.6B.300d.txt"
+    }
+
+    if name in glove_files:
+        txt_filename = glove_files[name]
         url = "https://nlp.stanford.edu/data/glove.6B.zip"
         zip_path = os.path.join(base_dir, "glove.6B.zip")
-        txt_path = os.path.join(base_dir, "glove.6B.100d.txt")
+        txt_path = os.path.join(base_dir, txt_filename)
         
         if not os.path.exists(txt_path):
             if not os.path.exists(zip_path):
-                print(f"Download {url}...")
-                urllib.request.urlretrieve(url, zip_path)
-            print("Estrazione...")
+                # Se lo zip non c'è in datasets, controlliamo nella root (il tuo caso)
+                if os.path.exists("glove.6B.zip"):
+                    print("Trovato zip nella root, lo sposto...")
+                    os.rename("glove.6B.zip", zip_path)
+                else:
+                    print(f"Download {url}...")
+                    urllib.request.urlretrieve(url, zip_path)
+            
+            print(f"Estrazione {txt_filename}...")
             with zipfile.ZipFile(zip_path, 'r') as zf:
-                zf.extract("glove.6B.100d.txt", path=base_dir)
+                zf.extract(txt_filename, path=base_dir)
         
         print("Parsing vettori...")
         vectors = []
+        
+        # Determina la dimensione attesa dal nome (es. 100d -> 100)
+        expected_dim = int(name.split('-')[1][:-1])
+        
         with open(txt_path, 'r', encoding='utf-8') as f:
             for line in f:
                 parts = line.split()
                 try:
+                    # GloVe a volte ha righe sporche, il try-except è fondamentale
                     vec = np.array(parts[1:], dtype=np.float32)
-                    if len(vec) == 100: vectors.append(vec)
+                    if len(vec) == expected_dim: 
+                        vectors.append(vec)
                 except: continue
         all_vectors = np.array(vectors)
         metric = "cosine"
@@ -138,7 +158,7 @@ class KektorDBRunner(DBRunner):
         for i in tqdm(range(0, len(vectors), BATCH_SIZE), desc="Index KektorDB"):
             # self.client.vadd_batch(index_name, all_objs[i : i + BATCH_SIZE])
             chunk = all_objs[i : i + BATCH_SIZE]
-            self.client.vimport(index_name, chunk)
+            self.client.vadd_batch(index_name, chunk)
             
         indexing_time = time.time() - start
         
@@ -331,7 +351,7 @@ def run_test(runner, dataset, metric, config):
         idx_time = runner.index_vectors("bench_idx", dataset, metric, config)
         
         # Ground Truth Calculation (Solo 500 query per velocità, ma accurate)
-        NUM_Q = 500
+        NUM_Q = 1000
         idxs = np.random.choice(len(dataset), NUM_Q, replace=False)
         queries = dataset[idxs]
         
@@ -374,7 +394,8 @@ def run_test(runner, dataset, metric, config):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", default="glove-100d")
+    parser.add_argument("--dataset", default="glove-100d", 
+                        choices=["glove-100d", "glove-200d", "glove-300d", "sift-1m"])
     parser.add_argument("--size", type=int, default=50000)
     args = parser.parse_args()
     
@@ -387,8 +408,13 @@ if __name__ == "__main__":
         data = data / norms
 
     configs = [
-        {"m": 16, "ef_construction": 200, "ef_search": 100, "precision": "float32"},
-        {"m": 32, "ef_construction": 400, "ef_search": 150, "precision": "float32"},
+        {"m": 16, "ef_construction": 200, "ef_search": 100, "precision": "float32"}, # balanced
+        #{"m": 32, "ef_construction": 400, "ef_search": 150, "precision": "float32"},
+        #{"m": 32, "ef_construction": 400, "ef_search": 200, "precision": "float32"}, # quality
+        {"m": 12, "ef_construction": 150, "ef_search": 50, "precision": "float32"}, # speed
+        #{"m": 8, "ef_construction": 100, "ef_search": 100, "precision": "float32"}, # less memory
+        #{"m": 16, "ef_construction": 200, "ef_search": 20, "precision": "float32"},
+        #{"m": 16, "ef_construction": 200, "ef_search": 40, "precision": "float32"},
     ]
     
     runners = [KektorDBRunner()]

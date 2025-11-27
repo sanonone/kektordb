@@ -292,7 +292,7 @@ func (s *DB) IterateVectorIndexes(callback func(indexName string, index *hnsw.In
 	for name, idx := range s.vectorIndexes {
 		if hnswIndex, ok := idx.(*hnsw.Index); ok {
 			hnswIndex.Iterate(func(id string, vector []float32) {
-				// recupera i dati dallo store principale
+				// retrieve data from the main store
 				internalID := hnswIndex.GetInternalID(id)
 				metadata := s.getMetadataForNode(name, internalID)
 
@@ -537,7 +537,7 @@ func (s *DB) GetVectors(indexName string, vectorIDs []string) ([]VectorData, err
 func (s *DB) getMetadataForNode(indexName string, nodeID uint32) map[string]any {
 	metadata := make(map[string]any)
 
-	// fa la scansione dell'indice invertito
+	// scans the inverted index
 	if invIdx, ok := s.invertedIndex[indexName]; ok {
 		for key, valueMap := range invIdx {
 			for value, idSet := range valueMap {
@@ -549,8 +549,6 @@ func (s *DB) getMetadataForNode(indexName string, nodeID uint32) map[string]any 
 
 		}
 	}
-
-	// fare scansione b tree simile a sopra
 
 	return metadata
 }
@@ -1103,7 +1101,7 @@ func (s *DB) FindIDsByFilter(indexName string, filter string) (map[uint32]struct
 	return finalIDSet, nil
 }
 
-// regex per parsare la funzione CONTAINS
+// regex to parse the CONTAINS function
 var containsRegex = regexp.MustCompile(`(?i)CONTAINS\s*\(\s*(\w+)\s*,\s*['"](.+?)['"]\s*\)`)
 
 // evaluateBooleanFilter evaluates a single expression like "price >= 10" or "name = 'Alice'".
@@ -1310,7 +1308,6 @@ const (
 // FindIDsByTextSearch performs a search on the text index for a given query.
 // It uses the BM25 ranking algorithm to score and sort documents based on relevance.
 func (db *DB) FindIDsByTextSearch(indexName, fieldName, queryText string) ([]types.SearchResult, error) {
-	// Ottieni l'analizzatore corretto per questo indice
 	idx, ok := db.vectorIndexes[indexName]
 	if !ok {
 		return nil, fmt.Errorf("index '%s' not found", indexName)
