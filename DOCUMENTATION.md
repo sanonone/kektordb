@@ -1,4 +1,4 @@
-# KektorDB Documentation (v0.2.0)
+# KektorDB Documentation (v0.2.2)
 
 ## Overview
 
@@ -54,6 +54,10 @@ To use KektorDB inside your own Go application:
 ```bash
 go get github.com/sanonone/kektordb
 ```
+
+> **Compatibility Note:** All development and testing were performed on **Linux (x86_64)**.
+> *   **Pure Go Builds:** Expected to run seamlessly on Windows, macOS (Intel/M1), and ARM, though not manually verified yet.
+> *   **Rust-Accelerated Builds:** Leverage CGO and specific SIMD instructions. These builds have currently **only been verified on Linux**.
 
 ---
 
@@ -366,7 +370,7 @@ As the sole maintainer, I built this engine to explore CGO, SIMD, and low-level 
 If you spot race conditions, missed optimizations, or unidiomatic Go patterns, **please open an Issue or a PR**. I treat every contribution as a learning opportunity and I am looking for people who want to build this together.
 
 ### Areas for Contribution
-The project is currently in `v0.3.0`. I would appreciate help with:
+The project is currently in `v0.2.2`. I would appreciate help with:
 
 1.  **Core Optimization:** Reviewing the HNSW implementation and locking strategies.
 2.  **Features:** Implementing Roaring Bitmaps or Graph Healing (see Roadmap).
