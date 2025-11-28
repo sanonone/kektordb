@@ -42,6 +42,29 @@ KektorDB può essere eseguito come server standalone o importato come libreria G
 
 ---
 
+### Architettura 
+
+1.  **Core (`pkg/core`):** Contiene le strutture dati grezze in memoria (grafo HNSW, archivio KV, indice invertito). Gestisce la logica dei dati ma non è a conoscenza del file system o della rete.
+2.  **Engine (`pkg/engine`):** Gestisce il Core, gestisce la persistenza dei dati (scrittura/riproduzione AOF, snapshot) e coordina le attività di manutenzione in background. Questo è il punto di ingresso per l'utilizzo embedded.
+3.  **Server (`internal/server`):** Un wrapper HTTP attorno all'Engine. Fornisce l'API REST, i worker in background di Vectorizer e la gestione delle attività.
+
+```mermaid
+graph TD
+    A[Client HTTP/Library] --> B[Server Layer]
+    B --> C[Engine Layer]
+    C --> D[Core DB]
+    D --> E[HNSW Index]
+    D --> F[KV Store]
+    C --> G[Persistence AOF]
+    C --> H[Snapshot System]
+    E --> I[Distance Metrics]
+    I --> J[Go/Gonum]
+    I --> K[Rust CGO Optional]
+    I --> L[AVO Assembly]
+```
+
+---
+
 ### Benchmark Preliminari
 
 I benchmark sono stati eseguiti su una macchina Linux locale (Hardware Consumer, Intel i5-12500). Il confronto è stato fatto con **Qdrant** e **ChromaDB** (via Docker con host networking) per garantire una base equa.

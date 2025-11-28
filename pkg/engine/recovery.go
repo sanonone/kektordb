@@ -3,10 +3,6 @@ package engine
 import (
 	"bufio"
 	"encoding/json"
-	"github.com/sanonone/kektordb/pkg/core"
-	"github.com/sanonone/kektordb/pkg/core/distance"
-	"github.com/sanonone/kektordb/pkg/core/hnsw"
-	"github.com/sanonone/kektordb/pkg/persistence"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,6 +10,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/sanonone/kektordb/pkg/core"
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
+	"github.com/sanonone/kektordb/pkg/persistence"
 )
 
 // replayAOF reads the AOF file and reconstructs the state.

@@ -17,8 +17,23 @@ KektorDB is available in two forms:
 The system is structured in three distinct layers:
 
 1.  **Core (`pkg/core`):** Contains the raw in-memory data structures (HNSW graph, KV store, Inverted Index). It handles data logic but is unaware of the file system or network.
-2.  **Engine (`pkg/engine`):** The high-level controller. It manages the Core, handles data persistence (AOF writing/replaying, Snapshots), and coordinates background maintenance tasks. This is the entry point for embedded usage.
+2.  **Engine (`pkg/engine`):** It manages the Core, handles data persistence (AOF writing/replaying, Snapshots), and coordinates background maintenance tasks. This is the entry point for embedded usage.
 3.  **Server (`internal/server`):** An HTTP wrapper around the Engine. It provides the REST API, Vectorizer background workers, and task management.
+
+```mermaid
+graph TD
+    A[Client HTTP/Library] --> B[Server Layer]
+    B --> C[Engine Layer]
+    C --> D[Core DB]
+    D --> E[HNSW Index]
+    D --> F[KV Store]
+    C --> G[Persistence AOF]
+    C --> H[Snapshot System]
+    E --> I[Distance Metrics]
+    I --> J[Go/Gonum]
+    I --> K[Rust CGO Optional]
+    I --> L[AVO Assembly]
+```
 
 ---
 

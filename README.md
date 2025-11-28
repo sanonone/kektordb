@@ -42,6 +42,29 @@ KektorDB runs as a standalone server or can be imported as an embeddable Go libr
 
 ---
 
+### Architecture 
+
+1.  **Core (`pkg/core`):** Contains the raw in-memory data structures (HNSW graph, KV store, Inverted Index). It handles data logic but is unaware of the file system or network.
+2.  **Engine (`pkg/engine`):** It manages the Core, handles data persistence (AOF writing/replaying, Snapshots), and coordinates background maintenance tasks. This is the entry point for embedded usage.
+3.  **Server (`internal/server`):** An HTTP wrapper around the Engine. It provides the REST API, Vectorizer background workers, and task management.
+
+```mermaid
+graph TD
+    A[Client HTTP/Library] --> B[Server Layer]
+    B --> C[Engine Layer]
+    C --> D[Core DB]
+    D --> E[HNSW Index]
+    D --> F[KV Store]
+    C --> G[Persistence AOF]
+    C --> H[Snapshot System]
+    E --> I[Distance Metrics]
+    I --> J[Go/Gonum]
+    I --> K[Rust CGO Optional]
+    I --> L[AVO Assembly]
+```
+
+---
+
 ### Preliminary Benchmarks
 
 Benchmarks were performed on a local Linux machine (Consumer Hardware, Intel i5-12500). The comparison runs against **Qdrant** and **ChromaDB** (via Docker with host networking) to ensure a fair baseline.

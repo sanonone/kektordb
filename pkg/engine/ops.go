@@ -7,15 +7,16 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
+	"sync"
+	"sync/atomic"
+
 	"github.com/sanonone/kektordb/pkg/core"
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/core/types"
 	"github.com/sanonone/kektordb/pkg/persistence"
-	"sort"
-	"strconv"
-	"sync"
-	"sync/atomic"
 )
 
 // --- KV Operations ---
@@ -345,7 +346,7 @@ func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 	for _, item := range items {
 		if len(item.Metadata) > 0 {
 			id := hnswIdx.GetInternalID(item.Id)
-			e.DB.AddMetadataUnlocked(indexName, id, item.Metadata)
+			e.DB.AddMetadata(indexName, id, item.Metadata) // Use thread-safe version for concurrent vectorizer workers
 		}
 
 		vecStr := float32SliceToString(item.Vector)

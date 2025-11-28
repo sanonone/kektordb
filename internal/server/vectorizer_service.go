@@ -58,6 +58,12 @@ func (vs *VectorizerService) Start() {
 		// Start the worker's goroutine.
 		go v.run()
 	}
+
+	// Log when all initial synchronizations complete
+	go func() {
+		vs.wg.Wait()
+		log.Println("✓ All Vectorizer workers have completed their initial synchronization")
+	}()
 }
 
 // Stop gracefully stops all workers managed by the service.

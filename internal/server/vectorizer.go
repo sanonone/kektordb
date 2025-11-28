@@ -2,9 +2,6 @@ package server
 
 import (
 	"fmt"
-	"github.com/sanonone/kektordb/pkg/core/distance"
-	"github.com/sanonone/kektordb/pkg/core/text"
-	"github.com/sanonone/kektordb/pkg/core/types"
 	"log"
 	"os"
 	"path/filepath"
@@ -13,6 +10,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/text"
+	"github.com/sanonone/kektordb/pkg/core/types"
 )
 
 type Vectorizer struct {
@@ -71,13 +72,17 @@ func (v *Vectorizer) synchronize() {
 		return
 	}
 
-	log.Printf("Vectorizer '%s': Processing %d files.", v.config.Name, len(changedFiles))
+	log.Printf("Vectorizer '%s': Starting processing of %d files...", v.config.Name, len(changedFiles))
 
+	processed := 0
 	for _, filePath := range changedFiles {
 		if err := v.processFile(filePath); err != nil {
-			log.Printf("Error processing '%s': %v", filePath, err)
+			log.Printf("Vectorizer '%s': ERROR processing '%s': %v", v.config.Name, filePath, err)
+		} else {
+			processed++
 		}
 	}
+	log.Printf("Vectorizer '%s': ✓ COMPLETED - Successfully processed %d/%d files", v.config.Name, processed, len(changedFiles))
 }
 
 func (v *Vectorizer) Stop() {
@@ -185,6 +190,8 @@ func (v *Vectorizer) processFile(filePath string) error {
 	// Update state
 	stateKey := fmt.Sprintf("_vectorizer_state:%s:%s", v.config.Name, filePath)
 	newModTime := fmt.Sprintf("%d", fileInfo.ModTime().UnixNano())
+
+	log.Printf("Vectorizer '%s': ✓ Processed file '%s' (%d chunks)", v.config.Name, filePath, len(chunks))
 
 	// USARE ENGINE: KVSet
 	return v.server.Engine.KVSet(stateKey, []byte(newModTime))
