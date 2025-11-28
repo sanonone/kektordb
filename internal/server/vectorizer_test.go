@@ -16,8 +16,8 @@ import (
 // TestVectorizerProcessing verifies that the vectorizer correctly processes files,
 // generates embeddings via a mock API, and persists data into the index.
 func TestVectorizerProcessing(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode.")
+	if os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Skip("Skipping Vectorizer integration test in GitHub Actions")
 	}
 	// 1. Setup Fake Embedder Service (Mock Ollama)
 	// This server responds to any request with a valid fake embedding.
@@ -131,8 +131,8 @@ func TestVectorizerProcessing(t *testing.T) {
 // TestVectorizerConcurrent verifies that no race conditions or panics occur
 // when multiple vectorizers run concurrently.
 func TestVectorizerConcurrent(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode.")
+	if os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Skip("Skipping Vectorizer integration test in GitHub Actions")
 	}
 	// Use mock server here as well to avoid connection errors cluttering logs
 	mockEmbedder := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
