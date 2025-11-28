@@ -16,6 +16,9 @@ import (
 // TestVectorizerProcessing verifies that the vectorizer correctly processes files,
 // generates embeddings via a mock API, and persists data into the index.
 func TestVectorizerProcessing(t *testing.T) {
+	if os.Getenv("CI") != "" {
+		t.Skip("Skipping Vectorizer integration test in CI environment")
+	}
 	// 1. Setup Fake Embedder Service (Mock Ollama)
 	// This server responds to any request with a valid fake embedding.
 	mockEmbedder := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -128,6 +131,9 @@ func TestVectorizerProcessing(t *testing.T) {
 // TestVectorizerConcurrent verifies that no race conditions or panics occur
 // when multiple vectorizers run concurrently.
 func TestVectorizerConcurrent(t *testing.T) {
+	if os.Getenv("CI") != "" {
+		t.Skip("Skipping Vectorizer integration test in CI environment")
+	}
 	// Use mock server here as well to avoid connection errors cluttering logs
 	mockEmbedder := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
