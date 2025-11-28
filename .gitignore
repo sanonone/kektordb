@@ -22,6 +22,9 @@
 *.zip
 *.gz
 
+# Benchmark
+*.pprof
+
 # Code coverage profiles and other test artifacts
 *.out
 coverage.*
