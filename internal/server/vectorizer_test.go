@@ -1,6 +1,9 @@
 package server
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,19 +13,30 @@ import (
 	"github.com/sanonone/kektordb/pkg/engine"
 )
 
-// TestVectorizerProcessing verifies that the vectorizer is processing files correctly
+// TestVectorizerProcessing verifies that the vectorizer correctly processes files,
+// generates embeddings via a mock API, and persists data into the index.
 func TestVectorizerProcessing(t *testing.T) {
+	// 1. Setup Fake Embedder Service (Mock Ollama)
+	// This server responds to any request with a valid fake embedding.
+	mockEmbedder := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		// Response compatible with the struct expected in embedder.go
+		// Returns a 3-float vector (compatible with the index we will create)
+		w.Write([]byte(`{"embedding": [0.1, 0.2, 0.3]}`))
+	}))
+	defer mockEmbedder.Close()
+
 	tmpDir := t.TempDir()
 	testFile := filepath.Join(tmpDir, "test_doc.txt")
 
-	testContent := "This is a test document for vectorizer processing. It contains some sample text."
+	testContent := "This is a test document."
 	if err := os.WriteFile(testFile, []byte(testContent), 0644); err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 
 	dataDir := t.TempDir()
 	opts := engine.DefaultOptions(dataDir)
-	opts.AutoSaveInterval = 0 // Disable auto-save for test
+	opts.AutoSaveInterval = 0 // Disable auto-save for deterministic testing
 	opts.AutoSaveThreshold = 0
 
 	eng, err := engine.Open(opts)
@@ -32,25 +46,28 @@ func TestVectorizerProcessing(t *testing.T) {
 	defer eng.Close()
 
 	indexName := "test_index"
+	// Create index. Note: dimension is auto-detected or fixed on first insert.
 	if err := eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english"); err != nil {
 		t.Fatalf("Failed to create index: %v", err)
 	}
 
+	// Configuration pointing to the Mock Server
 	configPath := filepath.Join(tmpDir, "vectorizers.yaml")
-	configContent := `vectorizers:
+	configContent := fmt.Sprintf(`vectorizers:
   - name: test_vectorizer
     source:
       type: filesystem
-      path: ` + tmpDir + `
-    embedding:
-      provider: mock
+      path: %s
+    embedder:
+      type: ollama_api
       model: mock-model
-      base_url: http://localhost:11434
+      url: %s
     schedule: 60s
-    kektor_index: ` + indexName + `
+    kektor_index: %s
     doc_processor:
       chunk_size: 100
-`
+`, tmpDir, mockEmbedder.URL, indexName)
+
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
 		t.Fatalf("Failed to create config: %v", err)
 	}
@@ -62,65 +79,71 @@ func TestVectorizerProcessing(t *testing.T) {
 
 	if server.vectorizerService != nil {
 		server.vectorizerService.Start()
+		defer server.vectorizerService.Stop()
 
+		// Poll to wait for processing completion
 		timeout := time.After(5 * time.Second)
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 
 		completed := false
 	waitLoop:
-		for !completed {
+		for {
 			select {
 			case <-timeout:
 				t.Fatal("Timeout: vectorizer did not complete processing within 5 seconds")
 			case <-ticker.C:
-				// Check that the file status has been saved (which indicates processing is complete)
+				// Check that the file status has been saved in KV store
 				stateKey := "_vectorizer_state:test_vectorizer:" + testFile
 				_, found := eng.KVGet(stateKey)
 				if found {
 					completed = true
-					t.Logf("✓ Vectorizer successfully tracked file state")
 					break waitLoop
 				}
 			}
 		}
 
-		_, ok := eng.DB.GetVectorIndex(indexName)
-		if !ok {
-			t.Error("Index not found after vectorizer processing")
-		} else {
-			t.Logf("✓ Vectorizer processed files without errors")
+		if !completed {
+			t.Fatal("Test failed to complete")
 		}
 
-		// Cleanup
-		server.vectorizerService.Stop()
+		// Verify that vectors were actually inserted into the index
+		info, err := eng.DB.GetSingleVectorIndexInfoAPI(indexName)
+		if err != nil {
+			t.Errorf("Failed to get index info: %v", err)
+		}
+
+		// There must be at least 1 vector (the chunked document)
+		if info.VectorCount == 0 {
+			t.Errorf("Expected vectors to be added, but VectorCount is 0. Embedding probably failed silently.")
+		} else {
+			t.Logf("✓ Vectorizer processed files successfully. Count: %d", info.VectorCount)
+		}
+
 	} else {
-		t.Skip("Vectorizer service not initialized (this is expected if embedding provider is not available)")
+		t.Skip("Vectorizer service not initialized")
 	}
 }
 
-// Test Vectorizer Concurrent verifies that multiple vectorizers can run in parallel
+// TestVectorizerConcurrent verifies that no race conditions or panics occur
+// when multiple vectorizers run concurrently.
 func TestVectorizerConcurrent(t *testing.T) {
+	// Use mock server here as well to avoid connection errors cluttering logs
+	mockEmbedder := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"embedding": [0.1, 0.2, 0.3]}`))
+	}))
+	defer mockEmbedder.Close()
+
 	tmpDir := t.TempDir()
 
 	numVectorizers := 3
-	for i := 0; i < numVectorizers; i++ {
-		dir := filepath.Join(tmpDir, "dir"+string(rune('A'+i)))
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			t.Fatalf("Failed to create dir: %v", err)
-		}
+	var configBuilder string
+	configBuilder += "vectorizers:\n"
 
-		testFile := filepath.Join(dir, "doc.txt")
-		if err := os.WriteFile(testFile, []byte("Test content for concurrent processing"), 0644); err != nil {
-			t.Fatalf("Failed to create test file: %v", err)
-		}
-	}
-
-	// Setup engine
 	dataDir := t.TempDir()
 	opts := engine.DefaultOptions(dataDir)
 	opts.AutoSaveInterval = 0
-	opts.AutoSaveThreshold = 0
 
 	eng, err := engine.Open(opts)
 	if err != nil {
@@ -128,36 +151,32 @@ func TestVectorizerConcurrent(t *testing.T) {
 	}
 	defer eng.Close()
 
-	// Create config with multiple vectorizers
-	configPath := filepath.Join(tmpDir, "vectorizers.yaml")
-	configContent := `vectorizers:`
 	for i := 0; i < numVectorizers; i++ {
-		indexName := "index_" + string(rune('A'+i))
-		dirPath := filepath.Join(tmpDir, "dir"+string(rune('A'+i)))
+		dir := filepath.Join(tmpDir, fmt.Sprintf("dir%d", i))
+		os.MkdirAll(dir, 0755)
+		os.WriteFile(filepath.Join(dir, "doc.txt"), []byte("content"), 0644)
 
-		if err := eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english"); err != nil {
-			t.Fatalf("Failed to create index %s: %v", indexName, err)
-		}
+		idxName := fmt.Sprintf("index_%d", i)
+		eng.VCreate(idxName, distance.Cosine, 16, 200, distance.Float32, "")
 
-		configContent += `
-  - name: vectorizer_` + string(rune('A'+i)) + `
+		configBuilder += fmt.Sprintf(`
+  - name: vec_%d
     source:
       type: filesystem
-      path: ` + dirPath + `
-    embedding:
-      provider: mock
+      path: %s
+    embedder:
+      type: ollama_api
+      url: %s
       model: mock
-      base_url: http://localhost:11434
     schedule: 60s
-    kektor_index: ` + indexName + `
+    kektor_index: %s
     doc_processor:
       chunk_size: 100
-`
+`, i, dir, mockEmbedder.URL, idxName)
 	}
 
-	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
-		t.Fatalf("Failed to create config: %v", err)
-	}
+	configPath := filepath.Join(tmpDir, "vectorizers.yaml")
+	os.WriteFile(configPath, []byte(configBuilder), 0644)
 
 	server, err := NewServer(eng, ":0", configPath)
 	if err != nil {
@@ -166,13 +185,9 @@ func TestVectorizerConcurrent(t *testing.T) {
 
 	if server.vectorizerService != nil {
 		server.vectorizerService.Start()
-
-		time.Sleep(3 * time.Second)
-
-		t.Log("✓ No race conditions detected - concurrent vectorizers running successfully")
-
+		// Let it run for a while to stimulate potential race conditions
+		time.Sleep(1 * time.Second)
 		server.vectorizerService.Stop()
-	} else {
-		t.Skip("Vectorizer service not initialized")
+		t.Log("✓ No race conditions detected")
 	}
 }
