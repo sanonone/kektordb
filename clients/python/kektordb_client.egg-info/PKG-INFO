@@ -1,6 +1,6 @@
 Metadata-Version: 2.1
 Name: kektordb-client
-Version: 0.2.0
+Version: 0.2.2
 Summary: An official Python client for KektorDB, a high-performance in-memory vector database.
 Home-page: https://github.com/sanonone/kektordb
 Author: Sanonone
