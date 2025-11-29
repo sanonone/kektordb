@@ -10,212 +10,162 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/sanonone/kektordb/pkg/core/distance"
+	"log"
 	"net/http"
 	"net/http/pprof"
 	"strings"
+
+	"github.com/sanonone/kektordb/pkg/core/distance"
 )
 
-// registerHTTPHandlers sets up all HTTP routes.
+// registerHTTPHandlers sets up all HTTP routes using Go 1.22+ routing.
 func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
-	mux.HandleFunc("/", s.router)
-}
-
-func (s *Server) router(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
-
 	// Debug endpoints
-	if strings.HasPrefix(path, "/debug/pprof") {
-		switch {
-		case path == "/debug/pprof/":
-			pprof.Index(w, r)
-		case path == "/debug/pprof/cmdline":
-			pprof.Cmdline(w, r)
-		case path == "/debug/pprof/profile":
-			pprof.Profile(w, r)
-		case path == "/debug/pprof/symbol":
-			pprof.Symbol(w, r)
-		case path == "/debug/pprof/trace":
-			pprof.Trace(w, r)
-		default:
-			handlerName := strings.TrimPrefix(path, "/debug/pprof/")
-			pprof.Handler(handlerName).ServeHTTP(w, r)
-		}
-		return
-	}
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 
 	// System endpoints
-	if path == "/system/aof-rewrite" {
-		s.handleAOFRewriteHTTP(w, r)
-		return
-	}
-	if path == "/system/save" {
-		s.handleSaveHTTP(w, r)
-		return
-	}
-	if strings.HasPrefix(path, "/system/tasks/") {
-		s.handleTaskStatus(w, r)
-		return
-	}
+	mux.HandleFunc("POST /system/aof-rewrite", s.handleAOFRewriteHTTP)
+	mux.HandleFunc("POST /system/save", s.handleSaveHTTP)
+	mux.HandleFunc("GET /system/tasks/{id}", s.handleTaskStatus)
 
 	// Vectorizer management
-	if path == "/system/vectorizers" {
-		s.handleGetVectorizers(w, r)
-		return
-	}
-	if strings.HasPrefix(path, "/system/vectorizers/") {
-		s.handleTriggerVectorizer(w, r)
-		return
-	}
+	mux.HandleFunc("GET /system/vectorizers", s.handleGetVectorizers)
+	mux.HandleFunc("POST /system/vectorizers/{name}/trigger", s.handleTriggerVectorizer)
 
 	// KV endpoints
-	if strings.HasPrefix(path, "/kv/") {
-		s.handleKV(w, r)
-		return
-	}
+	mux.HandleFunc("GET /kv/{key}", s.handleKVGet)
+	mux.HandleFunc("POST /kv/{key}", s.handleKVSet)
+	mux.HandleFunc("PUT /kv/{key}", s.handleKVSet)
+	mux.HandleFunc("DELETE /kv/{key}", s.handleKVDelete)
 
-	// Vector API
-	switch path {
-	case "/vector/indexes":
-		s.handleIndexesRequest(w, r)
-		return
-	case "/vector/actions/create":
-		s.handleVectorCreate(w, r)
-		return
-	case "/vector/actions/add":
-		s.handleVectorAdd(w, r)
-		return
-	case "/vector/actions/add-batch":
-		s.handleVectorAddBatch(w, r)
-		return
-	case "/vector/actions/import":
-		s.handleVectorImport(w, r)
-		return
-	case "/vector/actions/search":
-		s.handleVectorSearch(w, r)
-		return
-	case "/vector/actions/delete_vector":
-		s.handleVectorDelete(w, r)
-		return
-	case "/vector/actions/compress":
-		s.handleVectorCompress(w, r)
-		return
-	case "/vector/actions/get-vectors":
-		s.handleGetVectorsBatch(w, r)
-		return
-	}
+	// Vector API - Indexes
+	mux.HandleFunc("GET /vector/indexes", s.handleIndexesGet)
+	mux.HandleFunc("POST /vector/indexes", s.handleVectorCreate)
+
+	// Vector API - Actions
+	// Keeping these paths for backward compatibility, though RESTful would be better.
+	mux.HandleFunc("POST /vector/actions/create", s.handleVectorCreate)
+	mux.HandleFunc("POST /vector/actions/add", s.handleVectorAdd)
+	mux.HandleFunc("POST /vector/actions/add-batch", s.handleVectorAddBatch)
+	mux.HandleFunc("POST /vector/actions/import", s.handleVectorImport)
+	mux.HandleFunc("POST /vector/actions/search", s.handleVectorSearch)
+	mux.HandleFunc("POST /vector/actions/delete_vector", s.handleVectorDelete)
+	mux.HandleFunc("POST /vector/actions/compress", s.handleVectorCompress)
+	mux.HandleFunc("POST /vector/actions/get-vectors", s.handleGetVectorsBatch)
 
 	// Dynamic index routes
-	if strings.HasPrefix(path, "/vector/indexes/") {
-		if parts := strings.Split(path, "/vectors/"); len(parts) == 2 {
-			s.handleGetVector(w, r, strings.TrimPrefix(parts[0], "/vector/indexes/"), parts[1])
-			return
-		}
-		s.handleSingleIndexRequest(w, r, strings.TrimPrefix(path, "/vector/indexes/"))
-		return
-	}
+	mux.HandleFunc("GET /vector/indexes/{name}", s.handleSingleIndexGet)
+	mux.HandleFunc("DELETE /vector/indexes/{name}", s.handleSingleIndexDelete)
 
-	s.writeHTTPError(w, http.StatusNotFound, "Endpoint not found")
+	// Specific vector retrieval
+	mux.HandleFunc("GET /vector/indexes/{name}/vectors/{id}", s.handleGetVector)
 }
 
 // --- INDEX HANDLERS ---
 
-func (s *Server) handleIndexesRequest(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		// ENGINE CALL
-		info, err := s.Engine.DB.GetVectorIndexInfo()
-		if err != nil {
-			s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		s.writeHTTPResponse(w, http.StatusOK, info)
-	case http.MethodPost:
-		s.handleVectorCreate(w, r)
-	default:
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Method not allowed")
+func (s *Server) handleIndexesGet(w http.ResponseWriter, r *http.Request) {
+	info, err := s.Engine.DB.GetVectorIndexInfo()
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		return
 	}
+	s.writeHTTPResponse(w, http.StatusOK, info)
 }
 
-func (s *Server) handleSingleIndexRequest(w http.ResponseWriter, r *http.Request, indexName string) {
-	switch r.Method {
-	case http.MethodGet:
-		info, err := s.Engine.DB.GetSingleVectorIndexInfoAPI(indexName)
-		if err != nil {
-			status := http.StatusInternalServerError
-			if strings.Contains(err.Error(), "not found") {
-				status = http.StatusNotFound
-			}
-			s.writeHTTPError(w, status, err.Error())
-			return
+func (s *Server) handleSingleIndexGet(w http.ResponseWriter, r *http.Request) {
+	indexName := r.PathValue("name")
+	info, err := s.Engine.DB.GetSingleVectorIndexInfoAPI(indexName)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			s.writeHTTPError(w, http.StatusNotFound, err)
+		} else {
+			s.writeHTTPError(w, http.StatusInternalServerError, err)
 		}
-		s.writeHTTPResponse(w, http.StatusOK, info)
-	case http.MethodDelete:
-		s.Engine.DB.DeleteVectorIndex(indexName)
-		w.WriteHeader(http.StatusNoContent)
-	default:
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Only GET and DELETE allowed")
+		return
 	}
+	s.writeHTTPResponse(w, http.StatusOK, info)
+}
+
+func (s *Server) handleSingleIndexDelete(w http.ResponseWriter, r *http.Request) {
+	indexName := r.PathValue("name")
+	// Check if exists first to return 404? Or just try delete.
+	// DB.DeleteVectorIndex returns error if not found.
+	err := s.Engine.DB.DeleteVectorIndex(indexName)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			s.writeHTTPError(w, http.StatusNotFound, err)
+		} else {
+			s.writeHTTPError(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- KV HANDLERS ---
 
-func (s *Server) handleKV(w http.ResponseWriter, r *http.Request) {
-	key := strings.TrimPrefix(r.URL.Path, "/kv/")
+func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
 	if key == "" {
-		s.writeHTTPError(w, http.StatusBadRequest, "Key cannot be empty")
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("key cannot be empty"))
+		return
+	}
+	value, found := s.Engine.KVGet(key)
+	if !found {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("key not found"))
+		return
+	}
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"key": key, "value": string(value)})
+}
+
+func (s *Server) handleKVSet(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	if key == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("key cannot be empty"))
+		return
+	}
+	var req struct {
+		Value string `json:"value"`
+	}
+	if err := s.decodeJSON(r, &req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, err)
 		return
 	}
 
-	switch r.Method {
-	case http.MethodGet:
-		// ENGINE CALL
-		value, found := s.Engine.KVGet(key)
-		if !found {
-			s.writeHTTPError(w, http.StatusNotFound, "Key not found")
-			return
-		}
-		s.writeHTTPResponse(w, http.StatusOK, map[string]string{"key": key, "value": string(value)})
-	case http.MethodPost, http.MethodPut:
-		var req struct {
-			Value string `json:"value"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.writeHTTPError(w, http.StatusBadRequest, "Invalid JSON")
-			return
-		}
-		// ENGINE CALL (Automatic Persistence)
-		if err := s.Engine.KVSet(key, []byte(req.Value)); err != nil {
-			s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK"})
-	case http.MethodDelete:
-		// ENGINE CALL
-		if err := s.Engine.KVDelete(key); err != nil {
-			s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK"})
-	default:
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Method not supported")
+	if err := s.Engine.KVSet(key, []byte(req.Value)); err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		return
 	}
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK"})
+}
+
+func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	if key == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("key cannot be empty"))
+		return
+	}
+	if err := s.Engine.KVDelete(key); err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK"})
 }
 
 // --- VECTOR HANDLERS ---
 
 func (s *Server) handleVectorCreate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use POST")
-		return
-	}
 	var req VectorCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeHTTPError(w, http.StatusBadRequest, "Invalid JSON")
+	if err := s.decodeJSON(r, &req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, err)
 		return
 	}
 	if req.IndexName == "" {
-		s.writeHTTPError(w, http.StatusBadRequest, "index_name required")
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name required"))
 		return
 	}
 
@@ -229,58 +179,51 @@ func (s *Server) handleVectorCreate(w http.ResponseWriter, r *http.Request) {
 		prec = distance.Float32
 	}
 
-	// ENGINE CALL
 	err := s.Engine.VCreate(req.IndexName, metric, req.M, req.EfConstruction, prec, req.TextLanguage)
 	if err != nil {
-		s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
 		return
 	}
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Index created"})
 }
 
 func (s *Server) handleVectorAdd(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use POST")
-		return
-	}
 	var req VectorAddRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeHTTPError(w, http.StatusBadRequest, "Invalid JSON")
+	if err := s.decodeJSON(r, &req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, err)
 		return
 	}
 	if req.IndexName == "" || req.Id == "" || len(req.Vector) == 0 {
-		s.writeHTTPError(w, http.StatusBadRequest, "Missing fields")
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("missing fields: index_name, id, or vector"))
 		return
 	}
 
-	// ENGINE CALL
 	err := s.Engine.VAdd(req.IndexName, req.Id, req.Vector, req.Metadata)
 	if err != nil {
-		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "not found") {
-			status = http.StatusNotFound
+			s.writeHTTPError(w, http.StatusNotFound, err)
+		} else {
+			s.writeHTTPError(w, http.StatusInternalServerError, err)
 		}
-		s.writeHTTPError(w, status, err.Error())
 		return
 	}
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK"})
 }
 
 func (s *Server) handleVectorAddBatch(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use POST")
+	var req BatchAddVectorsRequest
+	if err := s.decodeJSON(r, &req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, err)
 		return
 	}
-	var req BatchAddVectorsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeHTTPError(w, http.StatusBadRequest, "Invalid JSON")
+	if req.IndexName == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name required"))
 		return
 	}
 
-	// ENGINE CALL (Automatic Persistence)
 	err := s.Engine.VAddBatch(req.IndexName, req.Vectors)
 	if err != nil {
-		s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
 		return
 	}
 
@@ -291,26 +234,20 @@ func (s *Server) handleVectorAddBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleVectorImport(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use POST")
-		return
-	}
-
 	var req BatchAddVectorsRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeHTTPError(w, http.StatusBadRequest, "Invalid JSON")
+	if err := s.decodeJSON(r, &req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, err)
 		return
 	}
 
 	if req.IndexName == "" || len(req.Vectors) == 0 {
-		s.writeHTTPError(w, http.StatusBadRequest, "Missing index_name or vectors")
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("missing index_name or vectors"))
 		return
 	}
 
-	// ENGINE CALL (VImport)
 	err := s.Engine.VImport(req.IndexName, req.Vectors)
 	if err != nil {
-		s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
 		return
 	}
 
@@ -322,18 +259,15 @@ func (s *Server) handleVectorImport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use POST")
-		return
-	}
 	var req VectorSearchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeHTTPError(w, http.StatusBadRequest, "Invalid JSON")
+	if err := s.decodeJSON(r, &req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, err)
 		return
 	}
-
-	// Defaults handled by Engine, but we can set defaults here for clarity if needed.
-	// Just pass everything to the Engine.
+	if req.IndexName == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name required"))
+		return
+	}
 
 	results, err := s.Engine.VSearch(
 		req.IndexName,
@@ -345,11 +279,10 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if err != nil {
-		// Distinguish Not Found vs Internal Error
 		if strings.Contains(err.Error(), "not found") {
-			s.writeHTTPError(w, http.StatusNotFound, err.Error())
+			s.writeHTTPError(w, http.StatusNotFound, err)
 		} else {
-			s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
+			s.writeHTTPError(w, http.StatusInternalServerError, err)
 		}
 		return
 	}
@@ -358,32 +291,31 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleVectorDelete(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use POST")
+	var req VectorDeleteRequest
+	if err := s.decodeJSON(r, &req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, err)
 		return
 	}
-	var req VectorDeleteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeHTTPError(w, http.StatusBadRequest, "Invalid JSON")
+	if req.IndexName == "" || req.Id == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name and id required"))
 		return
 	}
 
-	// ENGINE CALL
 	if err := s.Engine.VDelete(req.IndexName, req.Id); err != nil {
-		s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
 		return
 	}
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK"})
 }
 
 func (s *Server) handleVectorCompress(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use POST")
+	var req VectorCompressRequest
+	if err := s.decodeJSON(r, &req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, err)
 		return
 	}
-	var req VectorCompressRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeHTTPError(w, http.StatusBadRequest, "Invalid JSON")
+	if req.IndexName == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name required"))
 		return
 	}
 
@@ -391,11 +323,7 @@ func (s *Server) handleVectorCompress(w http.ResponseWriter, r *http.Request) {
 
 	task := s.taskManager.NewTask()
 	go func() {
-		// ENGINE CALL (Direct DB access for heavy ops is ok inside Engine,
-		// but here we access DB directly via Engine pointer)
 		err := s.Engine.DB.Compress(req.IndexName, prec)
-		// NOTE: Compression changes memory but doesn't rewrite AOF automatically yet.
-		// User should trigger Snapshot or we should trigger it here.
 		if err != nil {
 			task.SetError(err)
 		} else {
@@ -407,30 +335,35 @@ func (s *Server) handleVectorCompress(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetVectorsBatch(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use POST")
+	var req BatchGetVectorsRequest
+	if err := s.decodeJSON(r, &req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, err)
 		return
 	}
-	var req BatchGetVectorsRequest
-	json.NewDecoder(r.Body).Decode(&req)
 
-	// ENGINE CALL
 	data, err := s.Engine.DB.GetVectors(req.IndexName, req.IDs)
 	if err != nil {
-		s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
 		return
 	}
 	s.writeHTTPResponse(w, http.StatusOK, data)
 }
 
-func (s *Server) handleGetVector(w http.ResponseWriter, r *http.Request, indexName, vectorID string) {
+func (s *Server) handleGetVector(w http.ResponseWriter, r *http.Request) {
+	indexName := r.PathValue("name")
+	vectorID := r.PathValue("id")
+	if indexName == "" || vectorID == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index name and vector id required"))
+		return
+	}
+
 	data, err := s.Engine.DB.GetVector(indexName, vectorID)
 	if err != nil {
-		status := http.StatusInternalServerError
 		if strings.Contains(err.Error(), "not found") {
-			status = http.StatusNotFound
+			s.writeHTTPError(w, http.StatusNotFound, err)
+		} else {
+			s.writeHTTPError(w, http.StatusInternalServerError, err)
 		}
-		s.writeHTTPError(w, status, err.Error())
 		return
 	}
 	s.writeHTTPResponse(w, http.StatusOK, data)
@@ -439,26 +372,16 @@ func (s *Server) handleGetVector(w http.ResponseWriter, r *http.Request, indexNa
 // --- SYSTEM HANDLERS ---
 
 func (s *Server) handleSaveHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use POST")
-		return
-	}
-	// ENGINE CALL
 	if err := s.Engine.SaveSnapshot(); err != nil {
-		s.writeHTTPError(w, http.StatusInternalServerError, err.Error())
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
 		return
 	}
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Snapshot created"})
 }
 
 func (s *Server) handleAOFRewriteHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use POST")
-		return
-	}
 	task := s.taskManager.NewTask()
 	go func() {
-		// ENGINE CALL
 		if err := s.Engine.RewriteAOF(); err != nil {
 			task.SetError(err)
 		} else {
@@ -468,34 +391,18 @@ func (s *Server) handleAOFRewriteHTTP(w http.ResponseWriter, r *http.Request) {
 	s.writeHTTPResponse(w, http.StatusAccepted, task)
 }
 
-// Helpers
-func (s *Server) writeHTTPResponse(w http.ResponseWriter, statusCode int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(payload)
-}
-
-func (s *Server) writeHTTPError(w http.ResponseWriter, statusCode int, message string) {
-	s.writeHTTPResponse(w, statusCode, map[string]string{"error": message})
-}
-
 // --- SYSTEM & VECTORIZER HANDLERS ---
 
 func (s *Server) handleTaskStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use GET")
-		return
-	}
-
-	taskID := strings.TrimPrefix(r.URL.Path, "/system/tasks/")
+	taskID := r.PathValue("id")
 	if taskID == "" {
-		s.writeHTTPError(w, http.StatusBadRequest, "Task ID missing")
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("task ID missing"))
 		return
 	}
 
 	task, found := s.taskManager.GetTask(taskID)
 	if !found {
-		s.writeHTTPError(w, http.StatusNotFound, "Task not found")
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("task not found"))
 		return
 	}
 
@@ -505,10 +412,6 @@ func (s *Server) handleTaskStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetVectorizers(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use GET")
-		return
-	}
 	if s.vectorizerService == nil {
 		s.writeHTTPResponse(w, http.StatusOK, []interface{}{})
 		return
@@ -518,22 +421,20 @@ func (s *Server) handleGetVectorizers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTriggerVectorizer(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		s.writeHTTPError(w, http.StatusMethodNotAllowed, "Use POST")
+	name := r.PathValue("name")
+	if name == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("vectorizer name missing"))
 		return
 	}
 
-	name := strings.TrimPrefix(r.URL.Path, "/system/vectorizers/")
-	name = strings.TrimSuffix(name, "/trigger")
-
 	if s.vectorizerService == nil {
-		s.writeHTTPError(w, http.StatusNotFound, "VectorizerService not active")
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("VectorizerService not active"))
 		return
 	}
 
 	err := s.vectorizerService.Trigger(name)
 	if err != nil {
-		s.writeHTTPError(w, http.StatusNotFound, err.Error())
+		s.writeHTTPError(w, http.StatusNotFound, err)
 		return
 	}
 
@@ -541,4 +442,34 @@ func (s *Server) handleTriggerVectorizer(w http.ResponseWriter, r *http.Request)
 		"status":  "OK",
 		"message": fmt.Sprintf("Synchronization for vectorizer '%s' triggered.", name),
 	})
+}
+
+// Helpers
+
+func (s *Server) writeHTTPResponse(w http.ResponseWriter, statusCode int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(payload)
+}
+
+// writeHTTPError writes an error response.
+// If statusCode is 500, it logs the actual error internally and returns a generic message to the client
+// to prevent information leakage.
+func (s *Server) writeHTTPError(w http.ResponseWriter, statusCode int, err error) {
+	msg := err.Error()
+	if statusCode == http.StatusInternalServerError {
+		log.Printf("INTERNAL SERVER ERROR: %v", err)
+		msg = "Internal Server Error"
+	}
+	s.writeHTTPResponse(w, statusCode, map[string]string{"error": msg})
+}
+
+// decodeJSON decodes the request body into v and disallows unknown fields.
+func (s *Server) decodeJSON(r *http.Request, v interface{}) error {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return fmt.Errorf("invalid JSON: %w", err)
+	}
+	return nil
 }
