@@ -13,9 +13,12 @@ type Node struct {
 	Id string
 	// InternalID is a unique, memory-efficient identifier used for graph traversal.
 	InternalID uint32
-	// Vector stores the vector data. It uses an empty interface (any)
-	// to support different data precisions, such as []float32, []uint16 (for float16), or []int8.
-	Vector any
+	// VectorF32 stores float32 vectors.
+	VectorF32 []float32
+	// VectorF16 stores float16 vectors (as uint16).
+	VectorF16 []uint16
+	// VectorI8 stores int8 vectors.
+	VectorI8 []int8
 
 	// Connections is a slice of slices, where the outer index represents the graph layer,
 	// and the inner slice contains the list of neighbors at that layer.

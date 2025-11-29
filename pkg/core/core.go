@@ -9,11 +9,6 @@ package core
 import (
 	"encoding/gob"
 	"fmt"
-	"github.com/sanonone/kektordb/pkg/core/distance"
-	"github.com/sanonone/kektordb/pkg/core/hnsw"
-	"github.com/sanonone/kektordb/pkg/core/types"
-	"github.com/sanonone/kektordb/pkg/textanalyzer"
-	"github.com/tidwall/btree"
 	"io"
 	"log"
 	"math"
@@ -23,6 +18,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
+	"github.com/sanonone/kektordb/pkg/core/types"
+	"github.com/sanonone/kektordb/pkg/textanalyzer"
+	"github.com/tidwall/btree"
 )
 
 // --- AOF Compaction Management ---
@@ -152,16 +153,15 @@ func (s *DB) Snapshot(writer io.Writer) error {
 				}
 
 				// Use a type switch to populate the correct vector field
-				switch vec := node.Vector.(type) {
-				case []float32:
-					snap.VectorF32 = vec
-				case []uint16:
-					snap.VectorF16 = vec
-				case []int8:
-					snap.VectorI8 = vec
-				default:
-					// Log a warning if we encounter an unexpected type
-					log.Printf("WARNING: Unknown vector type '%T' during snapshot of node %d", vec, internalID)
+				// Populate the correct vector field in the snapshot
+				if node.VectorF32 != nil {
+					snap.VectorF32 = node.VectorF32
+				} else if node.VectorF16 != nil {
+					snap.VectorF16 = node.VectorF16
+				} else if node.VectorI8 != nil {
+					snap.VectorI8 = node.VectorI8
+				} else {
+					log.Printf("WARNING: No vector data found for node %d during snapshot", internalID)
 				}
 				nodeSnapshots[internalID] = snap
 			}
@@ -212,6 +212,7 @@ func (s *DB) LoadFromSnapshot(reader io.Reader) error {
 	s.bTreeIndex = make(map[string]map[string]*btree.BTreeG[BTreeItem])
 	s.textIndex = make(InvertedIndex)
 	s.textIndexStats = make(map[string]map[string]*TextIndexStats)
+	s.metadataMap = make(map[string]map[uint32]map[string]any)
 
 	// Iterate over the indexes in the snapshot
 	for name, indexSnap := range snapshot.VectorData {
@@ -226,14 +227,13 @@ func (s *DB) LoadFromSnapshot(reader io.Reader) error {
 
 		// --- Reconstruct the 'Vector' field ---
 		for id, nodeSnap := range indexSnap.Nodes {
-			// Reconstruct the generic 'Vector' (interface{}) field
-			// based on which of the typed fields is populated.
+			// Reconstruct the typed fields
 			if nodeSnap.VectorF32 != nil {
-				nodeSnap.NodeData.Vector = nodeSnap.VectorF32
+				nodeSnap.NodeData.VectorF32 = nodeSnap.VectorF32
 			} else if nodeSnap.VectorF16 != nil {
-				nodeSnap.NodeData.Vector = nodeSnap.VectorF16
+				nodeSnap.NodeData.VectorF16 = nodeSnap.VectorF16
 			} else if nodeSnap.VectorI8 != nil {
-				nodeSnap.NodeData.Vector = nodeSnap.VectorI8
+				nodeSnap.NodeData.VectorI8 = nodeSnap.VectorI8
 			} else {
 				log.Printf("WARNING: No vector data found for node %d in snapshot", id)
 			}
@@ -555,22 +555,18 @@ func (s *DB) getMetadataForNode(indexName string, nodeID uint32) map[string]any 
 
 // getMetadataForNodeUnlocked is the lock-free version of getMetadataForNode.
 func (s *DB) getMetadataForNodeUnlocked(indexName string, nodeID uint32) map[string]any {
-	metadata := make(map[string]any)
-
-	// Scan the inverted index
-	if invIdx, ok := s.invertedIndex[indexName]; ok {
-		for key, valueMap := range invIdx {
-			for value, idSet := range valueMap {
-				if _, exists := idSet[nodeID]; exists {
-					metadata[key] = value
-				}
-
+	// Direct lookup O(1)
+	if idxMap, ok := s.metadataMap[indexName]; ok {
+		if nodeMeta, ok := idxMap[nodeID]; ok {
+			// Return a copy to prevent external modification of internal state
+			result := make(map[string]any, len(nodeMeta))
+			for k, v := range nodeMeta {
+				result[k] = v
 			}
-
+			return result
 		}
 	}
-
-	return metadata
+	return make(map[string]any)
 }
 
 // BTreeItem is a struct used by the B-Tree to associate a numerical metadata value with a node ID.
@@ -622,6 +618,10 @@ type DB struct {
 	bTreeIndex     map[string]map[string]*btree.BTreeG[BTreeItem]
 	textIndex      InvertedIndex
 	textIndexStats map[string]map[string]*TextIndexStats // map[indexName][fieldName] -> stats
+
+	// metadataMap for direct O(1) lookup of metadata by NodeID.
+	// structure: map[indexName] -> map[NodeID] -> map[Key]Value
+	metadataMap map[string]map[uint32]map[string]any
 }
 
 // NewDB creates and returns a new, initialized DB instance.
@@ -633,6 +633,7 @@ func NewDB() *DB {
 		bTreeIndex:     make(map[string]map[string]*btree.BTreeG[BTreeItem]),
 		textIndex:      make(InvertedIndex),
 		textIndexStats: make(map[string]map[string]*TextIndexStats),
+		metadataMap:    make(map[string]map[uint32]map[string]any),
 	}
 }
 
@@ -694,6 +695,8 @@ func (s *DB) DeleteVectorIndex(name string) error {
 	delete(s.textIndex, name)
 
 	delete(s.textIndexStats, name)
+
+	delete(s.metadataMap, name)
 
 	log.Printf("Index '%s' and all associated data have been deleted.", name)
 	return nil
@@ -915,6 +918,15 @@ func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[s
 	}
 
 	for key, value := range metadata {
+		// Update direct lookup map (O(1))
+		if _, ok := s.metadataMap[indexName]; !ok {
+			s.metadataMap[indexName] = make(map[uint32]map[string]any)
+		}
+		if _, ok := s.metadataMap[indexName][nodeID]; !ok {
+			s.metadataMap[indexName][nodeID] = make(map[string]any)
+		}
+		s.metadataMap[indexName][nodeID][key] = value
+
 		switch v := value.(type) { // Check the type of the 'any' variable
 		case string:
 			// --- LOGICA INDICE INVERTITO (invariata) ---

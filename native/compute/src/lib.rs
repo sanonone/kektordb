@@ -6,17 +6,17 @@ use half::f16;
 use std::mem;
 use std::os::raw::{c_float, c_int, c_ushort}; // c_ushort per u16
 
-// AGGIUNGI QUESTA RIGA:
+// Feature detection for AArch64
 #[cfg(target_arch = "aarch64")]
 use std::arch::is_aarch64_feature_detected;
 
-// --- Modulo per l'implementazione specifica di x86_64 ---
+// --- x86_64 Implementation Module ---
 #[cfg(target_arch = "x86_64")]
 mod x86_64_impl {
     use super::*;
     use std::arch::x86_64::*;
 
-    // Incolla qui TUTTE le tue funzioni SIMD per x86_64:
+    // SIMD implementations for x86_64
     pub(super) unsafe fn reduce_sum_ps(v: __m256) -> f32 {
         let vhigh = _mm256_extractf128_ps(v, 1);
         let vlow = _mm256_castps256_ps128(v);
@@ -190,13 +190,13 @@ mod x86_64_impl {
     }
 }
 
-// --- Modulo per l'implementazione specifica di aarch64 (NEON) ---
+// --- AArch64 (NEON) Implementation Module ---
 #[cfg(target_arch = "aarch64")]
 mod aarch64_impl {
     use super::*;
     use std::arch::aarch64::*;
 
-    // Incolla qui TUTTE le tue funzioni SIMD per aarch64 (NEON) che sono STABILI
+    // SIMD implementations for AArch64 (NEON)
     #[target_feature(enable = "neon")]
     pub(super) unsafe fn squared_euclidean_f32_neon(
         x: *const f32,
@@ -306,10 +306,10 @@ mod aarch64_impl {
         total_sum
     }
 
-    // NO squared_euclidean_f16_neon perché usa feature instabili
+    // Note: No stable squared_euclidean_f16_neon implementation available yet.
 }
 
-// --- Funzioni di Fallback (generiche, compilate sempre) ---
+// --- Fallback Functions (Generic, always compiled) ---
 unsafe fn squared_euclidean_f32_fallback(x: *const f32, y: *const f32, len: usize) -> f32 {
     let mut sum: f32 = 0.0;
     for i in 0..len {
@@ -343,9 +343,9 @@ unsafe fn dot_product_i8_fallback(x: *const i8, y: *const i8, len: usize) -> i32
     }
     sum as i32
 }
-// (Assicurati di incollare qui il corpo completo di queste 4 funzioni)
 
-// --- Funzioni Pubbliche Esportate (Punto di Ingresso con Dispatch Intelligente) ---
+
+// --- Exported Public Functions (Entry Points with Dynamic Dispatch) ---
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn squared_euclidean_f32(x: *const f32, y: *const f32, len: usize) -> f32 {
@@ -389,7 +389,7 @@ pub unsafe extern "C" fn squared_euclidean_f16(x: *const u16, y: *const u16, len
             return x86_64_impl::squared_euclidean_f16_fma(x, y, len);
         }
     }
-    // Nessuna implementazione NEON stabile per f16, quindi per aarch64 si userà il fallback.
+    // No stable NEON implementation for f16, fallback to generic.
     squared_euclidean_f16_fallback(x, y, len)
 }
 
@@ -411,7 +411,7 @@ pub unsafe extern "C" fn dot_product_i8(x: *const i8, y: *const i8, len: usize) 
 }
 
 // =======================================================================
-// === Test Unitari (esegui con cargo test) ===
+// === Unit Tests ===
 // =======================================================================
 
 #[cfg(test)]

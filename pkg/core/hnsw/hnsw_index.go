@@ -10,9 +10,6 @@ package hnsw
 import (
 	// "container/heap"
 	"fmt"
-	"github.com/sanonone/kektordb/pkg/core/distance"
-	"github.com/sanonone/kektordb/pkg/core/types"
-	"github.com/x448/float16"
 	"log"
 	"math"
 	"math/rand"
@@ -20,6 +17,10 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/types"
+	"github.com/x448/float16"
 )
 
 // LinkRequest represents a single atomic connection modification operation to be
@@ -168,100 +169,29 @@ func New(m int, efConstruction int, metric distance.DistanceMetric, precision di
 	return h, nil
 }
 
-// distance calculates the distance between two stored vectors of the same type
-func (h *Index) distance(v1, v2 any) (float64, error) {
-	// type switch to call the correct function
-	switch fn := h.distanceFunc.(type) {
-	case distance.DistanceFuncF32:
-		vec1, ok1 := v1.([]float32)
-		vec2, ok2 := v2.([]float32)
-		if !ok1 || !ok2 {
-			return 0, fmt.Errorf("vector type mismatch (expected float32)")
-		}
-		return fn(vec1, vec2)
-	case distance.DistanceFuncF16:
-		vec1, ok1 := v1.([]uint16)
-		vec2, ok2 := v2.([]uint16)
-		if !ok1 || !ok2 {
-			return 0, fmt.Errorf("vector type mismatch (expected uint16)")
-		}
-		return fn(vec1, vec2)
-	case distance.DistanceFuncI8:
-		vec1, ok1 := v1.([]int8)
-		vec2, ok2 := v2.([]int8)
-		if !ok1 || !ok2 {
-			return 0, fmt.Errorf("vector type mismatch (expected int8)")
-		}
-		dot, err := fn(vec1, vec2)
-
-		// --- SCALING LOGIC ---
-		// Calculate the "norms" of the int8 vectors to scale the result.
-		var norm1, norm2 int64
-		for i := range vec1 {
-			norm1 += int64(vec1[i]) * int64(vec1[i])
-			norm2 += int64(vec2[i]) * int64(vec2[i])
-		}
-
-		if norm1 == 0 || norm2 == 0 {
-			return 1.0, nil // Max distance if a vector is zero
-		}
-
-		similarity := float64(dot) / (math.Sqrt(float64(norm1)) * math.Sqrt(float64(norm2)))
-
-		// similarity range [-1, 1]
-		if similarity > 1.0 {
-			similarity = 1.0
-		}
-		if similarity < -1.0 {
-			similarity = -1.0
-		}
-		return 1.0 - similarity, err
-	default:
-		return 0, fmt.Errorf("invalid or uninitialized distance function")
-	}
-}
-
-// distanceToQuery calculates the distance between a query vector and a stored vector.
-// It assumes 'query' is already in the correct format (normalized f32, uint16, or int8).
-// No normalization, allocation, or quantization happens here for performance.
-func (h *Index) distanceToQuery(query any, storedVector any) (float64, error) {
-	switch fn := h.distanceFunc.(type) {
-	case distance.DistanceFuncF32:
-		// Assume query is []float32. Panic if not (indicates upstream bug).
-		q := query.([]float32)
-		stored, ok := storedVector.([]float32)
-		if !ok {
-			return 0, fmt.Errorf("stored vector type mismatch")
-		}
-		return fn(q, stored)
-
-	case distance.DistanceFuncF16:
-		q := query.([]uint16)
-		stored, ok := storedVector.([]uint16)
-		if !ok {
-			return 0, fmt.Errorf("stored vector type mismatch")
-		}
-		return fn(q, stored)
-
-	case distance.DistanceFuncI8:
-		q := query.([]int8)
-		stored, ok := storedVector.([]int8)
-		if !ok {
-			return 0, fmt.Errorf("stored vector type mismatch")
-		}
-
-		dot, err := fn(q, stored)
-
+// distanceBetweenNodes calculates the distance between two nodes avoiding boxing
+func (h *Index) distanceBetweenNodes(n1, n2 *Node) (float64, error) {
+	switch h.precision {
+	case distance.Float32:
+		return h.distFuncF32(n1.VectorF32, n2.VectorF32)
+	case distance.Float16:
+		return h.distFuncF16(n1.VectorF16, n2.VectorF16)
+	case distance.Int8:
+		dot, err := h.distFuncI8(n1.VectorI8, n2.VectorI8)
 		// Scaling logic
-		var norm1, norm2 int64
-		for i := range q {
-			norm1 += int64(q[i]) * int64(q[i])
-			norm2 += int64(stored[i]) * int64(stored[i])
-		}
+		norm1 := h.quantizedNorms[n1.InternalID]
+		norm2 := h.quantizedNorms[n2.InternalID]
 		if norm1 == 0 || norm2 == 0 {
 			return 1.0, nil
 		}
-		similarity := float64(dot) / (math.Sqrt(float64(norm1)) * math.Sqrt(float64(norm2)))
+		// Note: quantizedNorms stores pre-calculated float32 norms (sqrt(sum(sq)))?
+		// Let's check computeInt8Norm. It returns float32.
+		// Wait, previous code calculated norm on the fly in distance function?
+		// Yes: "var norm1, norm2 int64 ... math.Sqrt".
+		// But Add/AddBatch computes h.quantizedNorms[internalID].
+		// So we should use that!
+
+		similarity := float64(dot) / (float64(norm1) * float64(norm2))
 		if similarity > 1.0 {
 			similarity = 1.0
 		}
@@ -269,9 +199,49 @@ func (h *Index) distanceToQuery(query any, storedVector any) (float64, error) {
 			similarity = -1.0
 		}
 		return 1.0 - similarity, err
-
 	default:
-		return 0, fmt.Errorf("invalid distance function")
+		return 0, fmt.Errorf("invalid precision")
+	}
+}
+
+// distanceToNode calculates distance from query to a node
+func (h *Index) distanceToNode(query any, node *Node) (float64, error) {
+	switch h.precision {
+	case distance.Float32:
+		return h.distFuncF32(query.([]float32), node.VectorF32)
+	case distance.Float16:
+		return h.distFuncF16(query.([]uint16), node.VectorF16)
+	case distance.Int8:
+		q := query.([]int8)
+		stored := node.VectorI8
+		dot, err := h.distFuncI8(q, stored)
+
+		// For query, we might need to compute norm if not cached.
+		// But usually query norm is constant for the search.
+		// However, here we compute it every time?
+		// The previous code computed it every time.
+		// We can optimize this later by passing query norm.
+		var norm1 int64
+		for i := range q {
+			norm1 += int64(q[i]) * int64(q[i])
+		}
+
+		// Use cached norm for stored vector
+		norm2 := h.quantizedNorms[node.InternalID]
+
+		if norm1 == 0 || norm2 == 0 {
+			return 1.0, nil
+		}
+		similarity := float64(dot) / (math.Sqrt(float64(norm1)) * float64(norm2))
+		if similarity > 1.0 {
+			similarity = 1.0
+		}
+		if similarity < -1.0 {
+			similarity = -1.0
+		}
+		return 1.0 - similarity, err
+	default:
+		return 0, fmt.Errorf("invalid precision")
 	}
 }
 
@@ -412,7 +382,15 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 		}
 	}
 
-	node := &Node{Id: id, InternalID: internalID, Vector: storedVector}
+	node := &Node{Id: id, InternalID: internalID}
+	switch h.precision {
+	case distance.Float32:
+		node.VectorF32 = storedVector.([]float32)
+	case distance.Float16:
+		node.VectorF16 = storedVector.([]uint16)
+	case distance.Int8:
+		node.VectorI8 = storedVector.([]int8)
+	}
 	h.nodes[internalID] = node
 	h.externalToInternalID[id] = internalID
 	h.internalToExternalID[internalID] = id
@@ -474,13 +452,13 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 				maxDist := -1.0
 				worstNeighborIndex := -1
 				for i, nID := range neighborConnections {
-					d, _ := h.distance(neighborNode.Vector, h.nodes[nID].Vector)
+					d, _ := h.distanceBetweenNodes(neighborNode, h.nodes[nID])
 					if d > maxDist {
 						maxDist = d
 						worstNeighborIndex = i
 					}
 				}
-				distToNew, _ := h.distance(neighborNode.Vector, node.Vector)
+				distToNew, _ := h.distanceBetweenNodes(neighborNode, node)
 				if distToNew < maxDist && worstNeighborIndex != -1 {
 					neighborNode.Connections[l][worstNeighborIndex] = internalID
 				}
@@ -566,7 +544,15 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 			}
 		}
 
-		node := &Node{Id: obj.Id, InternalID: internalID, Vector: storedVector}
+		node := &Node{Id: obj.Id, InternalID: internalID}
+		switch h.precision {
+		case distance.Float32:
+			node.VectorF32 = storedVector.([]float32)
+		case distance.Float16:
+			node.VectorF16 = storedVector.([]uint16)
+		case distance.Int8:
+			node.VectorI8 = storedVector.([]int8)
+		}
 		newNodes[i] = node
 		h.nodes[internalID] = node
 		h.externalToInternalID[node.Id] = internalID
@@ -604,7 +590,15 @@ func (h *Index) batchWorker(nodesToProcess []*Node, linkQueue chan<- LinkRequest
 	for _, node := range nodesToProcess {
 		// The vector in the node is already "stored" (f32 normalized, f16 or i8).
 		// We can use it directly as a query for distanceToQuery.
-		queryObj := node.Vector
+		var queryObj any
+		switch h.precision {
+		case distance.Float32:
+			queryObj = node.VectorF32
+		case distance.Float16:
+			queryObj = node.VectorF16
+		case distance.Int8:
+			queryObj = node.VectorI8
+		}
 
 		level := h.randomLevel()
 		node.Connections = make([][]uint32, level+1)
@@ -777,7 +771,7 @@ func (h *Index) commitLinks(linkQueue <-chan LinkRequest, newNodes []*Node) {
 						if targetNode == nil {
 							continue
 						}
-						dist, _ := h.distance(node.Vector, targetNode.Vector)
+						dist, _ := h.distanceBetweenNodes(node, targetNode)
 						allCandidates = append(allCandidates, types.Candidate{Id: id, Distance: dist})
 					}
 
@@ -913,10 +907,7 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 		fn := h.distFuncF32    // Direct pointer to function (e.g., AVX)
 
 		distFn = func(node *Node) (float64, error) {
-			v, ok := node.Vector.([]float32)
-			if !ok {
-				return 0, fmt.Errorf("type mismatch")
-			}
+			v := node.VectorF32
 			return fn(q, v)
 		}
 
@@ -924,10 +915,7 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 		q := query.([]uint16)
 		fn := h.distFuncF16
 		distFn = func(node *Node) (float64, error) {
-			v, ok := node.Vector.([]uint16)
-			if !ok {
-				return 0, fmt.Errorf("type mismatch")
-			}
+			v := node.VectorF16
 			return fn(q, v)
 		}
 
@@ -946,10 +934,7 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 		}
 
 		distFn = func(node *Node) (float64, error) {
-			stored, ok := node.Vector.([]int8)
-			if !ok {
-				return 0, fmt.Errorf("type mismatch")
-			}
+			stored := node.VectorI8
 
 			dot, err := fn(q, stored)
 			if err != nil {
@@ -1145,7 +1130,7 @@ func (h *Index) selectNeighbors(candidates []types.Candidate, m int) []types.Can
 
 		isGoodCandidate := true
 		for _, r := range results {
-			dist_e_r, err := h.distance(h.nodes[e.Id].Vector, h.nodes[r.Id].Vector)
+			d, err := h.distanceBetweenNodes(h.nodes[e.Id], h.nodes[r.Id])
 			if err != nil {
 				isGoodCandidate = false
 				break
@@ -1153,9 +1138,9 @@ func (h *Index) selectNeighbors(candidates []types.Candidate, m int) []types.Can
 
 			var condition bool
 			if h.metric == distance.Cosine {
-				condition = (dist_e_r < e.Distance)
+				condition = (d < e.Distance)
 			} else {
-				condition = (dist_e_r < e.Distance)
+				condition = (d < e.Distance)
 			}
 
 			if condition {
@@ -1252,22 +1237,22 @@ func (h *Index) Iterate(callback func(id string, vector []float32)) {
 			var vectorF32 []float32
 
 			// Check the type of the stored vector
-			switch vec := node.Vector.(type) {
-			case []float32:
-				vectorF32 = vec
-			case []uint16:
+			switch h.precision {
+			case distance.Float32:
+				vectorF32 = node.VectorF32
+			case distance.Float16:
 				// If it's float16, we need to unpack it into float32
-				vectorF32 = make([]float32, len(vec))
-				for i, v := range vec {
+				vectorF32 = make([]float32, len(node.VectorF16))
+				for i, v := range node.VectorF16 {
 					vectorF32[i] = float16.Frombits(v).Float32()
 				}
-			case []int8:
+			case distance.Int8:
 				// If it's int8, we need to de-quantize it.
 				if h.quantizer == nil {
 					log.Printf("WARNING: int8 index missing quantizer for node %s", node.Id)
 					continue
 				}
-				vectorF32 = h.quantizer.Dequantize(vec)
+				vectorF32 = h.quantizer.Dequantize(node.VectorI8)
 			default:
 				// Unknown type, let's skip this node to be safe
 				log.Printf("WARNING: Unknown vector type during iteration for node %s", node.Id)
@@ -1290,7 +1275,14 @@ func (h *Index) IterateRaw(callback func(id string, vector interface{})) {
 			continue
 		}
 		if !node.Deleted {
-			callback(node.Id, node.Vector)
+			switch h.precision {
+			case distance.Float32:
+				callback(node.Id, node.VectorF32)
+			case distance.Float16:
+				callback(node.Id, node.VectorF16)
+			case distance.Int8:
+				callback(node.Id, node.VectorI8)
+			}
 		}
 	}
 }
@@ -1340,19 +1332,19 @@ func (h *Index) GetNodeData(externalID string) (types.NodeData, bool) {
 
 	// Use the same logic as 'Iterate' to de-compress/de-quantize
 	var vectorF32 []float32
-	switch vec := node.Vector.(type) {
-	case []float32:
-		vectorF32 = vec
-	case []uint16:
-		vectorF32 = make([]float32, len(vec))
-		for i, v := range vec {
+	switch h.precision {
+	case distance.Float32:
+		vectorF32 = node.VectorF32
+	case distance.Float16:
+		vectorF32 = make([]float32, len(node.VectorF16))
+		for i, v := range node.VectorF16 {
 			vectorF32[i] = float16.Frombits(v).Float32()
 		}
-	case []int8:
+	case distance.Int8:
 		if h.quantizer == nil {
 			return types.NodeData{}, false // Inconsistent state
 		}
-		vectorF32 = h.quantizer.Dequantize(vec)
+		vectorF32 = h.quantizer.Dequantize(node.VectorI8)
 	default:
 		return types.NodeData{}, false // Type unknown
 	}
