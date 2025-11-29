@@ -210,6 +210,8 @@ func (e *Engine) checkMaintenance() {
 		}
 	}
 
+	_ = e.AOF.Flush() // Ensures that data in the AOF buffer goes to the OS periodically
+
 	// AOF Rewrite Policy
 	if e.opts.AofRewritePercentage > 0 {
 		info, err := e.AOF.File().Stat()

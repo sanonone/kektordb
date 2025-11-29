@@ -286,7 +286,7 @@ func (s *DB) IterateKVUnlocked(callback func(pair KVPair)) {
 // IterateVectorIndexes iterates over all vector indexes and their contents.
 // The caller is responsible for locking.
 func (s *DB) IterateVectorIndexes(callback func(indexName string, index *hnsw.Index, data VectorData)) {
-	s.mu.RUnlock()
+	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	for name, idx := range s.vectorIndexes {

@@ -27,11 +27,16 @@ func (e *Engine) KVSet(key string, value []byte) error {
 	// 1. AOF
 	cmd := persistence.FormatCommand("SET", []byte(key), value)
 	if err := e.AOF.Write(cmd); err != nil {
-		return err
+		return fmt.Errorf("persistence error (AOF write failed): %w", err)
 	}
 
 	// 2. Memory
 	e.DB.GetKVStore().Set(key, value)
+
+	// Instant flush for single operations (durability)
+	if err := e.AOF.Flush(); err != nil {
+		return fmt.Errorf("CRITICAL: persistence flush failed: %w", err)
+	}
 
 	atomic.AddInt64(&e.dirtyCounter, 1)
 	return nil
@@ -48,9 +53,15 @@ func (e *Engine) KVGet(key string) ([]byte, bool) {
 func (e *Engine) KVDelete(key string) error {
 	cmd := persistence.FormatCommand("DEL", []byte(key))
 	if err := e.AOF.Write(cmd); err != nil {
-		return err
+		return fmt.Errorf("persistence error (AOF write failed): %w", err)
 	}
 	e.DB.GetKVStore().Delete(key)
+
+	// Instant flush for single operations (durability)
+	if err := e.AOF.Flush(); err != nil {
+		return fmt.Errorf("CRITICAL: persistence flush failed: %w", err)
+	}
+
 	atomic.AddInt64(&e.dirtyCounter, 1)
 	return nil
 }
@@ -74,12 +85,18 @@ func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int
 		[]byte("TEXT_LANGUAGE"), []byte(lang),
 	)
 	if err := e.AOF.Write(cmd); err != nil {
-		return err
+		return fmt.Errorf("persistence error: %w", err)
 	}
 
 	err := e.DB.CreateVectorIndex(name, metric, m, efC, prec, lang)
 	if err == nil {
 		atomic.AddInt64(&e.dirtyCounter, 1)
+
+		// Instant flush for single operations (durability)
+		if errF := e.AOF.Flush(); errF != nil {
+			return fmt.Errorf("CRITICAL: persistence flush failed: %w", errF)
+		}
+
 	}
 	return err
 }
@@ -89,12 +106,18 @@ func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int
 func (e *Engine) VDeleteIndex(name string) error {
 	cmd := persistence.FormatCommand("VDROP", []byte(name))
 	if err := e.AOF.Write(cmd); err != nil {
-		return err
+		return fmt.Errorf("persistence error: %w", err)
 	}
 
 	err := e.DB.DeleteVectorIndex(name)
 	if err == nil {
 		atomic.AddInt64(&e.dirtyCounter, 1)
+
+		// Instant flush for single operations (durability)
+		if errF := e.AOF.Flush(); errF != nil {
+			return fmt.Errorf("CRITICAL: persistence flush failed: %w", errF)
+		}
+
 	}
 	return err
 }
@@ -134,7 +157,12 @@ func (e *Engine) VAdd(indexName, id string, vector []float32, metadata map[strin
 	cmd := persistence.FormatCommand("VADD", []byte(indexName), []byte(id), []byte(vecStr), metaBytes)
 	if err := e.AOF.Write(cmd); err != nil {
 		// Warn: Persistence failed but memory success. Inconsistency risk.
-		return err
+		return fmt.Errorf("CRITICAL: persistence failed (data in RAM only): %w", err)
+	}
+
+	// Instant flush for single operations (durability)
+	if err := e.AOF.Flush(); err != nil {
+		return fmt.Errorf("CRITICAL: persistence flush failed: %w", err)
 	}
 
 	atomic.AddInt64(&e.dirtyCounter, 1)
@@ -155,7 +183,12 @@ func (e *Engine) VDelete(indexName, id string) error {
 	// Disk
 	cmd := persistence.FormatCommand("VDEL", []byte(indexName), []byte(id))
 	if err := e.AOF.Write(cmd); err != nil {
-		return err
+		return fmt.Errorf("persistence error: %w", err)
+	}
+
+	// Instant flush for single operations (durability)
+	if err := e.AOF.Flush(); err != nil {
+		return fmt.Errorf("CRITICAL: persistence flush failed: %w", err)
 	}
 
 	atomic.AddInt64(&e.dirtyCounter, 1)
@@ -356,9 +389,14 @@ func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 		}
 
 		cmd := persistence.FormatCommand("VADD", []byte(indexName), []byte(item.Id), []byte(vecStr), meta)
-		// Note: This writes N times to disk. Not highly efficient, but safe.
-		// Future optimization: Buffered AOF writer.
-		e.AOF.Write(cmd)
+
+		if err := e.AOF.Write(cmd); err != nil {
+			return fmt.Errorf("batch persistence partial failure: %w", err)
+		}
+	}
+
+	if err := e.AOF.Flush(); err != nil {
+		return fmt.Errorf("batch persistence flush failed: %w", err)
 	}
 
 	atomic.AddInt64(&e.dirtyCounter, int64(len(items)))
@@ -395,7 +433,7 @@ func (e *Engine) VImport(indexName string, items []types.BatchObject) error {
 	for _, item := range items {
 		if len(item.Metadata) > 0 {
 			id := hnswIdx.GetInternalID(item.Id)
-			e.DB.AddMetadataUnlocked(indexName, id, item.Metadata)
+			e.DB.AddMetadata(indexName, id, item.Metadata)
 		}
 	}
 
