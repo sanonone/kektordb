@@ -16,7 +16,6 @@ import (
 	"github.com/x448/float16"
 	"gonum.org/v1/gonum/blas/gonum"
 	"log"
-	"sync"
 )
 
 func init() {
@@ -61,36 +60,6 @@ const (
 type DistanceFuncF32 func(v1, v2 []float32) (float64, error)
 type DistanceFuncF16 func(v1, v2 []uint16) (float64, error)
 type DistanceFuncI8 func(v1, v2 []int8) (int32, error)
-
-// --- WORKSPACE POOL ---
-
-// diffWorkspace is a pool of float32 slices used to avoid memory allocations
-// in distance calculations. Functions can borrow a slice from the pool, use it
-// for intermediate calculations (like the difference between two vectors), and
-// then return it, reducing pressure on the garbage collector.
-var diffWorkspace = sync.Pool{
-	New: func() interface{} {
-		// The size here should be large enough for typical vectors.
-		// 1536 is a common dimension for OpenAI embeddings.
-		// TODO: Make this configurable in the future.
-		s := make([]float32, 1536)
-		return &s
-	},
-}
-
-/*
-// squaredEuclideanF16AVX2Wrapper orchestrates the call to the AVX2-accelerated function.
-func squaredEuclideanF16AVX2Wrapper(v1, v2 []uint16) (float64, error) {
-	if len(v1) != len(v2) {
-		return 0, errors.New("vectors must have the same length")
-	}
-	if len(v1) == 0 {
-		return 0, nil
-	}
-	res := SquaredEuclideanFloat16AVX2(v1, v2)
-	return float64(res), nil
-}
-*/
 
 // --- REFERENCE IMPLEMENTATIONS (PURE GO) ---
 
@@ -158,31 +127,6 @@ func dotProductGoInt8(v1, v2 []int8) (int32, error) {
 
 // --- Gonum-based Implementations (for float32) ---
 var gonumEngine = gonum.Implementation{}
-
-// squaredEuclideanGonum uses the Gonum BLAS library for optimized calculation.
-func squaredEuclideanGonum(v1, v2 []float32) (float64, error) {
-	n := len(v1)
-	if n != len(v2) {
-		return 0, errors.New("vectors must have the same length")
-	}
-
-	// Get a slice from the pool
-	diffPtr := diffWorkspace.Get().(*[]float32)
-	defer diffWorkspace.Put(diffPtr) // Ensure the slice is returned to the pool
-
-	// Check if the pooled slice is large enough
-	if cap(*diffPtr) < n {
-		*diffPtr = make([]float32, n)
-	}
-	diff := (*diffPtr)[:n] // Use only the portion we need
-
-	// Now perform the calculations without allocations
-	copy(diff, v1)
-	gonumEngine.Saxpy(n, -1, v2, 1, diff, 1)
-	dot := gonumEngine.Sdot(n, diff, 1, diff, 1)
-
-	return float64(dot), nil
-}
 
 // dotProductAsDistanceGonum uses the Gonum BLAS library for an optimized dot product.
 func dotProductAsDistanceGonum(v1, v2 []float32) (float64, error) {

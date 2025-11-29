@@ -498,14 +498,6 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	return internalID, nil
 }
 
-/*
-// BatchObject è un wrapper per i dati di input di AddBatch.
-type BatchObject struct {
-	ID     string
-	Vector []float32
-}
-*/
-
 // AddBatch inserts a large batch of vectors concurrently.
 // It partitions the data, allocates nodes in parallel, finds neighbors
 // in parallel, and then commits all link changes in a final, sequential step.

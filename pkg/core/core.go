@@ -650,10 +650,6 @@ func (s *DB) CreateVectorIndex(name string, metric distance.DistanceMetric, m, e
 		return fmt.Errorf("index '%s' already exists", name)
 	}
 
-	const (
-		defaultM       = 16
-		defaultEfConst = 200
-	)
 	idx, err := hnsw.New(m, efConstruction, metric, precision, textLang)
 	if err != nil {
 		return err
