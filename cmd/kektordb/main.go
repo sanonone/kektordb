@@ -25,8 +25,7 @@ func main() {
 	vectorizersConfig := flag.String("vectorizers-config", "", "Vectorizers YAML config")
 	flag.Parse()
 
-	// 1. Configurazione Engine
-	// Estraiamo la directory dal path AOF per passarla all'Engine
+	// Engine Configuration
 	dataDir := filepath.Dir(*aofPath)
 	aofName := filepath.Base(*aofPath)
 
@@ -34,8 +33,7 @@ func main() {
 	opts.AofFilename = aofName
 	opts.AofRewritePercentage = *aofRewritePerc
 
-	// Parsing semplice della policy (supportiamo solo la prima policy per l'engine semplificato)
-	// Se l'utente ha passato "60 1000", prendiamo 60s e 1000 changes.
+	// "60 1000" = 60s e 1000 changes.
 	if *savePolicy == "" {
 		opts.AutoSaveInterval = 0
 		opts.AutoSaveThreshold = 0
@@ -52,14 +50,14 @@ func main() {
 
 	log.Printf("Initializing Engine (Data: %s, Save: %v/%d ops)...", dataDir, opts.AutoSaveInterval, opts.AutoSaveThreshold)
 
-	// 2. Avvio Engine
+	// Engine Startup
 	eng, err := engine.Open(opts)
 	if err != nil {
 		log.Fatalf("Failed to open engine: %v", err)
 	}
 	defer eng.Close() // Close on exit
 
-	// 3. Avvio Server HTTP
+	// Starting HTTP Server
 	srv, err := server.NewServer(eng, *httpAddr, *vectorizersConfig)
 	if err != nil {
 		log.Fatalf("Failed to create server: %v", err)
@@ -77,7 +75,6 @@ func main() {
 	}()
 
 	<-shutdownChan
-	srv.Shutdown() // Stop HTTP
-	// Engine.Close() viene chiamato dal defer
+	srv.Shutdown()
 	log.Println("KektorDB stopped.")
 }

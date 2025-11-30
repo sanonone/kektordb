@@ -184,12 +184,6 @@ func (h *Index) distanceBetweenNodes(n1, n2 *Node) (float64, error) {
 		if norm1 == 0 || norm2 == 0 {
 			return 1.0, nil
 		}
-		// Note: quantizedNorms stores pre-calculated float32 norms (sqrt(sum(sq)))?
-		// Let's check computeInt8Norm. It returns float32.
-		// Wait, previous code calculated norm on the fly in distance function?
-		// Yes: "var norm1, norm2 int64 ... math.Sqrt".
-		// But Add/AddBatch computes h.quantizedNorms[internalID].
-		// So we should use that!
 
 		similarity := float64(dot) / (float64(norm1) * float64(norm2))
 		if similarity > 1.0 {
@@ -204,6 +198,7 @@ func (h *Index) distanceBetweenNodes(n1, n2 *Node) (float64, error) {
 	}
 }
 
+/*
 // distanceToNode calculates distance from query to a node
 func (h *Index) distanceToNode(query any, node *Node) (float64, error) {
 	switch h.precision {
@@ -216,11 +211,7 @@ func (h *Index) distanceToNode(query any, node *Node) (float64, error) {
 		stored := node.VectorI8
 		dot, err := h.distFuncI8(q, stored)
 
-		// For query, we might need to compute norm if not cached.
-		// But usually query norm is constant for the search.
-		// However, here we compute it every time?
-		// The previous code computed it every time.
-		// We can optimize this later by passing query norm.
+
 		var norm1 int64
 		for i := range q {
 			norm1 += int64(q[i]) * int64(q[i])
@@ -244,6 +235,7 @@ func (h *Index) distanceToNode(query any, node *Node) (float64, error) {
 		return 0, fmt.Errorf("invalid precision")
 	}
 }
+*/
 
 // SearchWithScores finds the K nearest neighbors to a query vector, returning their scores (distances)
 func (h *Index) SearchWithScores(query []float32, k int, allowList map[uint32]struct{}, efSearch int) []types.SearchResult {

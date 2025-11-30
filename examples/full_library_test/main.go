@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"time"
 
@@ -175,16 +176,15 @@ func main() {
 	db.VCreate(int8Idx, distance.Cosine, 16, 200, distance.Float32, "")
 
 	// 1. Insert a specific "Target" (all high positive values)
-	targetVec := []float32{0.9, 0.9, 0.9}
+	targetVec := make([]float32, 128)
+	for i := range targetVec {
+		targetVec[i] = rand.Float32() // [0, 1]
+	}
 	db.VAdd(int8Idx, "target", targetVec, nil)
-
-	// 2. Insert "Noise" (all negative or orthogonal values)
-	// This helps train the quantizer on a wide range (-0.9 to +0.9)
-	// and ensures the "target" is mathematically the only valid result.
 	for i := 0; i < 100; i++ {
-		noiseVec := []float32{-0.5, -0.5, -0.5}
-		if i%2 == 0 {
-			noiseVec = []float32{-0.9, -0.9, -0.9}
+		noiseVec := make([]float32, 128)
+		for j := range noiseVec {
+			noiseVec[j] = rand.Float32()*2 - 1 // [-1, 1]
 		}
 		db.VAdd(int8Idx, fmt.Sprintf("noise_%d", i), noiseVec, nil)
 	}
