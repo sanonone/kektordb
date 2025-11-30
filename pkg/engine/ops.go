@@ -151,7 +151,11 @@ func (e *Engine) VAdd(indexName, id string, vector []float32, metadata map[strin
 	vecStr := float32SliceToString(vector)
 	var metaBytes []byte
 	if len(metadata) > 0 {
-		metaBytes, _ = json.Marshal(metadata)
+		var err error
+		metaBytes, err = json.Marshal(metadata)
+		if err != nil {
+			return fmt.Errorf("failed to marshal metadata: %w", err)
+		}
 	}
 
 	cmd := persistence.FormatCommand("VADD", []byte(indexName), []byte(id), []byte(vecStr), metaBytes)
@@ -310,9 +314,13 @@ func (e *Engine) VSearch(indexName string, query []float32, k int, filter string
 	// 4. Fusion
 	if textQuery == "" {
 		// Pure Vector Search return
-		ids := make([]string, len(vectorResults))
-		for i, r := range vectorResults {
-			ids[i], _ = hnswIndex.GetExternalID(r.DocID)
+		ids := make([]string, 0, len(vectorResults))
+		for _, r := range vectorResults {
+			extID, found := hnswIndex.GetExternalID(r.DocID)
+			if !found {
+				continue // Skip non-existent IDs
+			}
+			ids = append(ids, extID)
 		}
 		return ids, nil
 	}
@@ -385,7 +393,11 @@ func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 		vecStr := float32SliceToString(item.Vector)
 		var meta []byte
 		if len(item.Metadata) > 0 {
-			meta, _ = json.Marshal(item.Metadata)
+			var err error
+			meta, err = json.Marshal(item.Metadata)
+			if err != nil {
+				return fmt.Errorf("failed to marshal metadata for item %s: %w", item.Id, err)
+			}
 		}
 
 		cmd := persistence.FormatCommand("VADD", []byte(indexName), []byte(item.Id), []byte(vecStr), meta)

@@ -102,7 +102,13 @@ func (v *Vectorizer) findChangedFiles(root string) ([]string, error) {
 
 		lastModTime := int64(0)
 		if found {
-			lastModTime, _ = strconv.ParseInt(string(lastModBytes), 10, 64)
+			parsedTime, err := strconv.ParseInt(string(lastModBytes), 10, 64)
+			if err != nil {
+				// If parsing fails, consider file as never processed
+				lastModTime = 0
+			} else {
+				lastModTime = parsedTime
+			}
 		}
 
 		if info.ModTime().UnixNano() > lastModTime {

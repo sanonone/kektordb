@@ -535,22 +535,20 @@ func (s *DB) GetVectors(indexName string, vectorIDs []string) ([]VectorData, err
 // getMetadataForNode is a helper function to retrieve metadata for a given node ID.
 // Note: This implementation is inefficient as it scans the entire inverted index.
 func (s *DB) getMetadataForNode(indexName string, nodeID uint32) map[string]any {
-	metadata := make(map[string]any)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
-	// scans the inverted index
-	if invIdx, ok := s.invertedIndex[indexName]; ok {
-		for key, valueMap := range invIdx {
-			for value, idSet := range valueMap {
-				if _, exists := idSet[nodeID]; exists {
-					metadata[key] = value
-				}
-
+	if idxMap, ok := s.metadataMap[indexName]; ok {
+		if nodeMeta, ok := idxMap[nodeID]; ok {
+			// Return a copy to prevent external modification of internal state
+			result := make(map[string]any, len(nodeMeta))
+			for k, v := range nodeMeta {
+				result[k] = v
 			}
-
+			return result
 		}
 	}
-
-	return metadata
+	return make(map[string]any)
 }
 
 // getMetadataForNodeUnlocked is the lock-free version of getMetadataForNode.

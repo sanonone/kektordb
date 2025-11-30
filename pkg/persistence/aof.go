@@ -63,11 +63,19 @@ func (a *AOFWriter) Close() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	var flushErr error
 	if err := a.buf.Flush(); err != nil {
-		_ = a.file.Close()
-		return err
+		flushErr = fmt.Errorf("flush failed: %w", err)
 	}
-	return a.file.Close()
+
+	if err := a.file.Close(); err != nil {
+		if flushErr != nil {
+			return fmt.Errorf("close failed after flush error: %w (previous: %v)", err, flushErr)
+		}
+		return fmt.Errorf("close failed: %w", err)
+	}
+
+	return flushErr
 }
 
 // Truncate clears the file content. Used during rewriting/snapshotting.
@@ -102,8 +110,14 @@ func (a *AOFWriter) ReplaceWith(newFilePath string) error {
 	defer a.mu.Unlock()
 
 	// 1. Flush & Close old
-	_ = a.buf.Flush()
-	_ = a.file.Close()
+	if err := a.buf.Flush(); err != nil {
+		return fmt.Errorf("failed to flush buffer before replace: %w", err)
+	}
+	if err := a.file.Close(); err != nil {
+		// Log error but don't block: data already flushed
+		// In production, use proper logging framework
+		fmt.Fprintf(os.Stderr, "Warning: failed to close AOF file before replace: %v\n", err)
+	}
 
 	// 2. Rename
 	if err := os.Rename(newFilePath, a.path); err != nil {

@@ -411,7 +411,7 @@ if __name__ == "__main__":
         {"m": 16, "ef_construction": 200, "ef_search": 100, "precision": "float32"}, # balanced
         #{"m": 32, "ef_construction": 400, "ef_search": 150, "precision": "float32"},
         #{"m": 32, "ef_construction": 400, "ef_search": 200, "precision": "float32"}, # quality
-        {"m": 12, "ef_construction": 150, "ef_search": 50, "precision": "float32"}, # speed
+        #{"m": 12, "ef_construction": 150, "ef_search": 50, "precision": "float32"}, # speed
         #{"m": 8, "ef_construction": 100, "ef_search": 100, "precision": "float32"}, # less memory
         #{"m": 16, "ef_construction": 200, "ef_search": 20, "precision": "float32"},
         #{"m": 16, "ef_construction": 200, "ef_search": 40, "precision": "float32"},

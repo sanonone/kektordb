@@ -3,6 +3,7 @@ package engine
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -87,9 +88,17 @@ func (e *Engine) replayAOF() error {
 					case "METRIC":
 						idx.metric = distance.DistanceMetric(val)
 					case "M":
-						idx.m, _ = strconv.Atoi(val)
+						if m, err := strconv.Atoi(val); err == nil {
+							idx.m = m
+						} else {
+							idx.m = 16 // default value
+						}
 					case "EF_CONSTRUCTION":
-						idx.efConstruction, _ = strconv.Atoi(val)
+						if efC, err := strconv.Atoi(val); err == nil {
+							idx.efConstruction = efC
+						} else {
+							idx.efConstruction = 200 // default value
+						}
 					case "PRECISION":
 						idx.precision = distance.PrecisionType(val)
 					case "TEXT_LANGUAGE":
@@ -237,7 +246,13 @@ func (e *Engine) RewriteAOF() error {
 		vecStr := float32SliceToString(data.Vector)
 		var meta []byte
 		if len(data.Metadata) > 0 {
-			meta, _ = json.Marshal(data.Metadata)
+			var err error
+			meta, err = json.Marshal(data.Metadata)
+			if err != nil {
+				// Log warning, continue without metadata
+				fmt.Fprintf(os.Stderr, "Warning: failed to marshal metadata for %s during AOF rewrite: %v\n", data.ID, err)
+				meta = nil
+			}
 		}
 		cmd := persistence.FormatCommand("VADD", []byte(idxName), []byte(data.ID), []byte(vecStr), meta)
 		f.WriteString(cmd)

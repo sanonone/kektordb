@@ -16,14 +16,15 @@ package engine
 
 import (
 	"fmt"
-	"github.com/sanonone/kektordb/pkg/core"
-	"github.com/sanonone/kektordb/pkg/persistence"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sanonone/kektordb/pkg/core"
+	"github.com/sanonone/kektordb/pkg/persistence"
 )
 
 // Options configures the behavior of the Engine, including persistence paths
@@ -205,12 +206,17 @@ func (e *Engine) checkMaintenance() {
 	// Auto-Save Policy
 	if e.opts.AutoSaveThreshold > 0 && e.opts.AutoSaveInterval > 0 {
 		if dirty >= e.opts.AutoSaveThreshold && time.Since(e.lastSaveTime) >= e.opts.AutoSaveInterval {
-			// We ignore errors in background loop, but log them in a real app
-			_ = e.SaveSnapshot()
+			if err := e.SaveSnapshot(); err != nil {
+				// Log error but continue (background task)
+				// In production, use proper logging framework
+				fmt.Fprintf(os.Stderr, "Background snapshot failed: %v\n", err)
+			}
 		}
 	}
 
-	_ = e.AOF.Flush() // Ensures that data in the AOF buffer goes to the OS periodically
+	if err := e.AOF.Flush(); err != nil {
+		fmt.Fprintf(os.Stderr, "Background AOF flush failed: %v\n", err)
+	}
 
 	// AOF Rewrite Policy
 	if e.opts.AofRewritePercentage > 0 {
@@ -224,7 +230,9 @@ func (e *Engine) checkMaintenance() {
 			}
 
 			if e.aofBaseSize > 0 && currentSize > threshold {
-				_ = e.RewriteAOF()
+				if err := e.RewriteAOF(); err != nil {
+					fmt.Fprintf(os.Stderr, "Background AOF rewrite failed: %v\n", err)
+				}
 			}
 		}
 	}
