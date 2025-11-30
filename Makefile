@@ -1,27 +1,26 @@
-# --- Variabili di Configurazione ---
+# --- Configuration Variables ---
 VERSION ?= $(shell git describe --tags --abbrev=0 || echo "v0.0.0")
 BINARY_NAME=kektordb
 RELEASE_DIR=release
 
-# --- Target Principali ---
+# --- Main Targets ---
 .PHONY: all test test-rust bench bench-rust clean release
 
-# Il target di default è un test veloce della build Go-pura
+# The default target is a quick test of the pure Go build
 all: test
 
-# Esegue la versione Go-pura
+# Runs the Go version
 run:
 	@echo "==> Running KektorDB (Go-pure implementation)..."
 	@go run ./cmd/kektordb/ $(ARGS)
 
-# Esegue la versione ottimizzata con Rust
+# Run the Rust-optimized version
 run-rust: build-rust-native
 	@echo "==> Running KektorDB (Rust CGO implementation)..."
-	# Impostiamo le variabili d'ambiente del linker qui
 	@CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/release" \
 	go run -tags rust ./cmd/kektordb/ $(ARGS)
 
-# --- Target di Test e Benchmark ---
+# --- Test Targets and Benchmarks ---
 test: generate-avo
 	@echo "==> Running Go tests (Go/AVO implementation)..."
 	@go test -short -v ./...
@@ -40,13 +39,13 @@ bench-rust: build-rust-native
 	@CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/release" \
 	go test -tags rust -bench=. ./...
 
-# --- Target di Build ---
-# Compila Rust per la piattaforma nativa corrente
+# --- Build Target ---
+# Build Rust for the current native platform
 build-rust-native:
 	@echo "==> Building Rust compute library (native)..."
 	@cd native/compute && cargo build --release
 
-# Compila Rust per un target specifico (usato dalla release)
+# Compile Rust for a specific target (used by the release)
 build-rust-target:
 	@echo "==> Building Rust compute library for target: $(TARGET)..."
 	@cd native/compute && cargo build --release --target=$(TARGET)
@@ -56,31 +55,11 @@ generate-avo:
 	@go generate ./pkg/core/distance/avo_gen.go
 
 
-# --- Logica Condizionale per LDFLAGS (al livello corretto) ---
-# Questa sezione viene valutata da 'make' prima di eseguire qualsiasi regola.
-
-# Flag di base per linkare la nostra libreria Rust
-#LDFLAGS_BASE = -L$(CURDIR)/native/compute/target/$(TARGET)/release -lkektordb_compute
-
-# Definisci i flag extra in base a GOOS
-#ifeq ($(GOOS),linux)
-#	LDFLAGS_EXTRA = -ldl -lm -lgcc_s -lc -lpthread
-#else ifeq ($(GOOS),darwin)
-#	LDFLAGS_EXTRA = -ldl -lm
-#else ifeq ($(GOOS),windows)
-    # --- CORREZIONE QUI: Aggiungi le librerie di sistema di Windows ---
-#	LDFLAGS_EXTRA = -lws2_32 -luserenv -ladvapi32 -lbcrypt -lntdll 
-#else
-	# Windows non ha bisogno di flag extra
-#	LDFLAGS_EXTRA =
-#endif
-
-# --- Target di Release ---
-# Questo è il comando principale che verrà eseguito da GitHub Actions
+# --- Release Target ---
+# This is the main command that will be executed by GitHub Actions
 release: clean
 	@echo "Building releases for all targets..."
 	@mkdir -p $(RELEASE_DIR)
-	# Per linux, ora passiamo un flag speciale al linker
 	# Linux AMD64
 	@make release-build TARGET=x86_64-unknown-linux-gnu ZIG_TARGET=x86_64-linux-gnu \
 	GOOS=linux GOARCH=amd64 \
@@ -113,7 +92,7 @@ release: clean
 
 
 
-# Build ottimizzata con Rust (per Linux e Windows)
+# Rust-optimized build (for Linux and Windows)
 release-build: build-rust-target
 	@echo "==> Cross-compiling KektorDB for $(GOOS)/$(GOARCH)..."
 	@echo "Using Linker Flags: $(CGO_LDFLAGS)"
@@ -125,7 +104,7 @@ release-build: build-rust-target
 	go build -tags "rust netgo" -ldflags="-s -w" -o "$(RELEASE_DIR)/$(BINARY_NAME)-$(GOOS)-$(GOARCH)$(EXT)" ./cmd/kektordb
 
 
-# Build pura Go (per macOS)
+# Pure Go build (for macOS)
 release-build-pure:
 	@echo "==> Compiling pure-Go KektorDB for $(GOOS)/$(GOARCH)..."
 	@CGO_ENABLED=0 \
@@ -134,7 +113,7 @@ release-build-pure:
 
 
 
-# --- Target di Pulizia ---
+# --- Cleaning ---
 clean:
 	@echo "==> Aggressively cleaning all caches and artifacts..."
 	@rm -f pkg/core/distance/distance_avo_amd64.s pkg/core/distance/stubs_avo_amd64.go
