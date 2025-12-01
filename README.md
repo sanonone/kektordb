@@ -28,17 +28,17 @@ KektorDB runs as a standalone server or can be imported as an embeddable Go libr
     *   **BM25 Ranking:** Text results are ranked using the standard BM25 algorithm.
     *   **Score Fusion:** Combines vector and text scores via a configurable `alpha` parameter.
 *   **Automatic Synchronization (Vectorizer):** A background service that watches data sources (filesystem), generates embeddings via external APIs (e.g., Ollama), and updates the index automatically.
-*   **Metadata Filtering:** Support for pre-filtering on metadata using equality, range (`price<100`), and boolean logic (`AND`/`OR`). *(Tolto "High-performance")*
+*   **Metadata Filtering:** Support for pre-filtering on metadata using equality, range (`price<100`), and boolean logic (`AND`/`OR`). 
 *   **Vector Compression:**
     *   **Float16:** Reduces Euclidean index size by **50%**.
     *   **Int8:** Quantizes Cosine indexes by **75%**.
 *   **API:**
-    *   A JSON REST API supporting batch operations and async task management. *(Tolto "Clean")*
+    *   A JSON REST API supporting batch operations and async task management. 
     *   Official clients for **Python** and **Go**.
-*   **Persistence:** A hybrid **AOF + Snapshot** system ensures durability across restarts. *(Tolto "near-instantaneous", lasciamo che lo scoprano)*
+*   **Persistence:** A hybrid **AOF + Snapshot** system ensures durability across restarts. 
 *   **Dual Compute Engine:**
     *   **Standard Build:** Uses pure Go with `gonum` assembly for portability.
-    *   **Performance Build:** Optional (`-tags rust`) build that links a Rust library via CGO to leverage specific SIMD instructions. *(Tolto "highly optimized", meglio "specific SIMD instructions")*
+    *   **Performance Build:** Optional (`-tags rust`) build that links a Rust library via CGO to leverage specific SIMD instructions. 
 
 ---
 
