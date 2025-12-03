@@ -1166,14 +1166,6 @@ func (h *Index) selectNeighbors(candidates []types.Candidate, m int) []types.Can
 	return results
 }
 
-// min is a helper function for the minimum of two integers.
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // --- Helper ---
 
 // growNodes ensures the internal nodes slice has enough capacity for the given ID.
