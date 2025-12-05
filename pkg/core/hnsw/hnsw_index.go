@@ -10,9 +10,6 @@ package hnsw
 import (
 	// "container/heap"
 	"fmt"
-	"github.com/sanonone/kektordb/pkg/core/distance"
-	"github.com/sanonone/kektordb/pkg/core/types"
-	"github.com/x448/float16"
 	"log"
 	"math"
 	"math/rand"
@@ -21,6 +18,10 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/types"
+	"github.com/x448/float16"
 )
 
 // LinkRequest represents a single atomic connection modification operation to be
@@ -268,7 +269,7 @@ func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]stru
 		return []types.Candidate{}, nil
 	}
 
-	// Dimensioniamo su efSearch perché è il massimo che può tornare searchLayerUnlocked
+	// Size based on efSearch because it's the maximum that searchLayerUnlocked can return
 	scratchOut := make([]types.Candidate, 0, efSearch)
 
 	// --- PHASE 0: Query Preparation ---
@@ -346,8 +347,8 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	h.metaMu.Lock()
 	defer h.metaMu.Unlock()
 
-	// Buffer per l'output di searchLayerUnlocked.
-	// Deve essere grande almeno quanto efConstruction
+	// Buffer for searchLayerUnlocked output.
+	// Must be at least as large as efConstruction
 	scratchOut := make([]types.Candidate, 0, h.efConstruction)
 
 	if _, exists := h.externalToInternalID[id]; exists {
@@ -491,20 +492,20 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 		return nil
 	}
 
-	// Se il grafo è troppo piccolo, l'inserimento parallelo non funziona bene
-	// perché i nodi non si "vedono" a vicenda durante la ricerca dei vicini.
-	// Dobbiamo popolare lo scheletro iniziale del grafo sequenzialmente.
+	// If the graph is too small, parallel insertion doesn't work well
+	// because nodes don't "see" each other during neighbor search.
+	// We need to populate the initial skeleton of the graph sequentially.
 
 	h.metaMu.RLock()
 	currentSize := h.nodeCounter.Load()
 	h.metaMu.RUnlock()
 
-	// Usiamo efConstruction come soglia euristica.
-	// Finché non abbiamo almeno 'efConstruction' nodi, usiamo l'Add sequenziale standard.
-	// Questo garantisce che i primi nodi siano ben connessi.
+	// We use efConstruction as a heuristic threshold.
+	// Until we have at least 'efConstruction' nodes, we use standard sequential Add.
+	// This ensures that the first nodes are well connected.
 	if currentSize < uint64(h.efConstruction) {
-		// Log per debug (opzionale)
-		// fmt.Println("Grafo piccolo/vuoto: switch a inserimento sequenziale per boost recall")
+		// Debug log (optional)
+		// fmt.Println("Small/empty graph: switching to sequential insertion to boost recall")
 		for _, obj := range objects {
 			_, err := h.Add(obj.Id, obj.Vector)
 			if err != nil {
@@ -515,33 +516,33 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 	}
 
 	// =========================================================================
-	// FASE 0: PREPARAZIONE GLOBALE (Metadata & Allocazione)
+	// PHASE 0: GLOBAL PREPARATION (Metadata & Allocation)
 	// =========================================================================
-	// Qui prendiamo il lock globale per breve tempo per riservare gli ID
-	// e allocare lo spazio. Nessun calcolo pesante qui.
+	// Here we take the global lock briefly to reserve IDs
+	// and allocate space. No heavy computation here.
 
 	h.metaMu.Lock()
 
-	// 1. Riserviamo un range di ID atomici
+	// 1. Reserve a range of atomic IDs
 	startID := h.nodeCounter.Add(uint64(numVectors)) - uint64(numVectors)
 	lastID := uint32(startID + uint64(numVectors) - 1)
 
-	// 2. Allocazione memoria per i nodi
+	// 2. Memory allocation for nodes
 	h.growNodes(lastID)
 
-	// 3. Creazione e popolamento dei nodi (Inserimento Dati)
+	// 3. Node creation and population (Data Insertion)
 	newNodes := make([]*Node, numVectors)
 
 	for i, obj := range objects {
 		internalID := uint32(startID + uint64(i))
 
-		// Check duplicati ID esterni
+		// Check for duplicate external IDs
 		if _, exists := h.externalToInternalID[obj.Id]; exists {
 			h.metaMu.Unlock()
 			return fmt.Errorf("ID '%s' already exists", obj.Id)
 		}
 
-		// -- Logica di Normalizzazione/Quantizzazione (Copinta dal tuo codice) --
+		// -- Normalization/Quantization Logic --
 		if h.metric == distance.Cosine && h.precision == distance.Float32 {
 			normalize(obj.Vector)
 		}
@@ -580,38 +581,38 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 			node.VectorI8 = storedVector.([]int8)
 		}
 
-		// Assegnazione livello casuale
+		// Random level assignment
 		level := h.randomLevel()
 		node.Connections = make([][]uint32, level+1)
 
-		// Salvataggio nello slice globale e mappature
+		// Save to global slice and mappings
 		newNodes[i] = node
 		h.nodes[internalID] = node
 		h.externalToInternalID[node.Id] = internalID
 		h.internalToExternalID[internalID] = node.Id
 	}
 
-	// Se è il primo inserimento assoluto, impostiamo entrypoint
+	// If this is the very first insertion, set the entrypoint
 	if h.maxLevel == -1 {
 		h.entrypointID = newNodes[0].InternalID
-		h.maxLevel = 0 // Sarà aggiornato alla fine se necessario
+		h.maxLevel = 0 // Will be updated at the end if necessary
 	}
 
-	// Rilasciamo il lock globale. Ora i nodi esistono in memoria e possiamo leggerli.
+	// Release the global lock. Now the nodes exist in memory and we can read them.
 	h.metaMu.Unlock()
 
 	// =========================================================================
-	// FASE 1: CALCOLO PARALLELO DEI VICINI (CPU Bound)
+	// PHASE 1: PARALLEL NEIGHBOR CALCULATION (CPU Bound)
 	// =========================================================================
-	// Ogni worker calcola i vicini per il suo sottoinsieme di nodi.
-	// NON usiamo canali. Ogni worker scrive su una slice locale.
+	// Each worker calculates neighbors for its subset of nodes.
+	// We DON'T use channels. Each worker writes to a local slice.
 
 	numWorkers := runtime.NumCPU()
 	if numVectors < numWorkers {
 		numWorkers = numVectors
 	}
 
-	// Output dei worker: slice di slice di richieste
+	// Worker output: slice of slices of requests
 	workerResults := make([][]LinkRequest, numWorkers)
 
 	var wg sync.WaitGroup
@@ -632,11 +633,11 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 		go func(wID int, nodesSubset []*Node) {
 			defer wg.Done()
 
-			// Pre-allocazione euristica per evitare re-allocazioni
+			// Heuristic pre-allocation to avoid re-allocations
 			localReqs := make([]LinkRequest, 0, len(nodesSubset)*h.maxLevel*2)
 			scratchBuffer := make([]types.Candidate, 0, h.efConstruction+50)
 
-			// Leggiamo entrypoint attuale (con RLock rapido o atomico se possibile, qui usiamo RLock su meta)
+			// Read current entrypoint (with fast RLock or atomic if possible, here we use RLock on meta)
 			h.metaMu.RLock()
 			entryPointID := h.entrypointID
 			currentMaxLevel := h.maxLevel
@@ -644,7 +645,7 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 			h.metaMu.RUnlock()
 
 			for _, node := range nodesSubset {
-				// Preparazione oggetto query
+				// Query object preparation
 				var queryObj any
 				switch h.precision {
 				case distance.Float32:
@@ -658,7 +659,7 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 				nodeLevel := len(node.Connections) - 1
 				currEp := entryPointID
 
-				// 1. Zoom-in dai livelli alti (nessun salvataggio vicini, solo avvicinamento)
+				// 1. Zoom-in from higher levels (no neighbor saving, just approach)
 				for l := currentMaxLevel; l > nodeLevel; l-- {
 					nearest, err := h.searchLayerUnlocked(queryObj, currEp, 1, l, nil, 1, maxID, scratchBuffer)
 					if err == nil && len(nearest) > 0 {
@@ -666,15 +667,15 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 					}
 				}
 
-				// 2. Inserimento nei livelli del nodo
+				// 2. Insertion at node levels
 				for l := min(nodeLevel, currentMaxLevel); l >= 0; l-- {
-					// Cerchiamo efConstruction candidati
+					// Search for efConstruction candidates
 					candidates, err := h.searchLayerUnlocked(queryObj, currEp, h.efConstruction, l, nil, h.efConstruction, maxID, scratchBuffer)
 					if err != nil || len(candidates) == 0 {
 						continue
 					}
 
-					// Salviamo i risultati nella slice locale
+					// Save results to local slice
 					neighborIDs := make([]uint32, len(candidates))
 					for k, cand := range candidates {
 						neighborIDs[k] = cand.Id
@@ -686,7 +687,7 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 						NewNeighbors: neighborIDs,
 					})
 
-					// Aggiorniamo entrypoint per il livello sotto
+					// Update entrypoint for the level below
 					currEp = candidates[0].Id
 				}
 			}
@@ -696,15 +697,15 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 	wg.Wait()
 
 	// =========================================================================
-	// FASE 2: PARTIZIONAMENTO (SHUFFLE) - Memory Bound (Veloce)
+	// PHASE 2: PARTITIONING (SHUFFLE) - Memory Bound (Fast)
 	// =========================================================================
-	// Organizziamo le richieste in "secchi" basati sullo Shard ID.
-	// Generiamo anche i link inversi qui.
+	// We organize requests into "buckets" based on Shard ID.
+	// We also generate reverse links here.
 
-	// NumShards è la costante 128 definita nel tuo package
+	// NumShards is the constant 128 defined in the package
 	shardedReqs := make([][]LinkRequest, NumShards)
 
-	// Stima allocazione per evitare resize
+	// Estimate allocation to avoid resize
 	estReqs := (numVectors * h.maxLevel * 2) / NumShards
 	for i := range shardedReqs {
 		shardedReqs[i] = make([]LinkRequest, 0, estReqs)
@@ -712,32 +713,32 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 
 	for _, reqs := range workerResults {
 		for _, req := range reqs {
-			// A. Link Diretto: Il nuovo nodo si connette ai vicini trovati
-			// (Questo serve per popolare Connections del nuovo nodo)
+			// A. Direct Link: The new node connects to found neighbors
+			// (This is used to populate the new node's Connections)
 			shardIdx := req.NodeID & (NumShards - 1)
 			shardedReqs[shardIdx] = append(shardedReqs[shardIdx], req)
 
-			// B. Link Inverso: I vicini trovati devono (forse) connettersi al nuovo nodo
-			// HNSW è un grafo bidirezionale approssimato.
+			// B. Reverse Link: Found neighbors should (possibly) connect to the new node
+			// HNSW is an approximate bidirectional graph.
 			for _, neighborID := range req.NewNeighbors {
 				revShardIdx := neighborID & (NumShards - 1)
 				shardedReqs[revShardIdx] = append(shardedReqs[revShardIdx], LinkRequest{
 					NodeID:       neighborID,
 					Level:        req.Level,
-					NewNeighbors: []uint32{req.NodeID}, // Solo 1 vicino: il nodo nuovo
+					NewNeighbors: []uint32{req.NodeID}, // Only 1 neighbor: the new node
 				})
 			}
 		}
 	}
 
 	// =========================================================================
-	// FASE 3: COMMIT PARALLELO PER SHARD (IO/Lock Bound)
+	// PHASE 3: PARALLEL COMMIT PER SHARD (IO/Lock Bound)
 	// =========================================================================
-	// Processiamo ogni bucket indipendentemente. Nessuna contesa sui lock.
+	// We process each bucket independently. No lock contention.
 
 	var wgCommit sync.WaitGroup
 
-	// Semaforo per non sovraccaricare lo scheduler se NumShards > CPU
+	// Semaphore to avoid overloading the scheduler if NumShards > CPU
 	sem := make(chan struct{}, runtime.NumCPU())
 
 	for i := 0; i < NumShards; i++ {
@@ -753,11 +754,11 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 			defer wgCommit.Done()
 			defer func() { <-sem }()
 
-			// LOCK FINO: Blocchiamo solo questo frammento di DB
+			// FINE-GRAINED LOCK: Lock only this DB fragment
 			h.shardsMu[shardID].Lock()
 			defer h.shardsMu[shardID].Unlock()
 
-			// Ordiniamo per NodeID per raggruppare gli aggiornamenti dello stesso nodo
+			// Sort by NodeID to group updates for the same node
 			slices.SortFunc(requests, func(a, b LinkRequest) int {
 				if a.NodeID < b.NodeID {
 					return -1
@@ -768,11 +769,11 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 				return 0
 			})
 
-			// --- BUFFER RIUTILIZZABILI PER QUESTO WORKER ---
+			// --- REUSABLE BUFFERS FOR THIS WORKER ---
 			candidatesScratch := make([]types.Candidate, 0, h.m*4)
 			uniqueIDs := make([]uint32, 0, h.m*4)
 
-			// Processiamo un nodo alla volta aggregando tutte le sue richieste
+			// Process one node at a time, aggregating all its requests
 			for idx := 0; idx < len(requests); {
 				currentNodeID := requests[idx].NodeID
 				node := h.nodes[currentNodeID]
@@ -782,13 +783,13 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 					continue
 				}
 
-				// Troviamo la fine del blocco per questo nodo
+				// Find the end of the block for this node
 				endIdx := idx
 				for endIdx < len(requests) && requests[endIdx].NodeID == currentNodeID {
 					endIdx++
 				}
 
-				// Troviamo il max level coinvolto
+				// Find the max level involved
 				maxLvl := -1
 				if len(node.Connections) > 0 {
 					maxLvl = len(node.Connections) - 1
@@ -806,12 +807,12 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 
 					hasUpdates := false
 
-					// 2. Raccogli vicini attuali
+					// 2. Collect current neighbors
 					if lvl < len(node.Connections) {
 						uniqueIDs = append(uniqueIDs, node.Connections[lvl]...)
 					}
 
-					// 3. Raccogli nuovi candidati dalle richieste (Scansione lineare è OK qui, sono poche req)
+					// 3. Collect new candidates from requests (Linear scan is OK here, few reqs)
 					for k := idx; k < endIdx; k++ {
 						if requests[k].Level == lvl {
 							uniqueIDs = append(uniqueIDs, requests[k].NewNeighbors...)
@@ -820,18 +821,18 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 					}
 
 					if !hasUpdates && lvl < len(node.Connections) {
-						continue // Nessun cambiamento per questo livello
+						continue // No changes for this level
 					}
 					if len(uniqueIDs) == 0 {
 						continue
 					}
 
-					// 4. Deduplica e Rimuovi Self-Loop (Senza Mappe!)
-					// Sort uint32 è velocissimo
-					// Nota: Se hai un helper sortUint32, usalo. Altrimenti slice
+					// 4. Deduplicate and Remove Self-Loop (Without Maps!)
+					// Sorting uint32 is very fast
+					// Note: If you have a sortUint32 helper, use it. Otherwise slice
 					slices.Sort(uniqueIDs)
 
-					// Dedupe in-place
+					// Deduplicate in-place
 					uniqCount := 0
 					if len(uniqueIDs) > 0 {
 						// Skip self-loop if present
@@ -841,7 +842,7 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 						}
 
 						if readHead < len(uniqueIDs) {
-							uniqueIDs[0] = uniqueIDs[readHead] // Move first valid to pos 0
+							uniqueIDs[0] = uniqueIDs[readHead] // Move first valid element to position 0
 							uniqCount = 1
 							for r := readHead + 1; r < len(uniqueIDs); r++ {
 								val := uniqueIDs[r]
@@ -852,7 +853,7 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 							}
 						}
 					}
-					// Ora uniqueIDs[:uniqCount] è la lista pulita di ID.
+					// Now uniqueIDs[:uniqCount] is the clean list of IDs.
 
 					// 5. Pruning Logic
 					maxM := h.m
@@ -861,21 +862,21 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 					}
 
 					if uniqCount <= maxM {
-						// Fast path: copia diretta
+						// Fast path: direct copy
 						finalList := make([]uint32, uniqCount)
 						copy(finalList, uniqueIDs[:uniqCount])
 
 						// Resize node connections if needed
 						if lvl >= len(node.Connections) {
-							// grow connections slice
+							// Grow connections slice
 							newConns := make([][]uint32, lvl+1)
 							copy(newConns, node.Connections)
 							node.Connections = newConns
 						}
 						node.Connections[lvl] = finalList
 					} else {
-						// Slow path: Calcola distanze
-						// Riempi candidatesScratch
+						// Slow path: Calculate distances
+						// Fill candidatesScratch
 						for i := 0; i < uniqCount; i++ {
 							id := uniqueIDs[i]
 							targetNode := h.nodes[id]
@@ -884,7 +885,7 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 						}
 
 						slices.SortFunc(candidatesScratch, func(a, b types.Candidate) int {
-							// Confronto esplicito per float64
+							// Explicit comparison for float64
 							if a.Distance < b.Distance {
 								return -1
 							}
@@ -917,7 +918,7 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 	wgCommit.Wait()
 
 	// =========================================================================
-	// FASE 4: AGGIORNAMENTO GLOBALE ENTRYPOINT
+	// PHASE 4: GLOBAL ENTRYPOINT UPDATE
 	// =========================================================================
 
 	h.metaMu.Lock()
@@ -1344,8 +1345,8 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 	h.metaMu.RLock()
 	defer h.metaMu.RUnlock()
 
-	// Buffer per l'output di searchLayerUnlocked.
-	// Deve essere grande almeno quanto efConstruction
+	// Buffer for searchLayerUnlocked output.
+	// Must be at least as large as efConstruction
 	scratchOut := make([]types.Candidate, 0, h.efConstruction)
 
 	return h.searchLayerUnlocked(query, entrypointID, k, level, allowList, efSearch, uint32(h.nodeCounter.Load()), scratchOut)
@@ -1433,7 +1434,7 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 
 			/*
 
-				// Scaling logic inline per evitare call overhead
+				// Inline scaling logic to avoid call overhead
 				var norm1, norm2 int64
 				for i := range q {
 					norm1 += int64(q[i]) * int64(q[i])
@@ -1571,7 +1572,7 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 	if cap(out) < count {
 		out = make([]types.Candidate, count)
 	}
-	out = out[:count] // Resize logico
+	out = out[:count] // Logical resize
 
 	for i := count - 1; i >= 0; i-- {
 		out[i] = results.Pop()
@@ -1602,7 +1603,7 @@ func (h *Index) selectNeighbors(candidates []types.Candidate, m int) []types.Can
 	}
 
 	results := make([]types.Candidate, 0, m)
-	discarded := make([]types.Candidate, 0, m) // Teniamo traccia degli scartati
+	discarded := make([]types.Candidate, 0, m) // Keep track of discarded candidates
 	worklist := candidates
 
 	for len(worklist) > 0 && len(results) < m {
@@ -1685,7 +1686,7 @@ func (h *Index) growNodes(id uint32) {
 		copy(newNodes, h.nodes)
 
 		// The "new" part of the slice is nil
-		// Update main slice but set correct length to include new ID.
+		// Update main slice but set correct length to include new ID
 		h.nodes = newNodes
 
 		if h.precision == distance.Int8 {
@@ -1695,7 +1696,7 @@ func (h *Index) growNodes(id uint32) {
 		}
 	}
 
-	// Extend logical length (len) if necessary to cover id
+	// Extend logical length (len) if necessary to cover the ID
 	if uint32(len(h.nodes)) <= id {
 		h.nodes = h.nodes[:id+1]
 
@@ -1959,7 +1960,7 @@ func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uin
 // LoadSnapshotData restores the internal state of the index from snapshot data.
 // It expects the index to be empty and the caller to handle locking.
 func (h *Index) LoadSnapshotData(
-	nodesMap map[uint32]*Node, // Rinominato 'nodes' in 'nodesMap' per chiarezza
+	nodesMap map[uint32]*Node, // Renamed 'nodes' to 'nodesMap' for clarity
 	extToInt map[string]uint32,
 	counter uint32,
 	entrypoint uint32,
@@ -1968,26 +1969,26 @@ func (h *Index) LoadSnapshotData(
 	norms []float32,
 ) error {
 	// 1. Reconstruct h.nodes slice from input map.
-	// Capacity must cover up to max ID (counter).
+	// Capacity must cover up to the maximum ID (counter)
 	capacity := counter + 1
 	h.nodes = make([]*Node, capacity)
 
 	for id, node := range nodesMap {
 		if id >= uint32(len(h.nodes)) {
-			// Sanity check. If snapshot file is consistent, 'counter' should be >= any ID in map.
+			// Sanity check. If snapshot file is consistent, 'counter' should be >= any ID in the map
 			return fmt.Errorf("node ID %d found in snapshot is larger than the recorded max counter %d", id, counter)
 		}
 		h.nodes[id] = node
 	}
 
-	// 2. Restore other state fields.
+	// 2. Restore other state fields
 	h.externalToInternalID = extToInt
 	h.nodeCounter.Store(uint64(counter))
 	h.entrypointID = entrypoint
 	h.maxLevel = maxLevel
 	h.quantizer = quantizer
 
-	// 3. Basic consistency checks.
+	// 3. Basic consistency checks
 	if h.nodes == nil {
 		// If map was empty, init empty slice with base capacity
 		h.nodes = make([]*Node, 0, 1000)
@@ -1996,17 +1997,17 @@ func (h *Index) LoadSnapshotData(
 		h.externalToInternalID = make(map[string]uint32)
 	}
 
-	// 4. Reconstruct inverse map (Internal -> External).
+	// 4. Reconstruct inverse map (Internal -> External)
 	h.internalToExternalID = make(map[uint32]string)
 
-	// Iterate over newly populated h.nodes slice.
-	// Handle "holes" (nil) in the slice.
+	// Iterate over newly populated h.nodes slice
+	// Handle "holes" (nil) in the slice
 	for i, node := range h.nodes {
 		if node == nil {
 			continue // Skip empty slots
 		}
 
-		internalID := uint32(i) // Index is internal ID
+		internalID := uint32(i) // Index is the internal ID
 
 		if node.Id == "" {
 			return fmt.Errorf("node with internal ID %d has an empty external ID", internalID)
