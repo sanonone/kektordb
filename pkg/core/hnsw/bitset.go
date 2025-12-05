@@ -5,14 +5,14 @@ type BitSet struct {
 }
 
 func NewBitSet(initialCapacity uint32) *BitSet {
-	numBuckets := (initialCapacity / 64) + 1
+	numBuckets := (initialCapacity >> 6) + 1 // >> 6 == / 64
 	return &BitSet{
 		buckets: make([]uint64, numBuckets),
 	}
 }
 
 func (bs *BitSet) grow(n uint32) {
-	neededBuckets := (n / 64) + 1
+	neededBuckets := (n >> 6) + 1 // >> 6 == / 64
 	if uint32(len(bs.buckets)) < neededBuckets {
 		newBuckets := make([]uint64, neededBuckets)
 		copy(newBuckets, bs.buckets)
@@ -21,28 +21,24 @@ func (bs *BitSet) grow(n uint32) {
 }
 
 func (bs *BitSet) Add(n uint32) {
-	bucketIndex := n / 64
+	bucketIndex := n >> 6 // >> 6 == / 64
 
-	needsGrow := bucketIndex >= uint32(len(bs.buckets))
-
-	if needsGrow {
-		if bucketIndex >= uint32(len(bs.buckets)) {
-			bs.grow(n)
-		}
+	if bucketIndex >= uint32(len(bs.buckets)) {
+		bs.grow(n)
 	}
 
-	bitIndex := n % 64
-	bs.buckets[bucketIndex] |= (1 << bitIndex)
+	// Use bitwise AND: n & 63 == n % 64
+	bs.buckets[bucketIndex] |= (1 << (n & 63))
 }
 
 func (bs *BitSet) Has(n uint32) bool {
-	bucketIndex := n / 64
+	bucketIndex := n >> 6 // Equivalent to n / 64, but faster
 
 	if bucketIndex >= uint32(len(bs.buckets)) {
 		return false
 	}
-	bitIndex := n % 64
-	return (bs.buckets[bucketIndex] & (1 << bitIndex)) != 0
+	// Use bitwise AND instead of modulo: n & 63 == n % 64
+	return (bs.buckets[bucketIndex] & (1 << (n & 63))) != 0
 }
 
 func (bs *BitSet) Clear() {
@@ -52,13 +48,9 @@ func (bs *BitSet) Clear() {
 }
 
 func (bs *BitSet) EnsureCapacity(maxVal uint32) {
-	neededBuckets := (maxVal / 64) + 1
+	neededBuckets := (maxVal >> 6) + 1 // >> 6 == / 64
 
-	currentLen := uint32(len(bs.buckets))
-
-	if currentLen < neededBuckets {
-		if uint32(len(bs.buckets)) < neededBuckets {
-			bs.grow(maxVal)
-		}
+	if uint32(len(bs.buckets)) < neededBuckets {
+		bs.grow(maxVal)
 	}
 }

@@ -15,7 +15,6 @@ import (
 	"math/rand"
 	"runtime"
 	"slices"
-	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -120,7 +119,9 @@ func New(m int, efConstruction int, metric distance.DistanceMetric, precision di
 
 	h.visitedPool = sync.Pool{
 		New: func() any {
-			return NewBitSet(256)
+			// Pre-allocate larger BitSet to avoid grow() during batch operations
+			// 65536 covers most use cases without excessive memory
+			return NewBitSet(20480)
 		},
 	}
 
@@ -1243,11 +1244,7 @@ func (h *Index) commitLinks(linkQueue <-chan LinkRequest, newNodes []*Node) {
 						allCandidates = append(allCandidates, types.Candidate{Id: id, Distance: dist})
 					}
 
-					// Sort by distance
-					sort.Slice(allCandidates, func(i, j int) bool {
-						return allCandidates[i].Distance < allCandidates[j].Distance
-					})
-
+					// Sort by distance (using slices.SortFunc - faster than sort.Slice)
 					slices.SortFunc(allCandidates, func(a, b types.Candidate) int {
 						// Confronto esplicito per float64
 						if a.Distance < b.Distance {
