@@ -387,7 +387,7 @@ func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 	for _, item := range items {
 		if len(item.Metadata) > 0 {
 			id := hnswIdx.GetInternalID(item.Id)
-			e.DB.AddMetadata(indexName, id, item.Metadata) // Use thread-safe version for concurrent vectorizer workers
+			e.DB.AddMetadataUnlocked(indexName, id, item.Metadata) // Use thread-safe version for concurrent vectorizer workers
 		}
 
 		vecStr := float32SliceToString(item.Vector)
