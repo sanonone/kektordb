@@ -2,21 +2,22 @@ package hnsw
 
 import (
 	"fmt"
-	"github.com/sanonone/kektordb/pkg/core/distance"
-	"github.com/sanonone/kektordb/pkg/core/types"
 	"math/rand"
 	"os"
 	"runtime/pprof"
 	"sync/atomic"
 	"testing"
+
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/types"
 )
 
-// generateTestObjects crea un set di dati di test con vettori casuali.
-// Viene usata sia per i benchmark che per i test di profiling per garantire
-// coerenza e ridurre la duplicazione del codice.
+// generateTestObjects creates a test data set with random vectors.
+// It is used both for benchmarks and profiling tests to ensure
+// consistency and reduce code duplication.
 func generateTestObjects(numVectors int, vectorDim int) []types.BatchObject {
-	// Usiamo un seme fisso per rendere i test deterministici, se necessario.
-	// Per i benchmark di performance pura, un seme variabile va bene.
+	// We use a fixed seed to make tests deterministic, if needed.
+	// For pure performance benchmarks, a variable seed is fine.
 	rng := rand.New(rand.NewSource(42))
 
 	objects := make([]types.BatchObject, numVectors)
@@ -26,7 +27,7 @@ func generateTestObjects(numVectors int, vectorDim int) []types.BatchObject {
 			vec[j] = rng.Float32()
 		}
 		objects[i] = types.BatchObject{
-			// L'allocazione della stringa avviene qui, una sola volta per tutti i test.
+			// String allocation happens here, once for all tests.
 			Id:     fmt.Sprintf("vec-%d", i),
 			Vector: vec,
 		}
@@ -34,20 +35,20 @@ func generateTestObjects(numVectors int, vectorDim int) []types.BatchObject {
 	return objects
 }
 
-// BenchmarkConcurrentInserts misura le performance dell'inserimento di vettori
-// in parallelo. Questo è un test cruciale per identificare i colli di bottiglia
-// dovuti alla contesa sui lock in scenari multi-threaded.
+// BenchmarkConcurrentInserts measures the performance of vector insertion
+// in parallel. This is a crucial test to identify bottlenecks
+// due to lock contention in multi-threaded scenarios.
 func BenchmarkConcurrentInserts(b *testing.B) {
 	// --- Setup ---
-	// Prepariamo in anticipo un set di dati sufficientemente grande da non
-	// essere banale. La dimensione del vettore è comune (es. modelli MiniLM).
+	// We prepare in advance a data set large enough not to be
+	// trivial. The vector dimension is common (e.g., MiniLM models).
 	const (
-		numVectors = 10000 // Numero di vettori da inserire nel test
-		vectorDim  = 384   // Dimensione comune per embedding
+		numVectors = 10000 // Number of vectors to insert in the test
+		vectorDim  = 384   // Common dimension for embeddings
 	)
 
-	// Creiamo i vettori una sola volta, fuori dal ciclo di benchmark,
-	// per non misurare il costo della loro generazione.
+	// We create vectors only once, outside the benchmark loop,
+	// to avoid measuring the cost of their generation.
 	vectors := make([][]float32, numVectors)
 	for i := 0; i < numVectors; i++ {
 		vec := make([]float32, vectorDim)
@@ -59,25 +60,25 @@ func BenchmarkConcurrentInserts(b *testing.B) {
 
 	// --- Benchmark ---
 	b.Run("ConcurrentAdd", func(b *testing.B) {
-		// Creiamo un nuovo indice per ogni esecuzione del benchmark per partire
-		// da uno stato pulito.
+		// We create a new index for each benchmark run to start
+		// from a clean state.
 		idx, _ := New(16, 200, distance.Cosine, distance.Float32, "")
 
-		// Iniziamo a misurare il tempo solo da qui, dopo tutto il setup.
+		// We start measuring time only from here, after all the setup.
 		b.ResetTimer()
 
-		// Usiamo un contatore atomico per distribuire il lavoro (i vettori da inserire)
-		// tra le varie goroutine create da RunParallel. Questo evita la necessità
-		// di un lock per accedere alla slice dei vettori.
+		// We use an atomic counter to distribute work (vectors to insert)
+		// across the goroutines created by RunParallel. This avoids the need
+		// for a lock to access the vector slice.
 		var counter uint32
 
-		// Esegue il codice del body in parallelo su più goroutine.
+		// Runs the body code in parallel on multiple goroutines.
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				// Ottiene un indice univoco in modo atomico.
+				// Gets a unique index atomically.
 				currentIndex := atomic.AddUint32(&counter, 1) - 1
 
-				// Assicuriamoci di non andare oltre la nostra slice di vettori pre-generati.
+				// Make sure we don't go beyond our pre-generated vector slice.
 				if int(currentIndex) >= len(vectors) {
 					continue
 				}
@@ -85,28 +86,28 @@ func BenchmarkConcurrentInserts(b *testing.B) {
 				vectorID := fmt.Sprintf("vec-%d", currentIndex)
 				vector := vectors[currentIndex]
 
-				// Questa è l'operazione che stiamo misurando.
-				// Attualmente, si prevede che questa chiamata causi una forte contesa
-				// sul lock globale dell'indice.
+				// This is the operation we are measuring.
+				// Currently, this call is expected to cause significant contention
+				// on the global index lock.
 				_, err := idx.Add(vectorID, vector)
 				if err != nil {
-					b.Errorf("Errore durante l'inserimento concorrente: %v", err)
+					b.Errorf("Error during concurrent insertion: %v", err)
 				}
 			}
 		})
 	})
 }
 
-// --- SOSTITUIRE il test di profiling CON QUESTA VERSIONE ---
+// --- REPLACE the profiling test WITH THIS VERSION ---
 func TestLargeBatchInsertionForProfiling(t *testing.T) {
-	// --- Setup: la generazione dei dati avviene QUI, fuori dalla profilazione ---
+	// --- Setup: data generation happens HERE, outside of profiling ---
 	const (
 		totalVectors = 100000
 		vectorDim    = 100
 	)
 	objects := generateTestObjects(totalVectors, vectorDim)
 
-	// --- Inizio della profilazione ---
+	// --- Start of profiling ---
 	cpuFile, err := os.Create("cpu.pprof")
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +117,7 @@ func TestLargeBatchInsertionForProfiling(t *testing.T) {
 	}
 	defer pprof.StopCPUProfile()
 
-	// L'unica cosa che misuriamo è la creazione e l'inserimento.
+	// The only thing we measure is creation and insertion.
 	idx, _ := New(16, 200, distance.Cosine, distance.Float32, "")
 	err = idx.AddBatch(objects)
 	if err != nil {
@@ -134,30 +135,30 @@ func TestLargeBatchInsertionForProfiling(t *testing.T) {
 	}
 }
 
-// --- SOSTITUIRE il benchmark CON QUESTA VERSIONE ---
+// --- REPLACE the benchmark WITH THIS VERSION ---
 func BenchmarkConcurrentAddBatch(b *testing.B) {
 	// --- Setup Unico (fuori dal loop di benchmark) ---
 	const (
 		totalVectors = 100000
 		vectorDim    = 100
 	)
-	// I dati di test, incluse le stringhe ID, vengono generati una sola volta.
+	// Test data, including ID strings, is generated only once.
 	objects := generateTestObjects(totalVectors, vectorDim)
 
-	// --- Inizio del Benchmark ---
+	// --- Start of Benchmark ---
 	b.ReportAllocs()
 	b.ResetTimer()
 
 	for n := 0; n < b.N; n++ {
-		// Stoppiamo il timer solo per la creazione dell'indice pulito.
+		// Stop timer only for creating the clean index.
 		b.StopTimer()
 		idx, _ := New(16, 200, distance.Cosine, distance.Float32, "")
 		b.StartTimer()
 
-		// --- Operazione da Misurare ---
+		// --- Operation to Measure ---
 		err := idx.AddBatch(objects)
 		if err != nil {
-			b.Fatalf("AddBatch fallito: %v", err)
+			b.Fatalf("AddBatch failed: %v", err)
 		}
 	}
 }

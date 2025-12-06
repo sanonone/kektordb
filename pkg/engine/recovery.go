@@ -143,16 +143,16 @@ func (e *Engine) replayAOF() error {
 				idxName := string(cmd.Args[0])
 				cfgJSON := cmd.Args[1]
 
-				// Troviamo l'indice (deve essere stato creato da un VCREATE precedente nel log)
-				// Nota: stiamo lavorando sulla mappa temporanea 'indexes', non ancora sul DB core
+				// Find the index (must have been created by a previous VCREATE in the log)
+				// Note: we are working on the temporary 'indexes' map, not yet on the core DB
 				if idxState, ok := indexes[idxName]; ok {
-					// Poiché indexState è una struct temporanea per il replay,
-					// dobbiamo aggiungere un campo per salvare questa config e applicarla dopo.
-					// Oppure, applichiamola direttamente all'indice creato.
+					// Since indexState is a temporary struct for replay,
+					// we need to add a field to save this config and apply it later.
+					// Or, apply it directly to the created index.
 
-					// SOLUZIONE MIGLIORE PER ORA:
-					// Poiché la struct 'indexState' in recovery.go è semplice,
-					// aggiungiamo un campo 'maintenanceCfg' lì.
+					// BEST SOLUTION FOR NOW:
+					// Since the 'indexState' struct in recovery.go is simple,
+					// we add a 'maintenanceCfg' field there.
 					var cfg hnsw.AutoMaintenanceConfig
 					if json.Unmarshal(cfgJSON, &cfg) == nil {
 						idxState.maintenanceCfg = &cfg

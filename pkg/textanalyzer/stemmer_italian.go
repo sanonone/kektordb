@@ -5,19 +5,19 @@ import (
 	"unicode"
 )
 
-// ItalianStemmer è un analizzatore che tokenizza, filtra le stop words
-// e applica l'algoritmo di stemming Snowball per l'italiano.
+// ItalianStemmer is an analyzer that tokenizes, filters stop words
+// and applies the Snowball stemming algorithm for Italian.
 type ItalianStemmer struct{}
 
-// NewItalianStemmer crea un nuovo analizzatore per l'italiano.
+// NewItalianStemmer creates a new Italian analyzer.
 func NewItalianStemmer() *ItalianStemmer {
 	return &ItalianStemmer{}
 }
 
-// Analyze implementa l'interfaccia Analyzer.
+// Analyze implements the Analyzer interface.
 func (s *ItalianStemmer) Analyze(text string) []string {
 	tokens := Tokenize(text)
-	tokens = FilterItalianStopWords(tokens) // Usa il filtro corretto per le stop words italiane
+	tokens = FilterItalianStopWords(tokens) // Use the correct filter for Italian stop words
 	stemmedTokens := make([]string, len(tokens))
 	for i, token := range tokens {
 		stemmedTokens[i] = stemItalian(token)
@@ -25,9 +25,9 @@ func (s *ItalianStemmer) Analyze(text string) []string {
 	return stemmedTokens
 }
 
-// --- Algoritmo di Stemming Italiano (Implementazione Corretta) ---
+// --- Italian Stemming Algorithm (Correct Implementation) ---
 
-// isItalianVowel definisce le vocali italiane (senza accenti).
+// isItalianVowel defines Italian vowels (without accents).
 func isItalianVowel(r rune) bool {
 	switch r {
 	case 'a', 'e', 'i', 'o', 'u':
@@ -36,7 +36,7 @@ func isItalianVowel(r rune) bool {
 	return false
 }
 
-// getItalianRegions calcola le regioni R1, R2 e RV, fondamentali per l'algoritmo.
+// getItalianRegions calculates the R1, R2 and RV regions, fundamental for the algorithm.
 func getItalianRegions(runes []rune) (r1, r2, rv int) {
 	r1 = len(runes)
 	r2 = len(runes)
@@ -49,7 +49,7 @@ func getItalianRegions(runes []rune) (r1, r2, rv int) {
 	// Calcolo RV
 	if len(runes) > 2 {
 		if !isItalianVowel(runes[1]) {
-			// Se la seconda lettera è una consonante, RV è la regione dopo la vocale successiva
+			// If the second letter is a consonant, RV is the region after the next vowel
 			for i := 2; i < len(runes); i++ {
 				if isItalianVowel(runes[i]) {
 					rv = i + 1
@@ -57,7 +57,7 @@ func getItalianRegions(runes []rune) (r1, r2, rv int) {
 				}
 			}
 		} else if isItalianVowel(runes[0]) && isItalianVowel(runes[1]) {
-			// Se le prime due lettere sono vocali, RV è la regione dopo la consonante successiva
+			// If the first two letters are vowels, RV is the region after the next consonant
 			for i := 2; i < len(runes); i++ {
 				if !isItalianVowel(runes[i]) {
 					rv = i + 1
@@ -65,12 +65,12 @@ func getItalianRegions(runes []rune) (r1, r2, rv int) {
 				}
 			}
 		} else {
-			// Se C-V all'inizio, RV parte dalla posizione 3
+			// If C-V at the start, RV starts at position 3
 			rv = 3
 		}
 	}
 
-	// Calcolo R1 e R2
+	// Calculate R1 and R2
 	for i := 1; i < len(runes); i++ {
 		if isItalianVowel(runes[i-1]) && !isItalianVowel(runes[i]) {
 			r1 = i + 1
@@ -87,13 +87,13 @@ func getItalianRegions(runes []rune) (r1, r2, rv int) {
 	return
 }
 
-// stemItalian è l'orchestratore principale dell'algoritmo di stemming.
+// stemItalian is the main orchestrator of the stemming algorithm.
 func stemItalian(word string) string {
 	if len(word) < 3 {
 		return word
 	}
 
-	// 1. Pre-processing: normalizzazione degli accenti e gestione di 'i'/'u' intervocaliche.
+	// 1. Pre-processing: accent normalization and handling of intervocalic 'i'/'u'.
 	s := strings.ToLower(word)
 	s = strings.ReplaceAll(s, "à", "a")
 	s = strings.ReplaceAll(s, "è", "e")
@@ -104,34 +104,34 @@ func stemItalian(word string) string {
 	runes := []rune(s)
 	for i := 1; i < len(runes)-1; i++ {
 		if (runes[i] == 'i' || runes[i] == 'u') && isItalianVowel(runes[i-1]) && isItalianVowel(runes[i+1]) {
-			runes[i] = unicode.ToUpper(runes[i]) // Le marca per ignorarle temporaneamente
+			runes[i] = unicode.ToUpper(runes[i]) // Mark them to temporarily ignore
 		}
 	}
 
 	r1, r2, rv := getItalianRegions(runes)
 	s = string(runes)
 
-	// 2. Esecuzione degli Step in sequenza corretta
+	// 2. Execute Steps in correct sequence
 	s = step0_pronouns(s, rv)
 
 	sBeforeStep1 := s
 	s = step1_standard_suffixes(s, r1, r2, rv)
 
-	// Lo Step 2 si esegue SOLO se lo Step 1 non ha apportato modifiche.
+	// Step 2 is executed ONLY if Step 1 did not make any changes.
 	if s == sBeforeStep1 {
 		s = step2_verb_suffixes(s, rv)
 	}
 
 	s = step3_final_vowels(s, rv)
 
-	// 3. Post-processing: ripristina 'i' e 'u' marcate in precedenza.
+	// 3. Post-processing: restore 'i' and 'u' marked earlier.
 	s = strings.ReplaceAll(s, "I", "i")
 	s = strings.ReplaceAll(s, "U", "u")
 
 	return s
 }
 
-// step0_pronouns gestisce la rimozione dei pronomi clitici.
+// step0_pronouns handles the removal of clitic pronouns.
 func step0_pronouns(s string, rv int) string {
 	pronouns := []string{
 		"gliela", "gliele", "glieli", "glielo", "gliene", "cela", "cele", "celi", "celo", "cene",
@@ -142,7 +142,7 @@ func step0_pronouns(s string, rv int) string {
 
 	for _, p := range pronouns {
 		if newS, ok := replaceSuffixIfInRegionIT(s, rv, p, ""); ok {
-			// Dopo aver rimosso il pronome, controlla 'ch' o 'gh' e li normalizza in 'c'/'g'
+			// After removing the pronoun, check for 'ch' or 'gh' and normalize them to 'c'/'g'
 			if strings.HasSuffix(newS, "cher") || strings.HasSuffix(newS, "gher") {
 				return newS[:len(newS)-2]
 			}
@@ -152,12 +152,12 @@ func step0_pronouns(s string, rv int) string {
 	return s
 }
 
-// step1_standard_suffixes rimuove i suffissi nominali e avverbiali più comuni.
+// step1_standard_suffixes removes the most common nominal and adverbial suffixes.
 func step1_standard_suffixes(s string, r1, r2, rv int) string {
 	suffixes := []struct {
 		suf    string
 		repl   string
-		region *int // Puntatore alla regione da usare (r1, r2, rv)
+		region *int // Pointer to the region to use (r1, r2, rv)
 	}{
 		{"mente", "", &rv}, {"atrice", "", &r2}, {"atrici", "", &r2},
 		{"anza", "", &r1}, {"anze", "", &r1}, {"ico", "", &r1}, {"ici", "", &r1},
@@ -179,7 +179,7 @@ func step1_standard_suffixes(s string, r1, r2, rv int) string {
 	return s
 }
 
-// step2_verb_suffixes rimuove un'ampia gamma di desinenze verbali.
+// step2_verb_suffixes removes a wide range of verb endings.
 func step2_verb_suffixes(s string, rv int) string {
 	verbSuffixes := []string{
 		"erebbero", "irebbero", "assero", "assimo", "eranno", "erebbe", "eremmo", "ereste", "eresti", "essero", "iranno", "irebbe", "iremmo", "ireste", "iresti",
@@ -196,15 +196,15 @@ func step2_verb_suffixes(s string, rv int) string {
 	return s
 }
 
-// step3_final_vowels rimuove le vocali finali residue.
+// step3_final_vowels removes residual final vowels.
 func step3_final_vowels(s string, rv int) string {
-	// Rimuove la vocale finale se presente (a, e, i, o)
+	// Remove the final vowel if present (a, e, i, o)
 	if strings.HasSuffix(s, "a") || strings.HasSuffix(s, "e") || strings.HasSuffix(s, "i") || strings.HasSuffix(s, "o") {
 		if newS, ok := replaceSuffixIfInRegionIT(s, rv, s[len(s)-1:], ""); ok {
 			return newS
 		}
 	}
-	// Gestisce 'ch' e 'gh' finali per normalizzarli a 'c' e 'g'
+	// Handle final 'ch' and 'gh' to normalize them to 'c' and 'g'
 	if strings.HasSuffix(s, "chi") || strings.HasSuffix(s, "ghi") {
 		if newS, ok := replaceSuffixIfInRegionIT(s, rv, s[len(s)-1:], ""); ok {
 			return newS[:len(newS)-1]
@@ -213,10 +213,10 @@ func step3_final_vowels(s string, rv int) string {
 	return s
 }
 
-// replaceSuffixIfInRegionIT è una funzione helper per sostituire un suffisso solo se si trova nella regione corretta.
+// replaceSuffixIfInRegionIT is a helper function to replace a suffix only if it is in the correct region.
 func replaceSuffixIfInRegionIT(s string, region int, old, new string) (string, bool) {
 	if strings.HasSuffix(s, old) {
-		// La posizione di inizio del suffisso deve essere >= all'inizio della regione
+		// The starting position of the suffix must be >= the start of the region
 		if len(s)-len(old) >= region {
 			return s[:len(s)-len(old)] + new, true
 		}

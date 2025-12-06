@@ -18,7 +18,7 @@ type GraphOptimizer struct {
 
 	lastVacuumTime time.Time
 	lastRefineTime time.Time
-	lastScanIdx    int // Cursore ciclico per il refinement
+	lastScanIdx    int // Cyclic cursor for refinement
 
 	mu sync.Mutex
 }
@@ -47,7 +47,7 @@ func (o *GraphOptimizer) GetConfig() AutoMaintenanceConfig {
 
 // RunCycle checks timers and executes tasks. Called by the Engine ticker.
 func (o *GraphOptimizer) RunCycle(forceType string) bool {
-	// Acquisiamo il lock dell'optimizer per leggere stato e config
+	// Acquire the optimizer lock to read state and config
 	o.mu.Lock()
 	cfg := o.config
 	lastVac := o.lastVacuumTime
@@ -60,20 +60,20 @@ func (o *GraphOptimizer) RunCycle(forceType string) bool {
 	// --- 1. VACUUM CHECK ---
 	shouldVacuum := (forceType == "vacuum")
 
-	// Se non forzato, controlliamo le policy
+	// If not forced, check the policies
 	if !shouldVacuum && time.Duration(cfg.VacuumInterval) > 0 {
-		// A. Check Intervallo Temporale
+		// A. Check Time Interval
 		timePassed := now.Sub(lastVac) >= time.Duration(cfg.VacuumInterval)
 
-		// B. Check Delete Threshold (se abilitato)
+		// B. Check Delete Threshold (if enabled)
 		thresholdMet := false
 		if timePassed {
-			// Per evitare lock pesanti, facciamo una stima rapida leggendo RLock sull'indice
+			// To avoid heavy locks, we do a quick estimate using RLock on the index
 			o.index.metaMu.RLock()
 			nodes := o.index.nodes
 			total := len(nodes)
 			deleted := 0
-			// Scansione rapida per statistiche (molto veloce in RAM)
+			// Fast scan for statistics (very fast in RAM)
 			for _, n := range nodes {
 				if n != nil && n.Deleted {
 					deleted++
@@ -83,7 +83,7 @@ func (o *GraphOptimizer) RunCycle(forceType string) bool {
 
 			if total > 0 {
 				ratio := float64(deleted) / float64(total)
-				// Se ratio > threshold (es. 0.1), attiviamo
+				// If ratio > threshold (e.g. 0.1), activate
 				if ratio >= cfg.DeleteThreshold {
 					thresholdMet = true
 				}
@@ -102,7 +102,7 @@ func (o *GraphOptimizer) RunCycle(forceType string) bool {
 		o.mu.Lock()
 		o.lastVacuumTime = now
 		o.mu.Unlock()
-		return didWork // Vacuum ha priorità su Refine
+		return didWork // Vacuum has priority over Refine
 	}
 
 	// --- 2. REFINE CHECK ---
@@ -131,10 +131,10 @@ func (o *GraphOptimizer) RunCycle(forceType string) bool {
 // Phase 2: Repair affected nodes in batches (Lock per batch, released between batches)
 // Phase 3: Final cleanup (Lock)
 func (o *GraphOptimizer) Vacuum() bool {
-	const repairBatchSize = 100 // Nodi da riparare per lock acquisition
+	const repairBatchSize = 100 // Nodes to repair per lock acquisition
 
 	// =========================================================================
-	// PHASE 1: IDENTIFY DELETED NODES (RLock - permette query concorrenti)
+	// PHASE 1: IDENTIFY DELETED NODES (RLock - allows concurrent queries)
 	// =========================================================================
 	o.index.metaMu.RLock()
 	nodes := o.index.nodes
@@ -160,8 +160,8 @@ func (o *GraphOptimizer) Vacuum() bool {
 	o.index.metaMu.RLock()
 	nodes = o.index.nodes // Refresh reference
 
-	// Raccolta nodi che necessitano riparazione
-	nodesToRepair := make([]*Node, 0, totalNodes/10) // Pre-allocazione euristica
+	// Collect nodes that need repair
+	nodesToRepair := make([]*Node, 0, totalNodes/10) // Heuristic pre-allocation
 	for _, node := range nodes {
 		if node == nil || node.Deleted {
 			continue
@@ -186,7 +186,7 @@ func (o *GraphOptimizer) Vacuum() bool {
 	o.index.metaMu.RUnlock()
 
 	// =========================================================================
-	// PHASE 3: REPAIR IN BATCHES (Lock per batch, rilasciato tra batch)
+	// PHASE 3: REPAIR IN BATCHES (Lock per batch, released between batches)
 	// =========================================================================
 	repairedCount := 0
 	for i := 0; i < len(nodesToRepair); i += repairBatchSize {
@@ -196,11 +196,11 @@ func (o *GraphOptimizer) Vacuum() bool {
 		}
 		batch := nodesToRepair[i:end]
 
-		// Lock per questo batch
+		// Lock for this batch
 		o.index.metaMu.Lock()
 
 		for _, node := range batch {
-			// Verifica che il nodo sia ancora valido (potrebbe essere cambiato)
+			// Verify the node is still valid (it may have changed)
 			if node == nil || node.Deleted {
 				continue
 			}
@@ -209,11 +209,11 @@ func (o *GraphOptimizer) Vacuum() bool {
 		}
 
 		o.index.metaMu.Unlock()
-		// Lock rilasciato - le query possono eseguire tra i batch
+		// Lock released - queries can execute between batches
 	}
 
 	// =========================================================================
-	// PHASE 4: FINAL CLEANUP (Lock esclusivo)
+	// PHASE 4: FINAL CLEANUP (Exclusive Lock)
 	// =========================================================================
 	o.index.metaMu.Lock()
 	defer o.index.metaMu.Unlock()
@@ -265,7 +265,7 @@ type refineResult struct {
 // This implementation uses parallel computation with sharded commit for better performance.
 func (o *GraphOptimizer) Refine() bool {
 	// =========================================================================
-	// PHASE 0: PREPARATION (Lock breve per leggere stato)
+	// PHASE 0: PREPARATION (Brief lock to read state)
 	// =========================================================================
 	o.index.metaMu.RLock()
 	nodes := o.index.nodes
@@ -278,7 +278,7 @@ func (o *GraphOptimizer) Refine() bool {
 		return false
 	}
 
-	// Leggi configurazione optimizer
+	// Read optimizer configuration
 	o.mu.Lock()
 	start := o.lastScanIdx
 	batchSize := o.config.RefineBatchSize
@@ -289,7 +289,7 @@ func (o *GraphOptimizer) Refine() bool {
 		ef = o.index.efConstruction
 	}
 
-	// Calcola range
+	// Calculate range
 	if start >= totalNodes {
 		start = 0
 	}
@@ -298,7 +298,7 @@ func (o *GraphOptimizer) Refine() bool {
 		end = totalNodes
 	}
 
-	// Aggiorna cursore per prossimo ciclo
+	// Update cursor for next cycle
 	nextStart := end
 	if nextStart >= totalNodes {
 		nextStart = 0
@@ -307,7 +307,7 @@ func (o *GraphOptimizer) Refine() bool {
 	o.lastScanIdx = nextStart
 	o.mu.Unlock()
 
-	// Raccogli nodi validi da processare
+	// Collect valid nodes to process
 	nodesToProcess := make([]*Node, 0, end-start)
 	o.index.metaMu.RLock()
 	for i := start; i < end; i++ {
@@ -330,7 +330,7 @@ func (o *GraphOptimizer) Refine() bool {
 		numWorkers = len(nodesToProcess)
 	}
 
-	// Ogni worker scrive nella propria slice (no lock necessario)
+	// Each worker writes to its own slice (no lock needed)
 	workerResults := make([][]refineResult, numWorkers)
 	nodesPerWorker := (len(nodesToProcess) + numWorkers - 1) / numWorkers
 
@@ -352,7 +352,7 @@ func (o *GraphOptimizer) Refine() bool {
 
 			localResults := make([]refineResult, 0, len(nodeSlice))
 
-			// RLock per leggere il grafo durante la ricerca
+			// RLock to read the graph during search
 			o.index.metaMu.RLock()
 			defer o.index.metaMu.RUnlock()
 
@@ -375,7 +375,7 @@ func (o *GraphOptimizer) Refine() bool {
 	// =========================================================================
 	// PHASE 2: SHARDED COMMIT (Write, Lock per Shard)
 	// =========================================================================
-	// Partiziona risultati per shard
+	// Partition results by shard
 	shardedResults := make([][]refineResult, NumShards)
 	for _, results := range workerResults {
 		for _, res := range results {
@@ -384,7 +384,7 @@ func (o *GraphOptimizer) Refine() bool {
 		}
 	}
 
-	// Commit parallelo per shard
+	// Parallel commit by shard
 	var wgCommit sync.WaitGroup
 	sem := make(chan struct{}, runtime.NumCPU())
 
@@ -401,17 +401,17 @@ func (o *GraphOptimizer) Refine() bool {
 			defer wgCommit.Done()
 			defer func() { <-sem }()
 
-			// Lock solo questo shard
+			// Lock only this shard
 			o.index.shardsMu[sID].Lock()
 			defer o.index.shardsMu[sID].Unlock()
 
 			for _, res := range shardResults {
 				node := o.index.nodes[res.nodeID]
 				if node == nil || node.Deleted {
-					continue // Nodo cancellato durante il calcolo
+					continue // Node deleted during computation
 				}
 
-				// Applica le nuove connessioni
+				// Apply the new connections
 				for l := 0; l < len(res.connections) && l < len(node.Connections); l++ {
 					if res.connections[l] != nil {
 						node.Connections[l] = res.connections[l]
@@ -451,12 +451,12 @@ func (o *GraphOptimizer) computeNewConnections(node *Node, entryPoint uint32, ef
 		// 1. Search for candidates
 		candidates, err := o.index.searchLayerUnlocked(queryObj, entryPoint, ef, l, nil, ef, maxID, nil)
 		if err != nil {
-			// Mantieni connessioni esistenti per questo layer
+			// Keep existing connections for this layer
 			newConnections[l] = node.Connections[l]
 			continue
 		}
 
-		// 2. Aggiungi vicini esistenti validi
+		// 2. Add valid existing neighbors
 		currentNeighbors := node.Connections[l]
 		for _, nID := range currentNeighbors {
 			if ignoreSet != nil {
@@ -465,7 +465,7 @@ func (o *GraphOptimizer) computeNewConnections(node *Node, entryPoint uint32, ef
 				}
 			}
 
-			// Evita duplicati
+			// Avoid duplicates
 			alreadyIn := false
 			for _, c := range candidates {
 				if c.Id == nID {
@@ -483,7 +483,7 @@ func (o *GraphOptimizer) computeNewConnections(node *Node, entryPoint uint32, ef
 			}
 		}
 
-		// 3. Filtra self e ignoreSet
+		// 3. Filter self and ignoreSet
 		validCandidates := make([]types.Candidate, 0, len(candidates))
 		for _, c := range candidates {
 			if c.Id == node.InternalID {
@@ -497,12 +497,12 @@ func (o *GraphOptimizer) computeNewConnections(node *Node, entryPoint uint32, ef
 			validCandidates = append(validCandidates, c)
 		}
 
-		// 4. Ordina per distanza
+		// 4. Sort by distance
 		sort.Slice(validCandidates, func(i, j int) bool {
 			return validCandidates[i].Distance < validCandidates[j].Distance
 		})
 
-		// 5. Seleziona vicini
+		// 5. Select neighbors
 		maxM := o.index.m
 		if l == 0 {
 			maxM = o.index.mMax0
@@ -510,7 +510,7 @@ func (o *GraphOptimizer) computeNewConnections(node *Node, entryPoint uint32, ef
 
 		selected := o.index.selectNeighbors(validCandidates, maxM)
 
-		// 6. Converti in slice di ID
+		// 6. Convert to ID slice
 		newConns := make([]uint32, len(selected))
 		for i, c := range selected {
 			newConns[i] = c.Id
@@ -542,7 +542,7 @@ func (o *GraphOptimizer) reconnectNode(node *Node, ignoreSet map[uint32]struct{}
 
 	/*
 		if ignoreSet != nil {
-			// VACUUM BOOST: Raddoppiamo ef durante la riparazione per saltare i buchi
+			// VACUUM BOOST: Double ef during repair to skip over holes
 			ef = ef * 2
 		}
 	*/

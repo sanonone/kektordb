@@ -11,7 +11,7 @@ func main() {
 	// --- Float16 ---
 	TEXT("SquaredEuclideanFloat16AVX2", NOSPLIT, "func(v1, v2 []uint16) float32")
 	Pragma("noescape")
-	Doc("SquaredEuclideanFloat16AVX2 calcola la distanza euclidea al quadrato per vettori float16 (rappresentati come uint16) usando AVX2.")
+	Doc("SquaredEuclideanFloat16AVX2 calculates the squared Euclidean distance for float16 vectors (represented as uint16) using AVX2.")
 	generateSquaredEuclideanFloat16()
 	Generate()
 }
@@ -86,10 +86,10 @@ func generateSquaredEuclideanFloat16() {
 	RET()
 }
 
-// sumHorizontal somma orizzontalmente gli 8 float32 in un registro YMM.
-// La firma usa il TIPO 'reg.YMMRegister'.
+// sumHorizontal horizontally sums the 8 float32 values in a YMM register.
+// The signature uses the TYPE 'reg.YMMRegister'.
 func sumHorizontal(vec reg.Register) {
-	// Le FUNZIONI YMM() vengono da 'build'.
+	// The YMM() FUNCTIONS come from 'build'.
 	h1 := YMM()
 	VEXTRACTF128(Imm(1), vec, h1.AsX())
 	VADDPS(vec, h1, vec)

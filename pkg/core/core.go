@@ -403,7 +403,7 @@ func (s *DB) GetVectorIndexInfoAPI() ([]IndexInfo, error) {
 
 	for name, idx := range s.vectorIndexes {
 		if hnswIndex, ok := idx.(*hnsw.Index); ok {
-			metric, m, efConst, precision, count, textLang := hnswIndex.GetInfo() // Creeremo questo metodo
+			metric, m, efConst, precision, count, textLang := hnswIndex.GetInfo()
 			infoList = append(infoList, IndexInfo{
 				Name:           name,
 				Metric:         metric,

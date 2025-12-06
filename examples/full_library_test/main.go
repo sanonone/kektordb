@@ -333,49 +333,49 @@ func main() {
 	maintIdx := "test_maintenance"
 	db.VCreate(maintIdx, distance.Cosine, 16, 200, distance.Float32, "", nil)
 
-	// Aggiungiamo 3 nodi: A, B, C
-	// A e B sono vicini, C è lontano.
+	// Add 3 nodes: A, B, C
+	// A and B are close, C is far away.
 	db.VAdd(maintIdx, "nodeA", []float32{1.0, 0.0, 0.0}, nil)
 	db.VAdd(maintIdx, "nodeB", []float32{0.9, 0.1, 0.0}, nil)
 	db.VAdd(maintIdx, "nodeC", []float32{0.0, 1.0, 0.0}, nil)
 
-	// Cancelliamo nodeB. Ora nodeA potrebbe avere un link rotto verso B.
+	// Delete nodeB. Now nodeA might have a broken link to B.
 	db.VDelete(maintIdx, "nodeB")
 
-	// 1. Aggiorniamo la configurazione a caldo
-	// Abilitiamo il Refine e cambiamo intervalli
+	// 1. Update configuration on the fly
+	// Enable Refine and change intervals
 	newCfg := hnsw.AutoMaintenanceConfig{
 		VacuumInterval:  hnsw.Duration(5 * time.Second),
 		DeleteThreshold: 0.1,
-		RefineEnabled:   true, // Abilitiamo Refine
+		RefineEnabled:   true, // Enable Refine
 		RefineInterval:  hnsw.Duration(2 * time.Second),
 		RefineBatchSize: 10,
 	}
 
 	fmt.Println("   -> Updating Index Config...")
 	if err := db.VUpdateIndexConfig(maintIdx, newCfg); err != nil {
-		log.Fatalf("❌ VUpdateIndexConfig fallito: %v", err)
+		log.Fatalf("❌ VUpdateIndexConfig failed: %v", err)
 	}
 
-	// 2. Trigger Manuale Vacuum
-	// Questo dovrebbe trovare nodeB marcato 'Deleted', rimuovere i link da nodeA, e liberare memoria.
+	// 2. Manual Vacuum Trigger
+	// This should find nodeB marked 'Deleted', remove links from nodeA, and free memory.
 	fmt.Println("   -> Triggering Manual Vacuum...")
 	if err := db.VTriggerMaintenance(maintIdx, "vacuum"); err != nil {
-		log.Fatalf("❌ VTriggerMaintenance (vacuum) fallito: %v", err)
+		log.Fatalf("❌ VTriggerMaintenance (vacuum) failed: %v", err)
 	}
-	// Nota: Guarda i log del server per vedere "[Optimizer] Vacuum complete..."
+	// Note: Check server logs to see "[Optimizer] Vacuum complete..."
 
-	// 3. Trigger Manuale Refine
+	// 3. Manual Refine Trigger
 	fmt.Println("   -> Triggering Manual Refine...")
 	if err := db.VTriggerMaintenance(maintIdx, "refine"); err != nil {
-		log.Fatalf("❌ VTriggerMaintenance (refine) fallito: %v", err)
+		log.Fatalf("❌ VTriggerMaintenance (refine) failed: %v", err)
 	}
 
-	// Verifica che nodeA esista ancora e trovi nodeC (o nulla) ma non nodeB
+	// Verify that nodeA still exists and finds nodeC (or nothing) but not nodeB
 	resMaint, _ := db.VSearch(maintIdx, []float32{1.0, 0.0, 0.0}, 5, "", 100, 0.5)
 	for _, id := range resMaint {
 		if id == "nodeB" {
-			log.Fatalf("❌ ERRORE GRAVE: nodeB trovato dopo Vacuum!")
+			log.Fatalf("❌ CRITICAL ERROR: nodeB found after Vacuum!")
 		}
 	}
 

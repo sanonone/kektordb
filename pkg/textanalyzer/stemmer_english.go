@@ -2,16 +2,16 @@ package textanalyzer
 
 import "strings"
 
-// EnglishStemmer è un analizzatore che tokenizza, filtra le stop words
-// e applica l'algoritmo di stemming Porter2 per l'inglese.
+// EnglishStemmer is an analyzer that tokenizes, filters stop words
+// and applies the Porter2 stemming algorithm for English.
 type EnglishStemmer struct{}
 
-// NewEnglishStemmer crea un nuovo analizzatore per l'inglese.
+// NewEnglishStemmer creates a new English analyzer.
 func NewEnglishStemmer() *EnglishStemmer {
 	return &EnglishStemmer{}
 }
 
-// Analyze implementa l'interfaccia Analyzer.
+// Analyze implements the Analyzer interface.
 func (s *EnglishStemmer) Analyze(text string) []string {
 	tokens := Tokenize(text)
 	tokens = FilterEnglishStopWords(tokens)
@@ -22,7 +22,7 @@ func (s *EnglishStemmer) Analyze(text string) []string {
 	return stemmedTokens
 }
 
-// --- Funzioni di Supporto Generiche (Usate da entrambi gli stemmer) ---
+// --- Generic Support Functions (Used by both stemmers) ---
 
 func replaceSuffixIfInRegion(s string, regionStart int, old, new string) (string, bool) {
 	if strings.HasSuffix(s, old) {
@@ -33,11 +33,11 @@ func replaceSuffixIfInRegion(s string, regionStart int, old, new string) (string
 	return s, false
 }
 
-// --- Algoritmo di Stemming Inglese (Porter2) ---
+// --- English Stemming Algorithm (Porter2) ---
 
 func isEnglishVowel(runes []rune, i int) bool {
-	// --- CONTROLLO DI SICUREZZA ---
-	// Aggiungiamo un "guard bound" per prevenire qualsiasi panic.
+	// --- SAFETY CHECK ---
+	// We add a bounds guard to prevent any panic.
 	if i < 0 || i >= len(runes) {
 		return false
 	}
@@ -47,20 +47,20 @@ func isEnglishVowel(runes []rune, i int) bool {
 	case 'a', 'e', 'i', 'o', 'u':
 		return true
 	case 'y':
-		// La 'y' è una vocale se non è il primo carattere e
-		// il carattere precedente NON è una vocale.
+		// The 'y' is a vowel if it's not the first character and
+		// the preceding character is NOT a vowel.
 		if i == 0 {
-			return false // 'y' a inizio parola è una consonante.
+			return false // 'y' at the start of a word is a consonant.
 		}
 
-		// Controlla il carattere precedente senza ricorsione.
+		// Check the preceding character without recursion.
 		prevRune := runes[i-1]
 		switch prevRune {
 		case 'a', 'e', 'i', 'o', 'u':
-			return false // Il precedente era una vocale, quindi 'y' è una consonante.
+			return false // The preceding was a vowel, so 'y' is a consonant.
 		default:
-			// Se il precedente non è a,e,i,o,u, allora 'y' è una vocale.
-			// (Questo non gestisce il caso di 'yy', ma per ora va bene).
+			// If the preceding is not a,e,i,o,u, then 'y' is a vowel.
+			// (This doesn't handle the 'yy' case, but it's fine for now).
 			return true
 		}
 	}

@@ -1,7 +1,7 @@
 package server
 
 import (
-	"github.com/sanonone/kektordb/pkg/core/hnsw" // <--- AGGIUNGI QUESTO IMPORT
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/core/types"
 )
 
@@ -58,5 +58,5 @@ type VectorCompressRequest struct {
 }
 
 type TriggerMaintenanceRequest struct {
-	Type string `json:"type"` // "vacuum" o "refine"
+	Type string `json:"type"` // "vacuum" or "refine"
 }

@@ -10,12 +10,13 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/sanonone/kektordb/pkg/core/distance"
-	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"log"
 	"net/http"
 	"net/http/pprof"
 	"strings"
+
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
 )
 
 // registerHTTPHandlers sets up all HTTP routes using Go 1.22+ routing.
@@ -111,7 +112,7 @@ func (s *Server) handleSingleIndexDelete(w http.ResponseWriter, r *http.Request)
 
 // handleIndexConfig updates the maintenance configuration for an index.
 func (s *Server) handleIndexConfig(w http.ResponseWriter, r *http.Request) {
-	// Il metodo è garantito essere POST dal mux
+	// The method is guaranteed to be POST by the mux
 	indexName := r.PathValue("name")
 
 	var config hnsw.AutoMaintenanceConfig
@@ -304,13 +305,13 @@ func (s *Server) handleVectorImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Crea il Task
+	// Create the Task
 	task := s.taskManager.NewTask()
 
-	// Esegui in background
+	// Execute in background
 	go func() {
 		// ENGINE CALL (VImport)
-		// Nota: VImport è bloccante, quindi la goroutine vive finché non finisce.
+		// Note: VImport is blocking, so the goroutine lives until it finishes.
 		if err := s.Engine.VImport(req.IndexName, req.Vectors); err != nil {
 			task.SetError(err)
 		} else {
@@ -319,7 +320,7 @@ func (s *Server) handleVectorImport(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Ritorna subito 202 Accepted con il Task ID
+	// Return immediately with 202 Accepted and the Task ID
 	s.writeHTTPResponse(w, http.StatusAccepted, task)
 }
 

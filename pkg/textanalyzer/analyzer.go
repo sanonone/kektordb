@@ -5,34 +5,34 @@ import (
 	"strings"
 )
 
-// Analyzer è l'interfaccia che tutti i nostri analizzatori di testo implementeranno.
+// Analyzer is the interface that all our text analyzers will implement.
 type Analyzer interface {
-	// Analyze prende una stringa di testo e la trasforma in una slice di token.
+	// Analyze takes a text string and transforms it into a slice of tokens.
 	Analyze(text string) []string
 }
 
-// --- Componenti Riutilizzabili ---
+// --- Reusable Components ---
 
-// tokenizerRegex è un'espressione regolare per estrarre parole.
-// \p{L}+ corrisponde a sequenze di lettere in qualsiasi lingua (meglio di \w+).
+// tokenizerRegex is a regular expression to extract words.
+// \p{L}+ matches sequences of letters in any language (better than \w+).
 var tokenizerRegex = regexp.MustCompile(`\p{L}+`)
 
-// Tokenize divide un testo in una slice di parole in minuscolo.
+// Tokenize splits text into a slice of lowercase words.
 func Tokenize(text string) []string {
 	text = strings.ToLower(text)
 	return tokenizerRegex.FindAllString(text, -1)
 }
 
-// stopWords è una mappa di parole comuni inglesi da ignorare.
+// englishStopWords is a map of common English words to ignore.
 var englishStopWords = map[string]struct{}{
 	"a": {}, "an": {}, "and": {}, "are": {}, "as": {}, "at": {}, "be": {}, "by": {},
 	"for": {}, "from": {}, "has": {}, "he": {}, "in": {}, "is": {}, "it": {}, "its": {},
 	"of": {}, "on": {}, "that": {}, "the": {}, "to": {}, "was": {}, "were": {}, "will": {}, "with": {},
 }
 
-// FilterStopWords rimuove le parole comuni da una slice di token.
+// FilterEnglishStopWords removes common words from a slice of tokens.
 func FilterEnglishStopWords(tokens []string) []string {
-	// Pre-alloca una slice con una capacità ragionevole per evitare riallocazioni.
+	// Pre-allocate a slice with a reasonable capacity to avoid reallocations.
 	filtered := make([]string, 0, len(tokens))
 	for _, token := range tokens {
 		if _, isStopWord := englishStopWords[token]; !isStopWord {
@@ -42,7 +42,7 @@ func FilterEnglishStopWords(tokens []string) []string {
 	return filtered
 }
 
-// --- Stop Words Italiane (NUOVA AGGIUNTA) ---
+// --- Italian Stop Words ---
 
 var italianStopWords = map[string]struct{}{
 	"a": {}, "ad": {}, "al": {}, "allo": {}, "ai": {}, "agli": {}, "all": {}, "agl": {}, "alla": {}, "alle": {},
@@ -67,7 +67,7 @@ var italianStopWords = map[string]struct{}{
 	"siete": {}, "sia": {}, "siate": {}, "siano": {}, "sto": {}, "stai": {}, "sta": {}, "stiamo": {}, "state": {}, "stanno": {},
 }
 
-// FilterItalianStopWords rimuove le parole comuni italiane (NUOVA FUNZIONE)
+// FilterItalianStopWords removes common Italian words.
 func FilterItalianStopWords(tokens []string) []string {
 	filtered := make([]string, 0, len(tokens))
 	for _, token := range tokens {

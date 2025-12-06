@@ -94,13 +94,13 @@ func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int
 
 		if config != nil {
 			idx, _ := e.DB.GetVectorIndex(name)
-			// Type assertion sicura perché CreateVectorIndex crea sempre HNSW
+			// Safe type assertion because CreateVectorIndex always creates HNSW
 			hnswIdx := idx.(*hnsw.Index)
 
-			// Applica in RAM
+			// Apply in RAM
 			hnswIdx.UpdateMaintenanceConfig(*config)
 
-			// Scrivi comando VCONFIG su AOF
+			// Write VCONFIG command to AOF
 			cfgBytes, err := json.Marshal(*config)
 			if err == nil {
 				cmdConfig := persistence.FormatCommand("VCONFIG", []byte(name), cfgBytes)
@@ -477,8 +477,8 @@ func (e *Engine) VImport(indexName string, items []types.BatchObject) error {
 // VCompress changes the precision of an existing index (e.g., float32 -> int8).
 // This operation rebuilds the index in memory.
 func (e *Engine) VCompress(indexName string, newPrecision distance.PrecisionType) error {
-	// Acquisisce il lock sul DB tramite il metodo esposto da Core, se necessario,
-	// oppure delega a DB.Compress che gestisce i suoi lock.
+	// Acquires the lock on DB through the method exposed by Core, if needed,
+	// or delegates to DB.Compress which manages its own locks.
 	return e.DB.Compress(indexName, newPrecision)
 }
 
@@ -497,19 +497,19 @@ func (e *Engine) VUpdateIndexConfig(indexName string, config hnsw.AutoMaintenanc
 	hnswIdx.UpdateMaintenanceConfig(config)
 
 	// 2. Persistence (AOF)
-	// Serializziamo la config in JSON per salvarla nel comando AOF
+	// Serialize the config to JSON to save it in the AOF command
 	cfgBytes, err := json.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	// Comando: VCONFIG <indexName> <jsonConfig>
+	// Command: VCONFIG <indexName> <jsonConfig>
 	cmd := persistence.FormatCommand("VCONFIG", []byte(indexName), cfgBytes)
 	if err := e.AOF.Write(cmd); err != nil {
 		return fmt.Errorf("persistence error: %w", err)
 	}
 
-	// Flush per sicurezza visto che è un cambio di configurazione raro
+	// Flush for safety since this is a rare configuration change
 	if err := e.AOF.Flush(); err != nil {
 		return fmt.Errorf("persistence flush error: %w", err)
 	}

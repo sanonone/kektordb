@@ -486,7 +486,7 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	return internalID, nil
 }
 
-// Metodi Pubblici per accedere all'Optimizer
+// Public methods to access the Optimizer
 
 func (h *Index) UpdateMaintenanceConfig(cfg AutoMaintenanceConfig) {
 	if h.optimizer != nil {

@@ -20,8 +20,8 @@ type Quantizer struct {
 }
 
 /*
-// versione iniziale, da problemi con outlier
-// calcola i parametri di quantizzazione da un campione di vettori
+// initial version, causes problems with outliers
+// calculates quantization parameters from a sample of vectors
 func (q *Quantizer) Train(vectors [][]float32) {
 	var max float32
 	for _, vec := range vectors {
