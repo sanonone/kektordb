@@ -15,7 +15,7 @@ BAD_EF_CONSTRUCTION = 40
 
 # Parametri "buoni" per il refinement
 TARGET_EF = 200
-REFINE_BATCH = 1000
+REFINE_BATCH = 20000
 
 def load_vectors(filepath, size):
     print(f"Caricamento vettori da {filepath}...")

@@ -7,11 +7,11 @@ from kektordb_client import KektorDBClient
 DATASET_TXT_FILE = "glove.6B.100d.txt"
 METRIC = "cosine"
 K_SEARCH = 10
-NUM_QUERIES = 500
+NUM_QUERIES = 1000
 
 # Parametri Confronto
 EAGER_EF = 200   # Qualità alta subito (Lento inserimento)
-LAZY_EF = 40     # Qualità bassa subito (Veloce inserimento)
+LAZY_EF = 20     # Qualità bassa subito (Veloce inserimento)
 TARGET_EF = 200  # Obiettivo del Refine
 
 def load_vectors(filepath, size):
@@ -74,17 +74,25 @@ def run_scenario(client, vectors, words, queries, gt_sets, mode):
         client.vupdate_config(index_name, {
             "refine_enabled": True,
             "refine_ef_construction": TARGET_EF, # Portiamo la qualità a livello Eager
-            "refine_batch_size": 2000,
+            "refine_batch_size": 20000,
             "refine_interval": "1ms" # Più veloce possibile per il test
         })
         
         # Eseguiamo cicli finché la recall non è simile a EAGER
         # (Qui simuliamo chiamando trigger manuale finché non finisce un giro completo)
         # Stima: len(vectors) / batch_size
-        cycles = (len(vectors) // 2000) + 1
+        cycles = ((len(vectors) // 20000) + 1) * 2
         
         for _ in tqdm(range(cycles), desc="Refining"):
-             client.vtrigger_maintenance(index_name, "refine", wait=True)
+             # 1. Lancia il task senza aspettare (ritorna subito l'oggetto Task)
+             task = client.vtrigger_maintenance(index_name, "refine", wait=False)
+             
+             # 2. Aspetta con un intervallo molto breve (es. 0.1s o 0.2s)
+             # Questo ti darà la velocità REALE del server, non quella del timer python
+             try:
+                 task.wait(interval=0.2, timeout=60)
+             except Exception as e:
+                 print(f"Errore nel task di refine: {e}")
              
         refine_time = time.time() - start_refine
         total_time += refine_time

@@ -461,7 +461,7 @@ func (e *Engine) VImport(indexName string, items []types.BatchObject) error {
 	for _, item := range items {
 		if len(item.Metadata) > 0 {
 			id := hnswIdx.GetInternalID(item.Id)
-			e.DB.AddMetadata(indexName, id, item.Metadata)
+			e.DB.AddMetadataUnlocked(indexName, id, item.Metadata)
 		}
 	}
 

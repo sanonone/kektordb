@@ -2,14 +2,15 @@ package main
 
 import (
 	"fmt"
-	"github.com/sanonone/kektordb/pkg/core/distance"
-	"github.com/sanonone/kektordb/pkg/core/hnsw"
-	"github.com/sanonone/kektordb/pkg/core/types"
-	"github.com/sanonone/kektordb/pkg/engine"
 	"log"
 	"math/rand"
 	"os"
 	"time"
+
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
+	"github.com/sanonone/kektordb/pkg/core/types"
+	"github.com/sanonone/kektordb/pkg/engine"
 )
 
 const DataDir = "./test_data"
@@ -344,10 +345,10 @@ func main() {
 	// 1. Aggiorniamo la configurazione a caldo
 	// Abilitiamo il Refine e cambiamo intervalli
 	newCfg := hnsw.AutoMaintenanceConfig{
-		VacuumInterval:  5 * time.Second,
+		VacuumInterval:  hnsw.Duration(5 * time.Second),
 		DeleteThreshold: 0.1,
 		RefineEnabled:   true, // Abilitiamo Refine
-		RefineInterval:  2 * time.Second,
+		RefineInterval:  hnsw.Duration(2 * time.Second),
 		RefineBatchSize: 10,
 	}
 
