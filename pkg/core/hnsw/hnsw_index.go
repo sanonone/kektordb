@@ -86,6 +86,8 @@ type Index struct {
 	minHeapPool sync.Pool
 	maxHeapPool sync.Pool
 	// candidateObjectPool sync.Pool
+
+	optimizer *GraphOptimizer
 }
 
 // New creates and initializes a new HNSW index
@@ -171,6 +173,9 @@ func New(m int, efConstruction int, metric distance.DistanceMetric, precision di
 	if err != nil {
 		return nil, err
 	}
+
+	// Init Optimizer with defaults
+	h.optimizer = NewOptimizer(h, DefaultMaintenanceConfig())
 
 	return h, nil
 }
@@ -479,6 +484,28 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 		h.entrypointID = internalID
 	}
 	return internalID, nil
+}
+
+// Metodi Pubblici per accedere all'Optimizer
+
+func (h *Index) UpdateMaintenanceConfig(cfg AutoMaintenanceConfig) {
+	if h.optimizer != nil {
+		h.optimizer.UpdateConfig(cfg)
+	}
+}
+
+func (h *Index) GetMaintenanceConfig() AutoMaintenanceConfig {
+	if h.optimizer != nil {
+		return h.optimizer.GetConfig()
+	}
+	return DefaultMaintenanceConfig()
+}
+
+func (h *Index) MaintenanceRun(forceType string) bool {
+	if h.optimizer != nil {
+		return h.optimizer.RunCycle(forceType)
+	}
+	return false
 }
 
 // AddBatch inserts a large batch of vectors concurrently.

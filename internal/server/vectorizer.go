@@ -145,7 +145,7 @@ func (v *Vectorizer) processFile(filePath string) error {
 	if _, ok := v.server.Engine.DB.GetVectorIndex(v.config.KektorIndex); !ok {
 		log.Printf("Auto-creating index '%s'", v.config.KektorIndex)
 		// USARE ENGINE: VCreate (Persistenza automatica)
-		err := v.server.Engine.VCreate(v.config.KektorIndex, distance.Cosine, 16, 200, distance.Float32, "english")
+		err := v.server.Engine.VCreate(v.config.KektorIndex, distance.Cosine, 16, 200, distance.Float32, "english", nil)
 		if err != nil {
 			return err
 		}

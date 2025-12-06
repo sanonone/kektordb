@@ -75,7 +75,7 @@ func (e *Engine) KVDelete(key string) error {
 // 'lang' enables hybrid search features (e.g., "english", "italian") or "" to disable.
 //
 // Returns an error if an index with the same name already exists.
-func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int, prec distance.PrecisionType, lang string) error {
+func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int, prec distance.PrecisionType, lang string, config *hnsw.AutoMaintenanceConfig) error {
 	cmd := persistence.FormatCommand("VCREATE",
 		[]byte(name),
 		[]byte("METRIC"), []byte(metric),
@@ -91,6 +91,22 @@ func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int
 	err := e.DB.CreateVectorIndex(name, metric, m, efC, prec, lang)
 	if err == nil {
 		atomic.AddInt64(&e.dirtyCounter, 1)
+
+		if config != nil {
+			idx, _ := e.DB.GetVectorIndex(name)
+			// Type assertion sicura perché CreateVectorIndex crea sempre HNSW
+			hnswIdx := idx.(*hnsw.Index)
+
+			// Applica in RAM
+			hnswIdx.UpdateMaintenanceConfig(*config)
+
+			// Scrivi comando VCONFIG su AOF
+			cfgBytes, err := json.Marshal(*config)
+			if err == nil {
+				cmdConfig := persistence.FormatCommand("VCONFIG", []byte(name), cfgBytes)
+				e.AOF.Write(cmdConfig)
+			}
+		}
 
 		// Instant flush for single operations (durability)
 		if errF := e.AOF.Flush(); errF != nil {
@@ -464,4 +480,54 @@ func (e *Engine) VCompress(indexName string, newPrecision distance.PrecisionType
 	// Acquisisce il lock sul DB tramite il metodo esposto da Core, se necessario,
 	// oppure delega a DB.Compress che gestisce i suoi lock.
 	return e.DB.Compress(indexName, newPrecision)
+}
+
+func (e *Engine) VUpdateIndexConfig(indexName string, config hnsw.AutoMaintenanceConfig) error {
+	idx, ok := e.DB.GetVectorIndex(indexName)
+	if !ok {
+		return fmt.Errorf("index not found")
+	}
+
+	hnswIdx, ok := idx.(*hnsw.Index)
+	if !ok {
+		return fmt.Errorf("index is not HNSW")
+	}
+
+	// 1. Update Memory
+	hnswIdx.UpdateMaintenanceConfig(config)
+
+	// 2. Persistence (AOF)
+	// Serializziamo la config in JSON per salvarla nel comando AOF
+	cfgBytes, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	// Comando: VCONFIG <indexName> <jsonConfig>
+	cmd := persistence.FormatCommand("VCONFIG", []byte(indexName), cfgBytes)
+	if err := e.AOF.Write(cmd); err != nil {
+		return fmt.Errorf("persistence error: %w", err)
+	}
+
+	// Flush per sicurezza visto che è un cambio di configurazione raro
+	if err := e.AOF.Flush(); err != nil {
+		return fmt.Errorf("persistence flush error: %w", err)
+	}
+
+	atomic.AddInt64(&e.dirtyCounter, 1)
+	return nil
+}
+
+func (e *Engine) VTriggerMaintenance(indexName string, taskType string) error {
+	idx, ok := e.DB.GetVectorIndex(indexName)
+	if !ok {
+		return fmt.Errorf("index not found")
+	}
+	hnswIdx, ok := idx.(*hnsw.Index)
+	if !ok {
+		return fmt.Errorf("index is not HNSW")
+	}
+
+	hnswIdx.MaintenanceRun(taskType) // forceType = "vacuum" or "refine"
+	return nil
 }

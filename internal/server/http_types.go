@@ -1,15 +1,19 @@
 package server
 
-import "github.com/sanonone/kektordb/pkg/core/types"
+import (
+	"github.com/sanonone/kektordb/pkg/core/hnsw" // <--- AGGIUNGI QUESTO IMPORT
+	"github.com/sanonone/kektordb/pkg/core/types"
+)
 
 // VectorCreateRequest defines the body for index creation.
 type VectorCreateRequest struct {
-	IndexName      string `json:"index_name"`
-	Metric         string `json:"metric,omitempty"`
-	M              int    `json:"m,omitempty"`
-	EfConstruction int    `json:"ef_construction,omitempty"`
-	Precision      string `json:"precision,omitempty"`
-	TextLanguage   string `json:"text_language,omitempty"`
+	IndexName      string                      `json:"index_name"`
+	Metric         string                      `json:"metric,omitempty"`
+	M              int                         `json:"m,omitempty"`
+	EfConstruction int                         `json:"ef_construction,omitempty"`
+	Precision      string                      `json:"precision,omitempty"`
+	TextLanguage   string                      `json:"text_language,omitempty"`
+	Maintenance    *hnsw.AutoMaintenanceConfig `json:"maintenance,omitempty"`
 }
 
 // VectorAddRequest defines the body for adding a single vector.
@@ -51,4 +55,8 @@ type VectorDeleteRequest struct {
 type VectorCompressRequest struct {
 	IndexName string `json:"index_name"`
 	Precision string `json:"precision"`
+}
+
+type TriggerMaintenanceRequest struct {
+	Type string `json:"type"` // "vacuum" o "refine"
 }

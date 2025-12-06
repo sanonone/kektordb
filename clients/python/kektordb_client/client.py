@@ -157,7 +157,7 @@ class KektorDBClient:
 
     # --- Vector Index Management Methods ---
 
-    def vcreate(self, index_name: str, metric: str = "euclidean", precision: str = "float32", m: int = 0, ef_construction: int = 0, text_language: str = "") -> None:
+    def vcreate(self, index_name: str, metric: str = "euclidean", precision: str = "float32", m: int = 0, ef_construction: int = 0, text_language: str = "", maintenance_config: Dict[str, Any] = None) -> None:
         """
         Creates a new vector index.
 
@@ -167,6 +167,8 @@ class KektorDBClient:
             precision: The data precision ('float32', 'float16', 'int8').
             m: HNSW M parameter (max connections). Server default if 0.
             ef_construction: HNSW efConstruction parameter. Server default if 0.
+            text_language: Enables hybrid search ('english', 'italian').
+            maintenance_config: Optional dict for background tasks (vacuum/refine settings).
         
         Raises:
             APIError: If the index already exists or parameters are invalid.
@@ -177,6 +179,10 @@ class KektorDBClient:
         if ef_construction > 0: payload["ef_construction"] = ef_construction
         if text_language:
             payload["text_language"] = text_language
+
+        if maintenance_config:
+            payload["maintenance"] = maintenance_config
+
         self._request("POST", "/vector/actions/create", json=payload)
 
     def list_indexes(self) -> List[Dict[str, Any]]:
@@ -261,31 +267,26 @@ class KektorDBClient:
         }
         return self._request("POST", "/vector/actions/add-batch", json=payload)
 
-    def vimport(self, index_name: str, vectors: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def vimport(self, index_name: str, vectors: List[Dict[str, Any]], wait: bool = True) -> Task:
         """
-        Importa massivamente vettori in un indice (Bulk Load).
-        Questa operazione è ottimizzata per la velocità: non scrive sull'AOF riga per riga,
-        ma costruisce l'indice in memoria e forza uno snapshot alla fine.
+        Importa massivamente vettori (Async).
         
         Args:
-            index_name: Il nome dell'indice.
-            vectors: Una lista di dizionari (stesso formato di vadd_batch).
-
-        Returns:
-            Un dizionario con lo stato e il numero di vettori importati.
+            index_name: Nome indice.
+            vectors: Lista vettori.
+            wait: Se True, blocca finché l'import non è finito.
         """
         payload = {
             "index_name": index_name,
             "vectors": vectors
         }
-        # Nota: Aumentiamo il timeout perché l'import massivo può richiedere tempo
-        # prima di rispondere (specialmente durante lo snapshot finale).
-        original_timeout = self.timeout
-        self.timeout = 300 # 5 minuti di timeout per sicurezza
-        try:
-            return self._request("POST", "/vector/actions/import", json=payload)
-        finally:
-            self.timeout = original_timeout
+        # Non serve più il timeout gigante qui, la risposta è immediata
+        response = self._request("POST", "/vector/actions/import", json=payload)
+        
+        task = Task(self, response)
+        if wait:
+            return task.wait(interval=1, timeout=600) # Timeout lungo per il polling
+        return task
 
     def vdelete(self, index_name: str, item_id: str) -> None:
         """
@@ -363,6 +364,34 @@ class KektorDBClient:
             
         data = self._request("POST", "/vector/actions/search", json=payload)
         return data.get("results", [])
+
+    def vupdate_config(self, index_name: str, config: Dict[str, Any]) -> None:
+        """
+        Updates the background maintenance configuration for an index.
+        
+        Args:
+            index_name: The index to update.
+            config: Dictionary with configuration keys:
+                    - vacuum_interval (str, e.g. "60s")
+                    - delete_threshold (float, 0.0-1.0)
+                    - refine_enabled (bool)
+                    - refine_interval (str)
+                    - refine_batch_size (int)
+                    - refine_ef_construction (int)
+        """
+        self._request("POST", f"/vector/indexes/{index_name}/config", json=config)
+
+    def vtrigger_maintenance(self, index_name: str, task_type: str, wait: bool = True) -> Task:
+        """
+        Trigger manuale maintenance (Async).
+        """
+        payload = {"type": task_type}
+        response = self._request("POST", f"/vector/indexes/{index_name}/maintenance", json=payload)
+        
+        task = Task(self, response)
+        if wait:
+            return task.wait() # Timeout default
+        return task
         
 
     # --- System Methods ---

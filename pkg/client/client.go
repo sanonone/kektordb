@@ -1,13 +1,4 @@
 // Package client provides a Go client for interacting with the KektorDB API.
-//
-// It offers a type-safe way to perform all major operations, including:
-//   - Key-Value (KV) store operations (Set, Get, Delete).
-//   - Vector index management (Create, List, Delete, Get Info).
-//   - Vector data operations (Add, AddBatch, Search, Delete, Get).
-//   - System administration tasks (AOF Rewrite, Task Status).
-//
-// The client handles HTTP communication, JSON serialization/deserialization, and
-// standardized error handling.
 package client
 
 import (
@@ -21,7 +12,6 @@ import (
 
 // --- Custom Errors ---
 
-// APIError represents an error returned by the KektorDB API (status >= 400).
 type APIError struct {
 	StatusCode int
 	Message    string
@@ -33,25 +23,21 @@ func (e *APIError) Error() string {
 
 // --- JSON Response Structs ---
 
-// kvResponse models the response for GET operations on the KV store.
 type kvResponse struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
 }
 
-// searchResponse models the response for VSEARCH operations.
 type searchResponse struct {
 	Results []string `json:"results"`
 }
 
-// VectorData models the complete data of a vector for retrieval APIs.
 type VectorData struct {
 	ID       string                 `json:"id"`
 	Vector   []float32              `json:"vector"`
 	Metadata map[string]interface{} `json:"metadata"`
 }
 
-// IndexInfo models the information about an index for the introspection API.
 type IndexInfo struct {
 	Name           string `json:"name"`
 	Metric         string `json:"metric"`
@@ -61,32 +47,38 @@ type IndexInfo struct {
 	VectorCount    int    `json:"vector_count"`
 }
 
-// VectorAddObject represents a single object within a batch add request.
+// MaintenanceConfig defines settings for background optimization tasks.
+type MaintenanceConfig struct {
+	VacuumInterval       string  `json:"vacuum_interval,omitempty"`        // e.g. "60s"
+	DeleteThreshold      float64 `json:"delete_threshold,omitempty"`       // 0.0-1.0
+	RefineEnabled        bool    `json:"refine_enabled"`                   // true/false
+	RefineInterval       string  `json:"refine_interval,omitempty"`        // e.g. "30s"
+	RefineBatchSize      int     `json:"refine_batch_size,omitempty"`      // e.g. 100
+	RefineEfConstruction int     `json:"refine_ef_construction,omitempty"` // e.g. 200
+}
+
 type VectorAddObject struct {
 	Id       string                 `json:"id"`
 	Vector   []float32              `json:"vector"`
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
-// Task represents an asynchronous operation on the KektorDB server.
 type Task struct {
 	ID              string `json:"id"`
 	Status          string `json:"status"`
 	ProgressMessage string `json:"progress_message,omitempty"`
 	Error           string `json:"error,omitempty"`
 
-	client *Client // Reference to the client for polling.
+	client *Client
 }
 
 // --- Client ---
 
-// Client is the Go client for interacting with KektorDB.
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
 }
 
-// New creates a new KektorDB client.
 func New(host string, port int) *Client {
 	return &Client{
 		baseURL:    fmt.Sprintf("http://%s:%d", host, port),
@@ -94,8 +86,6 @@ func New(host string, port int) *Client {
 	}
 }
 
-// jsonRequest is a helper method to execute all requests to the API.
-// It handles JSON serialization, HTTP calls, and error management.
 func (c *Client) jsonRequest(method, endpoint string, payload any) ([]byte, error) {
 	var reqBody io.Reader
 	if payload != nil {
@@ -120,7 +110,7 @@ func (c *Client) jsonRequest(method, endpoint string, payload any) ([]byte, erro
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNoContent {
-		return nil, nil // For 204 responses (e.g., DELETE).
+		return nil, nil
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
@@ -139,7 +129,6 @@ func (c *Client) jsonRequest(method, endpoint string, payload any) ([]byte, erro
 	return respBody, nil
 }
 
-// Refresh updates the task's status by querying the server.
 func (t *Task) Refresh() error {
 	if t.client == nil {
 		return fmt.Errorf("client is not associated with the task")
@@ -154,11 +143,9 @@ func (t *Task) Refresh() error {
 	return nil
 }
 
-// Wait blocks until the task is completed, checking its status at regular intervals.
 func (t *Task) Wait(interval, timeout time.Duration) error {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
-
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -176,7 +163,7 @@ func (t *Task) Wait(interval, timeout time.Duration) error {
 			case "failed":
 				return fmt.Errorf("task %s failed with error: %s", t.ID, t.Error)
 			case "running", "started":
-				// Continue waiting.
+				continue
 			default:
 				return fmt.Errorf("unknown task status: %s", t.Status)
 			}
@@ -186,14 +173,12 @@ func (t *Task) Wait(interval, timeout time.Duration) error {
 
 // --- KV Methods ---
 
-// Set sets a key-value pair.
 func (c *Client) Set(key string, value []byte) error {
 	payload := map[string]string{"value": string(value)}
 	_, err := c.jsonRequest(http.MethodPost, "/kv/"+key, payload)
 	return err
 }
 
-// Get retrieves a value by its key.
 func (c *Client) Get(key string) ([]byte, error) {
 	respBody, err := c.jsonRequest(http.MethodGet, "/kv/"+key, nil)
 	if err != nil {
@@ -206,16 +191,16 @@ func (c *Client) Get(key string) ([]byte, error) {
 	return []byte(resp.Value), nil
 }
 
-// Delete removes a key-value pair.
 func (c *Client) Delete(key string) error {
 	_, err := c.jsonRequest(http.MethodDelete, "/kv/"+key, nil)
 	return err
 }
 
-// --- Vector Methods ---
+// --- Vector Index Management ---
 
 // VCreate creates a new vector index.
-func (c *Client) VCreate(indexName, metric, precision string, m, efConstruction int) error {
+// maintenance can be nil to use defaults.
+func (c *Client) VCreate(indexName, metric, precision string, m, efConstruction int, maintenance *MaintenanceConfig) error {
 	payload := map[string]interface{}{"index_name": indexName}
 	if metric != "" {
 		payload["metric"] = metric
@@ -229,12 +214,14 @@ func (c *Client) VCreate(indexName, metric, precision string, m, efConstruction 
 	if efConstruction > 0 {
 		payload["ef_construction"] = efConstruction
 	}
+	if maintenance != nil {
+		payload["maintenance"] = maintenance
+	}
 
 	_, err := c.jsonRequest(http.MethodPost, "/vector/actions/create", payload)
 	return err
 }
 
-// ListIndexes returns a list of all vector indexes.
 func (c *Client) ListIndexes() ([]IndexInfo, error) {
 	respBody, err := c.jsonRequest(http.MethodGet, "/vector/indexes", nil)
 	if err != nil {
@@ -247,7 +234,6 @@ func (c *Client) ListIndexes() ([]IndexInfo, error) {
 	return resp, nil
 }
 
-// GetIndexInfo retrieves information about a specific index.
 func (c *Client) GetIndexInfo(indexName string) (*IndexInfo, error) {
 	respBody, err := c.jsonRequest(http.MethodGet, "/vector/indexes/"+indexName, nil)
 	if err != nil {
@@ -260,13 +246,11 @@ func (c *Client) GetIndexInfo(indexName string) (*IndexInfo, error) {
 	return &resp, nil
 }
 
-// DeleteIndex deletes a vector index.
 func (c *Client) DeleteIndex(indexName string) error {
 	_, err := c.jsonRequest(http.MethodDelete, "/vector/indexes/"+indexName, nil)
 	return err
 }
 
-// VCompress starts the compression of an index and returns a Task.
 func (c *Client) VCompress(indexName, precision string) (*Task, error) {
 	payload := map[string]interface{}{
 		"index_name": indexName,
@@ -281,11 +265,25 @@ func (c *Client) VCompress(indexName, precision string) (*Task, error) {
 	if err := json.Unmarshal(respBody, &task); err != nil {
 		return nil, fmt.Errorf("invalid JSON response for VCompress: %w", err)
 	}
-	task.client = c // Inject the client to allow polling.
+	task.client = c
 	return &task, nil
 }
 
-// VAdd adds a single vector to an index.
+// VUpdateConfig updates the background maintenance settings for an index.
+func (c *Client) VUpdateConfig(indexName string, config MaintenanceConfig) error {
+	_, err := c.jsonRequest(http.MethodPost, fmt.Sprintf("/vector/indexes/%s/config", indexName), config)
+	return err
+}
+
+// VTriggerMaintenance manually triggers a "vacuum" or "refine" task.
+func (c *Client) VTriggerMaintenance(indexName string, taskType string) error {
+	payload := map[string]string{"type": taskType}
+	_, err := c.jsonRequest(http.MethodPost, fmt.Sprintf("/vector/indexes/%s/maintenance", indexName), payload)
+	return err
+}
+
+// --- Vector Data ---
+
 func (c *Client) VAdd(indexName, id string, vector []float32, metadata map[string]interface{}) error {
 	payload := map[string]interface{}{
 		"index_name": indexName,
@@ -299,18 +297,15 @@ func (c *Client) VAdd(indexName, id string, vector []float32, metadata map[strin
 	return err
 }
 
-// VAddBatch adds multiple vectors to an index in a single request.
 func (c *Client) VAddBatch(indexName string, vectors []VectorAddObject) (map[string]interface{}, error) {
 	payload := map[string]interface{}{
 		"index_name": indexName,
 		"vectors":    vectors,
 	}
-
 	respBody, err := c.jsonRequest(http.MethodPost, "/vector/actions/add-batch", payload)
 	if err != nil {
 		return nil, err
 	}
-
 	var resp map[string]interface{}
 	if err := json.Unmarshal(respBody, &resp); err != nil {
 		return nil, fmt.Errorf("invalid JSON response for VAddBatch: %w", err)
@@ -318,7 +313,28 @@ func (c *Client) VAddBatch(indexName string, vectors []VectorAddObject) (map[str
 	return resp, nil
 }
 
-// VSearch performs a vector search with optional filtering.
+// VImport performs a bulk import (bypassing AOF).
+func (c *Client) VImport(indexName string, vectors []VectorAddObject) (map[string]interface{}, error) {
+	payload := map[string]interface{}{
+		"index_name": indexName,
+		"vectors":    vectors,
+	}
+	// Increase timeout for import as it can be slow
+	originalTimeout := c.httpClient.Timeout
+	c.httpClient.Timeout = 5 * time.Minute
+	defer func() { c.httpClient.Timeout = originalTimeout }()
+
+	respBody, err := c.jsonRequest(http.MethodPost, "/vector/actions/import", payload)
+	if err != nil {
+		return nil, err
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for VImport: %w", err)
+	}
+	return resp, nil
+}
+
 func (c *Client) VSearch(indexName string, k int, queryVector []float32, filter string, efSearch int, alpha float64) ([]string, error) {
 	payload := map[string]interface{}{
 		"index_name":   indexName,
@@ -328,11 +344,9 @@ func (c *Client) VSearch(indexName string, k int, queryVector []float32, filter 
 	if filter != "" {
 		payload["filter"] = filter
 	}
-
 	if efSearch > 0 {
 		payload["ef_search"] = efSearch
 	}
-
 	if alpha != 0 {
 		payload["alpha"] = alpha
 	}
@@ -348,7 +362,6 @@ func (c *Client) VSearch(indexName string, k int, queryVector []float32, filter 
 	return resp.Results, nil
 }
 
-// VDelete deletes a single vector from an index.
 func (c *Client) VDelete(indexName, id string) error {
 	payload := map[string]string{
 		"index_name": indexName,
@@ -358,7 +371,6 @@ func (c *Client) VDelete(indexName, id string) error {
 	return err
 }
 
-// VGet retrieves a single vector by its ID.
 func (c *Client) VGet(indexName, id string) (*VectorData, error) {
 	respBody, err := c.jsonRequest(http.MethodGet, fmt.Sprintf("/vector/indexes/%s/vectors/%s", indexName, id), nil)
 	if err != nil {
@@ -371,7 +383,6 @@ func (c *Client) VGet(indexName, id string) (*VectorData, error) {
 	return &resp, nil
 }
 
-// VGetMany retrieves multiple vectors by their IDs in a single request.
 func (c *Client) VGetMany(indexName string, ids []string) ([]VectorData, error) {
 	payload := map[string]interface{}{
 		"index_name": indexName,
@@ -390,13 +401,11 @@ func (c *Client) VGetMany(indexName string, ids []string) ([]VectorData, error) 
 
 // --- Administration Methods ---
 
-// AOFRewrite triggers an AOF rewrite and returns a Task.
 func (c *Client) AOFRewrite() (*Task, error) {
 	respBody, err := c.jsonRequest(http.MethodPost, "/system/aof-rewrite", nil)
 	if err != nil {
 		return nil, err
 	}
-
 	var task Task
 	if err := json.Unmarshal(respBody, &task); err != nil {
 		return nil, fmt.Errorf("invalid JSON response for AOFRewrite: %w", err)
@@ -405,13 +414,11 @@ func (c *Client) AOFRewrite() (*Task, error) {
 	return &task, nil
 }
 
-// GetTaskStatus retrieves the status of a long-running task.
 func (c *Client) GetTaskStatus(taskID string) (*Task, error) {
 	respBody, err := c.jsonRequest(http.MethodGet, "/system/tasks/"+taskID, nil)
 	if err != nil {
 		return nil, err
 	}
-
 	var task Task
 	if err := json.Unmarshal(respBody, &task); err != nil {
 		return nil, fmt.Errorf("invalid JSON response for GetTaskStatus: %w", err)

@@ -52,6 +52,10 @@ type Options struct {
 	// AOF file size exceeds the base size by this percentage.
 	// E.g., 100 means rewrite when size doubles. Set to 0 to disable.
 	AofRewritePercentage int
+
+	// MaintenanceInterval defines how often the background graph optimization runs.
+	// Default: 10 seconds.
+	MaintenanceInterval time.Duration
 }
 
 // DefaultOptions returns a standard configuration suitable for most use cases.
@@ -68,6 +72,7 @@ func DefaultOptions(dataDir string) Options {
 		AutoSaveInterval:     60 * time.Second,
 		AutoSaveThreshold:    1000,
 		AofRewritePercentage: 100,
+		MaintenanceInterval:  10 * time.Second,
 	}
 }
 
@@ -97,8 +102,9 @@ type Engine struct {
 	// Note: core.DB has its own internal granular locks for data access.
 	adminMu sync.Mutex
 
-	closed chan struct{}
-	wg     sync.WaitGroup
+	closed    chan struct{}
+	closeOnce sync.Once
+	wg        sync.WaitGroup
 }
 
 // Open initializes a new Engine instance using the provided options.
@@ -170,14 +176,20 @@ func Open(opts Options) (*Engine, error) {
 // Note: It does not force a final snapshot, but all data is already persisted
 // in the AOF file, ensuring durability on restart.
 func (e *Engine) Close() error {
-	close(e.closed)
-	e.wg.Wait() // Wait for background tasks to finish
+	var err error
 
-	// Final sync
-	if e.AOF != nil {
-		return e.AOF.Close()
-	}
-	return nil
+	// Esegue il blocco una volta sola, anche se chiamato 100 volte
+	e.closeOnce.Do(func() {
+		close(e.closed)
+		e.wg.Wait() // Wait for background tasks
+
+		// Final sync
+		if e.AOF != nil {
+			err = e.AOF.Close()
+		}
+	})
+
+	return err
 }
 
 // backgroundTasks handles automatic saving and AOF rewriting.
@@ -187,12 +199,23 @@ func (e *Engine) backgroundTasks() {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
+	// Usa il valore configurato o un default safe se 0
+	interval := e.opts.MaintenanceInterval
+	if interval <= 0 {
+		interval = 1 * time.Second
+	}
+
+	maintTicker := time.NewTicker(interval)
+	defer maintTicker.Stop()
+
 	for {
 		select {
 		case <-e.closed:
 			return
 		case <-ticker.C:
 			e.checkMaintenance()
+		case <-maintTicker.C:
+			e.DB.RunMaintenance() // Graph Healing/Refine logic
 		}
 	}
 }

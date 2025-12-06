@@ -2,14 +2,14 @@ package main
 
 import (
 	"fmt"
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
+	"github.com/sanonone/kektordb/pkg/core/types"
+	"github.com/sanonone/kektordb/pkg/engine"
 	"log"
 	"math/rand"
 	"os"
 	"time"
-
-	"github.com/sanonone/kektordb/pkg/core/distance"
-	"github.com/sanonone/kektordb/pkg/core/types"
-	"github.com/sanonone/kektordb/pkg/engine"
 )
 
 const DataDir = "./test_data"
@@ -68,7 +68,7 @@ func main() {
 	idxName := "test_crud"
 
 	// VCreate
-	err = db.VCreate(idxName, distance.Cosine, 16, 200, distance.Float32, "english")
+	err = db.VCreate(idxName, distance.Cosine, 16, 200, distance.Float32, "english", nil)
 	if err != nil {
 		log.Fatalf("VCreate failed: %v", err)
 	}
@@ -123,7 +123,7 @@ func main() {
 
 	// VImport (Creates new index, bypasses AOF, forces snapshot)
 	importIdx := "test_import"
-	db.VCreate(importIdx, distance.Euclidean, 16, 200, distance.Float32, "")
+	db.VCreate(importIdx, distance.Euclidean, 16, 200, distance.Float32, "", nil)
 
 	importItems := []types.BatchObject{
 		{Id: "i1", Vector: []float32{0.5, 0.5, 0.5}},
@@ -173,7 +173,7 @@ func main() {
 
 	int8Idx := "test_int8_dedicated"
 	// Create a new index to isolate the test
-	db.VCreate(int8Idx, distance.Cosine, 16, 200, distance.Float32, "")
+	db.VCreate(int8Idx, distance.Cosine, 16, 200, distance.Float32, "", nil)
 
 	// 1. Insert a specific "Target" (all high positive values)
 	targetVec := make([]float32, 128)
@@ -232,7 +232,7 @@ func main() {
 
 	f16Idx := "test_f16_dedicated"
 	// Create Euclidean index (standard for Float16)
-	if err := db.VCreate(f16Idx, distance.Euclidean, 16, 200, distance.Float32, ""); err != nil {
+	if err := db.VCreate(f16Idx, distance.Euclidean, 16, 200, distance.Float32, "", nil); err != nil {
 		log.Fatalf("VCreate F16 failed: %v", err)
 	}
 
@@ -319,5 +319,64 @@ func main() {
 
 	fmt.Println("OK: Persistence verified (Data survived restart).")
 
+	db = db2
+	defer db.Close()
+
 	fmt.Println("\nALL TESTS PASSED SUCCESSFULLY!")
+
+	// ==========================================
+	// 10. TEST MAINTENANCE & OPTIMIZER
+	// ==========================================
+	fmt.Println("\n🔹 10. Testing Maintenance (Vacuum & Config)...")
+
+	maintIdx := "test_maintenance"
+	db.VCreate(maintIdx, distance.Cosine, 16, 200, distance.Float32, "", nil)
+
+	// Aggiungiamo 3 nodi: A, B, C
+	// A e B sono vicini, C è lontano.
+	db.VAdd(maintIdx, "nodeA", []float32{1.0, 0.0, 0.0}, nil)
+	db.VAdd(maintIdx, "nodeB", []float32{0.9, 0.1, 0.0}, nil)
+	db.VAdd(maintIdx, "nodeC", []float32{0.0, 1.0, 0.0}, nil)
+
+	// Cancelliamo nodeB. Ora nodeA potrebbe avere un link rotto verso B.
+	db.VDelete(maintIdx, "nodeB")
+
+	// 1. Aggiorniamo la configurazione a caldo
+	// Abilitiamo il Refine e cambiamo intervalli
+	newCfg := hnsw.AutoMaintenanceConfig{
+		VacuumInterval:  5 * time.Second,
+		DeleteThreshold: 0.1,
+		RefineEnabled:   true, // Abilitiamo Refine
+		RefineInterval:  2 * time.Second,
+		RefineBatchSize: 10,
+	}
+
+	fmt.Println("   -> Updating Index Config...")
+	if err := db.VUpdateIndexConfig(maintIdx, newCfg); err != nil {
+		log.Fatalf("❌ VUpdateIndexConfig fallito: %v", err)
+	}
+
+	// 2. Trigger Manuale Vacuum
+	// Questo dovrebbe trovare nodeB marcato 'Deleted', rimuovere i link da nodeA, e liberare memoria.
+	fmt.Println("   -> Triggering Manual Vacuum...")
+	if err := db.VTriggerMaintenance(maintIdx, "vacuum"); err != nil {
+		log.Fatalf("❌ VTriggerMaintenance (vacuum) fallito: %v", err)
+	}
+	// Nota: Guarda i log del server per vedere "[Optimizer] Vacuum complete..."
+
+	// 3. Trigger Manuale Refine
+	fmt.Println("   -> Triggering Manual Refine...")
+	if err := db.VTriggerMaintenance(maintIdx, "refine"); err != nil {
+		log.Fatalf("❌ VTriggerMaintenance (refine) fallito: %v", err)
+	}
+
+	// Verifica che nodeA esista ancora e trovi nodeC (o nulla) ma non nodeB
+	resMaint, _ := db.VSearch(maintIdx, []float32{1.0, 0.0, 0.0}, 5, "", 100, 0.5)
+	for _, id := range resMaint {
+		if id == "nodeB" {
+			log.Fatalf("❌ ERRORE GRAVE: nodeB trovato dopo Vacuum!")
+		}
+	}
+
+	fmt.Println("✅ Maintenance Ops OK (Config update, Triggers executed).")
 }

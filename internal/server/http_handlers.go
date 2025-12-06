@@ -10,12 +10,12 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"log"
 	"net/http"
 	"net/http/pprof"
 	"strings"
-
-	"github.com/sanonone/kektordb/pkg/core/distance"
 )
 
 // registerHTTPHandlers sets up all HTTP routes using Go 1.22+ routing.
@@ -61,6 +61,9 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("GET /vector/indexes/{name}", s.handleSingleIndexGet)
 	mux.HandleFunc("DELETE /vector/indexes/{name}", s.handleSingleIndexDelete)
 
+	mux.HandleFunc("POST /vector/indexes/{name}/config", s.handleIndexConfig)
+	mux.HandleFunc("POST /vector/indexes/{name}/maintenance", s.handleIndexMaintenance)
+
 	// Specific vector retrieval
 	mux.HandleFunc("GET /vector/indexes/{name}/vectors/{id}", s.handleGetVector)
 }
@@ -104,6 +107,59 @@ func (s *Server) handleSingleIndexDelete(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleIndexConfig updates the maintenance configuration for an index.
+func (s *Server) handleIndexConfig(w http.ResponseWriter, r *http.Request) {
+	// Il metodo è garantito essere POST dal mux
+	indexName := r.PathValue("name")
+
+	var config hnsw.AutoMaintenanceConfig
+	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON config: %v", err))
+		return
+	}
+
+	if err := s.Engine.VUpdateIndexConfig(indexName, config); err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Configuration updated"})
+}
+
+// handleIndexMaintenance starts an asynchronous maintenance task.
+func (s *Server) handleIndexMaintenance(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, fmt.Errorf("Use POST"))
+		return
+	}
+
+	var req TriggerMaintenanceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %v", err))
+		return
+	}
+
+	if req.Type != "vacuum" && req.Type != "refine" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid maintenance type"))
+		return
+	}
+
+	indexName := r.PathValue("name")
+
+	task := s.taskManager.NewTask()
+
+	go func() {
+		if err := s.Engine.VTriggerMaintenance(indexName, req.Type); err != nil {
+			task.SetError(err)
+		} else {
+			task.SetStatus(TaskStatusCompleted)
+			task.SetProgress(fmt.Sprintf("%s cycle completed", req.Type))
+		}
+	}()
+
+	s.writeHTTPResponse(w, http.StatusAccepted, task)
 }
 
 // --- KV HANDLERS ---
@@ -179,7 +235,7 @@ func (s *Server) handleVectorCreate(w http.ResponseWriter, r *http.Request) {
 		prec = distance.Float32
 	}
 
-	err := s.Engine.VCreate(req.IndexName, metric, req.M, req.EfConstruction, prec, req.TextLanguage)
+	err := s.Engine.VCreate(req.IndexName, metric, req.M, req.EfConstruction, prec, req.TextLanguage, req.Maintenance)
 	if err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, err)
 		return
@@ -234,28 +290,37 @@ func (s *Server) handleVectorAddBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleVectorImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeHTTPError(w, http.StatusMethodNotAllowed, fmt.Errorf("Use POST"))
+		return
+	}
 	var req BatchAddVectorsRequest
-	if err := s.decodeJSON(r, &req); err != nil {
-		s.writeHTTPError(w, http.StatusBadRequest, err)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("Invalid JSON"))
 		return
 	}
-
 	if req.IndexName == "" || len(req.Vectors) == 0 {
-		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("missing index_name or vectors"))
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("Missing index_name or vectors"))
 		return
 	}
 
-	err := s.Engine.VImport(req.IndexName, req.Vectors)
-	if err != nil {
-		s.writeHTTPError(w, http.StatusInternalServerError, err)
-		return
-	}
+	// Crea il Task
+	task := s.taskManager.NewTask()
 
-	s.writeHTTPResponse(w, http.StatusOK, map[string]interface{}{
-		"status":           "OK",
-		"vectors_imported": len(req.Vectors),
-		"message":          "Bulk import completed and persisted to snapshot",
-	})
+	// Esegui in background
+	go func() {
+		// ENGINE CALL (VImport)
+		// Nota: VImport è bloccante, quindi la goroutine vive finché non finisce.
+		if err := s.Engine.VImport(req.IndexName, req.Vectors); err != nil {
+			task.SetError(err)
+		} else {
+			task.SetStatus(TaskStatusCompleted)
+			task.SetProgress(fmt.Sprintf("Imported %d vectors", len(req.Vectors)))
+		}
+	}()
+
+	// Ritorna subito 202 Accepted con il Task ID
+	s.writeHTTPResponse(w, http.StatusAccepted, task)
 }
 
 func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {

@@ -39,6 +39,7 @@ func (e *Engine) replayAOF() error {
 		precision      distance.PrecisionType
 		textLanguage   string
 		entries        map[string]vectorEntry
+		maintenanceCfg *hnsw.AutoMaintenanceConfig
 	}
 
 	kvData := make(map[string][]byte)
@@ -137,6 +138,27 @@ func (e *Engine) replayAOF() error {
 					delete(idx.entries, id)
 				}
 			}
+		case "VCONFIG":
+			if len(cmd.Args) == 2 {
+				idxName := string(cmd.Args[0])
+				cfgJSON := cmd.Args[1]
+
+				// Troviamo l'indice (deve essere stato creato da un VCREATE precedente nel log)
+				// Nota: stiamo lavorando sulla mappa temporanea 'indexes', non ancora sul DB core
+				if idxState, ok := indexes[idxName]; ok {
+					// Poiché indexState è una struct temporanea per il replay,
+					// dobbiamo aggiungere un campo per salvare questa config e applicarla dopo.
+					// Oppure, applichiamola direttamente all'indice creato.
+
+					// SOLUZIONE MIGLIORE PER ORA:
+					// Poiché la struct 'indexState' in recovery.go è semplice,
+					// aggiungiamo un campo 'maintenanceCfg' lì.
+					var cfg hnsw.AutoMaintenanceConfig
+					if json.Unmarshal(cfgJSON, &cfg) == nil {
+						idxState.maintenanceCfg = &cfg
+					}
+				}
+			}
 		}
 	}
 
@@ -156,6 +178,13 @@ func (e *Engine) replayAOF() error {
 		idx, ok := e.DB.GetVectorIndex(name)
 		if !ok {
 			continue
+		}
+
+		// Applica config se presente nel replay
+		if state.maintenanceCfg != nil {
+			if h, ok := idx.(*hnsw.Index); ok {
+				h.UpdateMaintenanceConfig(*state.maintenanceCfg)
+			}
 		}
 
 		// Bulk Load items

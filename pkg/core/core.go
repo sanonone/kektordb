@@ -72,6 +72,7 @@ type IndexSnapshot struct {
 	MaxLevel           int
 	QuantizerState     *distance.Quantizer // Saves the quantizer's state.
 	QuantizedNorms     []float32
+	MaintenanceConfig  hnsw.AutoMaintenanceConfig
 }
 
 // NodeSnapshot contains all the necessary data to restore a single node.
@@ -181,6 +182,7 @@ func (s *DB) Snapshot(writer io.Writer) error {
 				MaxLevel:           maxLevel,
 				QuantizerState:     quantizer,
 				QuantizedNorms:     norms,
+				MaintenanceConfig:  hnswIndex.GetMaintenanceConfig(),
 			}
 		}
 	}
@@ -240,6 +242,8 @@ func (s *DB) LoadFromSnapshot(reader io.Reader) error {
 			nodesToLoad[id] = nodeSnap.NodeData
 		}
 
+		idx.UpdateMaintenanceConfig(indexSnap.MaintenanceConfig)
+
 		// Load the HNSW graph data
 		if err := idx.LoadSnapshotData(nodesToLoad, indexSnap.ExternalToInternal, indexSnap.InternalCounter, indexSnap.EntrypointID, indexSnap.MaxLevel, indexSnap.QuantizerState, indexSnap.QuantizedNorms); err != nil {
 			return fmt.Errorf("failed to load HNSW data for index '%s': %w", name, err)
@@ -262,6 +266,23 @@ func (s *DB) LoadFromSnapshot(reader io.Reader) error {
 	}
 
 	return nil
+}
+
+// RunMaintenance triggers background tasks (Vacuum/Refine) on all vector indexes.
+// It should be called periodically by the Engine.
+func (s *DB) RunMaintenance() {
+	s.mu.RLock()
+	indexes := make([]*hnsw.Index, 0, len(s.vectorIndexes))
+	for _, idx := range s.vectorIndexes {
+		if h, ok := idx.(*hnsw.Index); ok {
+			indexes = append(indexes, h)
+		}
+	}
+	s.mu.RUnlock()
+
+	for _, idx := range indexes {
+		idx.MaintenanceRun("") // "" = auto (check timer)
+	}
 }
 
 // IterateKV iterates over all key-value pairs in the store, passing each to a callback function.
