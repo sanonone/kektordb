@@ -1,0 +1,22 @@
+# Git
+.git
+.gitignore
+
+# Build artifacts
+kektordb
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+
+# Data
+kektordb.aof
+kektordb.kdb
+test_data/
+examples/
+benchmarks/
+
+# IDE files
+.vscode
+.idea
