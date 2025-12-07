@@ -16,11 +16,32 @@ import (
 	"time"
 )
 
+// getEnv retrieves an environment variable or returns a default value.
+func getEnv(key, fallback string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return fallback
+}
+
 func main() {
+	defaultAddr := getEnv("KEKTOR_PORT", ":9091")
+	if !strings.HasPrefix(defaultAddr, ":") && !strings.Contains(defaultAddr, ":") {
+		defaultAddr = ":" + defaultAddr
+	}
+
+	defaultAof := getEnv("KEKTOR_DATA_DIR", "kektordb.aof")
+	if info, err := os.Stat(defaultAof); err == nil && info.IsDir() {
+		defaultAof = filepath.Join(defaultAof, "kektordb.aof")
+	}
+
+	defaultAuth := getEnv("KEKTOR_TOKEN", "")
+
 	// Flags
 	httpAddr := flag.String("http-addr", ":9091", "HTTP address")
 	aofPath := flag.String("aof-path", "kektordb.aof", "Path to AOF file")
 	savePolicy := flag.String("save", "60 1000", "Auto-snapshot policy: 'seconds changes'")
+	authToken := flag.String("auth-token", defaultAuth, "API Authentication Token (empty = disabled)")
 	aofRewritePerc := flag.Int("aof-rewrite-percentage", 100, "Rewrite AOF at X% growth")
 	vectorizersConfig := flag.String("vectorizers-config", "", "Vectorizers YAML config")
 	flag.Parse()
@@ -58,7 +79,7 @@ func main() {
 	defer eng.Close() // Close on exit
 
 	// Starting HTTP Server
-	srv, err := server.NewServer(eng, *httpAddr, *vectorizersConfig)
+	srv, err := server.NewServer(eng, *httpAddr, *vectorizersConfig, *authToken)
 	if err != nil {
 		log.Fatalf("Failed to create server: %v", err)
 	}
@@ -69,6 +90,13 @@ func main() {
 
 	go func() {
 		log.Printf("KektorDB is ready on %s", *httpAddr)
+
+		if *authToken != "" {
+			log.Println("Security: API Authentication ENABLED")
+		} else {
+			log.Println("Security: API Authentication DISABLED (Dev Mode)")
+		}
+
 		if err := srv.Run(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("Server error: %v", err)
 		}

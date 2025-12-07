@@ -18,11 +18,12 @@ type Server struct {
 	taskManager       *TaskManager
 	vectorizerConfig  *Config
 	vectorizerService *VectorizerService
+	authToken         string
 }
 
 // NewServer initializes the HTTP server using an existing Engine.
 // Note: The Engine must be initialized (Open) before passing it here.
-func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string) (*Server, error) {
+func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string, authToken string) (*Server, error) {
 
 	// Load Vectorizer Configuration
 	vecConfig, err := LoadVectorizersConfig(vectorizersConfigPath)
@@ -37,6 +38,7 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 		Engine:           eng,
 		taskManager:      NewTaskManager(),
 		vectorizerConfig: vecConfig,
+		authToken:        authToken,
 	}
 
 	// Initialize Vectorizer Service
@@ -50,9 +52,11 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 	mux := http.NewServeMux()
 	s.registerHTTPHandlers(mux)
 
+	handler := s.authMiddleware(mux)
+
 	s.httpServer = &http.Server{
 		Addr:    httpAddr,
-		Handler: mux,
+		Handler: handler,
 	}
 
 	return s, nil

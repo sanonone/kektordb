@@ -77,12 +77,14 @@ type Task struct {
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
+	apiKey     string
 }
 
-func New(host string, port int) *Client {
+func New(host string, port int, apiKey string) *Client {
 	return &Client{
 		baseURL:    fmt.Sprintf("http://%s:%d", host, port),
 		httpClient: &http.Client{Timeout: 10 * time.Second},
+		apiKey:     apiKey,
 	}
 }
 
@@ -102,6 +104,10 @@ func (c *Client) jsonRequest(method, endpoint string, payload any) ([]byte, erro
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

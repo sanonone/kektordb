@@ -539,3 +539,30 @@ func (s *Server) decodeJSON(r *http.Request, v interface{}) error {
 	}
 	return nil
 }
+
+// authMiddleware wraps an http.Handler and checks for the Bearer token.
+// It acts as a gatekeeper for all incoming requests.
+func (s *Server) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.authToken == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			http.Error(w, "Unauthorized: missing Authorization header", http.StatusUnauthorized)
+			return
+		}
+
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		token = strings.TrimSpace(token)
+
+		if token != s.authToken {
+			http.Error(w, "Unauthorized: invalid token", http.StatusUnauthorized)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}

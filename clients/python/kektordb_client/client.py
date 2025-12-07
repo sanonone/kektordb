@@ -68,7 +68,7 @@ class KektorDBClient:
     """
     The official Python client for interacting with a KektorDB server via its REST API.
     """
-    def __init__(self, host: str = "localhost", port: int = 9091, timeout: int = 30):
+    def __init__(self, host: str = "localhost", port: int = 9091, timeout: int = 30, api_key: str = None):
         """
         Initializes the KektorDB client.
 
@@ -76,25 +76,36 @@ class KektorDBClient:
             host: The hostname or IP address of the KektorDB server.
             port: The port of the KektorDB REST API server.
             timeout: The request timeout in seconds.
+            api_key: Optional secret token for authentication.
         """
         self.base_url = f"http://{host}:{port}"
         self.timeout = timeout
+        self.api_key = api_key
         self._session = requests.Session()
 
     def _request(self, method: str, endpoint: str, **kwargs) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
         """Internal helper method for making HTTP requests."""
+        
+        headers = kwargs.get("headers", {})
+
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        kwargs["headers"] = headers
+
         try:
             response = self._session.request(
                 method,
                 f"{self.base_url}{endpoint}",
                 timeout=self.timeout,
-                **kwargs
+                **kwargs 
             )
             response.raise_for_status()
-            # Handle 204 No Content for successful DELETE operations
+            
             if response.status_code == 204:
                 return {}
             return response.json()
+            
         except requests.exceptions.HTTPError as e:
             try:
                 msg = e.response.json().get("error", str(e))
