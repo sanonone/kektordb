@@ -10,6 +10,10 @@
 
 [English](README.md) | [Italiano](README.it.md)
 
+> [!TIP]
+> **Docker Support:** Prefer containers? A `Dockerfile` is included in the root for building your own images.
+
+
 **KektorDB is an in-memory vector and Key-Value database built in Go. It implements an HNSW engine for vector search, hybrid search with BM25 ranking, metadata filtering, and a JSON-based REST API.**
 
 ### Motivation and Philosophy
@@ -36,6 +40,9 @@ KektorDB runs as a standalone server or can be imported as an embeddable Go libr
     *   A JSON REST API supporting batch operations and async task management. 
     *   Official clients for **Python** and **Go**.
 *   **Persistence:** A hybrid **AOF + Snapshot** system ensures durability across restarts. 
+*   **Maintenance & Optimization:**
+    *   **Vacuum:** A background process that cleans up deleted nodes to reclaim memory and repair graph connections.
+    *   **Refine:** An ongoing optimization that re-evaluates graph connections to improve search quality (recall) over time. 
 *   **Dual Compute Engine:**
     *   **Standard Build:** Uses pure Go with `gonum` assembly for portability.
     *   **Performance Build:** Optional (`-tags rust`) build that links a Rust library via CGO to leverage specific SIMD instructions. 
@@ -121,6 +128,29 @@ Download the pre-compiled binary from the [Releases page](https://github.com/san
 > **Compatibility Note:** All development and testing were performed on **Linux (x86_64)**.
 > *   **Pure Go Builds:** Expected to run seamlessly on Windows, macOS (Intel/M1), and ARM, though not manually verified yet.
 > *   **Rust-Accelerated Builds:** Leverage CGO and specific SIMD instructions. These builds have currently **only been verified on Linux**.
+
+### Use Cases & When to Use
+
+KektorDB follows the "SQLite philosophy" but for vectors. It is not designed to replace distributed clusters (like Qdrant Cloud or Milvus) for petabyte-scale data.
+
+**✅ Use KektorDB when:**
+*   You need a **local, embedded** search engine for a Go or Python application.
+*   You want to keep your architecture simple (no extra containers/services required).
+*   Your dataset fits in RAM (e.g., < 5M vectors on a standard server).
+*   You are building "Edge AI" or privacy-first applications where data shouldn't leave the machine.
+
+**❌ Consider other options when:**
+*   You need distributed storage across multiple nodes (Sharding/Replication).
+*   Your dataset is massive (100M+ vectors) and requires disk-based indexing.
+
+### 🦜 Integration with LangChain
+
+KektorDB includes a built-in wrapper for **LangChain Python**, allowing you to plug it directly into your existing AI pipelines.
+
+```python
+from kektordb_client.langchain import KektorVectorStore
+# See clients/python/README.md for full details
+```
 
 ### 🚀 Quick Start (Python)
 
