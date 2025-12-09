@@ -60,10 +60,10 @@ type AutoMaintenanceConfig struct {
 // DefaultMaintenanceConfig returns safe defaults: Vacuum ON, Refine OFF.
 func DefaultMaintenanceConfig() AutoMaintenanceConfig {
 	return AutoMaintenanceConfig{
-		VacuumInterval:       Duration(1 * time.Minute),
+		VacuumInterval:       Duration(5 * time.Minute),
 		DeleteThreshold:      0.1, // 10% dirty
 		RefineEnabled:        false,
-		RefineInterval:       Duration(30 * time.Second),
+		RefineInterval:       Duration(30 * time.Minute),
 		RefineBatchSize:      500,
 		RefineEfConstruction: 0,
 	}

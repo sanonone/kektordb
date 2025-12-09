@@ -6,7 +6,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="kektordb_client",
-    version="0.2.2", 
+    version="0.3.0", 
     author="Sanonone",
     author_email="fedeld023@gmail.com",
     description="An official Python client for KektorDB, a high-performance in-memory vector database.",

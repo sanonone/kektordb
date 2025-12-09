@@ -1153,6 +1153,8 @@ func (s *DB) evaluateBooleanFilter(indexName string, filter string) (map[uint32]
 	key := strings.TrimSpace(filter[:opIndex])
 	valueStr := strings.TrimSpace(filter[opIndex+len(op):])
 
+	valueStr = strings.Trim(valueStr, "'\"")
+
 	// Result set
 	idSet := make(map[uint32]struct{})
 
