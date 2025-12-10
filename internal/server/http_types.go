@@ -60,3 +60,9 @@ type VectorCompressRequest struct {
 type TriggerMaintenanceRequest struct {
 	Type string `json:"type"` // "vacuum" or "refine"
 }
+
+type RagRetrieveRequest struct {
+	PipelineName string `json:"pipeline_name"`
+	Query        string `json:"query"`
+	K            int    `json:"k"` // Default 10
+}

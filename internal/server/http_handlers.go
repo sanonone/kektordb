@@ -58,6 +58,8 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /vector/actions/compress", s.handleVectorCompress)
 	mux.HandleFunc("POST /vector/actions/get-vectors", s.handleGetVectorsBatch)
 
+	mux.HandleFunc("POST /rag/retrieve", s.handleRagRetrieve)
+
 	// Dynamic index routes
 	mux.HandleFunc("GET /vector/indexes/{name}", s.handleSingleIndexGet)
 	mux.HandleFunc("DELETE /vector/indexes/{name}", s.handleSingleIndexDelete)
@@ -433,6 +435,42 @@ func (s *Server) handleGetVector(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeHTTPResponse(w, http.StatusOK, data)
+}
+
+// handleRagRetrieve esegue una ricerca semantica usando una pipeline configurata.
+func (s *Server) handleRagRetrieve(w http.ResponseWriter, r *http.Request) {
+	var req RagRetrieveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("Invalid JSON"))
+		return
+	}
+
+	if req.Query == "" || req.PipelineName == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("pipeline_name and query are required"))
+		return
+	}
+	if req.K <= 0 {
+		req.K = 3
+	}
+
+	// Trova la pipeline giusta nel VectorizerService
+	// (Dobbiamo esporre un metodo per ottenere una pipeline per nome)
+	pipeline := s.vectorizerService.GetPipeline(req.PipelineName)
+	if pipeline == nil {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("pipeline '%s' not found", req.PipelineName))
+		return
+	}
+
+	// Esegui Retrieval
+	texts, err := pipeline.Retrieve(req.Query, req.K)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("error while retrieving"))
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
+		"results": texts,
+	})
 }
 
 // --- SYSTEM HANDLERS ---

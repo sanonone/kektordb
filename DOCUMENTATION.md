@@ -52,6 +52,9 @@ graph TD
     -   **AOF (Append-Only File):** Logs write operations using a RESP-like protocol for durability.
     -   **Snapshots:** Periodic binary dumps of the in-memory state for faster restarts.
 -   **Vectorizer Service:** A background worker that monitors external data sources (e.g., filesystem directories), chunks text, and syncs embeddings using external APIs (like Ollama).
+-   **Graph Maintenance:**
+    -   **Vacuum:** Automatically detects and removes soft-deleted nodes, reclaiming memory and repairing the HNSW graph structure.
+    -   **Refine:** Periodically re-scans the graph to optimize edge connections, improving recall that may have degraded after many updates.
 
 ## Installation
 
@@ -73,6 +76,19 @@ go get github.com/sanonone/kektordb
 > **Compatibility Note:** All development and testing were performed on **Linux (x86_64)**.
 > *   **Pure Go Builds:** Expected to run seamlessly on Windows, macOS (Intel/M1), and ARM, though not manually verified yet.
 > *   **Rust-Accelerated Builds:** Leverage CGO and specific SIMD instructions. These builds have currently **only been verified on Linux**.
+
+### Using Docker
+
+A `Dockerfile` is provided in the root directory for containerized deployments.
+
+```bash
+# Build the image
+docker build -t kektordb .
+
+# Run the container (exposing port 9091)
+docker run -p 9091:9091 kektordb
+```
+
 
 ---
 
@@ -147,6 +163,17 @@ Launch the server with custom flags:
 | `-save`                   | Snapshot policy in `"seconds changes"` format. Multiple policies allowed.  | `"60 1000"`     | `-save="300 10"` (Save after 300s if 10 changes)     |
 | `-aof-rewrite-percentage` | Triggers AOF compaction when file grows by this percentage (0 to disable). | `100`           | `-aof-rewrite-percentage=50` (Rewrite at 50% growth) |
 | `-vectorizers-config`     | Path to YAML config for the Vectorizer service.                            | `""` (disabled) | `-vectorizers-config="vectorizers.yaml"`             |
+| `-auth-token`             | Secret token for API authentication.                                       | `""` (disabled) | `-auth-token="super-secret-key"`                     |
+
+#### Environment Variables
+
+You can also configure the server using environment variables. Flags take precedence over environment variables.
+
+| Variable          | Description                                    | Default          |
+| ----------------- | ---------------------------------------------- | ---------------- |
+| `KEKTOR_PORT`     | HTTP Port (e.g. `:9091` or `8080`).            | `:9091`          |
+| `KEKTOR_DATA_DIR` | Directory to store the `.aof` and `.kdb` files.| `./`             |
+| `KEKTOR_TOKEN`    | API Authentication Token.                      | `""`             |
 
 Example with custom config:
 ```
@@ -155,7 +182,17 @@ Example with custom config:
 
 ### Interacting with the REST API
 
-All operations use HTTP requests (e.g., via `curl`, Python/Go clients, or tools like Postman). 
+All operations use HTTP requests (e.g., via `curl`, Python/Go clients, or tools like Postman).
+
+#### Authentication
+
+If kektordb is started with an authentication token (via `-auth-token` or `KEKTOR_TOKEN`), you must include it in the `Authorization` header of every request.
+
+```bash
+Authorization: Bearer <your-token>
+```
+
+If the token is missing or invalid, the server will respond with `401 Unauthorized`. 
 #### Key-Value Operations
 
 A simple persistent store for string data, useful for storing application state or configurations alongside your vectors.
@@ -191,6 +228,9 @@ Manage the containers (indexes) that hold your vector data.
     *   Returns configuration and statistics (vector count) for a specific index.
 *   **Delete Index:** `DELETE /vector/indexes/{name}`
     *   Permanently removes the index and all associated data.
+*   **Update Config:** `POST /vector/indexes/{name}/config`
+    *   **Body:** `{"vacuum_interval": "60s", "refine_enabled": true, ...}`
+    *   Updates the background maintenance settings (Vacuum/Refine) for a specific index dynamically.
 
 ### Vector Ingestion
 
@@ -323,6 +363,21 @@ The Vectorizer service runs background workers to sync indexes with external dat
   ```
   curl -X POST http://localhost:9091/system/aof-rewrite
   ```
+
+#### Graph Optimization (Vacuum & Refine)
+
+KektorDB maintains graph quality through two background processes:
+
+1.  **Vacuum**:
+    *   **Purpose**: Deletion in HNSW is typically "soft" (marking a node as ignored). Vacuum physically removes these nodes and repairs the connections of their neighbors.
+    *   **Trigger**: Runs automatically when the ratio of deleted nodes exceeds a threshold (default 10%) or can be manually triggered.
+    *   **Mechanism**: Uses an improved repair algorithm that locks small batches of nodes to minimize blocking searches.
+
+2.  **Refine**:
+    *   **Purpose**: Over time, random insertions can lead to suboptimal graph connections. Refine re-evaluates neighbors for existing nodes to "rewire" the graph for better recall.
+    *   **Trigger**: Periodic background task.
+    *   **Mechanism**: Uses a parallel, sharded approach to compute better neighbors without blocking the entire index.
+
 
 ## Persistence
 

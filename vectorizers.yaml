@@ -1,83 +1,82 @@
 vectorizers:
-  - name: "kektordb"
+  # 1. Documentazione Generale (Markdown/PDF)
+  # Usa strategia "recursive" (default intelligente)
+  - name: "docs_kektor_internal"
     kektor_index: "knowledge_base"
-    schedule: "30s"
+    schedule: "60s"
     source:
       type: "filesystem"
-      path: "/home/dash/myGoProg/kektordb/internal/" # Usa una cartella che esiste
+      path: "/home/dash/myGoProg/kektordb/internal/"
+    include_patterns: ["*.go", "*.md"] # Processa solo codice Go e Markdown
+    exclude_patterns: ["*_test.go"]    # Ignora i test
+    index_config:
+      metric: "cosine"
+      precision: "float32"       # <--- Risparmia 75% RAM!
+      m: 16                   # <--- Migliore qualità grafo
+      ef_construction: 200    # <--- Costruzione più lenta ma precisa
+      text_language: "english" # <--- Stemming italiano per la ricerca ibrida
     embedder:
       type: "ollama_api"
       url: "http://localhost:11434/api/embeddings"
       model: "nomic-embed-text"
+      timeout: "120s" # Timeout lungo per file grossi
     document_processor:
-      chunking_strategy: "lines"
-      chunk_size: 400
+      chunking_strategy: "code" 
+      chunk_size: 500
+      chunk_overlap: 50
     metadata_template:
       source_file: "{{file_path}}"
-      progetto: "kektordb-docs"
-  - name: "kektordb"
-    kektor_index: "knowledge_base"
-    schedule: "30s"
-    source:
-      type: "filesystem"
-      path: "/home/dash/myGoProg/kektordb/pkg/" # Usa una cartella che esiste
-    embedder:
-      type: "ollama_api"
-      url: "http://localhost:11434/api/embeddings"
-      model: "nomic-embed-text"
-    document_processor:
-      chunking_strategy: "lines"
-      chunk_size: 400
-    metadata_template:
-      source_file: "{{file_path}}"
-      progetto: "kektordb-docs"
-  - name: "kektordb"
-    kektor_index: "knowledge_base"
-    schedule: "30s"
-    source:
-      type: "filesystem"
-      path: "/home/dash/myGoProg/kektordb/cmd/" # Usa una cartella che esiste
-    embedder:
-      type: "ollama_api"
-      url: "http://localhost:11434/api/embeddings"
-      model: "nomic-embed-text"
-    document_processor:
-      chunking_strategy: "lines"
-      chunk_size: 400
-    metadata_template:
-      source_file: "{{file_path}}"
-      progetto: "kektordb-docs"
-  - name: "kektordb"
-    kektor_index: "knowledge_base"
-    schedule: "30s"
-    source:
-      type: "filesystem"
-      path: "/home/dash/myGoProg/kektordb/examples/" # Usa una cartella che esiste
-    embedder:
-      type: "ollama_api"
-      url: "http://localhost:11434/api/embeddings"
-      model: "nomic-embed-text"
-    document_processor:
-      chunking_strategy: "lines"
-      chunk_size: 400
-    metadata_template:
-      source_file: "{{file_path}}"
-      progetto: "kektordb-docs"
-  - name: "kektordb"
-    kektor_index: "knowledge_base"
-    schedule: "30s"
-    source:
-      type: "filesystem"
-      path: "/home/dash/Documenti/nvim comandi" # Usa una cartella che esiste
-    embedder:
-      type: "ollama_api"
-      url: "http://localhost:11434/api/embeddings"
-      model: "nomic-embed-text"
-    document_processor:
-      chunking_strategy: "lines"
-      chunk_size: 400
-    metadata_template:
-      source_file: "{{file_path}}"
-      progetto: "kektordb-docs"
+      category: "internal_code"
 
+  # 2. Documentazione Core (Codice)
+  # Usa strategia "code" (ottimizzata per tagliare su funzioni/tipi)
+  - name: "docs_kektor_pkg"
+    kektor_index: "knowledge_base"
+    schedule: "60s"
+    source:
+      type: "filesystem"
+      path: "/home/dash/myGoProg/kektordb/pkg/"
+    include_patterns: ["*.go"]
+    index_config:
+      metric: "cosine"
+      precision: "float32"       # <--- Risparmia 75% RAM!
+      m: 32                   # <--- Migliore qualità grafo
+      ef_construction: 300    # <--- Costruzione più lenta ma precisa
+      text_language: "english" # <--- Stemming italiano per la ricerca ibrida
+    embedder:
+      type: "ollama_api"
+      url: "http://localhost:11434/api/embeddings"
+      model: "nomic-embed-text"
+    document_processor:
+      chunking_strategy: "code" # <--- Strategia specifica per codice
+      chunk_size: 800
+    metadata_template:
+      source_file: "{{file_path}}"
+      category: "core_logic"
 
+  # 3. Appunti Obsidian / Markdown
+  # Usa strategia "markdown" (taglia sugli header ##)
+  - name: "personal_notes"
+    kektor_index: "knowledge_base"
+    schedule: "30s"
+    source:
+      type: "filesystem"
+      path: "/home/dash/Documenti/nvim comandi"
+    include_patterns: ["*.md", "*.txt", "*.pdf"]
+    exclude_patterns: ["draft_*"] # Ignora bozze
+    index_config:
+      metric: "cosine"
+      precision: "float32"       # <--- Risparmia 75% RAM!
+      m: 32                   # <--- Migliore qualità grafo
+      ef_construction: 400    # <--- Costruzione più lenta ma precisa
+      text_language: "english" # <--- Stemming italiano per la ricerca ibrida
+    embedder:
+      type: "ollama_api"
+      url: "http://localhost:11434/api/embeddings"
+      model: "nomic-embed-text"
+    document_processor:
+      chunking_strategy: "markdown" # <--- Rispetta la struttura MD
+      chunk_size: 1000
+    metadata_template:
+      source_file: "{{file_path}}"
+      category: "study_notes"
