@@ -811,10 +811,11 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Get the index configuration to determine which text analyzer to use.
 	idx, ok := s.vectorIndexes[indexName]
 	if !ok {
 		return nil
-	} // L'indice non esiste, non fare nulla
+	}
 
 	hnswIndex, ok := idx.(*hnsw.Index)
 	if !ok {
@@ -828,11 +829,22 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 	case "italian":
 		analyzer = textanalyzer.NewItalianStemmer()
 	default:
+
 	}
 
 	for key, value := range metadata {
-		switch v := value.(type) {
+		// Update direct lookup map (O(1))
+		if _, ok := s.metadataMap[indexName]; !ok {
+			s.metadataMap[indexName] = make(map[uint32]map[string]any)
+		}
+		if _, ok := s.metadataMap[indexName][nodeID]; !ok {
+			s.metadataMap[indexName][nodeID] = make(map[string]any)
+		}
+		s.metadataMap[indexName][nodeID][key] = value
+
+		switch v := value.(type) { // Check the type of the 'any' variable
 		case string:
+			// --- LOGICA INDICE INVERTITO (invariata) ---
 			indexMetadata, ok := s.invertedIndex[indexName]
 			if !ok {
 				return fmt.Errorf("metadata index for '%s' not found", indexName)
@@ -845,9 +857,11 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 			}
 			indexMetadata[key][v][nodeID] = struct{}{}
 
+			// --- FULL-TEXT INDEXING (with analyzer) ---
 			if analyzer != nil {
 				tokens := analyzer.Analyze(v)
 
+				// Initialize maps if they don't exist
 				if _, ok := s.textIndex[indexName][key]; !ok {
 					s.textIndex[indexName][key] = make(map[string]PostingList)
 				}
@@ -859,19 +873,25 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 
 				stats := s.textIndexStats[indexName][key]
 
+				// --- BM25 LOGIC ---
+
+				// Update document statistics
 				if _, docExists := stats.DocLengths[nodeID]; !docExists {
 					stats.TotalDocs++
 				}
 				stats.DocLengths[nodeID] = len(tokens)
 
+				// 2. Calculate term frequencies (TF) for this document
 				termFrequencies := make(map[string]int)
 				for _, token := range tokens {
 					termFrequencies[token]++
 				}
 
+				// 3. Update the inverted index with TF
 				for token, freq := range termFrequencies {
 					list := s.textIndex[indexName][key][token]
 
+					// Check if the docID is already in the list to avoid duplicates
 					found := false
 					for _, entry := range list {
 						if entry.DocID == nodeID {
@@ -889,23 +909,27 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 			}
 
 		case float64:
-			// --- NUOVA LOGICA B-TREE ---
+			// --- B-TREE LOGIC (for numerical data) ---
 			indexBTree, ok := s.bTreeIndex[indexName]
 			if !ok {
 				return fmt.Errorf("b-tree index for '%s' not found", indexName)
 			}
 
+			// Check if a B-Tree for this key already exists; otherwise, create it
 			if _, ok := indexBTree[key]; !ok {
 				indexBTree[key] = btree.NewBTreeG[BTreeItem](btreeItemLess)
 			}
 
+			// Insert the item into the B-Tree
 			indexBTree[key].Set(BTreeItem{Value: v, NodeID: nodeID})
 
 		default:
+			// For now, we ignore other types (bool, etc.)
 			continue
 		}
 	}
 
+	// Recalculate the average field length
 	s.recalculateAvgFieldLengths(indexName)
 
 	return nil
