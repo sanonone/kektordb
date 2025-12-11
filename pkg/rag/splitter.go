@@ -11,7 +11,7 @@ type Splitter interface {
 }
 
 // RecursiveCharacterSplitter splits text recursively using a list of separetors.
-// It try to keep related text together (paragraphs, then sentences, then words).
+// It tries to keep related text together (paragraphs, then sentences, then words).
 type RecursiveCharacterSplitter struct {
 	ChunkSize    int
 	ChunkOverlap int
@@ -30,7 +30,7 @@ func NewSplitterFactory(cfg Config) Splitter {
 		overlap = 0
 	}
 
-	// Se l'utente ha fornito separatori manuali, usiamo quelli
+	// If the user provided manual separators, use them
 	if len(cfg.CustomSeparators) > 0 {
 		return &RecursiveCharacterSplitter{
 			ChunkSize:    size,
@@ -39,7 +39,7 @@ func NewSplitterFactory(cfg Config) Splitter {
 		}
 	}
 
-	// Altrimenti, scegliamo in base alla strategia
+	// Otherwise, choose based on strategy
 	switch cfg.ChunkingStrategy {
 	case "code", "go", "python":
 		return NewCodeSplitter(size, overlap)
@@ -47,11 +47,11 @@ func NewSplitterFactory(cfg Config) Splitter {
 		return &RecursiveCharacterSplitter{
 			ChunkSize:    size,
 			ChunkOverlap: overlap,
-			Separators:   []string{"\n## ", "\n### ", "\n\n", "\n", " ", ""}, // Taglia su Header
+			Separators:   []string{"\n## ", "\n### ", "\n\n", "\n", " ", ""}, // Cut on Header
 		}
 	case "fixed":
-		// Fallback simulato usando separatore vuoto o logica semplice
-		// Per ora il recursive con solo "" si comporta similmente al fixed
+		// Simulated fallback using empty separator or simple logic
+		// For now recursive with only "" behaves similarly to fixed
 		return &RecursiveCharacterSplitter{
 			ChunkSize:    size,
 			ChunkOverlap: overlap,
@@ -78,7 +78,7 @@ func NewRecursiveSplitter(chunkSize, chunkOverlap int) *RecursiveCharacterSplitt
 }
 
 // NewCodeSplitter creates a splitter optimized for code (Go, Python, etc).
-// TODO: improvement add specific separators for languagfes
+// TODO: improvement add specific separators for languages
 func NewCodeSplitter(chunkSize, chunkOverlap int) *RecursiveCharacterSplitter {
 	return &RecursiveCharacterSplitter{
 		ChunkSize:    chunkSize,
@@ -91,29 +91,29 @@ func (s *RecursiveCharacterSplitter) SplitText(text string) []string {
 	finalChunks := []string{}
 	goodSplits := s.recursiveSplit(text, s.Separators)
 
-	// Merge dei piccoli pezzi nel chunk finale rispettando la size e l'overlap
+	// Merge small pieces into final chunk respecting size and overlap
 	currentDoc := ""
 	for _, split := range goodSplits {
-		// Se aggiungere il prossimo pezzo supera la dimensione...
+		// If adding the next piece exceeds the size...
 		if utf8.RuneCountInString(currentDoc)+utf8.RuneCountInString(split) > s.ChunkSize {
 			if currentDoc != "" {
 				finalChunks = append(finalChunks, currentDoc)
 
-				// Gestione Overlap: Manteniamo la coda del chunk precedente
-				// Questa è una logica semplificata per l'overlap.
-				// Per un overlap perfetto, dovremmo tenere una finestra mobile dei 'split' precedenti.
-				// Qui facciamo un approccio "greedy": resettiamo e ripartiamo.
-				// TODO: Implementare overlap sofisticato basato su token/parole.
+				// Overlap Management: Keep the tail of the previous chunk
+				// This is a simplified logic for overlap.
+				// For perfect overlap, we should keep a moving window of previous 'splits'.
+				// Here we take a "greedy" approach: reset and restart.
+				// TODO: Implement sophisticated overlap based on tokens/words.
 				currentDoc = ""
 			}
 		}
 
 		if currentDoc != "" {
-			// Aggiungiamo il separatore (spazio) se stiamo unendo parole,
-			// ma attenzione: recursiveSplit potrebbe aver mangiato i separatori.
-			// Per semplicità qui concateniamo.
-			// Nella logica ricorsiva reale, il separatore è implicito.
-			// Questo splitter semplice assume che i pezzi siano "puliti".
+			// Add the separator (space) if we are joining words,
+			// but be careful: recursiveSplit might have eaten the separators.
+			// For simplicity here we concatenate.
+			// In real recursive logic, the separator is implicit.
+			// This simple splitter assumes pieces are "clean".
 		}
 		currentDoc += split
 	}
@@ -130,7 +130,7 @@ func (s *RecursiveCharacterSplitter) SplitText(text string) []string {
 func (s *RecursiveCharacterSplitter) recursiveSplit(text string, separators []string) []string {
 	// finalChunks := []string{}
 
-	// Caso base: nessun separatore rimasto, restituiamo il testo (anche se grande)
+	// Base case: no separators left, return text (even if large)
 	if len(separators) == 0 {
 		return []string{text}
 	}
@@ -138,17 +138,17 @@ func (s *RecursiveCharacterSplitter) recursiveSplit(text string, separators []st
 	separator := separators[0]
 	nextSeparators := separators[1:]
 
-	// Troviamo se il separatore esiste
-	// Se il separatore è vuoto "", split normale per caratteri
+	// Find if the separator exists
+	// If separator is empty "", normal char split
 	parts := strings.Split(text, separator)
 
-	// Se il testo non contiene il separatore, passiamo al prossimo livello
-	// Nota: strings.Split restituisce slice len 1 se sep non trovato
+	// If text does not contain separator, move to next level
+	// Note: strings.Split returns len 1 slice if sep not found
 	if len(parts) == 1 && separator != "" {
 		return s.recursiveSplit(text, nextSeparators)
 	}
 
-	// Processiamo le parti
+	// Process parts
 	var goodSplits []string
 
 	for _, part := range parts {
@@ -156,27 +156,27 @@ func (s *RecursiveCharacterSplitter) recursiveSplit(text string, separators []st
 			continue
 		}
 
-		// Se il pezzo è piccolo, lo teniamo
+		// If piece is small, keep it
 		if utf8.RuneCountInString(part) < s.ChunkSize {
 			goodSplits = append(goodSplits, part)
 		} else {
-			// Se è grande, ricorsione con i separatori successivi
+			// If large, recurse with next separators
 			if len(nextSeparators) > 0 {
 				subSplits := s.recursiveSplit(part, nextSeparators)
 				goodSplits = append(goodSplits, subSplits...)
 			} else {
-				// Se non ci sono più separatori, dobbiamo tenerlo così com'è (o troncarlo brutalmente)
+				// If no more separators, keep as is (or truncate brutally)
 				goodSplits = append(goodSplits, part)
 			}
 		}
 	}
 
-	// Ora dobbiamo "ricucire" i pezzi (goodSplits) usando il separatore corrente
-	// per creare chunk che si avvicinano a ChunkSize senza superarlo.
+	// Now re-stitch pieces (goodSplits) using current separator
+	// to create chunks close to ChunkSize without exceeding it.
 	return s.mergeSplits(goodSplits, separator)
 }
 
-// mergeSplits combina piccoli pezzi usando il separatore originale finché non raggiungono ChunkSize.
+// mergeSplits combines small pieces using original separator until ChunkSize is reached.
 func (s *RecursiveCharacterSplitter) mergeSplits(splits []string, separator string) []string {
 	var mergedDocs []string
 	var currentDoc []string
@@ -186,23 +186,23 @@ func (s *RecursiveCharacterSplitter) mergeSplits(splits []string, separator stri
 	for _, split := range splits {
 		splitLen := utf8.RuneCountInString(split)
 
-		// Se aggiungere questo pezzo supera il limite...
+		// If adding this piece exceeds limit...
 		if currentLen+splitLen+(len(currentDoc)*sepLen) > s.ChunkSize {
 			if len(currentDoc) > 0 {
 				doc := strings.Join(currentDoc, separator)
 				mergedDocs = append(mergedDocs, doc)
 
-				// Gestione Overlap
-				// Manteniamo la coda del chunk precedente che rientra nell'overlap.
+				// Overlap Management
+				// Keep the tail of the previous chunk that fits in overlap.
 				if s.ChunkOverlap > 0 {
 					currentDoc = s.removeFirstUntilOverlap(currentDoc, separator, s.ChunkOverlap)
 
-					// Ricalcoliamo currentLen per i pezzi rimasti
+					// Recalculate currentLen for remaining pieces
 					currentLen = 0
 					for _, p := range currentDoc {
 						currentLen += utf8.RuneCountInString(p)
 					}
-					// Aggiungiamo i separatori se ci sono pezzi
+					// Add separators if there are pieces
 					if len(currentDoc) > 1 {
 						currentLen += (len(currentDoc) - 1) * sepLen
 					}

@@ -27,7 +27,7 @@ type Pipeline struct {
 	isScanning int32
 }
 
-// fileState traccia lo stato dell'ultima indicizzazione di un file
+// fileState tracks the state of the last file indexing
 type fileState struct {
 	ModTime    int64 `json:"mod_time"`
 	ChunkCount int   `json:"chunk_count"`
@@ -86,7 +86,7 @@ func (p *Pipeline) scanAndProcess() {
 	if !p.store.IndexExists(p.cfg.IndexName) {
 		log.Printf("[RAG] Index '%s' missing. Auto-creating...", p.cfg.IndexName)
 
-		// Passiamo i parametri dalla config
+		// Pass parameters from config
 		err := p.store.CreateVectorIndex(
 			p.cfg.IndexName,
 			p.cfg.IndexMetric,
@@ -108,7 +108,7 @@ func (p *Pipeline) scanAndProcess() {
 		}
 		if info.IsDir() {
 			if strings.HasPrefix(info.Name(), ".") || info.Name() == "kektor_data" || info.Name() == "temp_rag_data" {
-				return filepath.SkipDir // Salta intere cartelle
+				return filepath.SkipDir // Skip entire directories
 			}
 			return nil
 		}
@@ -116,17 +116,17 @@ func (p *Pipeline) scanAndProcess() {
 			return nil
 		}
 
-		// Ignora file del DB e file binari non supportati esplicitamente
+		// Ignore DB files and explicitly unsupported binary files
 		ext := strings.ToLower(filepath.Ext(path))
 		if ext == ".aof" || ext == ".kdb" || ext == ".tmp" {
 			return nil
 		}
 
-		// Check Includes (Whitelist) - Se vuoto, accetta tutto
+		// Check Includes (Whitelist) - If empty, accept everything
 		if len(p.cfg.IncludePatterns) > 0 {
 			matched := false
 			for _, pattern := range p.cfg.IncludePatterns {
-				// filepath.Match controlla solo il nome del file, non il path completo
+				// filepath.Match checks only the filename, not the full path
 				if ok, _ := filepath.Match(pattern, info.Name()); ok {
 					matched = true
 					break
@@ -134,14 +134,14 @@ func (p *Pipeline) scanAndProcess() {
 			}
 			if !matched {
 				return nil
-			} // Skip se non in whitelist
+			} // Skip if not in whitelist
 		}
 
 		// Check Excludes (Blacklist)
 		if len(p.cfg.ExcludePatterns) > 0 {
 			for _, pattern := range p.cfg.ExcludePatterns {
 				if ok, _ := filepath.Match(pattern, info.Name()); ok {
-					return nil // Skip se in blacklist
+					return nil // Skip if in blacklist
 				}
 			}
 		}
@@ -171,11 +171,11 @@ func (p *Pipeline) needsProcessing(path string, info os.FileInfo) (bool, *fileSt
 
 	var state fileState
 	if err := json.Unmarshal(val, &state); err != nil {
-		// Se il formato è vecchio o corrotto, riprocessiamo
+		// If format is old or corrupt, reprocess
 		return true, nil
 	}
 
-	// Se il file su disco è più recente, processiamo
+	// If the file on disk is newer, process
 	return info.ModTime().UnixNano() > state.ModTime, &state
 }
 
@@ -183,12 +183,12 @@ func (p *Pipeline) needsProcessing(path string, info os.FileInfo) (bool, *fileSt
 func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileState) error {
 	log.Printf("[RAG] Processing: %s", path)
 
-	// Prima di inserire, dobbiamo rimuovere le versioni precedenti per evitare conflitti ID
-	// e per rimuovere chunk "orfani" se il file si è accorciato.
+	// Before inserting, we must remove previous versions to avoid ID conflicts
+	// and to remove "orphan" chunks if the file has shrunk.
 	if oldState != nil && oldState.ChunkCount > 0 {
 		for i := 0; i < oldState.ChunkCount; i++ {
 			oldID := fmt.Sprintf("%s_%d", path, i)
-			// Ignoriamo errori di cancellazione (magari non esiste già più)
+			// Ignore deletion errors (maybe it doesn't exist anymore)
 			_ = p.store.Delete(p.cfg.IndexName, oldID)
 		}
 	}
@@ -262,7 +262,7 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 	stateKey := fmt.Sprintf("_rag_state:%s:%s", p.cfg.Name, path)
 	newState := fileState{
 		ModTime:    info.ModTime().UnixNano(),
-		ChunkCount: len(chunks), // Salviamo quanti chunk abbiamo fatto
+		ChunkCount: len(chunks), // Save how many chunks we made
 	}
 	stateBytes, _ := json.Marshal(newState)
 
@@ -272,7 +272,7 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 // Trigger forces an immediate scan and process cycle.
 // It is thread-safe (can be called concurrently with the background loop).
 func (p *Pipeline) Trigger() {
-	// Eseguiamo in una goroutine per non bloccare il chiamante
+	// Run in a goroutine to avoid blocking the caller
 	go p.scanAndProcess()
 }
 
@@ -298,7 +298,7 @@ func (p *Pipeline) Retrieve(text string, k int) ([]string, error) {
 	}
 
 	// 3. Hydrate (Get Metadata)
-	// Nota: Assumiamo che GetMany ritorni una struct con campo Metadata
+	// Note: We assume GetMany returns a struct with Metadata field
 	items, err := p.store.GetMany(p.cfg.IndexName, ids)
 	if err != nil {
 		return nil, fmt.Errorf("fetch data failed: %w", err)
@@ -307,7 +307,7 @@ func (p *Pipeline) Retrieve(text string, k int) ([]string, error) {
 	// 4. Extract Text
 	results := make([]string, 0, len(items))
 	for _, item := range items {
-		// Cerchiamo il campo "content" o "text" o "page_content"
+		// Look for "content", "text", or "page_content" field
 		if val, ok := item.Metadata["content"]; ok {
 			results = append(results, fmt.Sprintf("%v", val))
 		} else if val, ok := item.Metadata["text"]; ok {

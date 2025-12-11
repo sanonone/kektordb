@@ -23,7 +23,7 @@ func (l *PDFLoader) Load(path string) (string, error) {
 
 	var buf bytes.Buffer
 
-	// r.NumPage() restituisce il numero totale di pagine
+	// r.NumPage() returns total number of pages
 	totalPage := r.NumPage()
 
 	for pageIndex := 1; pageIndex <= totalPage; pageIndex++ {
@@ -32,16 +32,16 @@ func (l *PDFLoader) Load(path string) (string, error) {
 			continue
 		}
 
-		// Estrai il testo puro dalla pagina
+		// Extract plain text from page
 		text, err := p.GetPlainText(nil)
 		if err != nil {
-			// Logghiamo l'errore ma continuiamo con le altre pagine?
-			// Per ora ritorniamo errore se una pagina fallisce.
+			// Log error but continue with other pages?
+			// For now return error if a page fails.
 			return "", fmt.Errorf("failed to extract text from page %d: %w", pageIndex, err)
 		}
 
 		buf.WriteString(text)
-		// Aggiungiamo un newline tra le pagine per separarle semanticamente
+		// Add a newline between pages to separate them semantically
 		buf.WriteString("\n")
 	}
 
