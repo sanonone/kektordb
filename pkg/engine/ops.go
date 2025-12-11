@@ -160,7 +160,7 @@ func (e *Engine) VAdd(indexName, id string, vector []float32, metadata map[strin
 
 	// 2. Metadata
 	if len(metadata) > 0 {
-		e.DB.AddMetadataUnlocked(indexName, internalID, metadata)
+		e.DB.AddMetadata(indexName, internalID, metadata)
 	}
 
 	// 3. Persistence
@@ -400,11 +400,16 @@ func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 	}
 
 	// 2. Persistence Loop & Metadata
+	e.DB.Lock()
 	for _, item := range items {
 		if len(item.Metadata) > 0 {
 			id := hnswIdx.GetInternalID(item.Id)
-			e.DB.AddMetadataUnlocked(indexName, id, item.Metadata) // Use thread-safe version for concurrent vectorizer workers
+			e.DB.AddMetadataUnlocked(indexName, id, item.Metadata) // Covered by e.DB.Lock()
 		}
+	}
+	e.DB.Unlock()
+
+	for _, item := range items {
 
 		vecStr := float32SliceToString(item.Vector)
 		var meta []byte
@@ -458,12 +463,14 @@ func (e *Engine) VImport(indexName string, items []types.BatchObject) error {
 	}
 
 	// 2. Add Metadata
+	e.DB.Lock()
 	for _, item := range items {
 		if len(item.Metadata) > 0 {
 			id := hnswIdx.GetInternalID(item.Id)
 			e.DB.AddMetadataUnlocked(indexName, id, item.Metadata)
 		}
 	}
+	e.DB.Unlock()
 
 	// 3. Immediate Snapshot (Bulk Persistence)
 	// Uses the private version that assumes adminMu is already held.

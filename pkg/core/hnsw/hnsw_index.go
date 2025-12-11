@@ -377,9 +377,15 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 		}
 		storedVector = f16Vec
 	case distance.Int8:
-		if h.quantizer == nil || h.quantizer.AbsMax == 0 {
-			return 0, fmt.Errorf("quantizer not trained")
+		// Auto-Train if needed (Fallback for single insert)
+		if h.quantizer == nil {
+			h.quantizer = &distance.Quantizer{}
 		}
+		if h.quantizer.AbsMax == 0 {
+			log.Printf("[HNSW] Auto-training quantizer on single vector (suboptimal for quality but necessary for progress)")
+			h.quantizer.Train([][]float32{vector})
+		}
+
 		storedVector = h.quantizer.Quantize(vector)
 	}
 
@@ -586,10 +592,24 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 			}
 			storedVector = f16Vec
 		case distance.Int8:
-			if h.quantizer == nil || h.quantizer.AbsMax == 0 {
-				h.metaMu.Unlock()
-				return fmt.Errorf("quantizer not trained")
+			// Auto-Train if needed
+			if h.quantizer == nil {
+				h.quantizer = &distance.Quantizer{}
 			}
+			if h.quantizer.AbsMax == 0 {
+				// Prevent multiple concurrent trainings
+				// Although AddBatch is technically thread-safe w.r.t other AddBatches if called correctly,
+				// we are inside the global lock here (h.metaMu.Lock()), so we are safe.
+
+				// Collect all vectors to train
+				trainingData := make([][]float32, numVectors)
+				for k, objTrain := range objects {
+					trainingData[k] = objTrain.Vector // Assuming they are not modified during train
+				}
+				log.Printf("[HNSW] Auto-training quantizer on batch of %d vectors", numVectors)
+				h.quantizer.Train(trainingData)
+			}
+
 			storedVector = h.quantizer.Quantize(obj.Vector)
 		}
 

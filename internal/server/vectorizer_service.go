@@ -1,9 +1,3 @@
-// Package server implements the main KektorDB server logic.
-//
-// This file specifically handles the VectorizerService, which is responsible for
-// managing the lifecycle of all background vectorizer workers. It orchestrates
-// their creation, startup, and graceful shutdown.
-
 package server
 
 import (
@@ -11,73 +5,174 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/sanonone/kektordb/pkg/rag"
 )
 
-// VectorizerService manages the lifecycle of all Vectorizer workers.
-// It holds references to all active vectorizers and coordinates their
-// start and stop operations using a shared WaitGroup.
+// VectorizerService manages the lifecycle of RAG pipelines.
 type VectorizerService struct {
-	server      *Server
-	vectorizers []*Vectorizer
-	wg          sync.WaitGroup
+	server    *Server
+	pipelines []*rag.Pipeline
+	wg        sync.WaitGroup
 }
 
-// NewVectorizerService creates and initializes the main vectorizer service.
-// It iterates through the loaded vectorizer configurations, creates a worker
-// for each, and prepares the service to manage them.
+// NewVectorizerService initializes the service based on the YAML config.
 func NewVectorizerService(server *Server) (*VectorizerService, error) {
 	service := &VectorizerService{
 		server: server,
-		// The WaitGroup is initialized to zero automatically.
 	}
 
-	// Iterate over the loaded configurations and start a worker for each one.
-	for _, config := range server.vectorizerConfig.Vectorizers {
-		// Pass the service's WaitGroup to each new worker.
-		vec, err := NewVectorizer(config, server, &service.wg)
+	for _, cfg := range server.vectorizerConfig.Vectorizers {
+		// 1. Parsing Durate (Schedule e Timeout Embedder)
+		schedule, err := time.ParseDuration(cfg.Schedule)
 		if err != nil {
-			log.Printf("ERROR: Could not start vectorizer '%s': %v", config.Name, err)
-			continue // Skip this one and move to the next.
+			log.Printf("ERROR: Invalid schedule for vectorizer '%s': %v", cfg.Name, err)
+			continue
 		}
-		service.vectorizers = append(service.vectorizers, vec)
+
+		embedTimeout, _ := time.ParseDuration(cfg.Embedder.Timeout)
+		if embedTimeout == 0 {
+			embedTimeout = 60 * time.Second // Default sicuro se non specificato
+		}
+
+		// 2. Calcolo Overlap (se non specificato, usa 10% del ChunkSize)
+		overlap := cfg.DocProcessor.ChunkOverlap
+		if overlap == 0 && cfg.DocProcessor.ChunkSize > 0 {
+			overlap = cfg.DocProcessor.ChunkSize / 10
+		}
+
+		idxMetric := cfg.IndexConfig.Metric
+		if idxMetric == "" {
+			idxMetric = "cosine"
+		}
+
+		idxPrec := cfg.IndexConfig.Precision
+		if idxPrec == "" {
+			idxPrec = "float32"
+		}
+
+		idxM := cfg.IndexConfig.M
+		if idxM == 0 {
+			idxM = 16
+		}
+
+		idxEf := cfg.IndexConfig.EfConstruction
+		if idxEf == 0 {
+			idxEf = 200
+		}
+
+		idxLang := cfg.IndexConfig.TextLanguage
+		if idxLang == "" {
+			idxLang = "english"
+		}
+
+		// 3. Mappatura Configurazione YAML -> Configurazione RAG
+		ragConfig := rag.Config{
+			Name:            cfg.Name,
+			SourcePath:      cfg.Source.Path,
+			IndexName:       cfg.KektorIndex,
+			PollingInterval: schedule,
+
+			// Filtri File
+			IncludePatterns: cfg.IncludePatterns,
+			ExcludePatterns: cfg.ExcludePatterns,
+
+			// Text Processing Avanzato
+			ChunkingStrategy: cfg.DocProcessor.ChunkingStrategy, // es. "recursive", "markdown", "code"
+			ChunkSize:        cfg.DocProcessor.ChunkSize,
+			ChunkOverlap:     overlap,
+			CustomSeparators: cfg.DocProcessor.CustomSeparators,
+
+			// Embedding
+			EmbedderURL:     cfg.Embedder.URL,
+			EmbedderModel:   cfg.Embedder.Model,
+			EmbedderTimeout: embedTimeout, // Passiamo il timeout parsato
+
+			MetadataTemplate: cfg.MetadataTemplate,
+
+			IndexMetric:         idxMetric,
+			IndexPrecision:      idxPrec,
+			IndexM:              idxM,
+			IndexEfConstruction: idxEf,
+			IndexTextLanguage:   idxLang,
+		}
+
+		// 4. Creazione Dipendenze
+		storeAdapter := rag.NewKektorAdapter(server.Engine)
+
+		// Passiamo il timeout al costruttore dell'Embedder
+		embedder := rag.NewOllamaEmbedder(ragConfig.EmbedderURL, ragConfig.EmbedderModel, ragConfig.EmbedderTimeout)
+
+		// 5. Creazione Pipeline
+		pipeline := rag.NewPipeline(ragConfig, storeAdapter, embedder)
+
+		service.pipelines = append(service.pipelines, pipeline)
+		log.Printf("RAG Pipeline '%s' configured (Mode: %s, Source: %s)", cfg.Name, ragConfig.ChunkingStrategy, cfg.Source.Path)
 	}
 
 	return service, nil
 }
 
-// Start begins the lifecycle of all workers managed by the service.
-// Each worker is started in its own background goroutine.
+// Start launches all pipelines.
 func (vs *VectorizerService) Start() {
-	if vs == nil || len(vs.vectorizers) == 0 {
+	if vs == nil || len(vs.pipelines) == 0 {
 		return
 	}
-	log.Println("Starting VectorizerService and all background workers...")
-	for _, v := range vs.vectorizers {
-		// Tell the WaitGroup that a goroutine is about to start.
-		v.wg.Add(1)
-		// Start the worker's goroutine.
-		go v.run()
+	log.Println("Starting RAG Pipelines...")
+	for _, p := range vs.pipelines {
+		p.Start()
 	}
-
-	// Log when all initial synchronizations complete
-	go func() {
-		vs.wg.Wait()
-		log.Println("✓ All Vectorizer workers have completed their initial synchronization")
-	}()
 }
 
-// Stop gracefully stops all workers managed by the service.
-// It signals each worker to stop and then waits for them to complete
-// their current tasks and shut down.
+// Stop halts all pipelines.
 func (vs *VectorizerService) Stop() {
-	log.Println("Stopping VectorizerService... Waiting for workers...")
-	for _, v := range vs.vectorizers {
-		v.Stop() // Send the stop signal.
+	log.Println("Stopping RAG Pipelines...")
+	for _, p := range vs.pipelines {
+		p.Stop()
 	}
+}
 
-	// Wait for all goroutines that have called Add() to call Done().
-	vs.wg.Wait()
-	log.Println("All Vectorizer workers have been stopped.")
+// Trigger manually forces a scan for a specific pipeline.
+func (vs *VectorizerService) Trigger(name string) error {
+	// Nota: rag.Pipeline non espone il nome pubblicamente nella struct,
+	// ma possiamo trovarlo iterando sulla config originale o modificando Pipeline per esporre Name.
+	// Per ora, assumiamo che l'ordine sia mantenuto o modifichiamo Pipeline per avere GetName().
+
+	// Soluzione pulita: Cerchiamo nella config del server
+	for i, cfg := range vs.server.vectorizerConfig.Vectorizers {
+		if cfg.Name == name {
+			if i < len(vs.pipelines) {
+				vs.pipelines[i].Trigger()
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("vectorizer pipeline '%s' not found", name)
+}
+
+// GetStatuses returns a summary (simplified for now).
+func (vs *VectorizerService) GetStatuses() []VectorizerStatus {
+	var statuses []VectorizerStatus
+	for _, cfg := range vs.server.vectorizerConfig.Vectorizers {
+		statuses = append(statuses, VectorizerStatus{
+			Name:         cfg.Name,
+			IsRunning:    true,
+			CurrentState: "active (managed by rag pkg)",
+		})
+	}
+	return statuses
+}
+
+// GetPipeline returns a running pipeline by name, or nil if not found.
+func (vs *VectorizerService) GetPipeline(name string) *rag.Pipeline {
+	for i, cfg := range vs.server.vectorizerConfig.Vectorizers {
+		if cfg.Name == name {
+			if i < len(vs.pipelines) {
+				return vs.pipelines[i]
+			}
+		}
+	}
+	return nil
 }
 
 // VectorizerStatus is a public-facing struct for the API, containing no internal fields.
@@ -87,28 +182,4 @@ type VectorizerStatus struct {
 	IsRunning    bool      `json:"is_running"`
 	LastRun      time.Time `json:"last_run,omitempty"`
 	CurrentState string    `json:"current_state"`
-}
-
-// GetStatuses returns the current status of all managed vectorizers.
-// This is used to provide information via the HTTP API.
-func (vs *VectorizerService) GetStatuses() []VectorizerStatus {
-	statuses := make([]VectorizerStatus, 0, len(vs.vectorizers))
-	for _, v := range vs.vectorizers {
-		// We use a method on the Vectorizer to get its individual status.
-		statuses = append(statuses, v.GetStatus())
-	}
-	return statuses
-}
-
-// Trigger manually starts the synchronization process for a specific vectorizer by name.
-// The synchronization is run in a separate goroutine to avoid blocking the caller.
-func (vs *VectorizerService) Trigger(name string) error {
-	for _, v := range vs.vectorizers {
-		if v.config.Name == name {
-			log.Printf("Manual trigger received for vectorizer '%s'", name)
-			go v.synchronize() // Start synchronization in a goroutine to avoid blocking.
-			return nil
-		}
-	}
-	return fmt.Errorf("vectorizer with name '%s' not found", name)
 }

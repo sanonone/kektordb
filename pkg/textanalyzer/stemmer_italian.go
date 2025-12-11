@@ -46,7 +46,7 @@ func getItalianRegions(runes []rune) (r1, r2, rv int) {
 		return
 	}
 
-	// Calcolo RV
+	// Calculate RV
 	if len(runes) > 2 {
 		if !isItalianVowel(runes[1]) {
 			// If the second letter is a consonant, RV is the region after the next vowel
