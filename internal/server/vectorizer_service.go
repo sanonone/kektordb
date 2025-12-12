@@ -2,11 +2,11 @@ package server
 
 import (
 	"fmt"
+	"github.com/sanonone/kektordb/pkg/embeddings"
+	"github.com/sanonone/kektordb/pkg/rag"
 	"log"
 	"sync"
 	"time"
-
-	"github.com/sanonone/kektordb/pkg/rag"
 )
 
 // VectorizerService manages the lifecycle of RAG pipelines.
@@ -101,7 +101,7 @@ func NewVectorizerService(server *Server) (*VectorizerService, error) {
 		storeAdapter := rag.NewKektorAdapter(server.Engine)
 
 		// Passiamo il timeout al costruttore dell'Embedder
-		embedder := rag.NewOllamaEmbedder(ragConfig.EmbedderURL, ragConfig.EmbedderModel, ragConfig.EmbedderTimeout)
+		embedder := embeddings.NewOllamaEmbedder(ragConfig.EmbedderURL, ragConfig.EmbedderModel, ragConfig.EmbedderTimeout)
 
 		// 5. Creazione Pipeline
 		pipeline := rag.NewPipeline(ragConfig, storeAdapter, embedder)

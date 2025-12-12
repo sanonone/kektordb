@@ -5,11 +5,6 @@ import (
 	"github.com/sanonone/kektordb/pkg/core/types"
 )
 
-// Embedder converts text into a vector.
-type Embedder interface {
-	Embed(text string) ([]float32, error)
-}
-
 // Store defines the storage requirements for the RAG pipeline.
 // It needs to save vectors and track file processing state (KV).
 type Store interface {

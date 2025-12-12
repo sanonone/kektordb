@@ -1,0 +1,24 @@
+port: ":9092"
+target_url: "http://localhost:11434"
+
+# Configurazione Embedder (usa il tuo modello locale)
+embedder_type: "ollama_api"
+embedder_url: "http://localhost:11434/api/embeddings"
+embedder_model: "nomic-embed-text:latest"
+embedder_timeout: 60s
+
+# Firewall (Prompt Guard)
+firewall_enabled: true
+firewall_index: "prompt_guard"
+firewall_threshold: 0.25 # Blocca se molto simile
+block_message: "I cannot fulfill this request as it violates safety policies."
+
+# Semantic Cache
+cache_enabled: true
+cache_index: "semantic_cache_test"
+cache_threshold: 0.1
+cache_ttl: "5s"        
+max_cache_items: 100
+
+cache_vacuum_interval: "2s" 
+cache_delete_threshold: 0.0 # 0.0 = Pulisci sempre se c'è anche solo 1 cancellazione

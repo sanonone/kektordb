@@ -3,14 +3,14 @@ package rag
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/sanonone/kektordb/pkg/core/types"
+	"github.com/sanonone/kektordb/pkg/embeddings"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
-
-	"github.com/sanonone/kektordb/pkg/core/types"
 )
 
 // Pipeline orchestrates the ingestion process: Load -> Split -> Embed -> Store.
@@ -18,7 +18,7 @@ type Pipeline struct {
 	cfg      Config
 	loader   Loader
 	splitter Splitter
-	embedder Embedder
+	embedder embeddings.Embedder
 	store    Store
 
 	stopCh chan struct{}
@@ -35,7 +35,7 @@ type fileState struct {
 
 // NewPipeline creates a ready-to-run pipeline.
 // We inject the Embedder to allow testing with mocks or swapping providers.
-func NewPipeline(cfg Config, store Store, embedder Embedder) *Pipeline {
+func NewPipeline(cfg Config, store Store, embedder embeddings.Embedder) *Pipeline {
 	return &Pipeline{
 		cfg:      cfg,
 		loader:   NewAutoLoader(),

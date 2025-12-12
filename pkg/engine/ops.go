@@ -380,6 +380,37 @@ func (e *Engine) VSearch(indexName string, query []float32, k int, filter string
 	return ids, nil
 }
 
+// SearchResult represents a match with its similarity score/distance.
+type SearchResult struct {
+	ID    string
+	Score float64
+}
+
+// VSearchWithScores performs a search and returns results with their distances.
+func (e *Engine) VSearchWithScores(indexName string, query []float32, k int) ([]SearchResult, error) {
+	idx, ok := e.DB.GetVectorIndex(indexName)
+	if !ok {
+		return nil, fmt.Errorf("index not found")
+	}
+
+	hnswIdx, ok := idx.(*hnsw.Index)
+	if !ok {
+		return nil, fmt.Errorf("not hnsw")
+	}
+
+	internalResults := hnswIdx.SearchWithScores(query, k, nil, 0)
+
+	results := make([]SearchResult, len(internalResults))
+	for i, r := range internalResults {
+		extID, _ := hnswIdx.GetExternalID(r.DocID)
+		results[i] = SearchResult{
+			ID:    extID,
+			Score: r.Score,
+		}
+	}
+	return results, nil
+}
+
 // VAddBatch inserts multiple vectors concurrently into an index.
 // It writes to the AOF log for each vector, ensuring durability but with higher I/O overhead.
 // Use VImport for faster initial loading.
