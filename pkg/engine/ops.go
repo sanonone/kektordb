@@ -225,6 +225,13 @@ func (e *Engine) VGetMany(indexName string, ids []string) ([]core.VectorData, er
 	return e.DB.GetVectors(indexName, ids)
 }
 
+// Struttura pubblica per i risultati del grafo
+type GraphSearchResult struct {
+	ID        string              `json:"id"`
+	Score     float64             `json:"score"`
+	Relations map[string][]string `json:"relations,omitempty"` // map[type] -> [ids]
+}
+
 // VSearch performs a vector, text, or hybrid search.
 //
 // 'k': number of results to return.
@@ -234,19 +241,70 @@ func (e *Engine) VGetMany(indexName string, ids []string) ([]core.VectorData, er
 //
 // Returns a list of external IDs sorted by relevance.
 func (e *Engine) VSearch(indexName string, query []float32, k int, filter string, efSearch int, alpha float64) ([]string, error) {
+	// Chiama l'helper interno
+	results, err := e.searchWithFusion(indexName, query, k, filter, efSearch, alpha)
+	if err != nil {
+		return nil, err
+	}
+
+	// Mappa solo agli ID
+	ids := make([]string, len(results))
+	for i, r := range results {
+		ids[i] = r.id
+	}
+	return ids, nil
+}
+
+// 2. NUOVO Metodo VSearchGraph (Con relazioni)
+func (e *Engine) VSearchGraph(indexName string, query []float32, k int, filter string, efSearch int, alpha float64, relations []string) ([]GraphSearchResult, error) {
+	// 1. Esegui la ricerca standard
+	rawResults, err := e.searchWithFusion(indexName, query, k, filter, efSearch, alpha)
+	if err != nil {
+		return nil, err
+	}
+
+	output := make([]GraphSearchResult, len(rawResults))
+
+	// 2. Graph Expansion (Enrichment)
+	// Per ogni risultato trovato, cerchiamo le relazioni richieste nel KV Store
+	for i, res := range rawResults {
+		outItem := GraphSearchResult{
+			ID:    res.id,
+			Score: res.score,
+		}
+
+		// Se l'utente ha chiesto relazioni, le recuperiamo
+		if len(relations) > 0 {
+			outItem.Relations = make(map[string][]string)
+			for _, relType := range relations {
+				// VGetLinks è velocissimo (O(1) su mappa in memoria)
+				links, found := e.VGetLinks(res.id, relType)
+				if found && len(links) > 0 {
+					outItem.Relations[relType] = links
+				}
+			}
+		}
+		output[i] = outItem
+	}
+
+	return output, nil
+}
+
+// Contiene tutta la logica di Parsing, Filtering, Hybrid Fusion
+func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filter string, efSearch int, alpha float64) ([]fusedResult, error) {
 	idx, ok := e.DB.GetVectorIndex(indexName)
 	if !ok {
 		return nil, fmt.Errorf("index '%s' not found", indexName)
 	}
 	hnswIndex, ok := idx.(*hnsw.Index)
 	if !ok {
-		return nil, fmt.Errorf("index is not HNSW, hybrid search not supported")
+		return nil, fmt.Errorf("index is not HNSW")
 	}
 
-	// 1. Parse Filters
+	// Parsing Filtri
 	booleanFilters, textQuery, textQueryField := parseHybridFilter(filter)
 
-	// 2. Boolean Pre-Filtering
+	// Pre-Filtering
 	var allowList map[uint32]struct{}
 	var err error
 	if booleanFilters != "" {
@@ -255,11 +313,11 @@ func (e *Engine) VSearch(indexName string, query []float32, k int, filter string
 			return nil, fmt.Errorf("invalid filter: %w", err)
 		}
 		if len(allowList) == 0 {
-			return []string{}, nil // No matches
+			return []fusedResult{}, nil
 		}
 	}
 
-	// 3. Check if Vector Query is empty
+	// Check Vector Query
 	isVectorQueryEmpty := true
 	if len(query) > 0 {
 		for _, v := range query {
@@ -270,11 +328,10 @@ func (e *Engine) VSearch(indexName string, query []float32, k int, filter string
 		}
 	}
 
-	// --- CASE A: TEXT ONLY (or Filter Only) ---
+	// CASE A: TEXT ONLY
 	if isVectorQueryEmpty && textQuery != "" {
 		textResults, _ := e.DB.FindIDsByTextSearch(indexName, textQueryField, textQuery)
-
-		finalIDs := make([]string, 0, k)
+		var finalRes []fusedResult
 		count := 0
 		for _, res := range textResults {
 			if count >= k {
@@ -286,32 +343,28 @@ func (e *Engine) VSearch(indexName string, query []float32, k int, filter string
 				}
 			}
 			extID, _ := hnswIndex.GetExternalID(res.DocID)
-			finalIDs = append(finalIDs, extID)
+			finalRes = append(finalRes, fusedResult{id: extID, score: res.Score}) // Score non normalizzato qui, ma ok per text-only
 			count++
 		}
-		return finalIDs, nil
+		return finalRes, nil
 	}
 
-	// --- CASE B: HYBRID / VECTOR SEARCH ---
+	// CASE B: HYBRID / VECTOR
 	var vectorResults []types.SearchResult
 	var textResults []types.SearchResult
 	var wg sync.WaitGroup
 
-	// Vector Search
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		vectorResults = idx.SearchWithScores(query, k, allowList, efSearch)
 	}()
 
-	// Text Search (if applicable)
 	if textQuery != "" {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			results, _ := e.DB.FindIDsByTextSearch(indexName, textQueryField, textQuery)
-
-			// Apply allowList to text results too
 			if allowList != nil {
 				var filtered []types.SearchResult
 				for _, res := range results {
@@ -327,23 +380,18 @@ func (e *Engine) VSearch(indexName string, query []float32, k int, filter string
 	}
 	wg.Wait()
 
-	// 4. Fusion
+	// Fusion Logic
 	if textQuery == "" {
-		// Pure Vector Search return
-		ids := make([]string, 0, len(vectorResults))
-		for _, r := range vectorResults {
-			extID, found := hnswIndex.GetExternalID(r.DocID)
-			if !found {
-				continue // Skip non-existent IDs
-			}
-			ids = append(ids, extID)
+		finalRes := make([]fusedResult, len(vectorResults))
+		for i, r := range vectorResults {
+			extID, _ := hnswIndex.GetExternalID(r.DocID)
+			finalRes[i] = fusedResult{id: extID, score: r.Score}
 		}
-		return ids, nil
+		return finalRes, nil
 	}
 
-	// Hybrid Fusion (Weighted Sum)
 	if alpha < 0 || alpha > 1 {
-		alpha = 0.5 // Default safe fallback
+		alpha = 0.5
 	}
 
 	normalizeVectorScores(vectorResults)
@@ -357,27 +405,25 @@ func (e *Engine) VSearch(indexName string, query []float32, k int, filter string
 		fusedScores[res.DocID] += (1 - alpha) * res.Score
 	}
 
-	// 5. Sort & Format
-	finalResults := make([]fusedResult, 0, len(fusedScores))
+	finalRes := make([]fusedResult, 0, len(fusedScores))
 	for id, score := range fusedScores {
 		extID, found := hnswIndex.GetExternalID(id)
 		if !found {
 			continue
 		}
-		finalResults = append(finalResults, fusedResult{id: extID, score: score})
+		finalRes = append(finalRes, fusedResult{id: extID, score: score})
 	}
 
-	sort.Slice(finalResults, func(i, j int) bool {
-		return finalResults[i].score > finalResults[j].score
+	sort.Slice(finalRes, func(i, j int) bool {
+		return finalRes[i].score > finalRes[j].score
 	})
 
-	// Top K
-	ids := make([]string, 0, k)
-	for i := 0; i < k && i < len(finalResults); i++ {
-		ids = append(ids, finalResults[i].id)
+	if len(finalRes) > k {
+		finalRes = finalRes[:k]
 	}
 
-	return ids, nil
+	return finalRes, nil
+
 }
 
 // SearchResult represents a match with its similarity score/distance.

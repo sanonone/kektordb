@@ -323,8 +323,6 @@ func main() {
 	db = db2
 	defer db.Close()
 
-	fmt.Println("\nALL TESTS PASSED SUCCESSFULLY!")
-
 	// ==========================================
 	// 10. TEST MAINTENANCE & OPTIMIZER
 	// ==========================================
@@ -380,4 +378,65 @@ func main() {
 	}
 
 	fmt.Println("✅ Maintenance Ops OK (Config update, Triggers executed).")
+
+	// ==========================================
+	// 11. TEST GRAPHRAG (Graph + Vector)
+	// ==========================================
+	fmt.Println("\n🔹 11. Testing GraphRAG Engine...")
+
+	graphIdx := "test_graph_rag"
+	// 1. Creiamo un indice pulito
+	_ = db.VCreate(graphIdx, distance.Cosine, 16, 200, distance.Float32, "", nil)
+
+	// 2. Inseriamo i nodi (Vettori ORTOGONALI per essere distinti col Coseno)
+	// Child: Punta su X
+	db.VAdd(graphIdx, "child_node", []float32{1.0, 0.0, 0.0}, nil)
+	// Parent: Punta su Y
+	db.VAdd(graphIdx, "parent_node", []float32{0.0, 1.0, 0.0}, nil)
+
+	// 3. Creiamo il Link: child -> parent
+	fmt.Println("   -> Linking 'child_node' to 'parent_node'...")
+	if err := db.VLink("child_node", "parent_node", "parent"); err != nil {
+		log.Fatalf("❌ VLink failed: %v", err)
+	}
+
+	// 4. Verifica GetLinks
+	links, found := db.VGetLinks("child_node", "parent")
+	if !found || len(links) == 0 || links[0] != "parent_node" {
+		log.Fatalf("❌ VGetLinks failed internally")
+	}
+
+	// 5. Verifica SearchGraph
+	// Cerchiamo esattamente il vettore del figlio [1, 0, 0]
+	queryVecGraph := []float32{1.0, 0.0, 0.0}
+
+	graphRes, err := db.VSearchGraph(graphIdx, queryVecGraph, 1, "", 100, 0.0, []string{"parent"})
+	if err != nil {
+		log.Fatalf("❌ VSearchGraph failed: %v", err)
+	}
+
+	// Validazione Risultato
+	if len(graphRes) > 0 {
+		top := graphRes[0]
+		// Ora child_node (distanza 0) vincerà sicuramente su parent_node (distanza 1)
+		if top.ID != "child_node" {
+			log.Fatalf("❌ Graph Search found wrong vector: %s (Expected child_node)", top.ID)
+		}
+
+		if rels, ok := top.Relations["parent"]; ok {
+			if len(rels) > 0 && rels[0] == "parent_node" {
+				fmt.Println("✅ Graph Search OK: Retrieved 'child_node' enriched with parent 'parent_node'.")
+			} else {
+				log.Fatalf("❌ Graph Search relation content mismatch: %v", rels)
+			}
+		} else {
+			log.Fatalf("❌ Graph Search missing 'parent' relation in output")
+		}
+	} else {
+		log.Fatalf("❌ Graph Search returned no results")
+	}
+
+	db.VDeleteIndex(graphIdx)
+
+	fmt.Println("\n🎉🎉🎉 TUTTI I TEST PASSATI CON SUCCESSO! 🎉🎉🎉")
 }

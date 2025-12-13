@@ -58,6 +58,11 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /vector/actions/compress", s.handleVectorCompress)
 	mux.HandleFunc("POST /vector/actions/get-vectors", s.handleGetVectorsBatch)
 
+	// Graph API
+	mux.HandleFunc("POST /graph/actions/link", s.handleGraphLink)
+	mux.HandleFunc("POST /graph/actions/unlink", s.handleGraphUnlink)
+	mux.HandleFunc("POST /graph/actions/get-links", s.handleGraphGetLinks)
+
 	mux.HandleFunc("POST /rag/retrieve", s.handleRagRetrieve)
 
 	// Dynamic index routes
@@ -337,25 +342,51 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results, err := s.Engine.VSearch(
-		req.IndexName,
-		req.QueryVector,
-		req.K,
-		req.Filter,
-		req.EfSearch,
-		req.Alpha,
-	)
-
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			s.writeHTTPError(w, http.StatusNotFound, err)
-		} else {
-			s.writeHTTPError(w, http.StatusInternalServerError, err)
+	if len(req.IncludeRelations) > 0 {
+		// --- GRAPH SEARCH ---
+		results, err := s.Engine.VSearchGraph(
+			req.IndexName,
+			req.QueryVector,
+			req.K,
+			req.Filter,
+			req.EfSearch,
+			req.Alpha,
+			req.IncludeRelations, // Passiamo la lista
+		)
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				s.writeHTTPError(w, http.StatusNotFound, err)
+			} else {
+				s.writeHTTPError(w, http.StatusInternalServerError, err)
+			}
+			return
 		}
-		return
-	}
+		// Ritorniamo l'oggetto ricco
+		s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": results})
 
-	s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": results})
+	} else {
+		// --- STANDARD SEARCH ---
+		// Identico a prima, ritorna solo stringhe per compatibilità
+		ids, err := s.Engine.VSearch(
+			req.IndexName,
+			req.QueryVector,
+			req.K,
+			req.Filter,
+			req.EfSearch,
+			req.Alpha,
+		)
+
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				s.writeHTTPError(w, http.StatusNotFound, err)
+			} else {
+				s.writeHTTPError(w, http.StatusInternalServerError, err)
+			}
+			return
+		}
+
+		s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": ids})
+	}
 }
 
 func (s *Server) handleVectorDelete(w http.ResponseWriter, r *http.Request) {
@@ -435,6 +466,73 @@ func (s *Server) handleGetVector(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeHTTPResponse(w, http.StatusOK, data)
+}
+
+// --- GRAPH HANDLERS ---
+
+func (s *Server) handleGraphLink(w http.ResponseWriter, r *http.Request) {
+	var req GraphLinkRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("Invalid JSON"))
+		return
+	}
+
+	if req.SourceID == "" || req.TargetID == "" || req.RelationType == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("source_id, target_id, and relation_type are required"))
+		return
+	}
+
+	if err := s.Engine.VLink(req.SourceID, req.TargetID, req.RelationType); err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("Error in Vlink"))
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Link created"})
+}
+
+func (s *Server) handleGraphUnlink(w http.ResponseWriter, r *http.Request) {
+	var req GraphLinkRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("Invalid JSON"))
+		return
+	}
+
+	if req.SourceID == "" || req.TargetID == "" || req.RelationType == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("source_id, target_id, and relation_type are required"))
+		return
+	}
+
+	if err := s.Engine.VUnlink(req.SourceID, req.TargetID, req.RelationType); err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("Error in Unlink"))
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Link removed"})
+}
+
+func (s *Server) handleGraphGetLinks(w http.ResponseWriter, r *http.Request) {
+	var req GraphGetLinksRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("Invalid JSON"))
+		return
+	}
+
+	if req.SourceID == "" || req.RelationType == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("source_id and relation_type are required"))
+		return
+	}
+
+	targets, found := s.Engine.VGetLinks(req.SourceID, req.RelationType)
+	if !found {
+		// Ritorniamo una lista vuota invece di 404 per facilitare il client
+		targets = []string{}
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
+		"source_id":     req.SourceID,
+		"relation_type": req.RelationType,
+		"targets":       targets,
+	})
 }
 
 // handleRagRetrieve esegue una ricerca semantica usando una pipeline configurata.

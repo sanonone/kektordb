@@ -72,6 +72,34 @@ type Task struct {
 	client *Client
 }
 
+// --- Graph Structures ---
+
+type graphLinkRequest struct {
+	SourceID     string `json:"source_id"`
+	TargetID     string `json:"target_id"`
+	RelationType string `json:"relation_type"`
+}
+
+type graphGetLinksRequest struct {
+	SourceID     string `json:"source_id"`
+	RelationType string `json:"relation_type"`
+}
+
+type graphGetLinksResponse struct {
+	Targets []string `json:"targets"`
+}
+
+// GraphSearchResult represents a search result enriched with scores and relationships.
+type GraphSearchResult struct {
+	ID        string              `json:"id"`
+	Score     float64             `json:"score"`
+	Relations map[string][]string `json:"relations,omitempty"`
+}
+
+type searchGraphResponse struct {
+	Results []GraphSearchResult `json:"results"`
+}
+
 // --- Client ---
 
 type Client struct {
@@ -403,6 +431,88 @@ func (c *Client) VGetMany(indexName string, ids []string) ([]VectorData, error) 
 		return nil, fmt.Errorf("invalid JSON response for VGetMany: %w", err)
 	}
 	return resp, nil
+}
+
+// --- Graph Methods ---
+
+// VLink creates a semantic relationship between two vectors (e.g. "chunk_1" -> "doc_A" as "parent").
+func (c *Client) VLink(sourceID, targetID, relationType string) error {
+	req := graphLinkRequest{
+		SourceID:     sourceID,
+		TargetID:     targetID,
+		RelationType: relationType,
+	}
+	_, err := c.jsonRequest(http.MethodPost, "/graph/actions/link", req)
+	return err
+}
+
+// VUnlink removes a semantic relationship.
+func (c *Client) VUnlink(sourceID, targetID, relationType string) error {
+	req := graphLinkRequest{
+		SourceID:     sourceID,
+		TargetID:     targetID,
+		RelationType: relationType,
+	}
+	_, err := c.jsonRequest(http.MethodPost, "/graph/actions/unlink", req)
+	return err
+}
+
+// VGetLinks retrieves all target IDs linked to a source ID by a specific relation type.
+func (c *Client) VGetLinks(sourceID, relationType string) ([]string, error) {
+	req := graphGetLinksRequest{
+		SourceID:     sourceID,
+		RelationType: relationType,
+	}
+	respBody, err := c.jsonRequest(http.MethodPost, "/graph/actions/get-links", req)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp graphGetLinksResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response: %w", err)
+	}
+	return resp.Targets, nil
+}
+
+// VSearchGraph performs a search and returns detailed results including scores and graph relations.
+// 'includeRelations' is a list of relation types to fetch (e.g. []string{"parent", "next"}).
+func (c *Client) VSearchGraph(indexName string, queryVector []float32, k int, filter string, efSearch int, alpha float64, includeRelations []string) ([]GraphSearchResult, error) {
+	// Riutilizziamo la struct di richiesta esistente in http_types del server,
+	// ma qui la definiamo dinamicamente o estendiamo quella locale se presente.
+	// Usiamo una map per flessibilità o estendiamo la struct interna.
+
+	payload := map[string]interface{}{
+		"index_name":   indexName,
+		"k":            k,
+		"query_vector": queryVector,
+	}
+
+	if filter != "" {
+		payload["filter"] = filter
+	}
+	if efSearch > 0 {
+		payload["ef_search"] = efSearch
+	}
+	if alpha != 0 {
+		payload["alpha"] = alpha
+	}
+	// Campo chiave per attivare la logica Graph nel server
+	if len(includeRelations) > 0 {
+		payload["include_relations"] = includeRelations
+	}
+
+	respBody, err := c.jsonRequest(http.MethodPost, "/vector/actions/search", payload)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp searchGraphResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for VSearchGraph: %w", err)
+	}
+
+	return resp.Results, nil
 }
 
 // --- Administration Methods ---

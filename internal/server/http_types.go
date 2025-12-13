@@ -37,12 +37,13 @@ type BatchGetVectorsRequest struct {
 
 // VectorSearchRequest defines the body for search operations.
 type VectorSearchRequest struct {
-	IndexName   string    `json:"index_name"`
-	K           int       `json:"k"`
-	QueryVector []float32 `json:"query_vector"`
-	Filter      string    `json:"filter,omitempty"`
-	EfSearch    int       `json:"ef_search,omitempty"`
-	Alpha       float64   `json:"alpha,omitempty"`
+	IndexName        string    `json:"index_name"`
+	K                int       `json:"k"`
+	QueryVector      []float32 `json:"query_vector"`
+	Filter           string    `json:"filter,omitempty"`
+	EfSearch         int       `json:"ef_search,omitempty"`
+	Alpha            float64   `json:"alpha,omitempty"`
+	IncludeRelations []string  `json:"include_relations,omitempty"`
 }
 
 // VectorDeleteRequest defines the body for vector deletion.
@@ -65,4 +66,15 @@ type RagRetrieveRequest struct {
 	PipelineName string `json:"pipeline_name"`
 	Query        string `json:"query"`
 	K            int    `json:"k"` // Default 10
+}
+
+type GraphLinkRequest struct {
+	SourceID     string `json:"source_id"`
+	TargetID     string `json:"target_id"`
+	RelationType string `json:"relation_type"` // e.g. "parent", "next", "cited_by"
+}
+
+type GraphGetLinksRequest struct {
+	SourceID     string `json:"source_id"`
+	RelationType string `json:"relation_type"`
 }

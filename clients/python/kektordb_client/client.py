@@ -336,7 +336,7 @@ class KektorDBClient:
         payload = {"index_name": index_name, "ids": item_ids}
         return self._request("POST", "/vector/actions/get-vectors", json=payload)
 
-    def vsearch(self, index_name: str, query_vector: List[float], k: int, filter_str: str = "", ef_search: int = 0, alpha: float = 0.5) -> List[str]:
+    def vsearch(self, index_name: str, query_vector: List[float], k: int, filter_str: str = "", ef_search: int = 0, alpha: float = 0.5, include_relations: List[str] = None) -> Union[List[str], List[Dict[str, Any]]]: 
         """
         Performs a nearest neighbor search in an index.
 
@@ -351,6 +351,9 @@ class KektorDBClient:
             alpha: The weight for hybrid search fusion (0 to 1).
                    1.0 = pure vector search, 0.0 = pure text search.
                    Only used when a CONTAINS filter is present. Default: 0.5.
+            include_relations: List of relation types to fetch (e.g. ["parent", "next"]).
+                               If provided, returns a list of dictionaries with relations.
+                               If None (default), returns list of IDs strings.
 
         Returns:
             A list of item IDs of the nearest neighbors.
@@ -372,9 +375,48 @@ class KektorDBClient:
 
         if alpha != 0.5:
             payload["alpha"] = alpha
+
+        if include_relations:
+            payload["include_relations"] = include_relations
             
         data = self._request("POST", "/vector/actions/search", json=payload)
         return data.get("results", [])
+
+    # --- Graph / Relationship Methods ---
+
+    def vlink(self, source_id: str, target_id: str, relation_type: str) -> None:
+        """
+        Creates a directed semantic link between two nodes.
+        Example: vlink("chunk_5", "doc_manual_v1", "parent")
+        """
+        payload = {
+            "source_id": source_id,
+            "target_id": target_id,
+            "relation_type": relation_type
+        }
+        self._request("POST", "/graph/actions/link", json=payload)
+
+    def vunlink(self, source_id: str, target_id: str, relation_type: str) -> None:
+        """
+        Removes a directed semantic link.
+        """
+        payload = {
+            "source_id": source_id,
+            "target_id": target_id,
+            "relation_type": relation_type
+        }
+        self._request("POST", "/graph/actions/unlink", json=payload)
+
+    def vget_links(self, source_id: str, relation_type: str) -> List[str]:
+        """
+        Retrieves all target IDs linked from source_id with a specific relation type.
+        """
+        payload = {
+            "source_id": source_id,
+            "relation_type": relation_type
+        }
+        resp = self._request("POST", "/graph/actions/get-links", json=payload)
+        return resp.get("targets", [])
 
     def vupdate_config(self, index_name: str, config: Dict[str, Any]) -> None:
         """
@@ -391,6 +433,8 @@ class KektorDBClient:
                     - refine_ef_construction (int)
         """
         self._request("POST", f"/vector/indexes/{index_name}/config", json=config)
+
+    # --- Mantainance ---
 
     def vtrigger_maintenance(self, index_name: str, task_type: str, wait: bool = True) -> Task:
         """
