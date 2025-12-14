@@ -33,6 +33,7 @@ type VectorizerConfig struct {
 	IncludePatterns  []string            `yaml:"include_patterns"`
 	ExcludePatterns  []string            `yaml:"exclude_patterns"`
 	IndexConfig      IndexCreationConfig `yaml:"index_config"`
+	GraphEnabled     bool                `yaml:"graph_enabled"`
 }
 
 type IndexCreationConfig struct {
@@ -68,21 +69,28 @@ type DocProcessorConfig struct {
 }
 
 // LoadVectorizersConfig reads and parses the YAML configuration file from the given path.
-// If the path is an empty string, it returns a valid, empty Config struct without error,
-// allowing the server to run without any vectorizers configured.
+// It uses Strict Mode (KnownFields) to prevent silent errors due to typos.
 func LoadVectorizersConfig(path string) (*Config, error) {
 	if path == "" {
 		return &Config{}, nil // No file specified, return an empty config.
 	}
 
-	data, err := os.ReadFile(path)
+	// 1. Open File
+	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("could not read configuration file '%s': %w", path, err)
+		return nil, fmt.Errorf("could not open configuration file '%s': %w", path, err)
 	}
+	defer file.Close()
 
 	var config Config
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("could not parse YAML file '%s': %w", path, err)
+
+	// 2. Setup Strict Decoder
+	decoder := yaml.NewDecoder(file)
+	decoder.KnownFields(true) // <--- FAIL FAST: Error if unknown field exists
+
+	// 3. Decode
+	if err := decoder.Decode(&config); err != nil {
+		return nil, fmt.Errorf("YAML syntax error in '%s': %w", path, err)
 	}
 
 	return &config, nil

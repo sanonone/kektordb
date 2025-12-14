@@ -379,7 +379,7 @@ class KektorDBClient:
         if include_relations:
             payload["include_relations"] = include_relations
 
-         if hydrate_relations:
+        if hydrate_relations:
             payload["hydrate_relations"] = True
             
         data = self._request("POST", "/vector/actions/search", json=payload)

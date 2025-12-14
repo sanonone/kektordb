@@ -23,4 +23,7 @@ type Store interface {
 	Search(indexName string, query []float32, k int) ([]string, error)
 	// GetMany retrieves full data (including metadata) for vectors
 	GetMany(indexName string, ids []string) ([]core.VectorData, error)
+
+	// Graph Ops
+	Link(sourceID, targetID, relationType string) error
 }

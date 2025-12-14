@@ -71,3 +71,7 @@ func (a *KektorAdapter) Search(indexName string, query []float32, k int) ([]stri
 func (a *KektorAdapter) GetMany(indexName string, ids []string) ([]core.VectorData, error) {
 	return a.Engine.VGetMany(indexName, ids)
 }
+
+func (a *KektorAdapter) Link(sourceID, targetID, relationType string) error {
+	return a.Engine.VLink(sourceID, targetID, relationType)
+}

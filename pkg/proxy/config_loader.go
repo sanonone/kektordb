@@ -34,7 +34,7 @@ func DefaultConfig() Config {
 	}
 }
 
-// LoadConfig reads the YAML configuration file.
+// LoadConfig reads the YAML configuration file using strict parsing.
 func LoadConfig(path string) (Config, error) {
 	cfg := DefaultConfig() // Start with defaults
 
@@ -42,13 +42,20 @@ func LoadConfig(path string) (Config, error) {
 		return cfg, nil
 	}
 
-	data, err := os.ReadFile(path)
+	// 1. Open File
+	file, err := os.Open(path)
 	if err != nil {
-		return cfg, fmt.Errorf("failed to read proxy config: %w", err)
+		return cfg, fmt.Errorf("failed to open proxy config: %w", err)
 	}
+	defer file.Close()
 
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return cfg, fmt.Errorf("failed to parse proxy config: %w", err)
+	// 2. Setup Strict Decoder
+	decoder := yaml.NewDecoder(file)
+	decoder.KnownFields(true) // <--- FAIL FAST
+
+	// 3. Decode
+	if err := decoder.Decode(&cfg); err != nil {
+		return cfg, fmt.Errorf("YAML syntax error in proxy config: %w", err)
 	}
 
 	return cfg, nil

@@ -27,6 +27,7 @@ vectorizers:
     metadata_template:
       source_file: "{{file_path}}"
       category: "internal_code"
+    graph_enabled: true
 
   # 2. Documentazione Core (Codice)
   # Usa strategia "code" (ottimizzata per tagliare su funzioni/tipi)
@@ -53,6 +54,7 @@ vectorizers:
     metadata_template:
       source_file: "{{file_path}}"
       category: "core_logic"
+    graph_enabled: true
 
   # 3. Appunti Obsidian / Markdown
   # Usa strategia "markdown" (taglia sugli header ##)
@@ -80,3 +82,5 @@ vectorizers:
     metadata_template:
       source_file: "{{file_path}}"
       category: "study_notes"
+    graph_enabled: true
+

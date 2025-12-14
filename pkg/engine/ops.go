@@ -453,6 +453,7 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 
 // VGetConnections retrieves the full data of nodes linked to a source node.
 // It performs a Graph Traversal (1-hop) and Hydration in one step.
+// SELF-REPAIR: If it encounters links to non-existent nodes, it removes them in background.
 func (e *Engine) VGetConnections(indexName, sourceID, relationType string) ([]core.VectorData, error) {
 	// 1. Recupera gli ID dei link dal KV Store
 	targetIDs, found := e.VGetLinks(sourceID, relationType)
@@ -461,8 +462,34 @@ func (e *Engine) VGetConnections(indexName, sourceID, relationType string) ([]co
 	}
 
 	// 2. Idratazione (Recupera dati da HNSW/Metadata)
-	// GetVectors gestisce internamente la concorrenza e salta i nodi non trovati
-	return e.DB.GetVectors(indexName, targetIDs)
+	results, err := e.DB.GetVectors(indexName, targetIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. Logic Self-Repair (Lazy Cleanup)
+	// Se abbiamo trovato meno vettori di quanti ID avevamo, alcuni link sono morti.
+	if len(results) < len(targetIDs) {
+		// Creiamo un set degli ID trovati (vivi)
+		foundSet := make(map[string]struct{}, len(results))
+		for _, res := range results {
+			foundSet[res.ID] = struct{}{}
+		}
+
+		// Identifichiamo i morti e puliamo
+		for _, targetID := range targetIDs {
+			if _, ok := foundSet[targetID]; !ok {
+				// Questo ID era nei link ma non nel DB. È morto.
+				// Lanciamo la pulizia in background per non rallentare la lettura corrente.
+				go func(deadID string) {
+					// VUnlink è thread-safe e gestisce il lock e l'AOF
+					_ = e.VUnlink(sourceID, deadID, relationType)
+				}(targetID)
+			}
+		}
+	}
+
+	return results, nil
 }
 
 // SearchResult represents a match with its similarity score/distance.

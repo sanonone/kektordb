@@ -214,6 +214,8 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 	// Pre-calculate modTime string for template
 	modTimeStr := info.ModTime().Format(time.RFC3339)
 
+	var prevChunkID string
+
 	for i, chunkText := range chunks {
 		// Embed
 		vec, err := p.embedder.Embed(chunkText)
@@ -247,6 +249,23 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 			Vector:   vec,
 			Metadata: meta,
 		})
+
+		// --- GRAPH AUTO-LINKING LOGIC ---
+		if p.cfg.GraphEnabled {
+			// Se esiste un chunk precedente, colleghiamoli
+			if prevChunkID != "" {
+				// Link: Precedente -> Corrente (Next)
+				if err := p.store.Link(prevChunkID, id, "next"); err != nil {
+					log.Printf("[RAG] Failed to link %s -> %s (next): %v", prevChunkID, id, err)
+				}
+				// Link: Corrente -> Precedente (Prev)
+				if err := p.store.Link(id, prevChunkID, "prev"); err != nil {
+					log.Printf("[RAG] Failed to link %s -> %s (prev): %v", id, prevChunkID, err)
+				}
+			}
+			// Aggiorna il puntatore per il prossimo giro
+			prevChunkID = id
+		}
 	}
 
 	if len(batch) == 0 {

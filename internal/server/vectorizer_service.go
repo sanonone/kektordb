@@ -91,6 +91,8 @@ func NewVectorizerService(server *Server) (*VectorizerService, error) {
 
 			MetadataTemplate: cfg.MetadataTemplate,
 
+			GraphEnabled: cfg.GraphEnabled,
+
 			IndexMetric:         idxMetric,
 			IndexPrecision:      idxPrec,
 			IndexM:              idxM,

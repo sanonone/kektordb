@@ -32,6 +32,10 @@ type Config struct {
 	// --- Metadata ---
 	MetadataTemplate map[string]string
 
+	// Graph Settings
+	// If true, automatically creates 'next' and 'prev' links between sequential chunks.
+	GraphEnabled bool `json:"graph_enabled"`
+
 	IndexMetric         string
 	IndexPrecision      string
 	IndexM              int
