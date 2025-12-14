@@ -17,7 +17,7 @@ func NewKektorAdapter(eng *engine.Engine) *KektorAdapter {
 }
 
 func (a *KektorAdapter) AddBatch(indexName string, items []types.BatchObject) error {
-	// Usiamo VAddBatch che gestisce la persistenza (AOF)
+	// Use VAddBatch which handles persistence (AOF)
 	return a.Engine.VAddBatch(indexName, items)
 }
 
@@ -57,14 +57,14 @@ func (a *KektorAdapter) CreateVectorIndex(name string, metric string, m int, efC
 		dPrec = distance.Float32
 	}
 
-	// Chiamata all'Engine con i parametri dinamici!
-	// Nota: passiamo nil per la AutoMaintenanceConfig per ora,
-	// ma potresti voler configurare anche quella nel YAML in futuro.
+	// Call to Engine with dynamic parameters!
+	// Note: passing nil for AutoMaintenanceConfig for now,
+	// but you might want to configure that in YAML in the future.
 	return a.Engine.VCreate(name, dMetric, m, efC, dPrec, lang, nil)
 }
 
 func (a *KektorAdapter) Search(indexName string, query []float32, k int) ([]string, error) {
-	// Chiama VSearch dell'Engine (usa default per efSearch e alpha per ora)
+	// Call Engine's VSearch (use default for efSearch and alpha for now)
 	return a.Engine.VSearch(indexName, query, k, "", 0, 0.5)
 }
 

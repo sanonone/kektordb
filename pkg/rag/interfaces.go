@@ -15,7 +15,7 @@ type Store interface {
 	// IndexExists checks if the index is already there
 	IndexExists(name string) bool
 
-	// State Ops (per non riprocessare file uguali)
+	// State Ops (to avoid reprocessing identical files)
 	SetState(key string, value []byte) error
 	GetState(key string) ([]byte, bool)
 

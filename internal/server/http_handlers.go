@@ -363,12 +363,12 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		// Ritorniamo l'oggetto ricco
+		// Return the rich object
 		s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": results})
 
 	} else {
 		// --- STANDARD SEARCH ---
-		// Identico a prima, ritorna solo stringhe per compatibilità
+		// Identical to above, returns only strings for compatibility
 		ids, err := s.Engine.VSearch(
 			req.IndexName,
 			req.QueryVector,
@@ -526,7 +526,7 @@ func (s *Server) handleGraphGetLinks(w http.ResponseWriter, r *http.Request) {
 
 	targets, found := s.Engine.VGetLinks(req.SourceID, req.RelationType)
 	if !found {
-		// Ritorniamo una lista vuota invece di 404 per facilitare il client
+		// We return an empty list instead of 404 to facilitate the client
 		targets = []string{}
 	}
 
@@ -560,7 +560,7 @@ func (s *Server) handleGraphGetConnections(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// handleRagRetrieve esegue una ricerca semantica usando una pipeline configurata.
+// handleRagRetrieve performs a semantic search using a configured pipeline.
 func (s *Server) handleRagRetrieve(w http.ResponseWriter, r *http.Request) {
 	var req RagRetrieveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -576,15 +576,15 @@ func (s *Server) handleRagRetrieve(w http.ResponseWriter, r *http.Request) {
 		req.K = 3
 	}
 
-	// Trova la pipeline giusta nel VectorizerService
-	// (Dobbiamo esporre un metodo per ottenere una pipeline per nome)
+	// Find the correct pipeline in the VectorizerService
+	// (We need to expose a method to get a pipeline by name)
 	pipeline := s.vectorizerService.GetPipeline(req.PipelineName)
 	if pipeline == nil {
 		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("pipeline '%s' not found", req.PipelineName))
 		return
 	}
 
-	// Esegui Retrieval
+	// Execute Retrieval
 	texts, err := pipeline.Retrieve(req.Query, req.K)
 	if err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("error while retrieving"))

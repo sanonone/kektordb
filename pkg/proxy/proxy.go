@@ -4,9 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/sanonone/kektordb/pkg/core/distance"
-	"github.com/sanonone/kektordb/pkg/core/hnsw"
-	"github.com/sanonone/kektordb/pkg/engine"
 	"io"
 	"log"
 	"net/http"
@@ -14,6 +11,10 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
+	"github.com/sanonone/kektordb/pkg/engine"
 )
 
 // AIProxy sits between the client and the LLM.
@@ -49,7 +50,7 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 2. Extract Text
 	promptText := extractPrompt(bodyBytes)
 	// Check if request asks for streaming
-	// (Ollama/OpenAI usano il campo JSON "stream": true)
+	// (Ollama/OpenAI use the JSON field "stream": true)
 	isStreaming := checkStreaming(bodyBytes)
 
 	var promptVec []float32
@@ -123,7 +124,7 @@ func checkStreaming(body []byte) bool {
 	return false // Default is usually false for most APIs if omitted, but depends on LLM.
 }
 
-// checkFirewallWithVec ottimizzato per usare il vettore già calcolato
+// checkFirewallWithVec optimized to use the already calculated vector
 func (p *AIProxy) checkFirewallWithVec(vec []float32) (bool, string) {
 	results, err := p.engine.VSearchWithScores(p.cfg.FirewallIndex, vec, 1)
 	if err != nil || len(results) == 0 {
@@ -136,7 +137,7 @@ func (p *AIProxy) checkFirewallWithVec(vec []float32) (bool, string) {
 	return false, ""
 }
 
-// checkCache cerca una risposta esistente
+// checkCache looks for an existing response
 func (p *AIProxy) checkCache(vec []float32) (string, bool) {
 	results, err := p.engine.VSearchWithScores(p.cfg.CacheIndex, vec, 1)
 	if err != nil || len(results) == 0 {
@@ -144,26 +145,26 @@ func (p *AIProxy) checkCache(vec []float32) (string, bool) {
 	}
 
 	best := results[0]
-	// Cache Hit solo se molto simile
+	// Cache Hit only if very similar
 	if float32(best.Score) < p.cfg.CacheThreshold {
 		data, err := p.engine.VGet(p.cfg.CacheIndex, best.ID)
 		if err == nil {
 
-			// --- LOGICA TTL ---
+			// --- TTL LOGIC ---
 			if createdAt, ok := data.Metadata["created_at"].(float64); ok {
 				createdTime := time.Unix(int64(createdAt), 0)
 
-				// Se è scaduto...
+				// If expired...
 				if p.cfg.CacheTTL > 0 && time.Since(createdTime) > p.cfg.CacheTTL {
 					log.Printf("[Cache] Item expired (Age: %v). Triggering cleanup.", time.Since(createdTime))
 
-					// AZIONE: Cancelliamo il nodo.
-					// Il Vacuum passerà poi a liberare la RAM e ricucire il grafo.
+					// ACTION: Delete the node.
+					// The Vacuum will then free RAM and repair the graph.
 					go func(id string) {
 						_ = p.engine.VDelete(p.cfg.CacheIndex, id)
 					}(best.ID)
 
-					return "", false // È un Cache Miss per l'utente
+					return "", false // It's a Cache Miss for the user
 				}
 			}
 			// ------------------
@@ -176,48 +177,48 @@ func (p *AIProxy) checkCache(vec []float32) (string, bool) {
 	return "", false
 }
 
-// saveToCache salva la coppia Domanda/Risposta
+// saveToCache saves the Question/Response pair
 func (p *AIProxy) saveToCache(queryVec []float32, queryText string, responseBytes []byte) {
 	if len(responseBytes) == 0 {
 		return
 	}
 
-	// 1. CHECK LIMITE DIMENSIONE
-	// Otteniamo info sull'indice cache
+	// 1. CHECK SIZE LIMIT
+	// Get info on cache index
 	info, err := p.engine.DB.GetSingleVectorIndexInfoAPI(p.cfg.CacheIndex)
 	if err == nil {
-		// Se siamo pieni, no cache (politica "Drop New")
-		// Alternativa futura: Cancellare vecchi con Vacuum
+		// If full, no cache ("Drop New" policy)
+		// Future alternative: Delete old ones with Vacuum
 		if p.cfg.MaxCacheItems > 0 && info.VectorCount >= p.cfg.MaxCacheItems {
 			log.Printf("[Cache] Full (%d items). Skipping save.", info.VectorCount)
 			return
 		}
 	}
 
-	id := fmt.Sprintf("cache_%d_%d", time.Now().UnixNano(), len(queryText)) // ID univoco temporale
+	id := fmt.Sprintf("cache_%d_%d", time.Now().UnixNano(), len(queryText)) // Temporal unique ID
 
 	meta := map[string]interface{}{
 		"query":    queryText,
 		"response": string(responseBytes),
-		// 2. SALVA TIMESTAMP (Unix Nano)
+		// 2. SAVE TIMESTAMP (Unix Nano)
 		"created_at": float64(time.Now().Unix()),
 	}
 
 	maintConfig := &hnsw.AutoMaintenanceConfig{
-		// Dobbiamo castare time.Duration nel tipo custom hnsw.Duration
-		// (se abbiamo usato il wrapper per il JSON nel file config.go di hnsw)
+		// We must cast time.Duration to custom type hnsw.Duration
+		// (if we used the wrapper for JSON in hnsw's config.go)
 		VacuumInterval:  hnsw.Duration(p.cfg.CacheVacuumInterval),
 		DeleteThreshold: p.cfg.CacheDeleteThreshold,
 		RefineEnabled:   false,
 	}
 
-	// Passiamo la config a VCreate
-	// Se l'indice non esiste, viene creato con QUESTA configurazione di manutenzione.
+	// Pass config to VCreate
+	// If index does not exist, it is created with THIS maintenance configuration.
 	_ = p.engine.VCreate(p.cfg.CacheIndex, distance.Cosine, 16, 200, distance.Float32, "", maintConfig)
 
 	p.engine.VAdd(p.cfg.CacheIndex, id, queryVec, meta)
 
-	// Log accorciato safe
+	// Safe shortened log
 	preview := queryText
 	if len(preview) > 30 {
 		preview = preview[:30]
@@ -232,7 +233,7 @@ func (p *AIProxy) checkFirewall(text string) (bool, string) {
 		return false, ""
 	}
 
-	// Cerchiamo il match più vicino
+	// Search for the closest match
 	results, err := p.engine.VSearchWithScores(p.cfg.FirewallIndex, vec, 1)
 	if err != nil || len(results) == 0 {
 		return false, ""
@@ -240,13 +241,13 @@ func (p *AIProxy) checkFirewall(text string) (bool, string) {
 
 	bestMatch := results[0]
 
-	// Logica Threshold:
-	// Cosine: Score è 0.0 (uguale) -> 2.0 (opposto).
-	// Attenzione: KektorDB ritorna "Distanza" (1 - CosineSimilarity) o score normalizzato?
-	// Nel codice SearchWithScores originale: results[i].Score = c.Distance.
-	// E c.Distance per Cosine è (1 - sim). Quindi 0 = identico.
+	// Threshold Logic:
+	// Cosine: Score is 0.0 (equal) -> 2.0 (opposite).
+	// Warning: Does KektorDB return "Distance" (1 - CosineSimilarity) or normalized score?
+	// In original SearchWithScores code: results[i].Score = c.Distance.
+	// And c.Distance for Cosine is (1 - sim). Therefore 0 = identical.
 
-	// Se la distanza è MOLTO BASSA (es. < 0.1), vuol dire che il prompt è molto simile all'attacco.
+	// If distance is VERY LOW (e.g. < 0.1), it means the prompt is very similar to the attack.
 	if float32(bestMatch.Score) < p.cfg.FirewallThreshold {
 		return true, fmt.Sprintf("Similar to known threat '%s' (Dist: %.4f)", bestMatch.ID, bestMatch.Score)
 	}
@@ -254,19 +255,19 @@ func (p *AIProxy) checkFirewall(text string) (bool, string) {
 	return false, ""
 }
 
-// Helper per estrarre testo da JSON generici (Ollama/OpenAI)
+// Helper to extract text from generic JSON (Ollama/OpenAI)
 func extractPrompt(jsonBody []byte) string {
 	var data map[string]interface{}
 	if err := json.Unmarshal(jsonBody, &data); err != nil {
 		return ""
 	}
 
-	// 1. Caso "prompt" (Ollama standard)
+	// 1. Case "prompt" (Standard Ollama)
 	if v, ok := data["prompt"].(string); ok {
 		return v
 	}
 
-	// 2. Caso "messages" (OpenAI chat format)
+	// 2. Case "messages" (OpenAI chat format)
 	if msgs, ok := data["messages"].([]interface{}); ok {
 		var sb strings.Builder
 		for _, m := range msgs {

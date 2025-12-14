@@ -1,8 +1,9 @@
 package proxy
 
 import (
-	"github.com/sanonone/kektordb/pkg/embeddings"
 	"time"
+
+	"github.com/sanonone/kektordb/pkg/embeddings"
 )
 
 type Config struct {
@@ -20,15 +21,15 @@ type Config struct {
 	// Firewall (Prompt Guard)
 	FirewallEnabled   bool    `yaml:"firewall_enabled"`
 	FirewallIndex     string  `yaml:"firewall_index"`
-	FirewallThreshold float32 `yaml:"firewall_threshold"` // es. 0.25
+	FirewallThreshold float32 `yaml:"firewall_threshold"` // e.g., 0.25
 	BlockMessage      string  `yaml:"block_message"`      // Custom error msg
 
 	// Semantic Cache
 	CacheEnabled         bool          `yaml:"cache_enabled"`
 	CacheIndex           string        `yaml:"cache_index"`
-	CacheThreshold       float32       `yaml:"cache_threshold"` // es. 0.05
-	CacheTTL             time.Duration `yaml:"cache_ttl"`       // Durata validità (es. 24h)
-	MaxCacheItems        int           `yaml:"max_cache_items"` // Stop caching se pieno
+	CacheThreshold       float32       `yaml:"cache_threshold"` // e.g., 0.05
+	CacheTTL             time.Duration `yaml:"cache_ttl"`       // Validity duration (e.g., 24h)
+	MaxCacheItems        int           `yaml:"max_cache_items"` // Stop caching if full
 	CacheVacuumInterval  time.Duration `yaml:"cache_vacuum_interval"`
 	CacheDeleteThreshold float64       `yaml:"cache_delete_threshold"`
 }

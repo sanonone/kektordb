@@ -23,7 +23,7 @@ func NewOllamaEmbedder(url, model string, timeout time.Duration) *OllamaEmbedder
 		URL:   url,
 		Model: model,
 		Client: &http.Client{
-			Timeout: timeout, // Usa il valore configurato
+			Timeout: timeout, // Use the configured value
 		},
 	}
 }

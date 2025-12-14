@@ -2,11 +2,12 @@ package server
 
 import (
 	"fmt"
-	"github.com/sanonone/kektordb/pkg/embeddings"
-	"github.com/sanonone/kektordb/pkg/rag"
 	"log"
 	"sync"
 	"time"
+
+	"github.com/sanonone/kektordb/pkg/embeddings"
+	"github.com/sanonone/kektordb/pkg/rag"
 )
 
 // VectorizerService manages the lifecycle of RAG pipelines.
@@ -23,7 +24,7 @@ func NewVectorizerService(server *Server) (*VectorizerService, error) {
 	}
 
 	for _, cfg := range server.vectorizerConfig.Vectorizers {
-		// 1. Parsing Durate (Schedule e Timeout Embedder)
+		// 1. Parse Duration (Schedule and Embedder Timeout)
 		schedule, err := time.ParseDuration(cfg.Schedule)
 		if err != nil {
 			log.Printf("ERROR: Invalid schedule for vectorizer '%s': %v", cfg.Name, err)
@@ -32,10 +33,10 @@ func NewVectorizerService(server *Server) (*VectorizerService, error) {
 
 		embedTimeout, _ := time.ParseDuration(cfg.Embedder.Timeout)
 		if embedTimeout == 0 {
-			embedTimeout = 60 * time.Second // Default sicuro se non specificato
+			embedTimeout = 60 * time.Second // Safe default if not specified
 		}
 
-		// 2. Calcolo Overlap (se non specificato, usa 10% del ChunkSize)
+		// 2. Calculate Overlap (if not specified, use 10% of ChunkSize)
 		overlap := cfg.DocProcessor.ChunkOverlap
 		if overlap == 0 && cfg.DocProcessor.ChunkSize > 0 {
 			overlap = cfg.DocProcessor.ChunkSize / 10
@@ -66,18 +67,18 @@ func NewVectorizerService(server *Server) (*VectorizerService, error) {
 			idxLang = "english"
 		}
 
-		// 3. Mappatura Configurazione YAML -> Configurazione RAG
+		// 3. Map YAML Configuration -> RAG Configuration
 		ragConfig := rag.Config{
 			Name:            cfg.Name,
 			SourcePath:      cfg.Source.Path,
 			IndexName:       cfg.KektorIndex,
 			PollingInterval: schedule,
 
-			// Filtri File
+			// File Filters
 			IncludePatterns: cfg.IncludePatterns,
 			ExcludePatterns: cfg.ExcludePatterns,
 
-			// Text Processing Avanzato
+			// Advanced Text Processing
 			ChunkingStrategy: cfg.DocProcessor.ChunkingStrategy, // es. "recursive", "markdown", "code"
 			ChunkSize:        cfg.DocProcessor.ChunkSize,
 			ChunkOverlap:     overlap,
@@ -86,7 +87,7 @@ func NewVectorizerService(server *Server) (*VectorizerService, error) {
 			// Embedding
 			EmbedderURL:     cfg.Embedder.URL,
 			EmbedderModel:   cfg.Embedder.Model,
-			EmbedderTimeout: embedTimeout, // Passiamo il timeout parsato
+			EmbedderTimeout: embedTimeout, // Pass the parsed timeout
 
 			MetadataTemplate: cfg.MetadataTemplate,
 
@@ -97,13 +98,13 @@ func NewVectorizerService(server *Server) (*VectorizerService, error) {
 			IndexTextLanguage:   idxLang,
 		}
 
-		// 4. Creazione Dipendenze
+		// 4. Create Dependencies
 		storeAdapter := rag.NewKektorAdapter(server.Engine)
 
-		// Passiamo il timeout al costruttore dell'Embedder
+		// Pass the timeout to the Embedder constructor
 		embedder := embeddings.NewOllamaEmbedder(ragConfig.EmbedderURL, ragConfig.EmbedderModel, ragConfig.EmbedderTimeout)
 
-		// 5. Creazione Pipeline
+		// 5. Create Pipeline
 		pipeline := rag.NewPipeline(ragConfig, storeAdapter, embedder)
 
 		service.pipelines = append(service.pipelines, pipeline)
@@ -134,11 +135,11 @@ func (vs *VectorizerService) Stop() {
 
 // Trigger manually forces a scan for a specific pipeline.
 func (vs *VectorizerService) Trigger(name string) error {
-	// Nota: rag.Pipeline non espone il nome pubblicamente nella struct,
-	// ma possiamo trovarlo iterando sulla config originale o modificando Pipeline per esporre Name.
-	// Per ora, assumiamo che l'ordine sia mantenuto o modifichiamo Pipeline per avere GetName().
+	// Note: rag.Pipeline does not publicly expose the name in the struct,
+	// but we can find it by iterating over the original config or modifying Pipeline to expose Name.
+	// For now, we assume the order is maintained or modify Pipeline to have GetName().
 
-	// Soluzione pulita: Cerchiamo nella config del server
+	// Clean solution: Look in the server config
 	for i, cfg := range vs.server.vectorizerConfig.Vectorizers {
 		if cfg.Name == name {
 			if i < len(vs.pipelines) {

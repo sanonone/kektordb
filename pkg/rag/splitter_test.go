@@ -13,7 +13,7 @@ Concurrency is a property of systems in which several computations are executing
 
 The Go memory model specifies the conditions under which reads of a variable in one goroutine can be guaranteed to observe values produced by writes to the same variable in a different goroutine.`
 
-	// Test 1: Chunk piccolo (dovrebbe spezzare frasi)
+	// Test 1: Small chunk (should break sentences)
 	splitter := NewRecursiveSplitter(50, 0) // 50 chars, no overlap
 	chunks := splitter.SplitText(text)
 
@@ -26,7 +26,7 @@ The Go memory model specifies the conditions under which reads of a variable in 
 		}
 	}
 
-	// Test 2: Chunk medio (dovrebbe tenere paragrafi)
+	// Test 2: Medium chunk (should keep paragraphs)
 	splitter2 := NewRecursiveSplitter(150, 20)
 	chunks2 := splitter2.SplitText(text)
 
@@ -35,7 +35,7 @@ The Go memory model specifies the conditions under which reads of a variable in 
 		fmt.Printf("[%d]: %q\n", i, c)
 	}
 
-	// Verifica empirica: il primo paragrafo (~110 chars) dovrebbe stare tutto intero nel primo chunk
+	// Empirical verification: the first paragraph (~110 chars) should fit entirely in the first chunk
 	if len(chunks2) > 0 {
 		if !contains(chunks2[0], "build simple, reliable") {
 			t.Errorf("Splitter broke the first paragraph unnecessarily")

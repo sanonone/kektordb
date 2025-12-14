@@ -26,11 +26,11 @@ func DefaultConfig() Config {
 		CacheEnabled:   false,
 		CacheIndex:     "semantic_cache",
 		CacheThreshold: 0.1,
-		CacheTTL:       24 * time.Hour, // Default sensato
-		MaxCacheItems:  10000,          // Limite di sicurezza
+		CacheTTL:       24 * time.Hour, // Sensible default
+		MaxCacheItems:  10000,          // Safety limit
 
-		CacheVacuumInterval:  60 * time.Second, // Pulisce ogni minuto
-		CacheDeleteThreshold: 0.05,             // Se il 5% è scaduto/cancellato,
+		CacheVacuumInterval:  60 * time.Second, // Cleans every minute
+		CacheDeleteThreshold: 0.05,             // If 5% is expired/deleted,
 	}
 }
 

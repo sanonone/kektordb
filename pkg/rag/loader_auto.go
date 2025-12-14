@@ -24,14 +24,14 @@ func (l *AutoLoader) Load(path string) (string, error) {
 	switch ext {
 	case ".pdf":
 		return l.pdfLoader.Load(path)
-	// Lista estensioni testuali note
+	// List of known text extensions
 	case ".txt", ".md", ".markdown", ".json", ".yaml", ".yml", ".go", ".py", ".js", ".ts", ".html", ".css", ".csv":
 		return l.textLoader.Load(path)
 	default:
-		// Fallback: proviamo a leggerlo come testo.
-		// Se è un binario (es. immagine), os.ReadFile leggerà spazzatura,
-		// ma per ora è meglio che fallire.
-		// Alternativa: ritornare errore per estensioni sconosciute.
+		// Fallback: try reading it as text.
+		// If it is binary (e.g. image), os.ReadFile will read garbage,
+		// but for now is better than failing.
+		// Alternative: return error for unknown extensions.
 		// return "", fmt.Errorf("unsupported file extension: %s", ext)
 		return l.textLoader.Load(path)
 	}
