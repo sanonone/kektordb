@@ -227,9 +227,15 @@ func (e *Engine) VGetMany(indexName string, ids []string) ([]core.VectorData, er
 
 // Struttura pubblica per i risultati del grafo
 type GraphSearchResult struct {
-	ID        string              `json:"id"`
-	Score     float64             `json:"score"`
+	ID    string  `json:"id"`
+	Score float64 `json:"score"`
+
+	// Populated if hydrate=false (Default): List of IDs
 	Relations map[string][]string `json:"relations,omitempty"` // map[type] -> [ids]
+
+	// Populated if hydrate=true: Full data of related nodes
+	// Map[RelationType] -> List of VectorData
+	HydratedRelations map[string][]core.VectorData `json:"hydrated_relations,omitempty"`
 }
 
 // VSearch performs a vector, text, or hybrid search.
@@ -255,8 +261,9 @@ func (e *Engine) VSearch(indexName string, query []float32, k int, filter string
 	return ids, nil
 }
 
-// 2. NUOVO Metodo VSearchGraph (Con relazioni)
-func (e *Engine) VSearchGraph(indexName string, query []float32, k int, filter string, efSearch int, alpha float64, relations []string) ([]GraphSearchResult, error) {
+// VSearchGraph performs a search and enriches results with graph connections.
+// If 'hydrate' is true, it fetches the full metadata/content of related nodes instead of just IDs.
+func (e *Engine) VSearchGraph(indexName string, query []float32, k int, filter string, efSearch int, alpha float64, relations []string, hydrate bool) ([]GraphSearchResult, error) {
 	// 1. Esegui la ricerca standard
 	rawResults, err := e.searchWithFusion(indexName, query, k, filter, efSearch, alpha)
 	if err != nil {
@@ -273,14 +280,32 @@ func (e *Engine) VSearchGraph(indexName string, query []float32, k int, filter s
 			Score: res.score,
 		}
 
-		// Se l'utente ha chiesto relazioni, le recuperiamo
 		if len(relations) > 0 {
-			outItem.Relations = make(map[string][]string)
+			// Prepariamo le mappe solo se servono
+			if hydrate {
+				outItem.HydratedRelations = make(map[string][]core.VectorData)
+			} else {
+				outItem.Relations = make(map[string][]string)
+			}
+
 			for _, relType := range relations {
-				// VGetLinks è velocissimo (O(1) su mappa in memoria)
-				links, found := e.VGetLinks(res.id, relType)
-				if found && len(links) > 0 {
-					outItem.Relations[relType] = links
+				// Recupera gli ID dei link dal KV Store (O(1))
+				linkIDs, found := e.VGetLinks(res.id, relType)
+				if !found || len(linkIDs) == 0 {
+					continue
+				}
+
+				if !hydrate {
+					// Caso Lightweight: Solo ID
+					outItem.Relations[relType] = linkIDs
+				} else {
+					// Caso Hydrated: Recupera i dati completi
+					// Usiamo VGetMany per efficienza (anche se qui lo facciamo per ogni relazione)
+					// Nota: GetVectors gestisce internamente la concorrenza se ci sono tanti ID
+					hydratedData, err := e.DB.GetVectors(indexName, linkIDs)
+					if err == nil && len(hydratedData) > 0 {
+						outItem.HydratedRelations[relType] = hydratedData
+					}
 				}
 			}
 		}
@@ -424,6 +449,20 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 
 	return finalRes, nil
 
+}
+
+// VGetConnections retrieves the full data of nodes linked to a source node.
+// It performs a Graph Traversal (1-hop) and Hydration in one step.
+func (e *Engine) VGetConnections(indexName, sourceID, relationType string) ([]core.VectorData, error) {
+	// 1. Recupera gli ID dei link dal KV Store
+	targetIDs, found := e.VGetLinks(sourceID, relationType)
+	if !found || len(targetIDs) == 0 {
+		return []core.VectorData{}, nil
+	}
+
+	// 2. Idratazione (Recupera dati da HNSW/Metadata)
+	// GetVectors gestisce internamente la concorrenza e salta i nodi non trovati
+	return e.DB.GetVectors(indexName, targetIDs)
 }
 
 // SearchResult represents a match with its similarity score/distance.

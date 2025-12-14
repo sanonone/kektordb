@@ -62,6 +62,7 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /graph/actions/link", s.handleGraphLink)
 	mux.HandleFunc("POST /graph/actions/unlink", s.handleGraphUnlink)
 	mux.HandleFunc("POST /graph/actions/get-links", s.handleGraphGetLinks)
+	mux.HandleFunc("POST /graph/actions/get-connections", s.handleGraphGetConnections)
 
 	mux.HandleFunc("POST /rag/retrieve", s.handleRagRetrieve)
 
@@ -351,7 +352,8 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 			req.Filter,
 			req.EfSearch,
 			req.Alpha,
-			req.IncludeRelations, // Passiamo la lista
+			req.IncludeRelations,
+			req.HydrateRelations,
 		)
 		if err != nil {
 			if strings.Contains(err.Error(), "not found") {
@@ -532,6 +534,29 @@ func (s *Server) handleGraphGetLinks(w http.ResponseWriter, r *http.Request) {
 		"source_id":     req.SourceID,
 		"relation_type": req.RelationType,
 		"targets":       targets,
+	})
+}
+
+func (s *Server) handleGraphGetConnections(w http.ResponseWriter, r *http.Request) {
+	var req GraphGetConnectionsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("Invalid JSON"))
+		return
+	}
+
+	if req.IndexName == "" || req.SourceID == "" || req.RelationType == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name, source_id, and relation_type are required"))
+		return
+	}
+
+	results, err := s.Engine.VGetConnections(req.IndexName, req.SourceID, req.RelationType)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("Error VGetConnection"))
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
+		"results": results,
 	})
 }
 

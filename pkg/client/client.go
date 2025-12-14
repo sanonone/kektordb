@@ -91,13 +91,24 @@ type graphGetLinksResponse struct {
 
 // GraphSearchResult represents a search result enriched with scores and relationships.
 type GraphSearchResult struct {
-	ID        string              `json:"id"`
-	Score     float64             `json:"score"`
-	Relations map[string][]string `json:"relations,omitempty"`
+	ID                string                  `json:"id"`
+	Score             float64                 `json:"score"`
+	Relations         map[string][]string     `json:"relations,omitempty"`
+	HydratedRelations map[string][]VectorData `json:"hydrated_relations,omitempty"`
 }
 
 type searchGraphResponse struct {
 	Results []GraphSearchResult `json:"results"`
+}
+
+type graphGetConnectionsRequest struct {
+	IndexName    string `json:"index_name"`
+	SourceID     string `json:"source_id"`
+	RelationType string `json:"relation_type"`
+}
+
+type getConnectionsResponse struct {
+	Results []VectorData `json:"results"`
 }
 
 // --- Client ---
@@ -475,13 +486,28 @@ func (c *Client) VGetLinks(sourceID, relationType string) ([]string, error) {
 	return resp.Targets, nil
 }
 
+// VGetConnections retrieves fully hydrated nodes linked to the source.
+func (c *Client) VGetConnections(indexName, sourceID, relationType string) ([]VectorData, error) {
+	req := graphGetConnectionsRequest{
+		IndexName:    indexName,
+		SourceID:     sourceID,
+		RelationType: relationType,
+	}
+	respBody, err := c.jsonRequest(http.MethodPost, "/graph/actions/get-connections", req)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp getConnectionsResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response: %w", err)
+	}
+	return resp.Results, nil
+}
+
 // VSearchGraph performs a search and returns detailed results including scores and graph relations.
 // 'includeRelations' is a list of relation types to fetch (e.g. []string{"parent", "next"}).
-func (c *Client) VSearchGraph(indexName string, queryVector []float32, k int, filter string, efSearch int, alpha float64, includeRelations []string) ([]GraphSearchResult, error) {
-	// Riutilizziamo la struct di richiesta esistente in http_types del server,
-	// ma qui la definiamo dinamicamente o estendiamo quella locale se presente.
-	// Usiamo una map per flessibilità o estendiamo la struct interna.
-
+func (c *Client) VSearchGraph(indexName string, queryVector []float32, k int, filter string, efSearch int, alpha float64, includeRelations []string, hydrate bool) ([]GraphSearchResult, error) {
 	payload := map[string]interface{}{
 		"index_name":   indexName,
 		"k":            k,
@@ -497,9 +523,12 @@ func (c *Client) VSearchGraph(indexName string, queryVector []float32, k int, fi
 	if alpha != 0 {
 		payload["alpha"] = alpha
 	}
-	// Campo chiave per attivare la logica Graph nel server
 	if len(includeRelations) > 0 {
 		payload["include_relations"] = includeRelations
+	}
+
+	if hydrate {
+		payload["hydrate_relations"] = true
 	}
 
 	respBody, err := c.jsonRequest(http.MethodPost, "/vector/actions/search", payload)

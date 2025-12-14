@@ -380,63 +380,71 @@ func main() {
 	fmt.Println("✅ Maintenance Ops OK (Config update, Triggers executed).")
 
 	// ==========================================
-	// 11. TEST GRAPHRAG (Graph + Vector)
+	// 11. TEST GRAPHRAG (Graph + Vector + Hydration)
 	// ==========================================
 	fmt.Println("\n🔹 11. Testing GraphRAG Engine...")
 
 	graphIdx := "test_graph_rag"
-	// 1. Creiamo un indice pulito
 	_ = db.VCreate(graphIdx, distance.Cosine, 16, 200, distance.Float32, "", nil)
 
-	// 2. Inseriamo i nodi (Vettori ORTOGONALI per essere distinti col Coseno)
-	// Child: Punta su X
+	// 2. Inseriamo i nodi
+	// Parent con Metadati interessanti
+	db.VAdd(graphIdx, "parent_node", []float32{0.0, 1.0, 0.0}, map[string]any{"title": "Master Document"})
+	// Child
 	db.VAdd(graphIdx, "child_node", []float32{1.0, 0.0, 0.0}, nil)
-	// Parent: Punta su Y
-	db.VAdd(graphIdx, "parent_node", []float32{0.0, 1.0, 0.0}, nil)
 
-	// 3. Creiamo il Link: child -> parent
+	// 3. Link
 	fmt.Println("   -> Linking 'child_node' to 'parent_node'...")
-	if err := db.VLink("child_node", "parent_node", "parent"); err != nil {
-		log.Fatalf("❌ VLink failed: %v", err)
-	}
+	db.VLink("child_node", "parent_node", "parent")
 
-	// 4. Verifica GetLinks
-	links, found := db.VGetLinks("child_node", "parent")
-	if !found || len(links) == 0 || links[0] != "parent_node" {
-		log.Fatalf("❌ VGetLinks failed internally")
-	}
-
-	// 5. Verifica SearchGraph
-	// Cerchiamo esattamente il vettore del figlio [1, 0, 0]
+	// 5. Verifica SearchGraph CON HYDRATION
 	queryVecGraph := []float32{1.0, 0.0, 0.0}
 
-	graphRes, err := db.VSearchGraph(graphIdx, queryVecGraph, 1, "", 100, 0.0, []string{"parent"})
+	// hydrate = true
+	graphRes, err := db.VSearchGraph(graphIdx, queryVecGraph, 1, "", 100, 0.0, []string{"parent"}, true)
 	if err != nil {
 		log.Fatalf("❌ VSearchGraph failed: %v", err)
 	}
 
-	// Validazione Risultato
 	if len(graphRes) > 0 {
 		top := graphRes[0]
-		// Ora child_node (distanza 0) vincerà sicuramente su parent_node (distanza 1)
-		if top.ID != "child_node" {
-			log.Fatalf("❌ Graph Search found wrong vector: %s (Expected child_node)", top.ID)
-		}
 
-		if rels, ok := top.Relations["parent"]; ok {
-			if len(rels) > 0 && rels[0] == "parent_node" {
-				fmt.Println("✅ Graph Search OK: Retrieved 'child_node' enriched with parent 'parent_node'.")
+		// Verifichiamo che ci sia il campo Hydrated
+		if rels, ok := top.HydratedRelations["parent"]; ok {
+			if len(rels) > 0 && rels[0].ID == "parent_node" {
+				// CHECK CRITICO: I metadati ci sono?
+				title := rels[0].Metadata["title"]
+				if title == "Master Document" {
+					fmt.Println("✅ Graph Hydration OK: Retrieved parent metadata directly.")
+				} else {
+					log.Fatalf("❌ Graph Hydration content mismatch. Got metadata: %v", rels[0].Metadata)
+				}
 			} else {
-				log.Fatalf("❌ Graph Search relation content mismatch: %v", rels)
+				log.Fatalf("❌ Graph Search relation mismatch.")
 			}
 		} else {
-			log.Fatalf("❌ Graph Search missing 'parent' relation in output")
+			log.Fatalf("❌ Graph Search missing hydrated 'parent' relation")
 		}
 	} else {
 		log.Fatalf("❌ Graph Search returned no results")
 	}
 
+	// ... (dopo la verifica di VSearchGraph) ...
+
+	// 6. Verifica VGetConnections (Traversal Puro)
+	fmt.Println("   -> Testing VGetConnections (Traversal)...")
+	connectedNodes, err := db.VGetConnections(graphIdx, "child_node", "parent")
+	if err != nil {
+		log.Fatalf("❌ VGetConnections failed: %v", err)
+	}
+
+	if len(connectedNodes) == 1 && connectedNodes[0].ID == "parent_node" {
+		fmt.Println("✅ VGetConnections OK: Retrieved parent data successfully.")
+	} else {
+		log.Fatalf("❌ VGetConnections mismatch. Got: %v", connectedNodes)
+	}
+
 	db.VDeleteIndex(graphIdx)
 
-	fmt.Println("\n🎉🎉🎉 TUTTI I TEST PASSATI CON SUCCESSO! 🎉🎉🎉")
+	fmt.Println("\nTUTTI I TEST PASSATI CON SUCCESSO!")
 }

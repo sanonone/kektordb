@@ -44,6 +44,7 @@ type VectorSearchRequest struct {
 	EfSearch         int       `json:"ef_search,omitempty"`
 	Alpha            float64   `json:"alpha,omitempty"`
 	IncludeRelations []string  `json:"include_relations,omitempty"`
+	HydrateRelations bool      `json:"hydrate_relations,omitempty"`
 }
 
 // VectorDeleteRequest defines the body for vector deletion.
@@ -75,6 +76,12 @@ type GraphLinkRequest struct {
 }
 
 type GraphGetLinksRequest struct {
+	SourceID     string `json:"source_id"`
+	RelationType string `json:"relation_type"`
+}
+
+type GraphGetConnectionsRequest struct {
+	IndexName    string `json:"index_name"`
 	SourceID     string `json:"source_id"`
 	RelationType string `json:"relation_type"`
 }

@@ -336,7 +336,7 @@ class KektorDBClient:
         payload = {"index_name": index_name, "ids": item_ids}
         return self._request("POST", "/vector/actions/get-vectors", json=payload)
 
-    def vsearch(self, index_name: str, query_vector: List[float], k: int, filter_str: str = "", ef_search: int = 0, alpha: float = 0.5, include_relations: List[str] = None) -> Union[List[str], List[Dict[str, Any]]]: 
+    def vsearch(self, index_name: str, query_vector: List[float], k: int, filter_str: str = "", ef_search: int = 0, alpha: float = 0.5, include_relations: List[str] = None, hydrate_relations: bool = False) -> Union[List[str], List[Dict[str, Any]]]: 
         """
         Performs a nearest neighbor search in an index.
 
@@ -378,6 +378,9 @@ class KektorDBClient:
 
         if include_relations:
             payload["include_relations"] = include_relations
+
+         if hydrate_relations:
+            payload["hydrate_relations"] = True
             
         data = self._request("POST", "/vector/actions/search", json=payload)
         return data.get("results", [])
@@ -417,6 +420,19 @@ class KektorDBClient:
         }
         resp = self._request("POST", "/graph/actions/get-links", json=payload)
         return resp.get("targets", [])
+
+    def vget_connections(self, index_name: str, source_id: str, relation_type: str) -> List[Dict[str, Any]]:
+        """
+        Retrieves full data (vector + metadata) of nodes linked to source_id.
+        """
+        payload = {
+            "index_name": index_name,
+            "source_id": source_id,
+            "relation_type": relation_type
+        }
+        data = self._request("POST", "/graph/actions/get-connections", json=payload)
+        return data.get("results", [])
+
 
     def vupdate_config(self, index_name: str, config: Dict[str, Any]) -> None:
         """
