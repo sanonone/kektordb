@@ -104,7 +104,27 @@ func NewVectorizerService(server *Server) (*VectorizerService, error) {
 		storeAdapter := rag.NewKektorAdapter(server.Engine)
 
 		// Pass the timeout to the Embedder constructor
-		embedder := embeddings.NewOllamaEmbedder(ragConfig.EmbedderURL, ragConfig.EmbedderModel, ragConfig.EmbedderTimeout)
+		var embedder embeddings.Embedder
+
+		switch cfg.Embedder.Type {
+		case "openai", "openai_compatible":
+			embedder = embeddings.NewOpenAIEmbedder(
+				ragConfig.EmbedderURL,
+				ragConfig.EmbedderModel,
+				cfg.Embedder.APIKey,
+				ragConfig.EmbedderTimeout,
+			)
+			log.Printf("   -> Using OpenAI-compatible embedder for '%s'", cfg.Name)
+
+		case "ollama", "ollama_api":
+			fallthrough // Se il tipo è ollama o non specificato (default)
+		default:
+			embedder = embeddings.NewOllamaEmbedder(
+				ragConfig.EmbedderURL,
+				ragConfig.EmbedderModel,
+				ragConfig.EmbedderTimeout,
+			)
+		}
 
 		// 5. Create Pipeline
 		pipeline := rag.NewPipeline(ragConfig, storeAdapter, embedder)

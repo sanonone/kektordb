@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"gopkg.in/yaml.v3"
 	"os"
+	"strings"
 )
 
 // Config represents the top-level structure of the vectorizers configuration file.
@@ -57,6 +58,7 @@ type EmbedderConfig struct {
 	URL     string `yaml:"url"`
 	Model   string `yaml:"model"`
 	Timeout string `yaml:"timeout"`
+	APIKey  string `yaml:"api_key"`
 }
 
 // DocProcessorConfig defines how source documents are processed before embedding.
@@ -72,23 +74,21 @@ type DocProcessorConfig struct {
 // It uses Strict Mode (KnownFields) to prevent silent errors due to typos.
 func LoadVectorizersConfig(path string) (*Config, error) {
 	if path == "" {
-		return &Config{}, nil // No file specified, return an empty config.
+		return &Config{}, nil
 	}
 
-	// 1. Open File
-	file, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("could not open configuration file '%s': %w", path, err)
+		return nil, fmt.Errorf("could not read configuration file '%s': %w", path, err)
 	}
-	defer file.Close()
+
+	expandedData := os.ExpandEnv(string(data))
+	// --------------------------------------------
 
 	var config Config
+	decoder := yaml.NewDecoder(strings.NewReader(expandedData))
+	decoder.KnownFields(true)
 
-	// 2. Setup Strict Decoder
-	decoder := yaml.NewDecoder(file)
-	decoder.KnownFields(true) // <--- FAIL FAST: Error if unknown field exists
-
-	// 3. Decode
 	if err := decoder.Decode(&config); err != nil {
 		return nil, fmt.Errorf("YAML syntax error in '%s': %w", path, err)
 	}

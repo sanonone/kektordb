@@ -7,6 +7,15 @@ embedder_url: "http://localhost:11434/api/embeddings"
 embedder_model: "nomic-embed-text:latest"
 embedder_timeout: 60s
 
+# RAG Automatico
+rag_enabled: true
+rag_index: "knowledge_base"  # Deve coincidere con l'indice popolato dai Vectorizer!
+rag_top_k: 6
+rag_threshold: 0.4           # Se la distanza > 0.4 (poco simile), non inietta nulla
+rag_use_hybrid: false       # Cerca anche per parole chiave
+rag_hybrid_alpha: 0.7      # 70% Vettore, 30% Keywords
+rag_use_graph: true        # Recupera automaticamente contesto prev/next
+
 # Firewall (Prompt Guard)
 firewall_enabled: true
 firewall_index: "prompt_guard"

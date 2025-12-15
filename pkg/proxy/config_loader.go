@@ -31,6 +31,14 @@ func DefaultConfig() Config {
 
 		CacheVacuumInterval:  60 * time.Second, // Cleans every minute
 		CacheDeleteThreshold: 0.05,             // If 5% is expired/deleted,
+
+		RAGEnabled:     false,
+		RAGIndex:       "knowledge_base",
+		RAGTopK:        3,
+		RAGThreshold:   0.5,
+		RAGUseHybrid:   false, // Off by default to keep it simple
+		RAGHybridAlpha: 0.5,
+		RAGUseGraph:    true, // On by default because it's the killer feature
 	}
 }
 
@@ -51,7 +59,7 @@ func LoadConfig(path string) (Config, error) {
 
 	// 2. Setup Strict Decoder
 	decoder := yaml.NewDecoder(file)
-	decoder.KnownFields(true) // <--- FAIL FAST
+	decoder.KnownFields(true)
 
 	// 3. Decode
 	if err := decoder.Decode(&cfg); err != nil {

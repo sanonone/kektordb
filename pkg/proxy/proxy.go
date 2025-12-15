@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,18 @@ type AIProxy struct {
 	cfg          Config
 	engine       *engine.Engine // Access to KektorDB for checks
 	reverseProxy *httputil.ReverseProxy
+}
+
+// Structures for manipulating Chat request JSON
+type chatRequest struct {
+	Model    string    `json:"model"`
+	Messages []message `json:"messages"`
+	Stream   bool      `json:"stream"`
+}
+
+type message struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 func NewAIProxy(cfg Config, dbEngine *engine.Engine) (*AIProxy, error) {
@@ -73,6 +86,19 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"error": fmt.Sprintf("Blocked by Semantic Firewall: %s", reason),
 			})
 			return
+		}
+	}
+
+	// RAG INJECTION
+	if p.cfg.RAGEnabled && strings.Contains(r.URL.Path, "/chat/completions") && len(promptVec) > 0 {
+		newBody, err := p.performRAGInjection(bodyBytes, promptVec, promptText)
+		if err == nil && newBody != nil {
+			// Sostituiamo il body con quello arricchito
+			bodyBytes = newBody
+			r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			// Aggiorniamo Content-Length fondamentale per proxy HTTP
+			r.ContentLength = int64(len(bodyBytes))
+			r.Header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
 		}
 	}
 
@@ -283,5 +309,138 @@ func extractPrompt(jsonBody []byte) string {
 		return sb.String()
 	}
 
+	return ""
+}
+
+func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, queryText string) ([]byte, error) {
+	// A. Configurazione Ricerca
+	filter := ""
+	if p.cfg.RAGUseHybrid {
+		// Pulizia base per evitare errori di sintassi nel filtro
+		safeQuery := strings.ReplaceAll(queryText, "'", "")
+		safeQuery = strings.ReplaceAll(safeQuery, "\"", "")
+		// Cerchiamo nel campo 'content' o 'text' (assumiamo content come default standard)
+		filter = fmt.Sprintf("CONTAINS(content, '%s')", safeQuery)
+	}
+
+	alpha := 0.5
+	if p.cfg.RAGHybridAlpha != 0 {
+		alpha = p.cfg.RAGHybridAlpha
+	}
+	if !p.cfg.RAGUseHybrid {
+		alpha = 1.0 // Solo vettoriale se ibrido disabilitato
+	}
+
+	var relations []string
+	if p.cfg.RAGUseGraph {
+		relations = []string{"prev", "next"}
+	}
+
+	// B. Esecuzione Ricerca (VSearchGraph con Hydration)
+	// hydrate=true è fondamentale per avere i testi dei nodi collegati
+	results, err := p.engine.VSearchGraph(
+		p.cfg.RAGIndex,
+		queryVec,
+		p.cfg.RAGTopK,
+		filter,
+		100, // efSearch default robusto
+		alpha,
+		relations,
+		true, // HYDRATE
+	)
+
+	if err != nil || len(results) == 0 {
+		return nil, nil // Nessun contesto
+	}
+
+	// C. Costruzione Prompt Contesto
+	var contextBuilder strings.Builder
+	contextBuilder.WriteString("Context information is below.\n---------------------\n")
+
+	foundRelevant := false
+	for _, res := range results {
+		// Nota: VSearchGraph ritorna ID e Score, ma non i metadati del nodo principale (solo le relazioni idratate).
+		// Dobbiamo fare una VGet veloce per il nodo principale.
+		mainNodeData, err := p.engine.VGet(p.cfg.RAGIndex, res.ID)
+		if err != nil {
+			continue
+		}
+
+		mainText := getTextFromMeta(mainNodeData.Metadata)
+		if mainText == "" {
+			continue
+		}
+
+		// Recupero contesto Graph (Prev/Next)
+		prevText := ""
+		if list, ok := res.HydratedRelations["prev"]; ok && len(list) > 0 {
+			prevText = getTextFromMeta(list[0].Metadata)
+		}
+
+		nextText := ""
+		if list, ok := res.HydratedRelations["next"]; ok && len(list) > 0 {
+			nextText = getTextFromMeta(list[0].Metadata)
+		}
+
+		// Assemblaggio: [Prev] [Main] [Next]
+		if prevText != "" {
+			contextBuilder.WriteString(prevText + " ")
+		}
+		contextBuilder.WriteString(mainText)
+		if nextText != "" {
+			contextBuilder.WriteString(" " + nextText)
+		}
+		contextBuilder.WriteString("\n\n")
+		foundRelevant = true
+	}
+
+	if !foundRelevant {
+		return nil, nil
+	}
+
+	contextBuilder.WriteString("---------------------\nGiven the context information and not prior knowledge, answer the query.\nQuery: ")
+
+	// D. Modifica JSON
+	var requestData map[string]interface{}
+	if err := json.Unmarshal(originalBody, &requestData); err != nil {
+		return nil, err
+	}
+
+	messages, ok := requestData["messages"].([]interface{})
+	if !ok || len(messages) == 0 {
+		return nil, nil
+	}
+
+	// Modifica l'ultimo messaggio (User)
+	lastMsgIdx := len(messages) - 1
+	lastMsg, ok := messages[lastMsgIdx].(map[string]interface{})
+	if !ok {
+		return nil, nil
+	}
+
+	if content, ok := lastMsg["content"].(string); ok {
+		// Aggiunge il contesto prima della domanda originale
+		newContent := contextBuilder.String() + content
+		lastMsg["content"] = newContent
+		messages[lastMsgIdx] = lastMsg
+		requestData["messages"] = messages
+	} else {
+		return nil, nil
+	}
+
+	return json.Marshal(requestData)
+}
+
+// Helper per estrarre testo dai metadati in modo flessibile
+func getTextFromMeta(meta map[string]any) string {
+	if v, ok := meta["content"].(string); ok {
+		return v
+	}
+	if v, ok := meta["text"].(string); ok {
+		return v
+	}
+	if v, ok := meta["page_content"].(string); ok {
+		return v
+	}
 	return ""
 }
