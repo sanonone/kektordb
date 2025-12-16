@@ -1,4 +1,13 @@
 # File: benchmark.py
+# Script di benchmarking unificato per KektorDB, Qdrant, e ChromaDB
+# con supporto per dataset e dimensioni personalizzabili.
+#
+# Esempi di esecuzione:
+#   # Test rapido su 10k vettori del dataset GloVe
+#   python benchmark2.py --dataset=glove-100d --size=10000
+#
+#   # Benchmark completo su 1 milione di vettori del dataset SIFT
+#   python benchmark2.py --dataset=sift-1m --size=1000000
 import abc
 import time
 import os

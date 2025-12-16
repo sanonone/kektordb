@@ -1,6 +1,6 @@
 # Detailed Performance Benchmarks
 
-This document contains the raw results of performance tests conducted on **KektorDB v0.2.2**.
+This document contains the raw results of performance tests conducted on **KektorDB v0.3.0**.
 
 ### Methodology
 *   **Hardware:** Intel Core i5-12500 (Consumer Desktop), Local SSD.
@@ -22,13 +22,13 @@ This document contains the raw results of performance tests conducted on **Kekto
 
 | DB | M | efC | efS | Recall | QPS | Index(s) |
 |:---|--:|----:|----:|-------:|----:|---------:|
-| **KektorDB** | 16 | 200 | 100 | 0.9710 | **974** | 127.1 |
-| Qdrant | 16 | 200 | 100 | 0.9698 | 807 | 34.3 |
-| ChromaDB | 16 | 200 | 100 | 0.9553 | 761 | 52.9 |
-| **KektorDB** | 12 | 150 | 50 | 0.9060 | **1296** | 92.3 |
+| **KektorDB** | 16 | 200 | 100 | 0.9664 | **1073** | 102.9 |
+| Qdrant | 16 | 200 | 100 | 0.9695 | 848 | 32.3 |
+| ChromaDB | 16 | 200 | 100 | 0.9519 | 802 | 51.5 |
+| **KektorDB** | 12 | 150 | 50 | 0.9123 | **1400** | 73.6 |
 | Qdrant | 12 | 150 | 50 | 0.9139 | 921 | 26.7 |
 | ChromaDB | 12 | 150 | 50 | 0.8775 | 866 | 42.9 |
-| **KektorDB** | 16 | 200 | 20 | 0.8747 | **1495** | 127.4 |
+| **KektorDB** | 16 | 200 | 20 | 0.8753 | **1563** | 102.9 |
 | Qdrant | 16 | 200 | 20 | 0.8684 | 1000 | 31.1 |
 | ChromaDB | 16 | 200 | 20 | 0.8414 | 874 | 52.5 |
 
@@ -58,10 +58,10 @@ SIFT-1M (128d)
 
 | DB | M | efC | efS | Recall | QPS | Index(s) |
 |:---|--:|----:|----:|-------:|----:|---------:|
-| **KektorDB** | 16 | 200 | 100 | 0.9898 | 753 | 634.4 |
-| Qdrant | 16 | 200 | 100 | 0.9981 | **852** | 88.9 |
+| **KektorDB** | 16 | 200 | 100 | 0.9906 | **881** | 481.4 |
+| Qdrant | 16 | 200 | 100 | 0.9981 | 852 | 88.9 |
 | ChromaDB | 16 | 200 | 100 | 0.9939 | 752 | 210.6 |
-| **KektorDB** | 12 | 150 | 50 | 0.9596 | **1098** | 433.8 |
+| **KektorDB** | 12 | 150 | 50 | 0.9607 | **1262** | 324.3 |
 | Qdrant | 12 | 150 | 50 | 0.988 | 966 | 72.8 |
 | ChromaDB | 12 | 150 | 50 | 0.9779 | 831 | 171.9 |
 
@@ -74,6 +74,6 @@ How changing parameters affects KektorDB (GloVe-100d).
 
 | Config Strategy | Params (M, efC, efS) | QPS | Recall | Notes |
 | :--- | :--- | :--- | :--- | :--- |
-| **Balanced** | 16, 200, 100 | 974 | 0.971 | Recommended default. |
-| **High Accuracy** | 32, 400, 200 | 527 | 0.997 | Near-perfect recall, 50% slower. |
-| **High Speed** | 16, 200, 20 | 1495 | 0.875 | Ultra-fast, for approximate needs. |
+| **Balanced** | 16, 200, 100 | 1073 | 0.9664 | Recommended default. |
+| **High Accuracy** | 32, 400, 200 | 603 | 0.9977 | Near-perfect recall, 50% slower. |
+| **High Speed** | 16, 200, 20 | 1563 | 0.8753 | Ultra-fast, for approximate needs. |
