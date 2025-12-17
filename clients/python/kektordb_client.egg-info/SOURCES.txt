@@ -2,6 +2,7 @@ README.md
 setup.py
 kektordb_client/__init__.py
 kektordb_client/client.py
+kektordb_client/langchain.py
 kektordb_client.egg-info/PKG-INFO
 kektordb_client.egg-info/SOURCES.txt
 kektordb_client.egg-info/dependency_links.txt
