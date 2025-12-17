@@ -12,6 +12,9 @@
 
 [English](README.md) | [Italiano](README.it.md)
 
+> [!TIP]
+> **Docker Support:** Prefer containers? A `Dockerfile` is included in the root for building your own images.
+
 **KektorDB is an embeddable, in-memory vector database designed for simplicity and speed.**
 
 It bridges the gap between raw HNSW libraries and complex distributed databases. Written in pure Go, it runs as a single binary or embeds directly into your application, providing a complete **RAG Pipeline**, **Hybrid Search**, and **Persistence** out of the box.
@@ -201,6 +204,76 @@ func main() {
 
 ---
 
+### 🚀 Quick Start (Python)
+
+This example demonstrates a complete workflow: creating an index, batch-inserting data with metadata, and performing a Hybrid Search (Vector + Keyword).
+
+1.  **Install Client & Utilities:**
+    ```bash
+    pip install kektordb-client sentence-transformers
+    ```
+
+2.  **Run the script:**
+
+    ```python
+    from kektordb_client import KektorDBClient
+    from sentence_transformers import SentenceTransformer
+
+    # 1. Initialize
+    client = KektorDBClient(port=9091)
+    model = SentenceTransformer('all-MiniLM-L6-v2') 
+    index = "quickstart"
+
+    # 2. Create Index (Hybrid enabled)
+    try: client.delete_index(index)
+    except: pass
+    client.vcreate(index, metric="cosine", text_language="english")
+
+    # 3. Add Data (Batch)
+    docs = [
+        {"text": "Go is efficient for backend systems.", "type": "code"},
+        {"text": "Rust guarantees memory safety.", "type": "code"},
+        {"text": "Pizza margherita is classic Italian food.", "type": "food"},
+    ]
+    
+    batch = []
+    for i, doc in enumerate(docs):
+        batch.append({
+            "id": f"doc_{i}",
+            "vector": model.encode(doc["text"]).tolist(),
+            "metadata": {"content": doc["text"], "category": doc["type"]}
+        })
+    
+    client.vadd_batch(index, batch)
+    print(f"Indexed {len(batch)} documents.")
+
+    # 4. Search (Hybrid: Vector + Metadata Filter)
+    # Finding "fast programming languages" BUT only in 'code' category
+    query_vec = model.encode("fast programming languages").tolist()
+    
+    results = client.vsearch(
+        index,
+        query_vector=query_vec,
+        k=2,
+        filter_str="category='code'", # Metadata Filter
+        alpha=0.7 # 70% Vector sim, 30% Keyword rank
+    )
+
+    print(f"Top Result ID: {results[0]}")
+    ```
+
+---
+
+### 🦜 Integration with LangChain
+
+KektorDB includes a built-in wrapper for **LangChain Python**, allowing you to plug it directly into your existing AI pipelines.
+
+```python
+from kektordb_client.langchain import KektorVectorStore
+```
+
+---
+
 ## API Reference (Summary)
 
 For a complete guide to all features and API endpoints, please see the **[Full Documentation](DOCUMENTATION.md)**.
@@ -231,8 +304,6 @@ KektorDB is a young project under active development.
 As the sole maintainer, I built this engine to explore CGO, SIMD, and low-level Go optimizations. I am proud of the performance achieved so far, but I know there is always a better way to write code.
 
 If you spot race conditions, missed optimizations, or unidiomatic Go patterns, **please open an Issue or a PR**.
-
-**[Read CONTRIBUTING.md](CONTRIBUTING.md)** for more details.
 
 ---
 

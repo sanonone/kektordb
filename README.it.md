@@ -11,6 +11,9 @@
 
 [English](README.md) | [Italiano](README.it.md)
 
+> [!TIP]
+> **Supporto Docker:** Preferisci i container? Un `Dockerfile` è incluso nella root per costruire le tue immagini.
+
 **KektorDB è un database vettoriale in-memory, integrabile (embeddable), progettato per semplicità e velocità.**
 
 Colma il divario tra le librerie HNSW grezze e i complessi database distribuiti. Scritto in puro Go, funziona come un singolo binario o si integra direttamente nella tua applicazione, fornendo una **Pipeline RAG completa**, **Ricerca Ibrida** e **Persistenza** pronte all'uso.
@@ -198,6 +201,76 @@ func main() {
 	results, _ := db.VSearch("products", []float32{0.1, 0.2}, 10, "category=electronics", 100, 0.5)
 	fmt.Println("ID Trovati:", results)
 }
+```
+---
+
+### 🚀 Quick Start (Python)
+
+Questo esempio mostra un flusso completo: creazione indice, inserimento batch con metadati e Ricerca Ibrida (Vettoriale + Parole chiave).
+
+1.  **Installa Client e Utilità:**
+    ```bash
+    pip install kektordb-client sentence-transformers
+    ```
+
+2.  **Esegui lo script:**
+
+    ```python
+    from kektordb_client import KektorDBClient
+    from sentence_transformers import SentenceTransformer
+
+    # 1. Inizializzazione
+    client = KektorDBClient(port=9091)
+    model = SentenceTransformer('all-MiniLM-L6-v2') 
+    index = "quickstart"
+
+    # 2. Crea Indice (Abilita Hybrid Search)
+    try: client.delete_index(index)
+    except: pass
+    client.vcreate(index, metric="cosine", text_language="english")
+
+    # 3. Inserimento Dati (Batch)
+    docs = [
+        {"text": "Go è efficiente per i backend.", "type": "code"},
+        {"text": "Rust garantisce sicurezza della memoria.", "type": "code"},
+        {"text": "La pizza margherita è un classico.", "type": "food"},
+    ]
+    
+    batch = []
+    for i, doc in enumerate(docs):
+        batch.append({
+            "id": f"doc_{i}",
+            "vector": model.encode(doc["text"]).tolist(),
+            "metadata": {"content": doc["text"], "category": doc["type"]}
+        })
+    
+    client.vadd_batch(index, batch)
+    print(f"Indicizzati {len(batch)} documenti.")
+
+    # 4. Ricerca (Ibrida: Vettore + Filtro Metadati)
+    # Cerchiamo "linguaggi veloci" MA filtriamo solo la categoria 'code'
+    query_vec = model.encode("linguaggi veloci").tolist()
+    
+    results = client.vsearch(
+        index,
+        query_vector=query_vec,
+        k=2,
+        filter_str="category='code'", # Filtro sui Metadati
+        alpha=0.7 # 70% Similarità vettoriale, 30% Keywords
+    )
+
+    print(f"Miglior Risultato ID: {results[0]}")
+    ```
+
+---
+
+### 🦜 Integrazione con LangChain
+
+KektorDB include un wrapper integrato per **LangChain Python**, permettendoti di inserirlo direttamente nelle tue pipeline AI esistenti.
+
+```python
+from kektordb_client.langchain import KektorVectorStore
+# Vedi clients/python/README.md per i dettagli completi
 ```
 
 ---

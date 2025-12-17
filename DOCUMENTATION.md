@@ -174,6 +174,18 @@ vectorizers:
     # Use existing maintenance config or defaults
     maintenance_config:
        vacuum_interval: "5m"
+
+  # You can define multiple vectorizers to watch different folders simultaneously
+  - name: "docs_marketing"
+    kektor_index: "knowledge_base"
+    source: { type: "filesystem", path: "./marketing_pdfs" }
+    # ... configuration ...
+
+  - name: "docs_technical"
+    kektor_index: "knowledge_base" # Can target the same or different index
+    source: { type: "filesystem", path: "./tech_specs" }
+    # ... configuration ...
+
 ```
 
 #### Key Fields Explained:
