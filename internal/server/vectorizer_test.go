@@ -48,7 +48,7 @@ func TestVectorizerProcessing(t *testing.T) {
 
 	indexName := "test_index"
 	// Create index. Note: dimension is auto-detected or fixed on first insert.
-	if err := eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english"); err != nil {
+	if err := eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil); err != nil {
 		t.Fatalf("Failed to create index: %v", err)
 	}
 
@@ -73,7 +73,7 @@ func TestVectorizerProcessing(t *testing.T) {
 		t.Fatalf("Failed to create config: %v", err)
 	}
 
-	server, err := NewServer(eng, ":0", configPath)
+	server, err := NewServer(eng, ":0", configPath, "")
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestVectorizerConcurrent(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, "doc.txt"), []byte("content"), 0644)
 
 		idxName := fmt.Sprintf("index_%d", i)
-		eng.VCreate(idxName, distance.Cosine, 16, 200, distance.Float32, "")
+		eng.VCreate(idxName, distance.Cosine, 16, 200, distance.Float32, "", nil)
 
 		configBuilder += fmt.Sprintf(`
   - name: vec_%d
@@ -180,7 +180,7 @@ func TestVectorizerConcurrent(t *testing.T) {
 	configPath := filepath.Join(tmpDir, "vectorizers.yaml")
 	os.WriteFile(configPath, []byte(configBuilder), 0644)
 
-	server, err := NewServer(eng, ":0", configPath)
+	server, err := NewServer(eng, ":0", configPath, "")
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}

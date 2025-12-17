@@ -27,7 +27,7 @@ func TestClientIntegration(t *testing.T) {
 		t.Skip("Skipping integration test in short mode.")
 	}
 
-	client := New("localhost", 9091)
+	client := New("localhost", 9091, "")
 
 	// Use unique index names for each test run to prevent conflicts
 	timestamp := time.Now().UnixNano()
@@ -36,11 +36,11 @@ func TestClientIntegration(t *testing.T) {
 
 	t.Run("A - Index Management", func(t *testing.T) {
 		// Test VCreate
-		err := client.VCreate(idxEuclidean, "euclidean", "float32", 10, 50)
+		err := client.VCreate(idxEuclidean, "euclidean", "float32", 10, 50, nil)
 		if err != nil {
 			t.Fatalf("VCreate for euclidean index failed: %v", err)
 		}
-		err = client.VCreate(idxCosine, "cosine", "float32", 0, 0)
+		err = client.VCreate(idxCosine, "cosine", "float32", 0, 0, nil)
 		if err != nil {
 			t.Fatalf("VCreate for cosine index failed: %v", err)
 		}
@@ -165,7 +165,7 @@ func TestClientIntegration(t *testing.T) {
 		idxName := fmt.Sprintf("go-e2e-efsearch-%d", timestamp)
 
 		// Use low construction parameters to highlight the effect of efSearch
-		err := client.VCreate(idxName, "euclidean", "float32", 8, 20)
+		err := client.VCreate(idxName, "euclidean", "float32", 8, 20, nil)
 		if err != nil {
 			t.Fatalf("VCreate for efSearch test failed: %v", err)
 		}
