@@ -63,6 +63,7 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /graph/actions/unlink", s.handleGraphUnlink)
 	mux.HandleFunc("POST /graph/actions/get-links", s.handleGraphGetLinks)
 	mux.HandleFunc("POST /graph/actions/get-connections", s.handleGraphGetConnections)
+	mux.HandleFunc("POST /graph/actions/traverse", s.handleGraphTraverse)
 
 	mux.HandleFunc("POST /rag/retrieve", s.handleRagRetrieve)
 
@@ -484,7 +485,7 @@ func (s *Server) handleGraphLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Engine.VLink(req.SourceID, req.TargetID, req.RelationType); err != nil {
+	if err := s.Engine.VLink(req.SourceID, req.TargetID, req.RelationType, req.InverseRelationType); err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("Error in Vlink"))
 		return
 	}
@@ -504,7 +505,7 @@ func (s *Server) handleGraphUnlink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Engine.VUnlink(req.SourceID, req.TargetID, req.RelationType); err != nil {
+	if err := s.Engine.VUnlink(req.SourceID, req.TargetID, req.RelationType, req.InverseRelationType); err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("Error in Unlink"))
 		return
 	}
@@ -557,6 +558,30 @@ func (s *Server) handleGraphGetConnections(w http.ResponseWriter, r *http.Reques
 
 	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
 		"results": results,
+	})
+}
+
+// Implementazione Handler:
+func (s *Server) handleGraphTraverse(w http.ResponseWriter, r *http.Request) {
+	var req GraphTraverseRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("Invalid JSON"))
+		return
+	}
+
+	if req.IndexName == "" || req.SourceID == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name and source_id required"))
+		return
+	}
+
+	result, err := s.Engine.VTraverse(req.IndexName, req.SourceID, req.Paths)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("VTraverse error"))
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
+		"result": result,
 	})
 }
 

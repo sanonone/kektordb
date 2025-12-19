@@ -34,11 +34,12 @@ type Config struct {
 	CacheDeleteThreshold float64       `yaml:"cache_delete_threshold"`
 
 	// --- RAG Injection Settings ---
-	RAGEnabled     bool    `yaml:"rag_enabled"`
-	RAGIndex       string  `yaml:"rag_index"`        // The index where you can search for documents
-	RAGTopK        int     `yaml:"rag_top_k"`        // How many chunks to retrieve (e.g. 3 or 5)
-	RAGThreshold   float32 `yaml:"rag_threshold"`    // Maximum distance to consider a chunk useful
-	RAGUseHybrid   bool    `yaml:"rag_use_hybrid"`   // BM25
-	RAGHybridAlpha float64 `yaml:"rag_hybrid_alpha"` // 0.5 default alpha
-	RAGUseGraph    bool    `yaml:"rag_use_graph"`    // prev/next
+	RAGEnabled      bool    `yaml:"rag_enabled"`
+	RAGIndex        string  `yaml:"rag_index"`        // The index where you can search for documents
+	RAGTopK         int     `yaml:"rag_top_k"`        // How many chunks to retrieve (e.g. 3 or 5)
+	RAGThreshold    float32 `yaml:"rag_threshold"`    // Maximum distance to consider a chunk useful
+	RAGUseHybrid    bool    `yaml:"rag_use_hybrid"`   // BM25
+	RAGHybridAlpha  float64 `yaml:"rag_hybrid_alpha"` // 0.5 default alpha
+	RAGUseGraph     bool    `yaml:"rag_use_graph"`    // prev/next
+	RAGSystemPrompt string  `yaml:"rag_system_prompt"`
 }

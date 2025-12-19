@@ -13,7 +13,7 @@ type fusedResult struct {
 	score float64
 }
 
-var containsRegex = regexp.MustCompile(`(?i)\s*CONTAINS\s*\(\s*(\w+)\s*,\s*['"](.+?)['"]\s*\)`)
+var containsRegex = regexp.MustCompile(`(?si)\s*CONTAINS\s*\(\s*(\w+)\s*,\s*['"](.+?)['"]\s*\)`)
 
 // parseHybridFilter separates the text filter (CONTAINS) from the boolean filters.
 func parseHybridFilter(filter string) (booleanFilter, textQuery, textField string) {

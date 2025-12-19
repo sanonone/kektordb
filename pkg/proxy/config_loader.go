@@ -10,6 +10,15 @@ import (
 
 // DefaultConfig returns a working configuration for local Ollama.
 func DefaultConfig() Config {
+	defaultPrompt := `You are a helpful assistant. Use the following context to answer the user's question.
+If the answer is not in the context, say "I don't have enough information in my knowledge base".
+Do not invent facts.
+
+Context:
+{{context}}
+
+Question: 
+{{query}}`
 	return Config{
 		Port:      ":9092",
 		TargetURL: "http://localhost:11434",
@@ -32,13 +41,14 @@ func DefaultConfig() Config {
 		CacheVacuumInterval:  60 * time.Second, // Cleans every minute
 		CacheDeleteThreshold: 0.05,             // If 5% is expired/deleted,
 
-		RAGEnabled:     false,
-		RAGIndex:       "knowledge_base",
-		RAGTopK:        3,
-		RAGThreshold:   0.5,
-		RAGUseHybrid:   false, // Off by default to keep it simple
-		RAGHybridAlpha: 0.5,
-		RAGUseGraph:    true, // On by default because it's the killer feature
+		RAGEnabled:      false,
+		RAGIndex:        "knowledge_base",
+		RAGTopK:         3,
+		RAGThreshold:    0.5,
+		RAGUseHybrid:    false, // Off by default to keep it simple
+		RAGHybridAlpha:  0.5,
+		RAGUseGraph:     true, // On by default because it's the killer feature
+		RAGSystemPrompt: defaultPrompt,
 	}
 }
 

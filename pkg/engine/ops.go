@@ -7,16 +7,16 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
-	"strconv"
-	"sync"
-	"sync/atomic"
-
 	"github.com/sanonone/kektordb/pkg/core"
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/core/types"
 	"github.com/sanonone/kektordb/pkg/persistence"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 // --- KV Operations ---
@@ -225,17 +225,19 @@ func (e *Engine) VGetMany(indexName string, ids []string) ([]core.VectorData, er
 	return e.DB.GetVectors(indexName, ids)
 }
 
+// GraphNode represents a node in the graph with its data and nested connections.
+// This allows representing trees like Chunk -> Parent -> Children.
+type GraphNode struct {
+	core.VectorData
+	// Mappa delle relazioni nidificate: "child" -> [List of Nodes]
+	Connections map[string][]GraphNode `json:"connections,omitempty"`
+}
+
 // Struttura pubblica per i risultati del grafo
 type GraphSearchResult struct {
-	ID    string  `json:"id"`
-	Score float64 `json:"score"`
-
-	// Populated if hydrate=false (Default): List of IDs
-	Relations map[string][]string `json:"relations,omitempty"` // map[type] -> [ids]
-
-	// Populated if hydrate=true: Full data of related nodes
-	// Map[RelationType] -> List of VectorData
-	HydratedRelations map[string][]core.VectorData `json:"hydrated_relations,omitempty"`
+	ID    string    `json:"id"`
+	Score float64   `json:"score"`
+	Node  GraphNode `json:"node"`
 }
 
 // VSearch performs a vector, text, or hybrid search.
@@ -261,10 +263,10 @@ func (e *Engine) VSearch(indexName string, query []float32, k int, filter string
 	return ids, nil
 }
 
-// VSearchGraph performs a search and enriches results with graph connections.
-// If 'hydrate' is true, it fetches the full metadata/content of related nodes instead of just IDs.
+// VSearchGraph performs a search and traverses the graph based on relation paths.
+// relations example: ["prev", "next", "parent.child"]
 func (e *Engine) VSearchGraph(indexName string, query []float32, k int, filter string, efSearch int, alpha float64, relations []string, hydrate bool) ([]GraphSearchResult, error) {
-	// 1. Esegui la ricerca standard
+	// 1. Core Search
 	rawResults, err := e.searchWithFusion(indexName, query, k, filter, efSearch, alpha)
 	if err != nil {
 		return nil, err
@@ -272,47 +274,135 @@ func (e *Engine) VSearchGraph(indexName string, query []float32, k int, filter s
 
 	output := make([]GraphSearchResult, len(rawResults))
 
-	// 2. Graph Expansion (Enrichment)
-	// Per ogni risultato trovato, cerchiamo le relazioni richieste nel KV Store
+	// 2. Traversal
 	for i, res := range rawResults {
-		outItem := GraphSearchResult{
+		// Recuperiamo i dati del nodo principale
+		rootData, err := e.VGet(indexName, res.id)
+		if err != nil {
+			// Se non troviamo il nodo principale (raro), mettiamo un placeholder o skip
+			rootData = core.VectorData{ID: res.id}
+		}
+
+		rootNode := GraphNode{VectorData: rootData}
+
+		// Se richiesto, navighiamo le relazioni
+		if len(relations) > 0 {
+			rootNode.Connections = make(map[string][]GraphNode)
+
+			// Per ogni percorso richiesto (es. "parent.child")
+			for _, path := range relations {
+				// Splittiamo il percorso: ["parent", "child"]
+				parts := strings.Split(path, ".")
+
+				// Eseguiamo la traversata ricorsiva
+				connectedNodes := e.traversePath(indexName, res.id, parts, hydrate)
+
+				// Aggiungiamo al risultato usando il nome completo del path come chiave
+				// o l'ultimo step? Meglio usare il path completo per chiarezza nel JSON.
+				if len(connectedNodes) > 0 {
+					rootNode.Connections[path] = connectedNodes
+				}
+			}
+		}
+
+		output[i] = GraphSearchResult{
 			ID:    res.id,
 			Score: res.score,
+			Node:  rootNode,
 		}
-
-		if len(relations) > 0 {
-			// Prepariamo le mappe solo se servono
-			if hydrate {
-				outItem.HydratedRelations = make(map[string][]core.VectorData)
-			} else {
-				outItem.Relations = make(map[string][]string)
-			}
-
-			for _, relType := range relations {
-				// Recupera gli ID dei link dal KV Store (O(1))
-				linkIDs, found := e.VGetLinks(res.id, relType)
-				if !found || len(linkIDs) == 0 {
-					continue
-				}
-
-				if !hydrate {
-					// Caso Lightweight: Solo ID
-					outItem.Relations[relType] = linkIDs
-				} else {
-					// Caso Hydrated: Recupera i dati completi
-					// Usiamo VGetMany per efficienza (anche se qui lo facciamo per ogni relazione)
-					// Nota: GetVectors gestisce internamente la concorrenza se ci sono tanti ID
-					hydratedData, err := e.DB.GetVectors(indexName, linkIDs)
-					if err == nil && len(hydratedData) > 0 {
-						outItem.HydratedRelations[relType] = hydratedData
-					}
-				}
-			}
-		}
-		output[i] = outItem
 	}
 
 	return output, nil
+}
+
+// VTraverse performs a deep graph traversal starting from a specific node ID.
+// Unlike VSearchGraph, this does not perform a vector search but starts from a known ID.
+// paths example: ["parent", "parent.child", "next"]
+func (e *Engine) VTraverse(indexName, startID string, paths []string) (*GraphNode, error) {
+	// 1. Recupera il nodo radice
+	rootVectorData, err := e.VGet(indexName, startID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Costruiamo il nodo radice
+	rootNode := &GraphNode{
+		VectorData: rootVectorData,
+	}
+
+	// 2. Se non ci sono path, ritorniamo solo il nodo
+	if len(paths) == 0 {
+		return rootNode, nil
+	}
+
+	// 3. Navigazione Ricorsiva
+	rootNode.Connections = make(map[string][]GraphNode)
+
+	for _, pathStr := range paths {
+		// Splitta la notazione punto (es. "parent.child" -> ["parent", "child"])
+		parts := strings.Split(pathStr, ".")
+
+		// Usa l'helper interno esistente traversePath
+		// Nota: traversePath deve essere accessibile (stesso package)
+		connectedNodes := e.traversePath(indexName, startID, parts, true) // true = hydrate sempre per traverse
+
+		if len(connectedNodes) > 0 {
+			rootNode.Connections[pathStr] = connectedNodes
+		}
+	}
+
+	return rootNode, nil
+}
+
+// traversePath walks the graph recursively.
+// currentID: ID del nodo da cui partiamo
+// path: lista di relazioni da seguire (es. ["parent", "child"])
+func (e *Engine) traversePath(indexName, currentID string, path []string, hydrate bool) []GraphNode {
+	if len(path) == 0 {
+		return nil
+	}
+
+	relType := path[0]        // "parent"
+	remainingPath := path[1:] // ["child"]
+
+	// 1. Get Links (IDs)
+	targetIDs, found := e.VGetLinks(currentID, relType)
+	if !found || len(targetIDs) == 0 {
+		return nil
+	}
+
+	// 2. Fetch Data (Hydration)
+	var nodesData []core.VectorData
+	if hydrate {
+		nodesData, _ = e.DB.GetVectors(indexName, targetIDs)
+	} else {
+		// Mock data con solo ID
+		for _, id := range targetIDs {
+			nodesData = append(nodesData, core.VectorData{ID: id})
+		}
+	}
+
+	results := make([]GraphNode, 0, len(nodesData))
+
+	// 3. Recurse (Deep Traversal)
+	for _, nodeData := range nodesData {
+		gNode := GraphNode{VectorData: nodeData}
+
+		if len(remainingPath) > 0 {
+			// Scendiamo al prossimo livello
+			children := e.traversePath(indexName, nodeData.ID, remainingPath, hydrate)
+			if len(children) > 0 {
+				if gNode.Connections == nil {
+					gNode.Connections = make(map[string][]GraphNode)
+				}
+				// Usiamo il resto del path come chiave (es. "child")
+				gNode.Connections[strings.Join(remainingPath, ".")] = children
+			}
+		}
+		results = append(results, gNode)
+	}
+
+	return results
 }
 
 // Contiene tutta la logica di Parsing, Filtering, Hybrid Fusion
@@ -483,7 +573,7 @@ func (e *Engine) VGetConnections(indexName, sourceID, relationType string) ([]co
 				// Lanciamo la pulizia in background per non rallentare la lettura corrente.
 				go func(deadID string) {
 					// VUnlink è thread-safe e gestisce il lock e l'AOF
-					_ = e.VUnlink(sourceID, deadID, relationType)
+					_ = e.VUnlink(sourceID, deadID, relationType, "")
 				}(targetID)
 			}
 		}

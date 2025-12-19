@@ -183,14 +183,16 @@ func (p *Pipeline) needsProcessing(path string, info os.FileInfo) (bool, *fileSt
 func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileState) error {
 	log.Printf("[RAG] Processing: %s", path)
 
-	// Before inserting, we must remove previous versions to avoid ID conflicts
-	// and to remove "orphan" chunks if the file has shrunk.
+	// 0. CLEANUP: Rimuoviamo vecchi chunk per evitare ID orfani
 	if oldState != nil && oldState.ChunkCount > 0 {
 		for i := 0; i < oldState.ChunkCount; i++ {
 			oldID := fmt.Sprintf("%s_%d", path, i)
-			// Ignore deletion errors (maybe it doesn't exist anymore)
 			_ = p.store.Delete(p.cfg.IndexName, oldID)
 		}
+		// Opzionale: Cancelliamo anche il vecchio nodo Padre
+		// (Non strettamente necessario perché VAdd fa upsert/sovrascrittura, ma pulito)
+		oldParentID := fmt.Sprintf("doc:%s", path)
+		_ = p.store.Delete(p.cfg.IndexName, oldParentID)
 	}
 
 	// 1. Load Text
@@ -210,11 +212,16 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 
 	// 3. Embed & Prepare Batch
 	var batch []types.BatchObject
-
-	// Pre-calculate modTime string for template
 	modTimeStr := info.ModTime().Format(time.RFC3339)
 
 	var prevChunkID string
+
+	// Variabili per calcolare il vettore "Medio" del documento (Parent)
+	var docVectorSum []float32
+	var docVectorCount int
+
+	// ID univoco del Padre (basato sul path del file)
+	parentID := fmt.Sprintf("doc:%s", path)
 
 	for i, chunkText := range chunks {
 		// Embed
@@ -224,16 +231,33 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 			continue
 		}
 
-		// ID Deterministic: path + chunk index
+		// Accumulo per la media del Padre (solo se GraphEnabled)
+		if p.cfg.GraphEnabled {
+			if docVectorSum == nil {
+				docVectorSum = make([]float32, len(vec))
+			}
+			if len(vec) == len(docVectorSum) {
+				for k, v := range vec {
+					docVectorSum[k] += v
+				}
+				docVectorCount++
+			}
+		}
+
+		// ID del Chunk
 		id := fmt.Sprintf("%s_%d", path, i)
 
 		// Metadata Construction
 		meta := make(map[string]interface{})
-
-		// Always include core info
 		meta["source"] = path
 		meta["chunk_index"] = i
-		meta["content"] = chunkText // Important: store text for retrieval!
+		meta["content"] = chunkText
+		meta["type"] = "chunk"
+
+		// Salviamo l'ID del padre nei metadati (utile per debug o filtri)
+		if p.cfg.GraphEnabled {
+			meta["parent_id"] = parentID
+		}
 
 		// Apply User Templates
 		for k, v := range p.cfg.MetadataTemplate {
@@ -252,20 +276,56 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 
 		// --- GRAPH AUTO-LINKING LOGIC ---
 		if p.cfg.GraphEnabled {
-			// Se esiste un chunk precedente, colleghiamoli
+			// A. Link Sequenziale (Prev/Next)
 			if prevChunkID != "" {
-				// Link: Precedente -> Corrente (Next)
-				if err := p.store.Link(prevChunkID, id, "next"); err != nil {
-					log.Printf("[RAG] Failed to link %s -> %s (next): %v", prevChunkID, id, err)
-				}
-				// Link: Corrente -> Precedente (Prev)
-				if err := p.store.Link(id, prevChunkID, "prev"); err != nil {
-					log.Printf("[RAG] Failed to link %s -> %s (prev): %v", id, prevChunkID, err)
+				// Bidirezionale atomico: Prev <-> Curr
+				err := p.store.Link(prevChunkID, id, "next", "prev")
+				if err != nil {
+					log.Printf("[RAG] Link seq error: %v", err)
 				}
 			}
-			// Aggiorna il puntatore per il prossimo giro
 			prevChunkID = id
+
+			// B. Link Gerarchico (Parent/Child)
+			// Chunk --(parent)--> Doc
+			// Doc --(child)--> Chunk
+			err := p.store.Link(id, parentID, "parent", "child")
+			if err != nil {
+				log.Printf("[RAG] Link parent error: %v", err)
+			}
 		}
+	}
+
+	// --- CREAZIONE NODO PADRE ---
+	if p.cfg.GraphEnabled && docVectorCount > 0 {
+		// Calcola media
+		avgVector := make([]float32, len(docVectorSum))
+		for k, v := range docVectorSum {
+			avgVector[k] = v / float32(docVectorCount)
+		}
+
+		// Metadati del Padre
+		docMeta := make(map[string]interface{})
+		docMeta["source"] = path
+		docMeta["filename"] = info.Name()
+		docMeta["type"] = "document"
+		docMeta["chunk_count"] = len(chunks)
+		docMeta["mod_time"] = modTimeStr
+		// (Opzionale) Aggiungiamo anche i template utente al padre
+		for k, v := range p.cfg.MetadataTemplate {
+			val := v
+			val = strings.ReplaceAll(val, "{{file_path}}", path)
+			val = strings.ReplaceAll(val, "{{filename}}", info.Name())
+			val = strings.ReplaceAll(val, "{{mod_time}}", modTimeStr)
+			docMeta[k] = val
+		}
+
+		// Aggiungiamo il Padre al batch
+		batch = append(batch, types.BatchObject{
+			Id:       parentID,
+			Vector:   avgVector,
+			Metadata: docMeta,
+		})
 	}
 
 	if len(batch) == 0 {
@@ -281,7 +341,7 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 	stateKey := fmt.Sprintf("_rag_state:%s:%s", p.cfg.Name, path)
 	newState := fileState{
 		ModTime:    info.ModTime().UnixNano(),
-		ChunkCount: len(chunks), // Save how many chunks we made
+		ChunkCount: len(chunks),
 	}
 	stateBytes, _ := json.Marshal(newState)
 

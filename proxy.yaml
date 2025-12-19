@@ -15,6 +15,20 @@ rag_threshold: 0.4           # Se la distanza > 0.4 (poco simile), non inietta n
 rag_use_hybrid: false       # Cerca anche per parole chiave
 rag_hybrid_alpha: 0.7      # 70% Vettore, 30% Keywords
 rag_use_graph: true        # Recupera automaticamente contesto prev/next
+# System Prompt Template
+# Usa {{context}} per iniettare i dati trovati e {{query}} per la domanda originale.
+# Il simbolo '|' permette stringhe multilinea in YAML.
+rag_system_prompt: |
+  You are a helpful and precise assistant.
+  Use ONLY the following context to answer the user's question.
+  If the answer is not in the context, say "I don't have enough information in my knowledge base".
+  Do not make up facts.
+
+  CONTEXT:
+  {{context}}
+
+  QUESTION:
+  {{query}}
 
 # Firewall (Prompt Guard)
 firewall_enabled: true

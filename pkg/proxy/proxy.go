@@ -316,10 +316,14 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 	// A. Configurazione Ricerca
 	filter := ""
 	if p.cfg.RAGUseHybrid {
-		// Pulizia base per evitare errori di sintassi nel filtro
 		safeQuery := strings.ReplaceAll(queryText, "'", "")
 		safeQuery = strings.ReplaceAll(safeQuery, "\"", "")
-		// Cerchiamo nel campo 'content' o 'text' (assumiamo content come default standard)
+
+		// Questo impedisce alla Regex di rompersi e pulisce il testo per BM25
+		safeQuery = strings.ReplaceAll(safeQuery, "\n", " ")
+		safeQuery = strings.ReplaceAll(safeQuery, "\r", " ")
+		safeQuery = strings.ReplaceAll(safeQuery, "\t", " ")
+
 		filter = fmt.Sprintf("CONTAINS(content, '%s')", safeQuery)
 	}
 
@@ -328,7 +332,7 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 		alpha = p.cfg.RAGHybridAlpha
 	}
 	if !p.cfg.RAGUseHybrid {
-		alpha = 1.0 // Solo vettoriale se ibrido disabilitato
+		alpha = 1.0
 	}
 
 	var relations []string
@@ -336,53 +340,45 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 		relations = []string{"prev", "next"}
 	}
 
-	// B. Esecuzione Ricerca (VSearchGraph con Hydration)
-	// hydrate=true è fondamentale per avere i testi dei nodi collegati
+	// B. Esecuzione Ricerca
 	results, err := p.engine.VSearchGraph(
 		p.cfg.RAGIndex,
 		queryVec,
 		p.cfg.RAGTopK,
 		filter,
-		100, // efSearch default robusto
+		100,
 		alpha,
 		relations,
 		true, // HYDRATE
 	)
 
 	if err != nil || len(results) == 0 {
-		return nil, nil // Nessun contesto
+		return nil, nil
 	}
 
-	// C. Costruzione Prompt Contesto
+	// C. Costruzione Blocco Contesto (Raw Data)
 	var contextBuilder strings.Builder
-	contextBuilder.WriteString("Context information is below.\n---------------------\n")
 
 	foundRelevant := false
 	for _, res := range results {
-		// Nota: VSearchGraph ritorna ID e Score, ma non i metadati del nodo principale (solo le relazioni idratate).
-		// Dobbiamo fare una VGet veloce per il nodo principale.
-		mainNodeData, err := p.engine.VGet(p.cfg.RAGIndex, res.ID)
-		if err != nil {
-			continue
-		}
-
-		mainText := getTextFromMeta(mainNodeData.Metadata)
+		// Recupero testo nodo principale
+		mainText := getTextFromMeta(res.Node.VectorData.Metadata)
 		if mainText == "" {
 			continue
 		}
 
 		// Recupero contesto Graph (Prev/Next)
 		prevText := ""
-		if list, ok := res.HydratedRelations["prev"]; ok && len(list) > 0 {
-			prevText = getTextFromMeta(list[0].Metadata)
+		if prevNodes, ok := res.Node.Connections["prev"]; ok && len(prevNodes) > 0 {
+			prevText = getTextFromMeta(prevNodes[0].VectorData.Metadata)
 		}
 
 		nextText := ""
-		if list, ok := res.HydratedRelations["next"]; ok && len(list) > 0 {
-			nextText = getTextFromMeta(list[0].Metadata)
+		if nextNodes, ok := res.Node.Connections["next"]; ok && len(nextNodes) > 0 {
+			nextText = getTextFromMeta(nextNodes[0].VectorData.Metadata)
 		}
 
-		// Assemblaggio: [Prev] [Main] [Next]
+		// Assemblaggio del blocco di testo pulito
 		if prevText != "" {
 			contextBuilder.WriteString(prevText + " ")
 		}
@@ -390,6 +386,8 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 		if nextText != "" {
 			contextBuilder.WriteString(" " + nextText)
 		}
+
+		// Doppio a capo per separare i chunk diversi
 		contextBuilder.WriteString("\n\n")
 		foundRelevant = true
 	}
@@ -398,9 +396,23 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 		return nil, nil
 	}
 
-	contextBuilder.WriteString("---------------------\nGiven the context information and not prior knowledge, answer the query.\nQuery: ")
+	// D. Applicazione del Template (Prompt Engineering)
+	// Recuperiamo il template dal config o usiamo un default sicuro
+	promptTemplate := p.cfg.RAGSystemPrompt
+	if promptTemplate == "" {
+		// Default generico se non specificato nel YAML
+		promptTemplate = "Context information is below.\n---------------------\n{{context}}\n---------------------\nGiven the context information and not prior knowledge, answer the query.\nQuery: {{query}}"
+	}
 
-	// D. Modifica JSON
+	// Sostituzione dei placeholder
+	finalContent := strings.ReplaceAll(promptTemplate, "{{context}}", contextBuilder.String())
+	finalContent = strings.ReplaceAll(finalContent, "{{query}}", queryText)
+
+	// --- DEBUG LOG (Decommenta per vedere cosa mandi all'LLM) ---
+	log.Printf("[RAG-DEBUG] Final Prompt:\n%s", finalContent)
+	// ------------------------------------------------------------
+
+	// E. Modifica JSON Originale
 	var requestData map[string]interface{}
 	if err := json.Unmarshal(originalBody, &requestData); err != nil {
 		return nil, err
@@ -411,17 +423,16 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 		return nil, nil
 	}
 
-	// Modifica l'ultimo messaggio (User)
+	// Modifica l'ultimo messaggio (User) sostituendolo con il prompt arricchito
 	lastMsgIdx := len(messages) - 1
 	lastMsg, ok := messages[lastMsgIdx].(map[string]interface{})
 	if !ok {
 		return nil, nil
 	}
 
-	if content, ok := lastMsg["content"].(string); ok {
-		// Aggiunge il contesto prima della domanda originale
-		newContent := contextBuilder.String() + content
-		lastMsg["content"] = newContent
+	// Verifica che ci sia un campo content da sostituire
+	if _, ok := lastMsg["content"].(string); ok {
+		lastMsg["content"] = finalContent
 		messages[lastMsgIdx] = lastMsg
 		requestData["messages"] = messages
 	} else {

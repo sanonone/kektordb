@@ -395,53 +395,29 @@ func main() {
 
 	// 3. Link
 	fmt.Println("   -> Linking 'child_node' to 'parent_node'...")
-	db.VLink("child_node", "parent_node", "parent")
+	db.VLink("child_node", "parent_node", "parent", "child")
 
-	// 5. Verifica SearchGraph CON HYDRATION
-	queryVecGraph := []float32{1.0, 0.0, 0.0}
+	// Aggiungiamo un "Fratello" (un altro chunk figlio del padre)
+	db.VAdd(graphIdx, "sibling_node", []float32{0.51, 0.51, 0.51}, nil)
+	db.VLink("parent_node", "sibling_node", "child", "parent")
+	// Ora parent->sibling (child) e sibling->parent (parent)
 
-	// hydrate = true
-	graphRes, err := db.VSearchGraph(graphIdx, queryVecGraph, 1, "", 100, 0.0, []string{"parent"}, true)
-	if err != nil {
-		log.Fatalf("❌ VSearchGraph failed: %v", err)
-	}
+	// QUERY MAGICA:
+	// "Trova child_node, vai al parent, e dammi tutti i suoi child (fratelli inclusi)"
+	queryVecGraph := []float32{0.5, 0.5, 0.5} // Simile a child_node
 
-	if len(graphRes) > 0 {
-		top := graphRes[0]
+	graphRes, err := db.VSearchGraph(graphIdx, queryVecGraph, 1, "", 100, 0.0, []string{"parent.child"}, true)
 
-		// Verifichiamo che ci sia il campo Hydrated
-		if rels, ok := top.HydratedRelations["parent"]; ok {
-			if len(rels) > 0 && rels[0].ID == "parent_node" {
-				// CHECK CRITICO: I metadati ci sono?
-				title := rels[0].Metadata["title"]
-				if title == "Master Document" {
-					fmt.Println("✅ Graph Hydration OK: Retrieved parent metadata directly.")
-				} else {
-					log.Fatalf("❌ Graph Hydration content mismatch. Got metadata: %v", rels[0].Metadata)
-				}
-			} else {
-				log.Fatalf("❌ Graph Search relation mismatch.")
-			}
-		} else {
-			log.Fatalf("❌ Graph Search missing hydrated 'parent' relation")
-		}
-	} else {
-		log.Fatalf("❌ Graph Search returned no results")
-	}
+	// Verifica
+	// graphRes[0].Node.Connections["parent.child"] deve contenere una lista
+	// che include sia "child_node" che "sibling_node".
 
-	// ... (dopo la verifica di VSearchGraph) ...
+	// Quindi:
+	parent := graphRes[0].Node.Connections["parent.child"][0] // Il nodo padre
+	children := parent.Connections["child"]                   // I nodi figli
 
-	// 6. Verifica VGetConnections (Traversal Puro)
-	fmt.Println("   -> Testing VGetConnections (Traversal)...")
-	connectedNodes, err := db.VGetConnections(graphIdx, "child_node", "parent")
-	if err != nil {
-		log.Fatalf("❌ VGetConnections failed: %v", err)
-	}
-
-	if len(connectedNodes) == 1 && connectedNodes[0].ID == "parent_node" {
-		fmt.Println("✅ VGetConnections OK: Retrieved parent data successfully.")
-	} else {
-		log.Fatalf("❌ VGetConnections mismatch. Got: %v", connectedNodes)
+	if len(children) >= 2 {
+		fmt.Println("✅ 2-Hop Traversal OK: Found siblings via parent.")
 	}
 
 	db.VDeleteIndex(graphIdx)

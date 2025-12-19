@@ -20,68 +20,85 @@ func makeRelKey(sourceID, relType string) string {
 	return fmt.Sprintf("%s%s:%s", relPrefix, sourceID, relType)
 }
 
-// VLink creates a directed edge between two nodes/items.
-// Example: VLink("chunk_1", "doc_A", "parent")
-func (e *Engine) VLink(sourceID, targetID, relationType string) error {
-	// Usiamo il lock amministrativo (o uno dedicato) per garantire atomicità Read-Modify-Write
-	// su questa specifica chiave. Per semplicità usiamo adminMu o DB.Lock
+// VLink creates a directed edge between two nodes.
+// If 'inverseRelationType' is provided (not empty), it also creates the reverse link.
+func (e *Engine) VLink(sourceID, targetID, relationType, inverseRelationType string) error {
 	e.adminMu.Lock()
 	defer e.adminMu.Unlock()
 
-	key := makeRelKey(sourceID, relationType)
-
-	// 1. Leggi esistente
-	var targets []string
-	val, found := e.DB.GetKVStore().Get(key)
-	if found {
-		if err := json.Unmarshal(val, &targets); err != nil {
-			// Se il formato è corrotto, sovrascriviamo o ritorniamo errore?
-			// Logghiamo e resettiamo per robustezza.
-			targets = []string{}
-		}
-	}
-
-	// 2. Aggiungi e Deduplica
-	// Evitiamo duplicati: se il link esiste già, non facciamo nulla
-	if slices.Contains(targets, targetID) {
-		return nil // Già collegato
-	}
-	targets = append(targets, targetID)
-
-	// 3. Serializza
-	newVal, err := json.Marshal(targets)
-	if err != nil {
-		return fmt.Errorf("failed to marshal relationships: %w", err)
-	}
-
-	// 4. Persistenza (AOF)
-	// Usiamo un comando custom VLINK per chiarezza nel log,
-	// ma internamente mappa su un SET KV.
-	// Per mantenere compatibilità col replay AOF esistente (che conosce solo SET),
-	// salviamo come SET.
-	// "SET rel:source:type JSON_DATA"
-	cmd := persistence.FormatCommand("SET", []byte(key), newVal)
-	if err := e.AOF.Write(cmd); err != nil {
+	// 1. Link Diretto (Source -> Target)
+	if err := e.setLinkInternal(sourceID, targetID, relationType); err != nil {
 		return err
 	}
 
-	// 5. Update Memoria
-	e.DB.GetKVStore().Set(key, newVal)
+	// 2. Link Inverso (Target -> Source) - Opzionale
+	if inverseRelationType != "" {
+		if err := e.setLinkInternal(targetID, sourceID, inverseRelationType); err != nil {
+			// Nota: Se fallisce qui, potremmo avere un grafo inconsistente a metà.
+			// In un sistema di produzione servirebbe rollback, ma per ora logghiamo/ritorniamo errore.
+			return fmt.Errorf("failed to create inverse link: %w", err)
+		}
+	}
 
 	atomic.AddInt64(&e.dirtyCounter, 1)
 	return nil
 }
 
-// VUnlink removes a directed edge.
-func (e *Engine) VUnlink(sourceID, targetID, relationType string) error {
+// setLinkInternal è la logica raw di scrittura (senza lock globale, perché lo ha il chiamante)
+func (e *Engine) setLinkInternal(src, dst, rel string) error {
+	key := makeRelKey(src, rel)
+
+	var targets []string
+	val, found := e.DB.GetKVStore().Get(key)
+	if found {
+		_ = json.Unmarshal(val, &targets) // Ignora errori di unmarshal su dati corrotti
+	}
+
+	if slices.Contains(targets, dst) {
+		return nil
+	}
+	targets = append(targets, dst)
+
+	newVal, err := json.Marshal(targets)
+	if err != nil {
+		return err
+	}
+
+	// AOF & Memoria
+	cmd := persistence.FormatCommand("SET", []byte(key), newVal)
+	if err := e.AOF.Write(cmd); err != nil {
+		return err
+	}
+	e.DB.GetKVStore().Set(key, newVal)
+	return nil
+}
+
+func (e *Engine) VUnlink(sourceID, targetID, relationType, inverseRelationType string) error {
 	e.adminMu.Lock()
 	defer e.adminMu.Unlock()
 
-	key := makeRelKey(sourceID, relationType)
+	// Unlink Diretto
+	if err := e.removeLinkInternal(sourceID, targetID, relationType); err != nil {
+		return err
+	}
 
+	// Unlink Inverso
+	if inverseRelationType != "" {
+		if err := e.removeLinkInternal(targetID, sourceID, inverseRelationType); err != nil {
+			return fmt.Errorf("failed to remove inverse link: %w", err)
+		}
+	}
+
+	atomic.AddInt64(&e.dirtyCounter, 1)
+	return nil
+}
+
+// removeLinkInternal (logica estratta dal vecchio VUnlink)
+func (e *Engine) removeLinkInternal(src, dst, rel string) error {
+	key := makeRelKey(src, rel)
 	val, found := e.DB.GetKVStore().Get(key)
 	if !found {
-		return nil // Nulla da cancellare
+		return nil
 	}
 
 	var targets []string
@@ -89,11 +106,10 @@ func (e *Engine) VUnlink(sourceID, targetID, relationType string) error {
 		return err
 	}
 
-	// Trova e rimuovi
 	newTargets := make([]string, 0, len(targets))
 	changed := false
 	for _, t := range targets {
-		if t != targetID {
+		if t != dst {
 			newTargets = append(newTargets, t)
 		} else {
 			changed = true
@@ -104,20 +120,16 @@ func (e *Engine) VUnlink(sourceID, targetID, relationType string) error {
 		return nil
 	}
 
-	// Se la lista è vuota, cancelliamo la chiave
 	if len(newTargets) == 0 {
 		cmd := persistence.FormatCommand("DEL", []byte(key))
 		e.AOF.Write(cmd)
 		e.DB.GetKVStore().Delete(key)
 	} else {
-		// Altrimenti aggiorniamo
 		newVal, _ := json.Marshal(newTargets)
 		cmd := persistence.FormatCommand("SET", []byte(key), newVal)
 		e.AOF.Write(cmd)
 		e.DB.GetKVStore().Set(key, newVal)
 	}
-
-	atomic.AddInt64(&e.dirtyCounter, 1)
 	return nil
 }
 

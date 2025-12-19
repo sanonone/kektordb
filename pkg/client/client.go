@@ -75,9 +75,10 @@ type Task struct {
 // --- Graph Structures ---
 
 type graphLinkRequest struct {
-	SourceID     string `json:"source_id"`
-	TargetID     string `json:"target_id"`
-	RelationType string `json:"relation_type"`
+	SourceID            string `json:"source_id"`
+	TargetID            string `json:"target_id"`
+	RelationType        string `json:"relation_type"`
+	InverseRelationType string `json:"inverse_relation_type,omitempty"`
 }
 
 type graphGetLinksRequest struct {
@@ -89,12 +90,18 @@ type graphGetLinksResponse struct {
 	Targets []string `json:"targets"`
 }
 
+type GraphNode struct {
+	ID          string                 `json:"id"`
+	Vector      []float32              `json:"vector"`
+	Metadata    map[string]interface{} `json:"metadata"`
+	Connections map[string][]GraphNode `json:"connections,omitempty"`
+}
+
 // GraphSearchResult represents a search result enriched with scores and relationships.
 type GraphSearchResult struct {
-	ID                string                  `json:"id"`
-	Score             float64                 `json:"score"`
-	Relations         map[string][]string     `json:"relations,omitempty"`
-	HydratedRelations map[string][]VectorData `json:"hydrated_relations,omitempty"`
+	ID    string    `json:"id"`
+	Score float64   `json:"score"`
+	Node  GraphNode `json:"node"`
 }
 
 type searchGraphResponse struct {
@@ -109,6 +116,16 @@ type graphGetConnectionsRequest struct {
 
 type getConnectionsResponse struct {
 	Results []VectorData `json:"results"`
+}
+
+type graphTraverseRequest struct {
+	IndexName string   `json:"index_name"`
+	SourceID  string   `json:"source_id"`
+	Paths     []string `json:"paths"`
+}
+
+type traverseResponse struct {
+	Result GraphNode `json:"result"`
 }
 
 // --- Client ---
@@ -447,22 +464,24 @@ func (c *Client) VGetMany(indexName string, ids []string) ([]VectorData, error) 
 // --- Graph Methods ---
 
 // VLink creates a semantic relationship between two vectors (e.g. "chunk_1" -> "doc_A" as "parent").
-func (c *Client) VLink(sourceID, targetID, relationType string) error {
+func (c *Client) VLink(sourceID, targetID, relationType, inverseRelationType string) error {
 	req := graphLinkRequest{
-		SourceID:     sourceID,
-		TargetID:     targetID,
-		RelationType: relationType,
+		SourceID:            sourceID,
+		TargetID:            targetID,
+		RelationType:        relationType,
+		InverseRelationType: inverseRelationType,
 	}
 	_, err := c.jsonRequest(http.MethodPost, "/graph/actions/link", req)
 	return err
 }
 
 // VUnlink removes a semantic relationship.
-func (c *Client) VUnlink(sourceID, targetID, relationType string) error {
+func (c *Client) VUnlink(sourceID, targetID, relationType, inverseRelationType string) error {
 	req := graphLinkRequest{
-		SourceID:     sourceID,
-		TargetID:     targetID,
-		RelationType: relationType,
+		SourceID:            sourceID,
+		TargetID:            targetID,
+		RelationType:        relationType,
+		InverseRelationType: inverseRelationType,
 	}
 	_, err := c.jsonRequest(http.MethodPost, "/graph/actions/unlink", req)
 	return err
@@ -542,6 +561,26 @@ func (c *Client) VSearchGraph(indexName string, queryVector []float32, k int, fi
 	}
 
 	return resp.Results, nil
+}
+
+// VTraverse explores the graph starting from sourceID following the specified paths.
+func (c *Client) VTraverse(indexName, sourceID string, paths []string) (*GraphNode, error) {
+	req := graphTraverseRequest{
+		IndexName: indexName,
+		SourceID:  sourceID,
+		Paths:     paths,
+	}
+
+	respBody, err := c.jsonRequest(http.MethodPost, "/graph/actions/traverse", req)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp traverseResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response: %w", err)
+	}
+	return &resp.Result, nil
 }
 
 // --- Administration Methods ---

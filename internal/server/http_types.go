@@ -70,9 +70,10 @@ type RagRetrieveRequest struct {
 }
 
 type GraphLinkRequest struct {
-	SourceID     string `json:"source_id"`
-	TargetID     string `json:"target_id"`
-	RelationType string `json:"relation_type"` // e.g. "parent", "next", "cited_by"
+	SourceID            string `json:"source_id"`
+	TargetID            string `json:"target_id"`
+	RelationType        string `json:"relation_type"` // e.g. "parent", "next", "cited_by"
+	InverseRelationType string `json:"inverse_relation_type,omitempty"`
 }
 
 type GraphGetLinksRequest struct {
@@ -84,4 +85,10 @@ type GraphGetConnectionsRequest struct {
 	IndexName    string `json:"index_name"`
 	SourceID     string `json:"source_id"`
 	RelationType string `json:"relation_type"`
+}
+
+type GraphTraverseRequest struct {
+	IndexName string   `json:"index_name"`
+	SourceID  string   `json:"source_id"`
+	Paths     []string `json:"paths"` // e.g. ["parent.child"]
 }
