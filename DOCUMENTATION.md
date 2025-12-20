@@ -125,6 +125,7 @@ These control the database engine itself.
 | `-auth-token` | `KEKTOR_TOKEN` | `""` | If set, enables `Authorization: Bearer <token>` check. |
 | `-save` | - | `"60 1000"` | Auto-snapshot policy `"seconds changes"`. Set to `""` to disable. |
 | `-aof-rewrite-percentage` | - | `100` | Trigger AOF compaction when file grows by X%. |
+| `-enable-proxy` | `-KEKTOR_ENABLE_PROXY` | `false` | Enables the AI Gateway/Proxy service on the port specified by -proxy-port. |
 | `-proxy-config` | - | `""` | Path to `proxy.yaml`. Enables Proxy if set. |
 | `-vectorizers-config` | - | `""` | Path to `vectorizers.yaml`. Enables RAG if set. |
 
@@ -228,7 +229,10 @@ max_cache_items: 10000
 # 3. RAG Injection (Zero-Code RAG)
 rag_enabled: true
 rag_index: "knowledge_base"   # Must match vectorizer index
-rag_top_k: 3
+rag_top_k: 6
+rag_ef_search: 100            # Search breadth (higher = better recall)
+rag_threshold: 0.6            # Similarity Score Threshold (0.0-1.0).
+                              # Keeps chunks with score >= 0.6. 
 rag_use_graph: true           # Fetch prev/next chunks automatically
 rag_use_hybrid: true          # Use BM25 + Vector for better precision
 ```
@@ -243,8 +247,8 @@ rag_use_hybrid: true          # Use BM25 + Vector for better precision
 | `cache_delete_threshold` | float | `0.0` | Internal threshold for cache cleanup (advanced). |
 | `max_cache_items` | int | `0` (unlimited) | Max items in cache before stopping additions. |
 | `rag_hybrid_alpha` | float | `0.5` | Weight for hybrid search (0.0=Text, 1.0=Vector). |
-| `rag_threshold` | float | `0.0` | Max distance for RAG chunks (0 = ignore). |
-
+| `rag_threshold` | float | `0.7` | Minimum Similarity Score (0.0-1.0) to include a chunk. Higher is stricter. |
+| `rag_ef_search` | int | `100` | Precision of the RAG vector search (HNSW parameter). |
 ---
 
 ### 3.4 Index Maintenance Tuning
@@ -304,23 +308,27 @@ All endpoints return JSON. Errors are returned as `{"error": "message"}` with ap
 #### Search
 **`POST /vector/actions/search`**
 
-Performs a nearest neighbor search. Supports hybrid search and graph hydration.
+Performs a nearest neighbor search. Supports hybrid search, filtering, and Deep Graph Traversal.
 
 **Body:**
 ```json
 {
   "index_name": "docs",
-  "query_vector": [0.12, -0.5, ...],
   "k": 10,
+  "query_vector": [0.12, -0.5, ...],
   "filter": "category='A'",
-  "include_relations": ["prev", "next"],
+  
+  // Graph Options
+  "include_relations": ["prev", "next", "parent.child"], 
   "hydrate_relations": true,
+  
   "alpha": 0.5
 }
 ```
 
-*   `alpha`: 1.0 = Pure Vector, 0.0 = Pure BM25.
-*   `hydrate_relations`: If true, fetches the actual content of linked nodes.
+*   `alpha`: `1.0` = Pure Vector, `0.0` = Pure BM25.
+*   `hydrate_relations`: If `true`, returns the full data (Metadata + Vector) of the main results and all related nodes in a nested structure. If false, returns only IDs.
+*   `include_relations`: List of relation paths to fetch. Supports Dot Notation for N-Hop traversal (e.g., `"parent.child"` fetches the parent node, then recursively fetches all children of that parent).
 
 #### Add Vectors
 **`POST /vector/actions/add`**
@@ -486,6 +494,26 @@ Retrieves all nodes connected to the source ID by a specific relation type. Deta
 **Body:** `{"index_name": "docs", "source_id": "1", "relation_type": "next"}`
 
 > **Note:** The API currently supports retrieving links by explicit `relation_type`. Retrieving ALL relationships for a node without specifying the type is not yet supported.
+
+#### Deep Traversal (N-Hop)
+**`POST /graph/actions/traverse`**
+
+Performs a recursive graph traversal starting from a specific node ID. This allows retrieving a complex tree of related data in a single request without performing a vector search first.
+
+**Request Body:**
+```json
+{
+  "index_name": "docs",
+  "source_id": "chunk_10",
+  "paths": [
+    "parent",           // 1-Hop: Get the parent document
+    "parent.child",     // 2-Hops: Get the parent, then all its children (siblings of chunk_10)
+    "next.next"         // 2-Hops: Get the next chunk, and the one after that
+  ]
+}
+```
+
+**Response:** Returns a nested `GraphNode` structure containing the fully hydrated data (Vectors + Metadata) for every node found along the requested paths.
 
 ---
 

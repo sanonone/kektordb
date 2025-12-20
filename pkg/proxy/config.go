@@ -37,6 +37,7 @@ type Config struct {
 	RAGEnabled      bool    `yaml:"rag_enabled"`
 	RAGIndex        string  `yaml:"rag_index"`        // The index where you can search for documents
 	RAGTopK         int     `yaml:"rag_top_k"`        // How many chunks to retrieve (e.g. 3 or 5)
+	RAGEfSearch     int     `yaml:"rag_ef_search"`    // HNSW search precision (default 100)
 	RAGThreshold    float32 `yaml:"rag_threshold"`    // Maximum distance to consider a chunk useful
 	RAGUseHybrid    bool    `yaml:"rag_use_hybrid"`   // BM25
 	RAGHybridAlpha  float64 `yaml:"rag_hybrid_alpha"` // 0.5 default alpha

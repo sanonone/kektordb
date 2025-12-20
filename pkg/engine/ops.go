@@ -497,6 +497,7 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 
 	// Fusion Logic
 	if textQuery == "" {
+		normalizeVectorScores(vectorResults)
 		finalRes := make([]fusedResult, len(vectorResults))
 		for i, r := range vectorResults {
 			extID, _ := hnswIndex.GetExternalID(r.DocID)

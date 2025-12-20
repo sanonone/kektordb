@@ -68,7 +68,7 @@ KektorDB can function as a **smart middleware** between your Chat UI and your LL
 
 1.  **Run KektorDB** with the proxy enabled:
     ```bash
-    ./kektordb -vectorizers-config vectorizers.yaml -enable-proxy -proxy-target "http://localhost:11434"
+    ./kektordb -vectorizers-config='vectorizers.yaml' -enable-proxy -proxy-target "http://localhost:11434"
     ```
 2.  **Configure Open WebUI:**
     *   **Base URL:** `http://localhost:9092/v1`
@@ -282,6 +282,7 @@ For a complete guide to all features and API endpoints, please see the **[Full D
 *   `POST /vector/actions/import`: High-speed bulk loading.
 *   `POST /vector/indexes`: Create and manage indexes.
 *   `POST /graph/actions/link`: Create semantic relationships.
+*   `POST /graph/actions/traverse`: Deep graph traversal (N-Hop) starting from a specific node ID.
 *   `POST /rag/retrieve`: Get text chunks for RAG.
 *   `GET /system/tasks/{id}`: Monitor long-running tasks.
 *   `POST /system/save`: Manual snapshot.

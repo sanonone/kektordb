@@ -67,7 +67,7 @@ KektorDB può funzionare come **middleware intelligente** tra la tua Chat UI e i
 
 1.  **Avvia KektorDB** con il proxy abilitato:
     ```bash
-    ./kektordb -vectorizers-config vectorizers.yaml -enable-proxy -proxy-target "http://localhost:11434"
+    ./kektordb -vectorizers-config='vectorizers.yaml' -enable-proxy -proxy-target "http://localhost:11434"
     ```
 2.  **Configura Open WebUI:**
     *   Vai su **Impostazioni > Connessioni**.
@@ -283,6 +283,7 @@ Per una guida completa a tutte le funzionalità ed endpoint, vedi la **[Document
 *   `POST /vector/actions/search`: Ricerca vettoriale ibrida.
 *   `POST /vector/actions/add`: Aggiungi singolo vettore.
 *   `POST /graph/actions/link`: Crea relazioni semantiche.
+*   `POST /graph/actions/traverse`: Attraversamento profondo del grafo (N-Hop) a partire da un ID nodo specifico.
 *   `POST /rag/retrieve`: Ottieni chunk di testo per RAG.
 *   `GET /system/tasks/{id}`: Monitora task a lunga esecuzione.
 *   `POST /system/save`: Snapshot manuale.

@@ -11,21 +11,28 @@ embedder_timeout: 60s
 rag_enabled: true
 rag_index: "knowledge_base"  # Deve coincidere con l'indice popolato dai Vectorizer!
 rag_top_k: 6
-rag_threshold: 0.4           # Se la distanza > 0.4 (poco simile), non inietta nulla
-rag_use_hybrid: false       # Cerca anche per parole chiave
+# RAG usa SIMILARITÀ (Higher is Better, 0.0-1.0)
+rag_threshold: 0.6         # Ignore chunks with similarity score < 0.6
+rag_use_hybrid: false # Cerca anche per parole chiave
 rag_hybrid_alpha: 0.7      # 70% Vettore, 30% Keywords
 rag_use_graph: true        # Recupera automaticamente contesto prev/next
 # System Prompt Template
 # Usa {{context}} per iniettare i dati trovati e {{query}} per la domanda originale.
 # Il simbolo '|' permette stringhe multilinea in YAML.
 rag_system_prompt: |
-  You are a helpful and precise assistant.
-  Use ONLY the following context to answer the user's question.
-  If the answer is not in the context, say "I don't have enough information in my knowledge base".
-  Do not make up facts.
-
-  CONTEXT:
+  You are an expert technical assistant. You have access to a local knowledge base.
+  
+  CONTEXT DATA:
   {{context}}
+  
+  INSTRUCTIONS:
+  1. Analyze the Context Data above carefully. Pay attention to Document titles.
+  2. Answer the user's Question using ONLY the information present in the Context.
+  3. If the Context contains conflicting information, mention it.
+  4. If the Context does not contain the answer, perform the following check:
+     - Is the question about general knowledge? (e.g., "Write python code"). If yes, answer normally.
+     - Is the question about specific data? (e.g., "What is project X?"). If yes, state: "I don't have that information in my documents."
+  5. Cite the Document name if available.
 
   QUESTION:
   {{query}}
@@ -33,13 +40,15 @@ rag_system_prompt: |
 # Firewall (Prompt Guard)
 firewall_enabled: true
 firewall_index: "prompt_guard"
-firewall_threshold: 0.25 # Blocca se molto simile
+# Firewall usa DISTANZA (Lower is Better)
+firewall_threshold: 0.25 # Block if distance < 0.25
 block_message: "I cannot fulfill this request as it violates safety policies."
 
 # Semantic Cache
 cache_enabled: true
 cache_index: "semantic_cache_test"
-cache_threshold: 0.1
+# Cache usano DISTANZA (Lower is Better)
+cache_threshold: 0.1 # Cache hit if distance < 0.1
 cache_ttl: "5s"        
 max_cache_items: 100
 

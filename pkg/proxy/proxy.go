@@ -4,18 +4,18 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
+	"github.com/sanonone/kektordb/pkg/engine"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/sanonone/kektordb/pkg/core/distance"
-	"github.com/sanonone/kektordb/pkg/core/hnsw"
-	"github.com/sanonone/kektordb/pkg/engine"
 )
 
 // AIProxy sits between the client and the LLM.
@@ -67,7 +67,7 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	isStreaming := checkStreaming(bodyBytes)
 
 	var promptVec []float32
-	if promptText != "" && (p.cfg.FirewallEnabled || p.cfg.CacheEnabled) {
+	if promptText != "" && (p.cfg.FirewallEnabled || p.cfg.CacheEnabled || p.cfg.RAGEnabled) {
 		// Calculate embedding once
 		v, err := p.cfg.Embedder.Embed(promptText)
 		if err == nil {
@@ -281,32 +281,31 @@ func (p *AIProxy) checkFirewall(text string) (bool, string) {
 	return false, ""
 }
 
-// Helper to extract text from generic JSON (Ollama/OpenAI)
+// extractPrompt extracts the latest user query from the JSON body.
+// It supports both Ollama raw format ("prompt") and OpenAI chat format ("messages").
 func extractPrompt(jsonBody []byte) string {
 	var data map[string]interface{}
 	if err := json.Unmarshal(jsonBody, &data); err != nil {
 		return ""
 	}
 
-	// 1. Case "prompt" (Standard Ollama)
+	// 1. Caso "prompt" (Ollama raw / Completion API)
 	if v, ok := data["prompt"].(string); ok {
 		return v
 	}
 
-	// 2. Case "messages" (OpenAI chat format)
+	// 2. Caso "messages" (OpenAI Chat API)
 	if msgs, ok := data["messages"].([]interface{}); ok {
-		var sb strings.Builder
-		for _, m := range msgs {
-			if msgMap, ok := m.(map[string]interface{}); ok {
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgMap, ok := msgs[i].(map[string]interface{}); ok {
+				// Controlliamo il ruolo
 				if role, _ := msgMap["role"].(string); role == "user" {
 					if content, _ := msgMap["content"].(string); content != "" {
-						sb.WriteString(content)
-						sb.WriteString("\n")
+						return content // Trovato l'ultimo input utente
 					}
 				}
 			}
 		}
-		return sb.String()
 	}
 
 	return ""
@@ -337,7 +336,12 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 
 	var relations []string
 	if p.cfg.RAGUseGraph {
-		relations = []string{"prev", "next"}
+		relations = []string{"prev", "next", "parent"}
+	}
+
+	efSearch := p.cfg.RAGEfSearch
+	if efSearch <= 0 {
+		efSearch = 100
 	}
 
 	// B. Esecuzione Ricerca
@@ -346,7 +350,7 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 		queryVec,
 		p.cfg.RAGTopK,
 		filter,
-		100,
+		efSearch,
 		alpha,
 		relations,
 		true, // HYDRATE
@@ -362,6 +366,10 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 	foundRelevant := false
 	for _, res := range results {
 		// Recupero testo nodo principale
+		if float32(res.Score) < p.cfg.RAGThreshold {
+			continue
+		}
+
 		mainText := getTextFromMeta(res.Node.VectorData.Metadata)
 		if mainText == "" {
 			continue
@@ -378,16 +386,31 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 			nextText = getTextFromMeta(nextNodes[0].VectorData.Metadata)
 		}
 
+		sourceName := "Unknown Source"
+		if parents, ok := res.Node.Connections["parent"]; ok && len(parents) > 0 {
+			// Il padre ha nei metadati "filename" o "source"
+			pMeta := parents[0].VectorData.Metadata
+			if name, ok := pMeta["filename"].(string); ok {
+				sourceName = name
+			} else if src, ok := pMeta["source"].(string); ok {
+				// Magari prendiamo solo il nome file dal path
+				sourceName = filepath.Base(src)
+			}
+		}
+
 		// Assemblaggio del blocco di testo pulito
+		// COSTRUZIONE BLOCCO STRUTTURATO
+		// Invece di incollare testo nudo, diamo una struttura XML-like o Markdown
+		contextBuilder.WriteString(fmt.Sprintf("--- Document: %s ---\n", sourceName))
+
 		if prevText != "" {
 			contextBuilder.WriteString(prevText + " ")
 		}
-		contextBuilder.WriteString(mainText)
+		contextBuilder.WriteString(mainText) // Il chunk trovato (con ** enfasi magari?)
 		if nextText != "" {
 			contextBuilder.WriteString(" " + nextText)
 		}
 
-		// Doppio a capo per separare i chunk diversi
 		contextBuilder.WriteString("\n\n")
 		foundRelevant = true
 	}

@@ -44,7 +44,8 @@ Question:
 		RAGEnabled:      false,
 		RAGIndex:        "knowledge_base",
 		RAGTopK:         3,
-		RAGThreshold:    0.5,
+		RAGEfSearch:     100, // Default HNSW value
+		RAGThreshold:    0.7,
 		RAGUseHybrid:    false, // Off by default to keep it simple
 		RAGHybridAlpha:  0.5,
 		RAGUseGraph:     true, // On by default because it's the killer feature
