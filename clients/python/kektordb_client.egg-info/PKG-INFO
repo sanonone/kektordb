@@ -1,7 +1,7 @@
 Metadata-Version: 2.1
 Name: kektordb-client
-Version: 0.3.0
-Summary: An official Python client for KektorDB, a high-performance in-memory vector database.
+Version: 0.3.1
+Summary: An official Python client for KektorDB. An in-memory Vector Database & AI Gateway written in Go. Supports HNSW, Hybrid Search (BM25), GraphRAG context, a built-in RAG Pipeline, and can be embedded directly into your apps. 
 Home-page: https://github.com/sanonone/kektordb
 Author: Sanonone
 Author-email: fedeld023@gmail.com
