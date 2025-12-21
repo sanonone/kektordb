@@ -397,3 +397,8 @@ func (p *Pipeline) Retrieve(text string, k int) ([]string, error) {
 
 	return results, nil
 }
+
+// GetEmbedder returns the embedder instance used by this pipeline.
+func (p *Pipeline) GetEmbedder() embeddings.Embedder {
+	return p.embedder
+}

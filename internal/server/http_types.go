@@ -92,3 +92,8 @@ type GraphTraverseRequest struct {
 	SourceID  string   `json:"source_id"`
 	Paths     []string `json:"paths"` // e.g. ["parent.child"]
 }
+
+type UIExploreRequest struct {
+	IndexName string `json:"index_name"`
+	Limit     int    `json:"limit"`
+}

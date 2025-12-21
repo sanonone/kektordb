@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KektorDB Dashboard</title>
+    <!-- External Library for Graph Visualization -->
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --sidebar-bg: #1e293b;
+            --card-bg: #334155;
+            --text-main: #f1f5f9;
+            --text-muted: #94a3b8;
+            --accent: #3b82f6;
+            --accent-hover: #2563eb;
+            --border: #475569;
+            --success: #10b981;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Sidebar */
+        #sidebar {
+            width: 260px;
+            background-color: var(--sidebar-bg);
+            border-right: 1px solid var(--border);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            z-index: 10;
+        }
+
+        h1 { font-size: 1.2rem; margin-top: 0; color: var(--accent); display: flex; align-items: center; gap: 10px; }
+        h2 { font-size: 0.8rem; text-transform: uppercase; color: var(--text-muted); margin-top: 20px; letter-spacing: 1px; }
+
+        .index-item {
+            padding: 10px;
+            margin-bottom: 5px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.2s;
+            font-size: 0.9rem;
+            display: flex;
+            justify-content: space-between;
+        }
+        .index-item:hover, .index-item.active { background-color: var(--card-bg); color: white; }
+        .index-badge { font-size: 0.75rem; background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; }
+
+        /* Main Content */
+        #main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+        }
+
+        /* Search Bar */
+        #search-bar {
+            padding: 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            gap: 10px;
+            background: var(--bg-color);
+            z-index: 5;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        input[type="text"] {
+            flex: 1;
+            padding: 12px 15px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--sidebar-bg);
+            color: white;
+            font-size: 1rem;
+            outline: none;
+        }
+        input[type="text"]:focus { border-color: var(--accent); }
+        
+        button {
+            padding: 0 25px;
+            background: var(--accent);
+            border: none;
+            color: white;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+        button:hover { background: var(--accent-hover); }
+
+        /* View Toggle */
+        .view-toggle {
+            display: flex;
+            background: var(--sidebar-bg);
+            padding: 2px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            margin-right: 10px;
+        }
+        .view-btn {
+            padding: 8px 15px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            border-radius: 4px;
+            color: var(--text-muted);
+        }
+        .view-btn.active {
+            background: var(--card-bg);
+            color: white;
+            font-weight: bold;
+        }
+
+        /* Content Areas */
+        #content-area {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+        }
+
+        #list-view {
+            height: 100%;
+            overflow-y: auto;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        #graph-view {
+            height: 100%;
+            width: 100%;
+            background-color: #0b1120; /* Slightly darker for graph contrast */
+            display: none; /* Hidden by default */
+        }
+
+        /* Result Cards */
+        .result-card {
+            background: var(--sidebar-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+        }
+
+        .result-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 15px;
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            padding-bottom: 10px;
+        }
+
+        .result-score { 
+            color: var(--success); 
+            font-weight: bold; 
+            background: rgba(16, 185, 129, 0.1);
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
+
+        .result-body {
+            font-size: 1rem;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            color: #e2e8f0;
+        }
+
+        /* Connections Section */
+        .connections {
+            margin-top: 20px;
+            padding-top: 15px;
+            border-top: 1px dashed var(--border);
+            font-size: 0.85rem;
+        }
+        
+        .conn-row { 
+            display: flex; 
+            align-items: flex-start; 
+            margin-bottom: 8px; 
+        }
+        
+        .conn-label { 
+            color: var(--accent); 
+            width: 80px; 
+            font-weight: bold; 
+            text-transform: uppercase; 
+            font-size: 0.7rem; 
+            padding-top: 4px;
+        }
+
+        .conn-badges { flex: 1; display: flex; flex-wrap: wrap; gap: 5px; }
+
+        .conn-tag {
+            background: var(--card-bg);
+            padding: 4px 8px;
+            border-radius: 4px;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            cursor: help;
+            max-width: 300px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .conn-tag:hover {
+            color: white;
+            border-color: var(--accent);
+        }
+
+        .loading { text-align: center; color: var(--text-muted); margin-top: 50px; font-style: italic; }
+        
+        /* Helper for empty state */
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--text-muted);
+        }
+        .empty-state svg { width: 64px; height: 64px; margin-bottom: 20px; opacity: 0.2; }
+
+    </style>
+</head>
+<body>
+
+<div id="sidebar">
+    <h1>
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
+        KektorDB
+    </h1>
+    
+    <h2>Available Indexes</h2>
+    <div id="index-list">
+        <div class="loading" style="font-size: 0.8rem;">Loading indexes...</div>
+    </div>
+
+    <div style="margin-top: auto; font-size: 0.75rem; color: #64748b; line-height: 1.5;">
+        <p><strong>GraphRAG Engine</strong><br>Status: <span style="color: #4ade80;">● Ready</span></p>
+    </div>
+</div>
+
+<div id="main">
+    <div id="search-bar">
+        <input type="text" id="query-input" placeholder="Type your query (e.g. 'project requirements')...">
+        
+        <div class="view-toggle">
+            <div class="view-btn active" id="btn-list" onclick="switchView('list')">List</div>
+            <div class="view-btn" id="btn-graph" onclick="switchView('graph')">Graph</div>
+        </div>
+
+        <button onclick="performSearch()">Search</button>
+
+        <div style="width: 1px; height: 30px; background: var(--border); margin: 0 15px;"></div>
+
+         <div style="display: flex; align-items: center; gap: 5px;">
+            <input type="number" id="explore-limit" value="200" min="50" max="5000" style="width: 70px; padding: 10px; text-align: center;" title="Max nodes to fetch">
+            <button onclick="exploreGraph()" style="background: var(--card-bg); border: 1px solid var(--accent); color: var(--accent); padding: 0 15px;">
+                Explore
+            </button>
+        </div>
+    </div>
+
+    <div id="content-area">
+        <div id="list-view">
+            <div class="empty-state">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                <p>Select an index and perform a search to see results.</p>
+            </div>
+        </div>
+        <div id="graph-view"></div>
+    </div>
+</div>
+
+<script>
+    let selectedIndex = "";
+    let currentResults = [];
+    let network = null; // Vis.js instance
+
+    // --- 1. Initialization ---
+    async function loadIndexes() {
+        try {
+            const res = await fetch('/vector/indexes');
+            const indexes = await res.json();
+            const list = document.getElementById('index-list');
+            list.innerHTML = "";
+
+            if (!indexes || indexes.length === 0) {
+                list.innerHTML = "<div style='color: #64748b; padding: 10px;'>No indexes found.</div>";
+                return;
+            }
+
+            indexes.forEach((idx, i) => {
+                const div = document.createElement('div');
+                div.className = 'index-item';
+                div.innerHTML = `<span>${idx.name}</span> <span class="index-badge">${idx.vector_count}</span>`;
+                div.onclick = () => selectIndex(idx.name, div);
+                list.appendChild(div);
+                
+                // Auto-select first index
+                if (i === 0) selectIndex(idx.name, div);
+            });
+
+        } catch (e) {
+            console.error(e);
+            document.getElementById('index-list').innerHTML = "<div style='color: #ef4444; padding: 10px;'>Connection Failed</div>";
+        }
+    }
+
+    function selectIndex(name, el) {
+        selectedIndex = name;
+        document.querySelectorAll('.index-item').forEach(d => d.classList.remove('active'));
+        if(el) el.classList.add('active');
+        document.getElementById('query-input').focus();
+    }
+
+    function switchView(view) {
+        document.getElementById('list-view').style.display = view === 'list' ? 'block' : 'none';
+        document.getElementById('graph-view').style.display = view === 'graph' ? 'block' : 'none';
+        
+        document.getElementById('btn-list').className = `view-btn ${view === 'list' ? 'active' : ''}`;
+        document.getElementById('btn-graph').className = `view-btn ${view === 'graph' ? 'active' : ''}`;
+
+        if (view === 'graph' && currentResults.length > 0) {
+            renderGraph(currentResults);
+        }
+    }
+
+    // --- 2. Search Logic ---
+    async function performSearch() {
+        if (!selectedIndex) return alert("Please select an index first.");
+        
+        const query = document.getElementById('query-input').value;
+        const listArea = document.getElementById('list-view');
+        
+        listArea.innerHTML = "<div class='loading'>Searching vector space & traversing graph...</div>";
+
+        try {
+            const res = await fetch('/ui/search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    index_name: selectedIndex,
+                    query: query,
+                    k: 5, // Top 5 is enough for UI
+                    include_relations: ["prev", "next", "parent", "child"], // Fetch everything for the graph
+                    hydrate: true
+                })
+            });
+
+            const data = await res.json();
+            
+            if (data.error) {
+                listArea.innerHTML = `<div style="color: #ef4444; text-align: center; margin-top: 50px;">Error: ${data.error}</div>`;
+                return;
+            }
+
+            currentResults = data.results || [];
+            
+            // Refresh current view
+            renderList(currentResults);
+            if (document.getElementById('graph-view').style.display === 'block') {
+                renderGraph(currentResults);
+            }
+
+        } catch (e) {
+            listArea.innerHTML = `<div style="color: #ef4444; text-align: center;">Network Error: ${e.message}</div>`;
+        }
+    }
+
+    // --- 3. List Renderer ---
+    function renderList(results) {
+        const area = document.getElementById('list-view');
+        area.innerHTML = "";
+
+        if (results.length === 0) {
+            area.innerHTML = "<div class='loading'>No results found.</div>";
+            return;
+        }
+
+        results.forEach(res => {
+            const node = res.node;
+            const meta = node.metadata || {};
+            
+            // Smarter content extraction
+            let content = meta.content || meta.text || meta.page_content || "No text content";
+            if (content.length > 400) content = content.substring(0, 400) + "...";
+
+            // Identify Source/Filename for Header
+            let source = meta.filename || meta.source || node.id;
+
+            // Connections
+            let connectionsHtml = "";
+            if (node.connections) {
+                connectionsHtml += `<div class="connections">`;
+                for (const [relType, nodes] of Object.entries(node.connections)) {
+                    if(!nodes || nodes.length === 0) continue;
+                    
+                    const badges = nodes.map(n => {
+                        const sm = n.metadata || {};
+                        // Smart label for relation badge: Filename, Source, or partial content
+                        let label = sm.filename || sm.source || sm.content || n.id;
+                        // Clean up label if it's a full path
+                        if (label.includes('/')) label = label.split('/').pop();
+                        // Truncate label
+                        if (label.length > 30) label = label.substring(0, 30) + "...";
+
+                        // Full content for Tooltip
+                        let fullText = sm.content || JSON.stringify(sm);
+                        
+                        return `<span class="conn-tag" title="${escapeHtml(fullText)}">${escapeHtml(label)}</span>`;
+                    }).join("");
+
+                    connectionsHtml += `<div class="conn-row"><div class="conn-label">${relType}</div> <div class="conn-badges">${badges}</div></div>`;
+                }
+                connectionsHtml += `</div>`;
+            }
+
+            // Percentages
+            const similarity = (res.score * 100).toFixed(1);
+
+            const div = document.createElement('div');
+            div.className = 'result-card';
+            div.innerHTML = `
+                <div class="result-header">
+                    <span><strong>DOC:</strong> ${escapeHtml(source)}</span>
+                    <span class="result-score">${similarity}% Match</span>
+                </div>
+                <div class="result-body">${escapeHtml(content)}</div>
+                ${connectionsHtml}
+            `;
+            area.appendChild(div);
+        });
+    }
+
+    // --- 4. Graph Renderer (Vis.js) ---
+    function renderGraph(results) {
+        const container = document.getElementById('graph-view');
+        
+        // Prepare Data
+        const nodes = new Map(); // Use Map to avoid duplicates
+        const edges = [];
+
+        results.forEach((res, index) => {
+            const mainId = res.node.id;
+            
+            // Add Main Node (Blue)
+            if (!nodes.has(mainId)) {
+                nodes.set(mainId, {
+                    id: mainId,
+                    label: getLabel(res.node.metadata, "Result " + (index+1)),
+                    group: 'main',
+                    title: res.node.metadata?.content || "Main Result"
+                });
+            }
+
+            // Add Related Nodes
+            if (res.node.connections) {
+                for (const [relType, relNodes] of Object.entries(res.node.connections)) {
+                    relNodes.forEach(rel => {
+                        // Add Linked Node (Gray/Orange)
+                        if (!nodes.has(rel.id)) {
+                            let group = 'context';
+                            if (relType === 'parent') group = 'parent';
+                            
+                            nodes.set(rel.id, {
+                                id: rel.id,
+                                label: getLabel(rel.metadata, relType),
+                                group: group,
+                                title: rel.metadata?.content || "Context"
+                            });
+                        }
+
+                        // Add Edge
+                        // Avoid duplicate edges? Vis.js handles multiple edges but we want clean graph
+                        edges.push({
+                            from: mainId,
+                            to: rel.id,
+                            label: relType,
+                            arrows: 'to',
+                            color: { color: '#64748b' }
+                        });
+                    });
+                }
+            }
+        });
+
+        const data = {
+            nodes: Array.from(nodes.values()),
+            edges: edges
+        };
+
+        const options = {
+            nodes: {
+                shape: 'dot',
+                size: 16,
+                font: { color: '#ffffff' },
+                borderWidth: 2
+            },
+            groups: {
+                main: { color: { background: '#3b82f6', border: '#2563eb' }, size: 25 },
+                parent: { color: { background: '#f59e0b', border: '#d97706' }, size: 20 },
+                context: { color: { background: '#475569', border: '#334155' }, size: 12 }
+            },
+            edges: {
+                font: { color: '#94a3b8', size: 10, align: 'middle' },
+                smooth: { type: 'continuous' }
+            },
+            physics: {
+                stabilization: false,
+                barnesHut: {
+                    gravitationalConstant: -2000,
+                    springConstant: 0.04,
+                    springLength: 95
+                }
+            },
+            layout: { randomSeed: 2 } // Keep consistent layout
+        };
+
+        if (network) {
+            network.setData(data);
+        } else {
+            network = new vis.Network(container, data, options);
+        }
+    }
+
+    function getLabel(meta, fallback) {
+        if (!meta) return fallback;
+        let lbl = meta.filename || meta.source || fallback;
+        if (lbl.includes('/')) lbl = lbl.split('/').pop(); // Filename only
+        if (lbl.length > 15) lbl = lbl.substring(0, 15) + "...";
+        return lbl;
+    }
+
+    function escapeHtml(text) {
+        if (!text) return "";
+        return text
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    async function exploreGraph() {
+    if (!selectedIndex) return alert("Please select an index first.");
+    
+    // Get user defined limit
+    const limitInput = document.getElementById('explore-limit');
+    let limit = parseInt(limitInput.value) || 200;
+
+    // Optional: Warn user if limit is high
+    if (limit > 1000) {
+        if(!confirm(`Loading ${limit} nodes might slow down or crash your browser. Continue?`)) return;
+    }
+
+    switchView('graph');
+    const container = document.getElementById('graph-view');
+    if(network) network.destroy();
+    
+    container.innerHTML = `<div class='loading' style='color:white; padding-top:100px;'>
+        Loading graph structure (${limit} nodes)...<br>
+        <span style="font-size:0.8em; opacity:0.7">This puts heavy load on the browser, not the server.</span>
+    </div>`;
+
+    try {
+        const res = await fetch('/ui/explore', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                index_name: selectedIndex,
+                limit: limit 
+            })
+        });
+
+        const data = await res.json();
+        if (data.error) {
+            container.innerHTML = `<div style="color: #ef4444; text-align: center; margin-top: 50px;">Error: ${data.error}</div>`;
+            return;
+        }
+
+        const results = data.results || [];
+        const formattedResults = results.map(n => ({ node: n }));
+        
+        container.innerHTML = "";
+        renderGraph(formattedResults);
+
+    } catch (e) {
+        console.error(e);
+        container.innerHTML = `<div style="color: #ef4444; text-align: center;">Explore failed: ${e.message}</div>`;
+    }
+}
+
+    // Initialize
+    loadIndexes();
+
+    document.getElementById('query-input').addEventListener("keypress", function(event) {
+        if (event.key === "Enter") performSearch();
+    });
+</script>
+
+</body>
+</html>

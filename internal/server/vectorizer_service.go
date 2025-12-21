@@ -206,3 +206,21 @@ type VectorizerStatus struct {
 	LastRun      time.Time `json:"last_run,omitempty"`
 	CurrentState string    `json:"current_state"`
 }
+
+// Add to internal/server/vectorizer_service.go
+
+// GetEmbedderForIndex returns the embedder configured for a specific index.
+// Useful for UI/Search endpoints that need to convert text to vector using the same model as ingestion.
+func (vs *VectorizerService) GetEmbedderForIndex(indexName string) embeddings.Embedder {
+	for _, cfg := range vs.server.vectorizerConfig.Vectorizers {
+		if cfg.KektorIndex == indexName {
+			// We need the initialized embedder, which is inside the running pipeline.
+			// So we match the name.
+			pipeline := vs.GetPipeline(cfg.Name)
+			if pipeline != nil {
+				return pipeline.GetEmbedder() // We need to expose this in rag/Pipeline
+			}
+		}
+	}
+	return nil
+}

@@ -15,8 +15,11 @@ import (
 	"net/http/pprof"
 	"strings"
 
+	"github.com/sanonone/kektordb/internal/server/ui"
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
+	"github.com/sanonone/kektordb/pkg/embeddings"
+	"github.com/sanonone/kektordb/pkg/engine"
 )
 
 // registerHTTPHandlers sets up all HTTP routes using Go 1.22+ routing.
@@ -76,6 +79,15 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 
 	// Specific vector retrieval
 	mux.HandleFunc("GET /vector/indexes/{name}/vectors/{id}", s.handleGetVector)
+
+	// 1. UI Routes
+	// Note: Go 1.22 routing uses "/ui/" for subtree matching.
+	// We use http.StripPrefix because the FileServer expects the root path.
+	mux.Handle("GET /ui/", http.StripPrefix("/ui/", ui.GetHandler()))
+
+	// 2. UI Helper Endpoint (Text to Vector Search)
+	mux.HandleFunc("POST /ui/search", s.handleUISearch)
+	mux.HandleFunc("POST /ui/explore", s.handleUIExplore)
 }
 
 // --- INDEX HANDLERS ---
@@ -694,6 +706,165 @@ func (s *Server) handleTriggerVectorizer(w http.ResponseWriter, r *http.Request)
 		"status":  "OK",
 		"message": fmt.Sprintf("Synchronization for vectorizer '%s' triggered.", name),
 	})
+}
+
+// --- UI HANDLERS ---
+// UISearchRequest defines the specific payload for the dashboard.
+type UISearchRequest struct {
+	IndexName        string   `json:"index_name"`
+	Query            string   `json:"query"`
+	K                int      `json:"k"`
+	IncludeRelations []string `json:"include_relations"`
+	Hydrate          bool     `json:"hydrate"`
+}
+
+// handleUISearch bridges the gap between text query and vector search for the UI.
+// It looks up the correct embedder from the VectorizerService.
+func (s *Server) handleUISearch(w http.ResponseWriter, r *http.Request) {
+	var req UISearchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON"))
+		return
+	}
+
+	if req.IndexName == "" || req.Query == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name and query required"))
+		return
+	}
+
+	// 1. Resolve Embedder
+	// We need to find a pipeline that targets this index to use its embedder.
+	// If multiple pipelines target the same index, any will do for embedding purposes.
+	var embedder embeddings.Embedder
+
+	// We iterate through running pipelines to find one matching the index
+	if s.vectorizerService != nil {
+		// Accessing pipelines via a new method we need to add to VectorizerService
+		// OR simply iterating if we expose the list.
+		// Ideally VectorizerService should have a method `GetEmbedderForIndex(indexName)`.
+		// For now, let's assume we add that helper.
+		embedder = s.vectorizerService.GetEmbedderForIndex(req.IndexName)
+	}
+
+	var queryVec []float32
+	var err error
+
+	if embedder != nil {
+		// 2a. Embed the query
+		queryVec, err = embedder.Embed(req.Query)
+		if err != nil {
+			s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("embedding failed: %v", err))
+			return
+		}
+	} else {
+		// 2b. Fallback: Check if the request manually provided a vector?
+		// The UI assumes text. If no embedder is found (e.g. index created manually via API),
+		// we cannot search by text.
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("no embedder configured for index '%s'. Cannot perform text search.", req.IndexName))
+		return
+	}
+
+	// 3. Execute Graph Search
+	// We reuse the powerful VSearchGraph method from the Engine
+	results, err := s.Engine.VSearchGraph(
+		req.IndexName,
+		queryVec,
+		req.K,
+		"",  // No filter for simple UI
+		0,   // Default ef
+		0.5, // Default alpha
+		req.IncludeRelations,
+		req.Hydrate,
+	)
+
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": results})
+}
+
+func (s *Server) handleUIExplore(w http.ResponseWriter, r *http.Request) {
+	var req UIExploreRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON"))
+		return
+	}
+
+	if req.IndexName == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name required"))
+		return
+	}
+	// If limit is 0, set default.
+	// We allow up to 10,000 nodes. It's up to the client (browser) to handle the load.
+	if req.Limit <= 0 {
+		req.Limit = 200 // Default safe value
+	}
+	if req.Limit > 10000 {
+		req.Limit = 10000 // Server-side safety cap
+	}
+
+	idx, ok := s.Engine.DB.GetVectorIndex(req.IndexName)
+	if !ok {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("index not found"))
+		return
+	}
+
+	// Usiamo HNSW per iterare velocemente
+	hnswIdx, ok := idx.(*hnsw.Index)
+	if !ok {
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("not hnsw index"))
+		return
+	}
+
+	// FIX 1: Usa engine.GraphNode invece di GraphNode
+	var nodes []engine.GraphNode
+	count := 0
+
+	// 1. Iteriamo sui nodi dell'indice
+	hnswIdx.IterateRaw(func(id string, _ interface{}) {
+		if count >= req.Limit {
+			return // Stop
+		}
+
+		// Recuperiamo i dati completi
+		vData, err := s.Engine.VGet(req.IndexName, id)
+		if err != nil {
+			return
+		}
+
+		// FIX 2: Usa engine.GraphNode
+		gNode := engine.GraphNode{VectorData: vData}
+		gNode.Connections = make(map[string][]engine.GraphNode)
+
+		relationsToCheck := []string{"next", "prev", "parent", "child"}
+
+		// FIX 3: Rimossa variabile inutilizzata 'hasRelations'
+
+		for _, rel := range relationsToCheck {
+			targetIDs, found := s.Engine.VGetLinks(id, rel)
+			if found && len(targetIDs) > 0 {
+
+				// FIX 4: Usa engine.GraphNode
+				var children []engine.GraphNode
+				for _, tid := range targetIDs {
+					// Fetch light metadata for target to display label
+					tData, _ := s.Engine.VGet(req.IndexName, tid)
+					if tData.ID == "" {
+						tData.ID = tid
+					} // Fallback if not found
+					children = append(children, engine.GraphNode{VectorData: tData})
+				}
+				gNode.Connections[rel] = children
+			}
+		}
+
+		nodes = append(nodes, gNode)
+		count++
+	})
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": nodes})
 }
 
 // Helpers
