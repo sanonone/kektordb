@@ -4,9 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/sanonone/kektordb/pkg/core/distance"
-	"github.com/sanonone/kektordb/pkg/core/hnsw"
-	"github.com/sanonone/kektordb/pkg/engine"
 	"io"
 	"log"
 	"net/http"
@@ -16,6 +13,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
+	"github.com/sanonone/kektordb/pkg/engine"
 )
 
 // AIProxy sits between the client and the LLM.
@@ -93,10 +94,10 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if p.cfg.RAGEnabled && strings.Contains(r.URL.Path, "/chat/completions") && len(promptVec) > 0 {
 		newBody, err := p.performRAGInjection(bodyBytes, promptVec, promptText)
 		if err == nil && newBody != nil {
-			// Sostituiamo il body con quello arricchito
+			// Replace the body with the enriched one
 			bodyBytes = newBody
 			r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-			// Aggiorniamo Content-Length fondamentale per proxy HTTP
+			// Update Content-Length, which is fundamental for the HTTP proxy
 			r.ContentLength = int64(len(bodyBytes))
 			r.Header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
 		}
@@ -289,19 +290,19 @@ func extractPrompt(jsonBody []byte) string {
 		return ""
 	}
 
-	// 1. Caso "prompt" (Ollama raw / Completion API)
+	// 1. "prompt" case (Ollama raw / Completion API)
 	if v, ok := data["prompt"].(string); ok {
 		return v
 	}
 
-	// 2. Caso "messages" (OpenAI Chat API)
+	// 2. "messages" case (OpenAI Chat API)
 	if msgs, ok := data["messages"].([]interface{}); ok {
 		for i := len(msgs) - 1; i >= 0; i-- {
 			if msgMap, ok := msgs[i].(map[string]interface{}); ok {
-				// Controlliamo il ruolo
+				// Check the role
 				if role, _ := msgMap["role"].(string); role == "user" {
 					if content, _ := msgMap["content"].(string); content != "" {
-						return content // Trovato l'ultimo input utente
+						return content // Found the last user input
 					}
 				}
 			}
@@ -312,13 +313,13 @@ func extractPrompt(jsonBody []byte) string {
 }
 
 func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, queryText string) ([]byte, error) {
-	// A. Configurazione Ricerca
+	// A. Search Configuration
 	filter := ""
 	if p.cfg.RAGUseHybrid {
 		safeQuery := strings.ReplaceAll(queryText, "'", "")
 		safeQuery = strings.ReplaceAll(safeQuery, "\"", "")
 
-		// Questo impedisce alla Regex di rompersi e pulisce il testo per BM25
+		// This prevents Regex breakage and cleans text for BM25
 		safeQuery = strings.ReplaceAll(safeQuery, "\n", " ")
 		safeQuery = strings.ReplaceAll(safeQuery, "\r", " ")
 		safeQuery = strings.ReplaceAll(safeQuery, "\t", " ")
@@ -344,7 +345,7 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 		efSearch = 100
 	}
 
-	// B. Esecuzione Ricerca
+	// B. Search Execution
 	results, err := p.engine.VSearchGraph(
 		p.cfg.RAGIndex,
 		queryVec,
@@ -360,12 +361,12 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 		return nil, nil
 	}
 
-	// C. Costruzione Blocco Contesto (Raw Data)
+	// C. Context Block Construction (Raw Data)
 	var contextBuilder strings.Builder
 
 	foundRelevant := false
 	for _, res := range results {
-		// Recupero testo nodo principale
+		// Retrieve main node text
 		if float32(res.Score) < p.cfg.RAGThreshold {
 			continue
 		}
@@ -375,7 +376,7 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 			continue
 		}
 
-		// Recupero contesto Graph (Prev/Next)
+		// Retrieve Graph context (Prev/Next)
 		prevText := ""
 		if prevNodes, ok := res.Node.Connections["prev"]; ok && len(prevNodes) > 0 {
 			prevText = getTextFromMeta(prevNodes[0].VectorData.Metadata)
@@ -388,25 +389,25 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 
 		sourceName := "Unknown Source"
 		if parents, ok := res.Node.Connections["parent"]; ok && len(parents) > 0 {
-			// Il padre ha nei metadati "filename" o "source"
+			// Parent metadata contains "filename" or "source"
 			pMeta := parents[0].VectorData.Metadata
 			if name, ok := pMeta["filename"].(string); ok {
 				sourceName = name
 			} else if src, ok := pMeta["source"].(string); ok {
-				// Magari prendiamo solo il nome file dal path
+				// Extract just the filename from the path
 				sourceName = filepath.Base(src)
 			}
 		}
 
-		// Assemblaggio del blocco di testo pulito
-		// COSTRUZIONE BLOCCO STRUTTURATO
-		// Invece di incollare testo nudo, diamo una struttura XML-like o Markdown
+		// Assembly of clean text block
+		// STRUCTURED BLOCK CONSTRUCTION
+		// Instead of pasting raw text, provide an XML-like or Markdown structure
 		contextBuilder.WriteString(fmt.Sprintf("--- Document: %s ---\n", sourceName))
 
 		if prevText != "" {
 			contextBuilder.WriteString(prevText + " ")
 		}
-		contextBuilder.WriteString(mainText) // Il chunk trovato (con ** enfasi magari?)
+		contextBuilder.WriteString(mainText) // The found chunk (optionally with ** emphasis)
 		if nextText != "" {
 			contextBuilder.WriteString(" " + nextText)
 		}
@@ -419,23 +420,23 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 		return nil, nil
 	}
 
-	// D. Applicazione del Template (Prompt Engineering)
-	// Recuperiamo il template dal config o usiamo un default sicuro
+	// D. Template Application (Prompt Engineering)
+	// Retrieve template from config or use a safe default
 	promptTemplate := p.cfg.RAGSystemPrompt
 	if promptTemplate == "" {
-		// Default generico se non specificato nel YAML
+		// Generic default if not specified in YAML
 		promptTemplate = "Context information is below.\n---------------------\n{{context}}\n---------------------\nGiven the context information and not prior knowledge, answer the query.\nQuery: {{query}}"
 	}
 
-	// Sostituzione dei placeholder
+	// Placeholder substitution
 	finalContent := strings.ReplaceAll(promptTemplate, "{{context}}", contextBuilder.String())
 	finalContent = strings.ReplaceAll(finalContent, "{{query}}", queryText)
 
-	// --- DEBUG LOG (Decommenta per vedere cosa mandi all'LLM) ---
+	// --- DEBUG LOG (Uncomment to see what is sent to the LLM) ---
 	log.Printf("[RAG-DEBUG] Final Prompt:\n%s", finalContent)
 	// ------------------------------------------------------------
 
-	// E. Modifica JSON Originale
+	// E. Modify Original JSON
 	var requestData map[string]interface{}
 	if err := json.Unmarshal(originalBody, &requestData); err != nil {
 		return nil, err
@@ -446,14 +447,14 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 		return nil, nil
 	}
 
-	// Modifica l'ultimo messaggio (User) sostituendolo con il prompt arricchito
+	// Modify the last message (User) by replacing it with the enriched prompt
 	lastMsgIdx := len(messages) - 1
 	lastMsg, ok := messages[lastMsgIdx].(map[string]interface{})
 	if !ok {
 		return nil, nil
 	}
 
-	// Verifica che ci sia un campo content da sostituire
+	// Verify that there is a content field to replace
 	if _, ok := lastMsg["content"].(string); ok {
 		lastMsg["content"] = finalContent
 		messages[lastMsgIdx] = lastMsg
@@ -465,7 +466,7 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 	return json.Marshal(requestData)
 }
 
-// Helper per estrarre testo dai metadati in modo flessibile
+// Helper to flexibly extract text from metadata
 func getTextFromMeta(meta map[string]any) string {
 	if v, ok := meta["content"].(string); ok {
 		return v

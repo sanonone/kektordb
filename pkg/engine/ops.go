@@ -7,16 +7,17 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/sanonone/kektordb/pkg/core"
-	"github.com/sanonone/kektordb/pkg/core/distance"
-	"github.com/sanonone/kektordb/pkg/core/hnsw"
-	"github.com/sanonone/kektordb/pkg/core/types"
-	"github.com/sanonone/kektordb/pkg/persistence"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/sanonone/kektordb/pkg/core"
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
+	"github.com/sanonone/kektordb/pkg/core/types"
+	"github.com/sanonone/kektordb/pkg/persistence"
 )
 
 // --- KV Operations ---
@@ -229,11 +230,11 @@ func (e *Engine) VGetMany(indexName string, ids []string) ([]core.VectorData, er
 // This allows representing trees like Chunk -> Parent -> Children.
 type GraphNode struct {
 	core.VectorData
-	// Mappa delle relazioni nidificate: "child" -> [List of Nodes]
+	// Nested relationship map: "child" -> [List of Nodes]
 	Connections map[string][]GraphNode `json:"connections,omitempty"`
 }
 
-// Struttura pubblica per i risultati del grafo
+// Public structure for graph results
 type GraphSearchResult struct {
 	ID    string    `json:"id"`
 	Score float64   `json:"score"`
@@ -249,13 +250,13 @@ type GraphSearchResult struct {
 //
 // Returns a list of external IDs sorted by relevance.
 func (e *Engine) VSearch(indexName string, query []float32, k int, filter string, efSearch int, alpha float64) ([]string, error) {
-	// Chiama l'helper interno
+	// Calls internal helper
 	results, err := e.searchWithFusion(indexName, query, k, filter, efSearch, alpha)
 	if err != nil {
 		return nil, err
 	}
 
-	// Mappa solo agli ID
+	// Map only to IDs
 	ids := make([]string, len(results))
 	for i, r := range results {
 		ids[i] = r.id
@@ -276,29 +277,29 @@ func (e *Engine) VSearchGraph(indexName string, query []float32, k int, filter s
 
 	// 2. Traversal
 	for i, res := range rawResults {
-		// Recuperiamo i dati del nodo principale
+		// Retrieve root node data
 		rootData, err := e.VGet(indexName, res.id)
 		if err != nil {
-			// Se non troviamo il nodo principale (raro), mettiamo un placeholder o skip
+			// If root node is missing (rare), use placeholder or skip
 			rootData = core.VectorData{ID: res.id}
 		}
 
 		rootNode := GraphNode{VectorData: rootData}
 
-		// Se richiesto, navighiamo le relazioni
+		// If requested, navigate relationships
 		if len(relations) > 0 {
 			rootNode.Connections = make(map[string][]GraphNode)
 
-			// Per ogni percorso richiesto (es. "parent.child")
+			// For each requested path (e.g., "parent.child")
 			for _, path := range relations {
-				// Splittiamo il percorso: ["parent", "child"]
+				// Split the path: ["parent", "child"]
 				parts := strings.Split(path, ".")
 
-				// Eseguiamo la traversata ricorsiva
+				// Execute recursive traversal
 				connectedNodes := e.traversePath(indexName, res.id, parts, hydrate)
 
-				// Aggiungiamo al risultato usando il nome completo del path come chiave
-				// o l'ultimo step? Meglio usare il path completo per chiarezza nel JSON.
+				// Add to result using full path name as key
+				// or last step? Better to use full path for clarity in JSON.
 				if len(connectedNodes) > 0 {
 					rootNode.Connections[path] = connectedNodes
 				}
@@ -319,32 +320,32 @@ func (e *Engine) VSearchGraph(indexName string, query []float32, k int, filter s
 // Unlike VSearchGraph, this does not perform a vector search but starts from a known ID.
 // paths example: ["parent", "parent.child", "next"]
 func (e *Engine) VTraverse(indexName, startID string, paths []string) (*GraphNode, error) {
-	// 1. Recupera il nodo radice
+	// 1. Retrieve root node
 	rootVectorData, err := e.VGet(indexName, startID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Costruiamo il nodo radice
+	// Construct root node
 	rootNode := &GraphNode{
 		VectorData: rootVectorData,
 	}
 
-	// 2. Se non ci sono path, ritorniamo solo il nodo
+	// 2. If no paths, return only the node
 	if len(paths) == 0 {
 		return rootNode, nil
 	}
 
-	// 3. Navigazione Ricorsiva
+	// 3. Recursive Navigation
 	rootNode.Connections = make(map[string][]GraphNode)
 
 	for _, pathStr := range paths {
-		// Splitta la notazione punto (es. "parent.child" -> ["parent", "child"])
+		// Split dot notation (e.g., "parent.child" -> ["parent", "child"])
 		parts := strings.Split(pathStr, ".")
 
-		// Usa l'helper interno esistente traversePath
-		// Nota: traversePath deve essere accessibile (stesso package)
-		connectedNodes := e.traversePath(indexName, startID, parts, true) // true = hydrate sempre per traverse
+		// Use existing internal helper traversePath
+		// Note: traversePath must be accessible (same package)
+		connectedNodes := e.traversePath(indexName, startID, parts, true) // true = always hydrate for traverse
 
 		if len(connectedNodes) > 0 {
 			rootNode.Connections[pathStr] = connectedNodes
@@ -355,8 +356,8 @@ func (e *Engine) VTraverse(indexName, startID string, paths []string) (*GraphNod
 }
 
 // traversePath walks the graph recursively.
-// currentID: ID del nodo da cui partiamo
-// path: lista di relazioni da seguire (es. ["parent", "child"])
+// currentID: ID of the starting node
+// path: list of relationships to follow (e.g., ["parent", "child"])
 func (e *Engine) traversePath(indexName, currentID string, path []string, hydrate bool) []GraphNode {
 	if len(path) == 0 {
 		return nil
@@ -376,7 +377,7 @@ func (e *Engine) traversePath(indexName, currentID string, path []string, hydrat
 	if hydrate {
 		nodesData, _ = e.DB.GetVectors(indexName, targetIDs)
 	} else {
-		// Mock data con solo ID
+		// Mock data with only ID
 		for _, id := range targetIDs {
 			nodesData = append(nodesData, core.VectorData{ID: id})
 		}
@@ -389,13 +390,13 @@ func (e *Engine) traversePath(indexName, currentID string, path []string, hydrat
 		gNode := GraphNode{VectorData: nodeData}
 
 		if len(remainingPath) > 0 {
-			// Scendiamo al prossimo livello
+			// Descend to next level
 			children := e.traversePath(indexName, nodeData.ID, remainingPath, hydrate)
 			if len(children) > 0 {
 				if gNode.Connections == nil {
 					gNode.Connections = make(map[string][]GraphNode)
 				}
-				// Usiamo il resto del path come chiave (es. "child")
+				// Use remaining path as key (e.g., "child")
 				gNode.Connections[strings.Join(remainingPath, ".")] = children
 			}
 		}
@@ -405,7 +406,7 @@ func (e *Engine) traversePath(indexName, currentID string, path []string, hydrat
 	return results
 }
 
-// Contiene tutta la logica di Parsing, Filtering, Hybrid Fusion
+// Contains all Parsing, Filtering, Hybrid Fusion logic
 func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filter string, efSearch int, alpha float64) ([]fusedResult, error) {
 	idx, ok := e.DB.GetVectorIndex(indexName)
 	if !ok {
@@ -416,7 +417,7 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 		return nil, fmt.Errorf("index is not HNSW")
 	}
 
-	// Parsing Filtri
+	// Parsing Filters
 	booleanFilters, textQuery, textQueryField := parseHybridFilter(filter)
 
 	// Pre-Filtering
@@ -458,7 +459,7 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 				}
 			}
 			extID, _ := hnswIndex.GetExternalID(res.DocID)
-			finalRes = append(finalRes, fusedResult{id: extID, score: res.Score}) // Score non normalizzato qui, ma ok per text-only
+			finalRes = append(finalRes, fusedResult{id: extID, score: res.Score}) // Score not normalized here, but ok for text-only
 			count++
 		}
 		return finalRes, nil
@@ -546,34 +547,34 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 // It performs a Graph Traversal (1-hop) and Hydration in one step.
 // SELF-REPAIR: If it encounters links to non-existent nodes, it removes them in background.
 func (e *Engine) VGetConnections(indexName, sourceID, relationType string) ([]core.VectorData, error) {
-	// 1. Recupera gli ID dei link dal KV Store
+	// 1. Retrieve link IDs from KV Store
 	targetIDs, found := e.VGetLinks(sourceID, relationType)
 	if !found || len(targetIDs) == 0 {
 		return []core.VectorData{}, nil
 	}
 
-	// 2. Idratazione (Recupera dati da HNSW/Metadata)
+	// 2. Hydration (Retrieve data from HNSW/Metadata)
 	results, err := e.DB.GetVectors(indexName, targetIDs)
 	if err != nil {
 		return nil, err
 	}
 
-	// 3. Logic Self-Repair (Lazy Cleanup)
-	// Se abbiamo trovato meno vettori di quanti ID avevamo, alcuni link sono morti.
+	// 3. Self-Repair Logic (Lazy Cleanup)
+	// If we found fewer vectors than IDs, some links are dead.
 	if len(results) < len(targetIDs) {
-		// Creiamo un set degli ID trovati (vivi)
+		// Create set of found (alive) IDs
 		foundSet := make(map[string]struct{}, len(results))
 		for _, res := range results {
 			foundSet[res.ID] = struct{}{}
 		}
 
-		// Identifichiamo i morti e puliamo
+		// Identify dead IDs and cleanup
 		for _, targetID := range targetIDs {
 			if _, ok := foundSet[targetID]; !ok {
-				// Questo ID era nei link ma non nel DB. È morto.
-				// Lanciamo la pulizia in background per non rallentare la lettura corrente.
+				// This ID was in links but not in DB. It is dead.
+				// Launch background cleanup to avoid slowing down current read.
 				go func(deadID string) {
-					// VUnlink è thread-safe e gestisce il lock e l'AOF
+					// VUnlink is thread-safe and handles lock and AOF
 					_ = e.VUnlink(sourceID, deadID, relationType, "")
 				}(targetID)
 			}

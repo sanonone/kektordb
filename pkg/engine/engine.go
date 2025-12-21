@@ -178,7 +178,7 @@ func Open(opts Options) (*Engine, error) {
 func (e *Engine) Close() error {
 	var err error
 
-	// Esegue il blocco una volta sola, anche se chiamato 100 volte
+	// Executes the block only once, even if called 100 times
 	e.closeOnce.Do(func() {
 		close(e.closed)
 		e.wg.Wait() // Wait for background tasks
@@ -199,7 +199,7 @@ func (e *Engine) backgroundTasks() {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	// Usa il valore configurato o un default safe se 0
+	// Use the configured value or a safe default if 0
 	interval := e.opts.MaintenanceInterval
 	if interval <= 0 {
 		interval = 1 * time.Second

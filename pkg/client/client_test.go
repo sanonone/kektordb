@@ -216,6 +216,6 @@ func TestClientIntegration(t *testing.T) {
 			t.Log("Warning: fast and accurate search returned identical results, ef_search might not be having a strong effect.")
 		}
 
-		t.Log("✅ Test Dynamic Search Tuning (efSearch) superato")
+		t.Log("✅ Dynamic Search Tuning (efSearch) test passed")
 	})
 }

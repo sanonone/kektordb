@@ -1,11 +1,11 @@
 #ifndef KektorDBCompute_h
 #define KektorDBCompute_h
 
-#include <stddef.h> // Per il tipo size_t
+#include <stddef.h> // For size_t type
 #include <stdint.h>
 
-// Dichiarazione della nostra funzione Rust. La firma deve corrispondere
-// a quella definita in lib.rs.
+// Declaration of our Rust function. The signature must match
+// the one defined in lib.rs.
 float squared_euclidean_f32(const float *x, const float *y, size_t len);
 float dot_product_f32(const float *x, const float *y, size_t len);
 float squared_euclidean_f16(const uint16_t *x, const uint16_t *y, size_t len);
