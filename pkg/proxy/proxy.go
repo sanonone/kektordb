@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
+	"github.com/sanonone/kektordb/pkg/engine"
+	"github.com/sanonone/kektordb/pkg/llm"
 	"io"
 	"log"
 	"net/http"
@@ -13,10 +17,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/sanonone/kektordb/pkg/core/distance"
-	"github.com/sanonone/kektordb/pkg/core/hnsw"
-	"github.com/sanonone/kektordb/pkg/engine"
 )
 
 // AIProxy sits between the client and the LLM.
@@ -24,6 +24,7 @@ type AIProxy struct {
 	cfg          Config
 	engine       *engine.Engine // Access to KektorDB for checks
 	reverseProxy *httputil.ReverseProxy
+	llmClient    llm.Client
 }
 
 // Structures for manipulating Chat request JSON
@@ -44,11 +45,20 @@ func NewAIProxy(cfg Config, dbEngine *engine.Engine) (*AIProxy, error) {
 		return nil, fmt.Errorf("invalid target URL: %w", err)
 	}
 
-	return &AIProxy{
+	p := &AIProxy{
 		cfg:          cfg,
 		engine:       dbEngine,
 		reverseProxy: httputil.NewSingleHostReverseProxy(target),
-	}, nil
+	}
+
+	// Inizializza LLM Client solo se HyDe è attivo
+	// (Risparmiamo risorse se l'utente non lo usa)
+	if cfg.RAGUseHyDe {
+		log.Printf("[Proxy] HyDe Enabled. Initializing LLM client (URL: %s, Model: %s)", cfg.LLM.BaseURL, cfg.LLM.Model)
+		p.llmClient = llm.NewClient(cfg.LLM)
+	}
+
+	return p, nil
 }
 
 // ServeHTTP implements the http.Handler interface.
@@ -69,8 +79,30 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var promptVec []float32
 	if promptText != "" && (p.cfg.FirewallEnabled || p.cfg.CacheEnabled || p.cfg.RAGEnabled) {
-		// Calculate embedding once
-		v, err := p.cfg.Embedder.Embed(promptText)
+
+		textToEmbed := promptText // Default: embedda la domanda utente
+
+		// SE HyDe è attivo, prova a "sognare" una risposta
+		if p.cfg.RAGUseHyDe && p.llmClient != nil {
+			// Nota: Usiamo un prompt di sistema ottimizzato per HyDe
+			sysPrompt := p.cfg.RAGHyDeSystemPrompt
+			if sysPrompt == "" {
+				sysPrompt = "You are a helpful expert. Given a user question, generate a generic, hypothetical answer passage. Write in the same language as the question."
+			}
+
+			log.Printf("[HyDe] Generating hypothetical answer for: '%s'...", promptText)
+			hypothetical, err := p.llmClient.Chat(sysPrompt, promptText)
+
+			if err == nil && hypothetical != "" {
+				textToEmbed = hypothetical
+				log.Printf("[HyDe] Generated (first 50 chars): %s...", strings.ReplaceAll(hypothetical[:min(50, len(hypothetical))], "\n", " "))
+			} else {
+				log.Printf("[HyDe] Generation failed or empty: %v. Fallback to original prompt.", err)
+			}
+		}
+
+		// Calcola Embedding (del testo originale O di quello ipotetico)
+		v, err := p.cfg.Embedder.Embed(textToEmbed)
 		if err == nil {
 			promptVec = v
 		} else {

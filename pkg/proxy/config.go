@@ -1,9 +1,9 @@
 package proxy
 
 import (
-	"time"
-
 	"github.com/sanonone/kektordb/pkg/embeddings"
+	"github.com/sanonone/kektordb/pkg/llm"
+	"time"
 )
 
 type Config struct {
@@ -17,6 +17,9 @@ type Config struct {
 	EmbedderModel   string              `yaml:"embedder_model"`
 	EmbedderTimeout time.Duration       `yaml:"embedder_timeout"`
 	Embedder        embeddings.Embedder `yaml:"-" json:"-"`
+
+	// --- LLM Settings ---
+	LLM llm.Config `yaml:"llm"`
 
 	// Firewall (Prompt Guard)
 	FirewallEnabled   bool    `yaml:"firewall_enabled"`
@@ -34,13 +37,15 @@ type Config struct {
 	CacheDeleteThreshold float64       `yaml:"cache_delete_threshold"`
 
 	// --- RAG Injection Settings ---
-	RAGEnabled      bool    `yaml:"rag_enabled"`
-	RAGIndex        string  `yaml:"rag_index"`        // The index where you can search for documents
-	RAGTopK         int     `yaml:"rag_top_k"`        // How many chunks to retrieve (e.g. 3 or 5)
-	RAGEfSearch     int     `yaml:"rag_ef_search"`    // HNSW search precision (default 100)
-	RAGThreshold    float32 `yaml:"rag_threshold"`    // Maximum distance to consider a chunk useful
-	RAGUseHybrid    bool    `yaml:"rag_use_hybrid"`   // BM25
-	RAGHybridAlpha  float64 `yaml:"rag_hybrid_alpha"` // 0.5 default alpha
-	RAGUseGraph     bool    `yaml:"rag_use_graph"`    // prev/next
-	RAGSystemPrompt string  `yaml:"rag_system_prompt"`
+	RAGEnabled          bool    `yaml:"rag_enabled"`
+	RAGIndex            string  `yaml:"rag_index"`        // The index where you can search for documents
+	RAGTopK             int     `yaml:"rag_top_k"`        // How many chunks to retrieve (e.g. 3 or 5)
+	RAGEfSearch         int     `yaml:"rag_ef_search"`    // HNSW search precision (default 100)
+	RAGThreshold        float32 `yaml:"rag_threshold"`    // Maximum distance to consider a chunk useful
+	RAGUseHybrid        bool    `yaml:"rag_use_hybrid"`   // BM25
+	RAGHybridAlpha      float64 `yaml:"rag_hybrid_alpha"` // 0.5 default alpha
+	RAGUseGraph         bool    `yaml:"rag_use_graph"`    // prev/next
+	RAGSystemPrompt     string  `yaml:"rag_system_prompt"`
+	RAGUseHyDe          bool    `yaml:"rag_use_hyde"`
+	RAGHyDeSystemPrompt string  `yaml:"rag_hyde_system_prompt"`
 }

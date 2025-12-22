@@ -16,6 +16,7 @@ rag_threshold: 0.6         # Ignore chunks with similarity score < 0.6
 rag_use_hybrid: false # Cerca anche per parole chiave
 rag_hybrid_alpha: 0.7      # 70% Vettore, 30% Keywords
 rag_use_graph: true        # Recupera automaticamente contesto prev/next
+rag_use_hyde: true
 # System Prompt Template
 # Usa {{context}} per iniettare i dati trovati e {{query}} per la domanda originale.
 # Il simbolo '|' permette stringhe multilinea in YAML.
