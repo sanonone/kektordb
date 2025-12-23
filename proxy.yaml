@@ -10,9 +10,9 @@ embedder_timeout: 60s
 # RAG Automatico
 rag_enabled: true
 rag_index: "knowledge_base"  # Deve coincidere con l'indice popolato dai Vectorizer!
-rag_top_k: 6
+rag_top_k: 4
 # RAG usa SIMILARITÀ (Higher is Better, 0.0-1.0)
-rag_threshold: 0.6         # Ignore chunks with similarity score < 0.6
+rag_threshold: 0.7         # Ignore chunks with similarity score < 0.6
 rag_use_hybrid: false # Cerca anche per parole chiave
 rag_hybrid_alpha: 0.7      # 70% Vettore, 30% Keywords
 rag_use_graph: true        # Recupera automaticamente contesto prev/next
@@ -22,6 +22,8 @@ rag_use_hyde: true
 # Il simbolo '|' permette stringhe multilinea in YAML.
 rag_system_prompt: |
   You are an expert technical assistant. You have access to a local knowledge base.
+
+  IMPORTANT: Answer in the same language as the user's question.
   
   CONTEXT DATA:
   {{context}}
@@ -55,3 +57,7 @@ max_cache_items: 100
 
 cache_vacuum_interval: "2s" 
 cache_delete_threshold: 0.0 # 0.0 = Pulisci sempre se c'è anche solo 1 cancellazione
+
+llm:
+  base_url: "http://localhost:11434/v1"
+  model: "gemma3:4b"

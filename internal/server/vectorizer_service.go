@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sanonone/kektordb/pkg/embeddings"
+	"github.com/sanonone/kektordb/pkg/llm"
 	"github.com/sanonone/kektordb/pkg/rag"
 )
 
@@ -91,7 +92,9 @@ func NewVectorizerService(server *Server) (*VectorizerService, error) {
 
 			MetadataTemplate: cfg.MetadataTemplate,
 
-			GraphEnabled: cfg.GraphEnabled,
+			GraphEnabled:          cfg.GraphEnabled,
+			GraphEntityExtraction: cfg.GraphEntityExtraction,
+			LLMConfig:             cfg.LLM,
 
 			IndexMetric:         idxMetric,
 			IndexPrecision:      idxPrec,
@@ -126,8 +129,21 @@ func NewVectorizerService(server *Server) (*VectorizerService, error) {
 			)
 		}
 
+		// --- Init Client LLM ---
+		var llmClient llm.Client
+		if ragConfig.GraphEntityExtraction {
+			// Se l'utente non ha configurato l'URL nel blocco LLM, usiamo un default sensato o fallback
+			if ragConfig.LLMConfig.BaseURL == "" {
+				// Fallback ai default di pkg/llm se la sezione manca
+				ragConfig.LLMConfig = llm.DefaultConfig()
+			}
+
+			log.Printf("[Vectorizer] Enabling Entity Extraction using LLM (%s)", ragConfig.LLMConfig.BaseURL)
+			llmClient = llm.NewClient(ragConfig.LLMConfig)
+		}
+
 		// 5. Create Pipeline
-		pipeline := rag.NewPipeline(ragConfig, storeAdapter, embedder)
+		pipeline := rag.NewPipeline(ragConfig, storeAdapter, embedder, llmClient)
 
 		service.pipelines = append(service.pipelines, pipeline)
 		log.Printf("RAG Pipeline '%s' configured (Mode: %s, Source: %s)", cfg.Name, ragConfig.ChunkingStrategy, cfg.Source.Path)

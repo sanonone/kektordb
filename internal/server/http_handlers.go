@@ -838,7 +838,7 @@ func (s *Server) handleUIExplore(w http.ResponseWriter, r *http.Request) {
 		gNode := engine.GraphNode{VectorData: vData}
 		gNode.Connections = make(map[string][]engine.GraphNode)
 
-		relationsToCheck := []string{"next", "prev", "parent", "child"}
+		relationsToCheck := []string{"next", "prev", "parent", "child", "mentions", "mentioned_in"}
 
 		// FIX 3: Rimossa variabile inutilizzata 'hasRelations'
 

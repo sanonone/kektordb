@@ -12,20 +12,28 @@ import (
 
 	"github.com/sanonone/kektordb/pkg/core/types"
 	"github.com/sanonone/kektordb/pkg/embeddings"
+	"github.com/sanonone/kektordb/pkg/llm"
 )
+
+type extractionJob struct {
+	ChunkID string
+	Text    string
+}
 
 // Pipeline orchestrates the ingestion process: Load -> Split -> Embed -> Store.
 type Pipeline struct {
-	cfg      Config
-	loader   Loader
-	splitter Splitter
-	embedder embeddings.Embedder
-	store    Store
+	cfg       Config
+	loader    Loader
+	splitter  Splitter
+	embedder  embeddings.Embedder
+	llmClient llm.Client
+	store     Store
 
 	stopCh chan struct{}
 
 	// isScanning is 1 if a scan is in progress, 0 otherwise
-	isScanning int32
+	isScanning     int32
+	extractionChan chan extractionJob
 }
 
 // fileState tracks the state of the last file indexing
@@ -36,14 +44,16 @@ type fileState struct {
 
 // NewPipeline creates a ready-to-run pipeline.
 // We inject the Embedder to allow testing with mocks or swapping providers.
-func NewPipeline(cfg Config, store Store, embedder embeddings.Embedder) *Pipeline {
+func NewPipeline(cfg Config, store Store, embedder embeddings.Embedder, llmClient llm.Client) *Pipeline {
 	return &Pipeline{
-		cfg:      cfg,
-		loader:   NewAutoLoader(),
-		splitter: NewSplitterFactory(cfg),
-		embedder: embedder,
-		store:    store,
-		stopCh:   make(chan struct{}),
+		cfg:            cfg,
+		loader:         NewAutoLoader(),
+		splitter:       NewSplitterFactory(cfg),
+		embedder:       embedder,
+		llmClient:      llmClient,
+		store:          store,
+		stopCh:         make(chan struct{}),
+		extractionChan: make(chan extractionJob, 100),
 	}
 }
 
@@ -51,6 +61,20 @@ func NewPipeline(cfg Config, store Store, embedder embeddings.Embedder) *Pipelin
 func (p *Pipeline) Start() {
 	log.Printf("[RAG] Starting pipeline '%s' watching '%s'", p.cfg.Name, p.cfg.SourcePath)
 	go p.loop()
+
+	if p.cfg.GraphEntityExtraction {
+		go p.extractionWorker()
+	}
+}
+
+func (p *Pipeline) extractionWorker() {
+	for job := range p.extractionChan {
+		// Chiama la funzione di estrazione (quella con l'idempotenza che abbiamo scritto prima)
+		if err := p.extractAndLinkEntities(job.ChunkID, job.Text); err != nil {
+			// Logghiamo solo warning per non intasare
+			log.Printf("[RAG-Background] Extraction failed for %s: %v", job.ChunkID, err)
+		}
+	}
 }
 
 // Stop halts the background watcher.
@@ -211,6 +235,10 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 		return nil
 	}
 
+	// Variabili per l'estrazione Parent-Level
+	var fullTextPreview strings.Builder
+	const maxPreviewChars = 6000 // Abbastanza per dare contesto all'LLM
+
 	// 3. Embed & Prepare Batch
 	var batch []types.BatchObject
 	modTimeStr := info.ModTime().Format(time.RFC3339)
@@ -225,6 +253,12 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 	parentID := fmt.Sprintf("doc:%s", path)
 
 	for i, chunkText := range chunks {
+		// --- Accumula testo per l'estrazione sul Parent ---
+		if fullTextPreview.Len() < maxPreviewChars {
+			fullTextPreview.WriteString(chunkText)
+			fullTextPreview.WriteString("\n")
+		}
+
 		// Embed
 		vec, err := p.embedder.Embed(chunkText)
 		if err != nil {
@@ -294,6 +328,7 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 			if err != nil {
 				log.Printf("[RAG] Link parent error: %v", err)
 			}
+
 		}
 	}
 
@@ -327,6 +362,25 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 			Vector:   avgVector,
 			Metadata: docMeta,
 		})
+
+		// === NUOVA LOGICA: ESTRAZIONE SUL PARENT (Una volta per file) ===
+		if p.cfg.GraphEntityExtraction && p.llmClient != nil {
+			// Usiamo il worker asincrono per non bloccare, ma lavoriamo sul PARENT ID
+			// Il testo passato è la preview accumulata (i primi X caratteri del file)
+
+			jobText := fullTextPreview.String()
+
+			// Se il testo è troppo breve, magari non vale la pena? (Opzionale)
+			if len(jobText) > 50 {
+				select {
+				case p.extractionChan <- extractionJob{ChunkID: parentID, Text: jobText}:
+					// Job accodato
+				default:
+					log.Printf("[RAG] Extraction queue full, skipping entity extraction for doc %s", parentID)
+				}
+			}
+		}
+
 	}
 
 	if len(batch) == 0 {
@@ -401,4 +455,107 @@ func (p *Pipeline) Retrieve(text string, k int) ([]string, error) {
 // GetEmbedder returns the embedder instance used by this pipeline.
 func (p *Pipeline) GetEmbedder() embeddings.Embedder {
 	return p.embedder
+}
+
+// NUOVA FUNZIONE: Estrae entità e crea nodi/link
+func (p *Pipeline) extractAndLinkEntities(chunkID, text string) error {
+	// 1. Costruisci il prompt
+	sysPrompt := "You are an entity extraction system. Identify the top 3-5 key entities (Concepts, Projects, Technologies, People) in the text. Return a JSON array of strings. Example: [\"Project Alpha\", \"Golang\"]. Return ONLY JSON."
+
+	if p.cfg.EntityExtractionPrompt != "" {
+		sysPrompt = p.cfg.EntityExtractionPrompt
+	}
+
+	// 2. Chiama LLM
+	jsonResponse, err := p.llmClient.Chat(sysPrompt, text)
+	if err != nil {
+		return err
+	}
+
+	// 3. Pulisci la risposta
+	jsonResponse = strings.ReplaceAll(jsonResponse, "```json", "")
+	jsonResponse = strings.ReplaceAll(jsonResponse, "```", "")
+	jsonResponse = strings.TrimSpace(jsonResponse)
+
+	// 4. Parse JSON
+	var entities []string
+	if err := json.Unmarshal([]byte(jsonResponse), &entities); err != nil {
+		// Logghiamo ma non blocchiamo: gli LLM piccoli a volte sbagliano il JSON
+		return fmt.Errorf("llm json error: %v", err)
+	}
+
+	if len(entities) == 0 {
+		return nil
+	}
+
+	// --- FASE DI FILTRAGGIO (Idempotenza) ---
+
+	// Mappa per tenere traccia degli ID e dei nomi originali
+	// Map[EntityID] -> OriginalName
+	candidates := make(map[string]string)
+	var candidateIDs []string
+
+	for _, entityName := range entities {
+		safeName := strings.ToLower(strings.TrimSpace(entityName))
+		safeName = strings.ReplaceAll(safeName, " ", "_")
+		// Pulizia base caratteri illegali per ID se necessario
+		safeName = strings.ReplaceAll(safeName, "'", "")
+		safeName = strings.ReplaceAll(safeName, "\"", "")
+
+		entityID := fmt.Sprintf("entity:%s", safeName)
+
+		// Linkiamo SUBITO (VLink è safe e gestisce i duplicati internamente)
+		if err := p.store.Link(chunkID, entityID, "mentions", "mentioned_in"); err != nil {
+			log.Printf("[RAG] Failed to link entity %s: %v", entityName, err)
+		}
+
+		candidates[entityID] = entityName
+		candidateIDs = append(candidateIDs, entityID)
+	}
+
+	// Controlliamo quali entità esistono già nel DB
+	// GetMany ritorna solo quelli trovati.
+	existingItems, err := p.store.GetMany(p.cfg.IndexName, candidateIDs)
+	if err != nil {
+		return err
+	}
+
+	// Creiamo un Set degli esistenti
+	existingSet := make(map[string]struct{})
+	for _, item := range existingItems {
+		existingSet[item.ID] = struct{}{}
+	}
+
+	// --- CREAZIONE BATCH (Solo Nuovi) ---
+	var entityBatch []types.BatchObject
+
+	for entityID, entityName := range candidates {
+		// Se esiste già, saltiamo la creazione del nodo
+		if _, exists := existingSet[entityID]; exists {
+			continue
+		}
+
+		// Se è nuovo, calcoliamo il vettore e lo aggiungiamo
+		vec, err := p.embedder.Embed(entityName)
+		if err != nil {
+			continue
+		}
+
+		entityBatch = append(entityBatch, types.BatchObject{
+			Id:     entityID,
+			Vector: vec,
+			Metadata: map[string]interface{}{
+				"type":    "entity",
+				"name":    entityName,
+				"content": fmt.Sprintf("Entity: %s", entityName),
+			},
+		})
+	}
+
+	// 6. Salva i nodi entità nel DB (Se ce ne sono di nuovi)
+	if len(entityBatch) > 0 {
+		return p.store.AddBatch(p.cfg.IndexName, entityBatch)
+	}
+
+	return nil
 }

@@ -1,60 +1,5 @@
 vectorizers:
-  # 1. Documentazione Generale (Markdown/PDF)
-  # Usa strategia "recursive" (default intelligente)
-  - name: "docs_kektor_internal"
-    kektor_index: "knowledge_base"
-    schedule: "60s"
-    source:
-      type: "filesystem"
-      path: "/home/dash/myGoProg/kektordb/internal/"
-    include_patterns: ["*.go", "*.md"] # Processa solo codice Go e Markdown
-    exclude_patterns: ["*_test.go"]    # Ignora i test
-    index_config:
-      metric: "cosine"
-      precision: "float32"       # <--- Risparmia 75% RAM!
-      m: 16                   # <--- Migliore qualità grafo
-      ef_construction: 200    # <--- Costruzione più lenta ma precisa
-      text_language: "english" # <--- Stemming italiano per la ricerca ibrida
-    embedder:
-      type: "ollama_api"
-      url: "http://localhost:11434/api/embeddings"
-      model: "nomic-embed-text"
-      timeout: "120s" # Timeout lungo per file grossi
-    document_processor:
-      chunking_strategy: "code" 
-      chunk_size: 500
-      chunk_overlap: 50
-    metadata_template:
-      source_file: "{{file_path}}"
-      category: "internal_code"
-    graph_enabled: true
-
-  # 2. Documentazione Core (Codice)
-  # Usa strategia "code" (ottimizzata per tagliare su funzioni/tipi)
-  - name: "docs_kektor_pkg"
-    kektor_index: "knowledge_base"
-    schedule: "60s"
-    source:
-      type: "filesystem"
-      path: "/home/dash/myGoProg/kektordb/pkg/"
-    include_patterns: ["*.go"]
-    index_config:
-      metric: "cosine"
-      precision: "float32"       # <--- Risparmia 75% RAM!
-      m: 32                   # <--- Migliore qualità grafo
-      ef_construction: 300    # <--- Costruzione più lenta ma precisa
-      text_language: "english" # <--- Stemming italiano per la ricerca ibrida
-    embedder:
-      type: "ollama_api"
-      url: "http://localhost:11434/api/embeddings"
-      model: "nomic-embed-text"
-    document_processor:
-      chunking_strategy: "code" # <--- Strategia specifica per codice
-      chunk_size: 800
-    metadata_template:
-      source_file: "{{file_path}}"
-      category: "core_logic"
-    graph_enabled: true
+ 
 
   # 3. Appunti Obsidian / Markdown
   # Usa strategia "markdown" (taglia sugli header ##)
@@ -69,9 +14,9 @@ vectorizers:
     index_config:
       metric: "cosine"
       precision: "float32"       # <--- Risparmia 75% RAM!
-      m: 32                   # <--- Migliore qualità grafo
-      ef_construction: 400    # <--- Costruzione più lenta ma precisa
-      text_language: "english" # <--- Stemming italiano per la ricerca ibrida
+      m: 16                   # <--- Migliore qualità grafo
+      ef_construction: 200    # <--- Costruzione più lenta ma precisa
+      text_language: "italian" # <--- Stemming italiano per la ricerca ibrida
     embedder:
       type: "ollama_api"
       url: "http://localhost:11434/api/embeddings"
@@ -83,4 +28,9 @@ vectorizers:
       source_file: "{{file_path}}"
       category: "study_notes"
     graph_enabled: true
-
+    graph_entity_extraction: true
+    llm:
+      base_url: "http://localhost:11434/v1"
+      model: "gemma3:4b" # O llama3, mistral, gpt-4o-mini...
+      temperature: 0.0  # Meglio deterministico per estrarre dati
+      

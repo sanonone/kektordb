@@ -9,6 +9,7 @@ package server
 
 import (
 	"fmt"
+	"github.com/sanonone/kektordb/pkg/llm"
 	"gopkg.in/yaml.v3"
 	"os"
 	"strings"
@@ -24,17 +25,19 @@ type Config struct {
 // Each VectorizerConfig corresponds to one background worker that monitors a source
 // and syncs its content into a specified KektorDB index.
 type VectorizerConfig struct {
-	Name             string              `yaml:"name"`
-	KektorIndex      string              `yaml:"kektor_index"`
-	Schedule         string              `yaml:"schedule"`
-	Source           SourceConfig        `yaml:"source"`
-	Embedder         EmbedderConfig      `yaml:"embedder"`
-	DocProcessor     DocProcessorConfig  `yaml:"document_processor"`
-	MetadataTemplate map[string]string   `yaml:"metadata_template"`
-	IncludePatterns  []string            `yaml:"include_patterns"`
-	ExcludePatterns  []string            `yaml:"exclude_patterns"`
-	IndexConfig      IndexCreationConfig `yaml:"index_config"`
-	GraphEnabled     bool                `yaml:"graph_enabled"`
+	Name                  string              `yaml:"name"`
+	KektorIndex           string              `yaml:"kektor_index"`
+	Schedule              string              `yaml:"schedule"`
+	Source                SourceConfig        `yaml:"source"`
+	Embedder              EmbedderConfig      `yaml:"embedder"`
+	LLM                   llm.Config          `yaml:"llm"`
+	DocProcessor          DocProcessorConfig  `yaml:"document_processor"`
+	MetadataTemplate      map[string]string   `yaml:"metadata_template"`
+	IncludePatterns       []string            `yaml:"include_patterns"`
+	ExcludePatterns       []string            `yaml:"exclude_patterns"`
+	IndexConfig           IndexCreationConfig `yaml:"index_config"`
+	GraphEnabled          bool                `yaml:"graph_enabled"`
+	GraphEntityExtraction bool                `yaml:"graph_entity_extraction"`
 }
 
 type IndexCreationConfig struct {

@@ -1,6 +1,9 @@
 package rag
 
-import "time"
+import (
+	"github.com/sanonone/kektordb/pkg/llm"
+	"time"
+)
 
 // Config holds all parameters to set up a RAG pipeline.
 type Config struct {
@@ -32,9 +35,12 @@ type Config struct {
 	// --- Metadata ---
 	MetadataTemplate map[string]string
 
+	LLMConfig llm.Config
 	// Graph Settings
 	// If true, automatically creates 'next' and 'prev' links between sequential chunks.
-	GraphEnabled bool `json:"graph_enabled"`
+	GraphEnabled           bool `json:"graph_enabled"`
+	GraphEntityExtraction  bool
+	EntityExtractionPrompt string
 
 	IndexMetric         string
 	IndexPrecision      string

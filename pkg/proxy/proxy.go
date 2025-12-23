@@ -369,7 +369,7 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 
 	var relations []string
 	if p.cfg.RAGUseGraph {
-		relations = []string{"prev", "next", "parent"}
+		relations = []string{"prev", "next", "parent", "mentions", "mentioned_in"}
 	}
 
 	efSearch := p.cfg.RAGEfSearch
@@ -397,6 +397,9 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 	var contextBuilder strings.Builder
 
 	foundRelevant := false
+
+	seenContent := make(map[string]struct{})
+
 	for _, res := range results {
 		// Retrieve main node text
 		if float32(res.Score) < p.cfg.RAGThreshold {
@@ -431,10 +434,32 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 			}
 		}
 
+		var topics []string
+		if entityNodes, ok := res.Node.Connections["mentions"]; ok {
+			for _, en := range entityNodes {
+				// Cerchiamo il nome dell'entità nei metadati
+				if name, ok := en.VectorData.Metadata["name"].(string); ok {
+					topics = append(topics, name)
+				} else if content, ok := en.VectorData.Metadata["content"].(string); ok {
+					topics = append(topics, content)
+				}
+			}
+		}
+
 		// Assembly of clean text block
 		// STRUCTURED BLOCK CONSTRUCTION
 		// Instead of pasting raw text, provide an XML-like or Markdown structure
+		blockHash := sourceName + mainText
+		if _, exists := seenContent[blockHash]; exists {
+			continue
+		}
+		seenContent[blockHash] = struct{}{}
+
 		contextBuilder.WriteString(fmt.Sprintf("--- Document: %s ---\n", sourceName))
+
+		if len(topics) > 0 {
+			contextBuilder.WriteString(fmt.Sprintf("[Related Topics: %s]\n", strings.Join(topics, ", ")))
+		}
 
 		if prevText != "" {
 			contextBuilder.WriteString(prevText + " ")

@@ -270,7 +270,11 @@
             <button onclick="exploreGraph()" style="background: var(--card-bg); border: 1px solid var(--accent); color: var(--accent); padding: 0 15px;">
                 Explore
             </button>
+            <label style="display: flex; align-items: center; gap: 5px; font-size: 0.9rem; color: var(--text-muted); margin-left: 15px;">
+            <input type="checkbox" id="hide-chunks" onchange="refreshGraph()"> Simplify View
+        </label>
         </div>
+        
     </div>
 
     <div id="content-area">
@@ -445,56 +449,16 @@
         });
     }
 
-    // --- 4. Graph Renderer (Vis.js) ---
     function renderGraph(results) {
         const container = document.getElementById('graph-view');
+        const hideChunks = document.getElementById('hide-chunks')?.checked || false; 
         
-        // Prepare Data
-        const nodes = new Map(); // Use Map to avoid duplicates
+        const nodes = new Map();
         const edges = [];
 
         results.forEach((res, index) => {
-            const mainId = res.node.id;
-            
-            // Add Main Node (Blue)
-            if (!nodes.has(mainId)) {
-                nodes.set(mainId, {
-                    id: mainId,
-                    label: getLabel(res.node.metadata, "Result " + (index+1)),
-                    group: 'main',
-                    title: res.node.metadata?.content || "Main Result"
-                });
-            }
-
-            // Add Related Nodes
-            if (res.node.connections) {
-                for (const [relType, relNodes] of Object.entries(res.node.connections)) {
-                    relNodes.forEach(rel => {
-                        // Add Linked Node (Gray/Orange)
-                        if (!nodes.has(rel.id)) {
-                            let group = 'context';
-                            if (relType === 'parent') group = 'parent';
-                            
-                            nodes.set(rel.id, {
-                                id: rel.id,
-                                label: getLabel(rel.metadata, relType),
-                                group: group,
-                                title: rel.metadata?.content || "Context"
-                            });
-                        }
-
-                        // Add Edge
-                        // Avoid duplicate edges? Vis.js handles multiple edges but we want clean graph
-                        edges.push({
-                            from: mainId,
-                            to: rel.id,
-                            label: relType,
-                            arrows: 'to',
-                            color: { color: '#64748b' }
-                        });
-                    });
-                }
-            }
+            // Passiamo true come ultimo argomento per dire "Questo è un risultato principale (Main)"
+            processNode(res.node, nodes, edges, hideChunks, true);
         });
 
         const data = {
@@ -506,27 +470,29 @@
             nodes: {
                 shape: 'dot',
                 size: 16,
-                font: { color: '#ffffff' },
+                font: { color: '#ffffff', size: 14, strokeWidth: 2, strokeColor: '#000' },
                 borderWidth: 2
             },
             groups: {
-                main: { color: { background: '#3b82f6', border: '#2563eb' }, size: 25 },
-                parent: { color: { background: '#f59e0b', border: '#d97706' }, size: 20 },
-                context: { color: { background: '#475569', border: '#334155' }, size: 12 }
+                main: { color: { background: '#3b82f6', border: '#2563eb' }, size: 25 }, // Blu
+                parent: { color: { background: '#f59e0b', border: '#d97706' }, size: 20 }, // Arancio
+                context: { color: { background: '#475569', border: '#334155' }, size: 12 }, // Grigio
+                entity: { color: { background: '#8b5cf6', border: '#7c3aed' }, size: 30, shape: 'diamond' } // Viola
             },
             edges: {
-                font: { color: '#94a3b8', size: 10, align: 'middle' },
+                font: { color: '#cbd5e1', size: 10, align: 'middle', background: 'rgba(15, 23, 42, 0.7)' },
+                color: { color: '#64748b' },
                 smooth: { type: 'continuous' }
             },
             physics: {
                 stabilization: false,
                 barnesHut: {
-                    gravitationalConstant: -2000,
+                    gravitationalConstant: -3000, // Più repulsione per evitare sovrapposizioni
                     springConstant: 0.04,
-                    springLength: 95
+                    springLength: 120
                 }
             },
-            layout: { randomSeed: 2 } // Keep consistent layout
+            layout: { randomSeed: 2 }
         };
 
         if (network) {
@@ -555,53 +521,145 @@
     }
 
     async function exploreGraph() {
-    if (!selectedIndex) return alert("Please select an index first.");
-    
-    // Get user defined limit
-    const limitInput = document.getElementById('explore-limit');
-    let limit = parseInt(limitInput.value) || 200;
+        if (!selectedIndex) return alert("Please select an index first.");
+        
+        // Get user defined limit
+        const limitInput = document.getElementById('explore-limit');
+        let limit = parseInt(limitInput.value) || 200;
 
-    // Optional: Warn user if limit is high
-    if (limit > 1000) {
-        if(!confirm(`Loading ${limit} nodes might slow down or crash your browser. Continue?`)) return;
-    }
-
-    switchView('graph');
-    const container = document.getElementById('graph-view');
-    if(network) network.destroy();
-    
-    container.innerHTML = `<div class='loading' style='color:white; padding-top:100px;'>
-        Loading graph structure (${limit} nodes)...<br>
-        <span style="font-size:0.8em; opacity:0.7">This puts heavy load on the browser, not the server.</span>
-    </div>`;
-
-    try {
-        const res = await fetch('/ui/explore', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                index_name: selectedIndex,
-                limit: limit 
-            })
-        });
-
-        const data = await res.json();
-        if (data.error) {
-            container.innerHTML = `<div style="color: #ef4444; text-align: center; margin-top: 50px;">Error: ${data.error}</div>`;
-            return;
+        if (limit > 1000) {
+            if(!confirm(`Loading ${limit} nodes might slow down or crash your browser. Continue?`)) return;
         }
 
-        const results = data.results || [];
-        const formattedResults = results.map(n => ({ node: n }));
+        switchView('graph');
+        const container = document.getElementById('graph-view');
         
-        container.innerHTML = "";
-        renderGraph(formattedResults);
+        // --- FIX: Reset network instance properly ---
+        if(network) {
+            network.destroy();
+            network = null; // Fondamentale: rimuove il riferimento all'oggetto distrutto
+        }
+        // --------------------------------------------
+        
+        container.innerHTML = `<div class='loading' style='color:white; padding-top:100px;'>
+            Loading graph structure (${limit} nodes)...<br>
+            <span style="font-size:0.8em; opacity:0.7">This puts heavy load on the browser, not the server.</span>
+        </div>`;
 
-    } catch (e) {
-        console.error(e);
-        container.innerHTML = `<div style="color: #ef4444; text-align: center;">Explore failed: ${e.message}</div>`;
+        try {
+            const res = await fetch('/ui/explore', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    index_name: selectedIndex,
+                    limit: limit 
+                })
+            });
+
+            const data = await res.json();
+            if (data.error) {
+                container.innerHTML = `<div style="color: #ef4444; text-align: center; margin-top: 50px;">Error: ${data.error}</div>`;
+                return;
+            }
+
+            const results = data.results || [];
+            // Adatta la struttura per renderGraph
+            const formattedResults = results.map(n => ({ node: n }));
+            
+            container.innerHTML = "";
+            renderGraph(formattedResults);
+
+        } catch (e) {
+            console.error(e);
+            container.innerHTML = `<div style="color: #ef4444; text-align: center;">Explore failed: ${e.message}</div>`;
+        }
     }
-}
+
+    function refreshGraph() {
+        if (currentResults.length > 0) {
+            renderGraph(currentResults);
+        }
+    }
+
+    // Aggiunto parametro isMainNode (default false)
+    function processNode(node, nodesMap, edgesArr, simplified, isMainNode = false) {
+        
+        // Helper per capire il tipo
+        const isEntity = node.id.startsWith('entity:') || node.metadata?.type === 'entity';
+        const isDoc = node.metadata?.type === 'document' || node.connections?.['child']; 
+        const isChunk = !isEntity && !isDoc;
+
+        // --- FIX 1: Non nascondere se è Main Node ---
+        if (simplified && isChunk && !isMainNode) return; 
+
+        // Aggiungi il nodo corrente
+        if (!nodesMap.has(node.id)) {
+            let group = 'context'; 
+            if (isDoc) group = 'parent';
+            if (isEntity) group = 'entity';
+            // Se è il nodo principale passato dalla ricerca, forza il gruppo Main (Blu)
+            if (isMainNode) group = 'main'; 
+
+            nodesMap.set(node.id, {
+                id: node.id,
+                label: getLabel(node.metadata, isEntity ? node.id : "Node"),
+                group: group,
+                title: node.metadata?.content || node.id
+            });
+        }
+
+        // Processa connessioni (Ricorsione limitata a 1 livello per visualizzazione)
+        if (node.connections) {
+            for (const [relType, relNodes] of Object.entries(node.connections)) {
+                
+                // --- FIX 2: Filtro Archi in modalità Semplificata ---
+                // Se semplificato, nascondi prev/next (rumore) ma tieni parent/child/mentions
+                if (simplified) {
+                    if (relType === 'next' || relType === 'prev') continue;
+                }
+
+                relNodes.forEach(rel => {
+                    // Logica ricorsiva leggera: aggiungiamo i nodi collegati
+                    // Se siamo in simplified, dobbiamo stare attenti a non aggiungere chunk "inutili"
+                    // Ma se il nodo corrente (node) esiste, mostriamo i suoi collegamenti strutturali.
+                    
+                    const relIsEntity = rel.id.startsWith('entity:') || rel.metadata?.type === 'entity';
+                    const relIsDoc = rel.metadata?.type === 'document';
+                    
+                    // Se semplificato, aggiungi il target SOLO se non è un chunk
+                    // ECCEZIONE: Se il link è 'child' (Doc->Chunk), lo mostriamo? 
+                    // No, in simplify vogliamo vedere Doc <-> Entity.
+                    const relIsChunk = !relIsEntity && !relIsDoc;
+                    if (simplified && relIsChunk) return;
+
+                    // Aggiungi nodo collegato
+                    if (!nodesMap.has(rel.id)) {
+                        let group = 'context';
+                        if (relType === 'parent') group = 'parent'; // Link verso parent
+                        if (relIsDoc) group = 'parent';             // Link verso doc generico
+                        if (relIsEntity) group = 'entity';
+                        
+                        nodesMap.set(rel.id, {
+                            id: rel.id,
+                            label: getLabel(rel.metadata, relType),
+                            group: group,
+                            title: rel.metadata?.content || rel.id
+                        });
+                    }
+
+                    // --- FIX 3: Aggiunta Label all'arco ---
+                    edgesArr.push({ 
+                        from: node.id, 
+                        to: rel.id, 
+                        label: relType, // <-- ECCOLA!
+                        arrows: 'to', 
+                        font: { align: 'middle' } // Allinea testo al centro
+                    });
+                });
+            }
+        }
+    }
+
 
     // Initialize
     loadIndexes();
