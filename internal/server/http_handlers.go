@@ -363,6 +363,7 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 			req.QueryVector,
 			req.K,
 			req.Filter,
+			"",
 			req.EfSearch,
 			req.Alpha,
 			req.IncludeRelations,
@@ -387,6 +388,7 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 			req.QueryVector,
 			req.K,
 			req.Filter,
+			"",
 			req.EfSearch,
 			req.Alpha,
 		)
@@ -770,7 +772,8 @@ func (s *Server) handleUISearch(w http.ResponseWriter, r *http.Request) {
 		req.IndexName,
 		queryVec,
 		req.K,
-		"",  // No filter for simple UI
+		"", // No filter for simple UI
+		"",
 		0,   // Default ef
 		0.5, // Default alpha
 		req.IncludeRelations,

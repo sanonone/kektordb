@@ -10,35 +10,47 @@ embedder_timeout: 60s
 # RAG Automatico
 rag_enabled: true
 rag_index: "knowledge_base"  # Deve coincidere con l'indice popolato dai Vectorizer!
-rag_top_k: 4
+rag_top_k: 8
 # RAG usa SIMILARITÀ (Higher is Better, 0.0-1.0)
-rag_threshold: 0.7         # Ignore chunks with similarity score < 0.6
-rag_use_hybrid: false # Cerca anche per parole chiave
-rag_hybrid_alpha: 0.7      # 70% Vettore, 30% Keywords
+rag_threshold: 0.4         # Ignore chunks with similarity score < 0.6
+rag_use_hybrid: true # Cerca anche per parole chiave
+rag_hybrid_alpha: 0.9      # 70% Vettore, 30% Keywords
 rag_use_graph: true        # Recupera automaticamente contesto prev/next
 rag_use_hyde: true
 # System Prompt Template
 # Usa {{context}} per iniettare i dati trovati e {{query}} per la domanda originale.
 # Il simbolo '|' permette stringhe multilinea in YAML.
 rag_system_prompt: |
-  You are an expert technical assistant. You have access to a local knowledge base.
+    Sei un assistente tecnico senior ed esperto.
+    Il tuo compito è rispondere alla domanda dell'utente usando ESCLUSIVAMENTE le informazioni fornite nel contesto sottostante.
+    
+    LINEE GUIDA:
+    1. Sii DETTAGLIATO ed ESAUSTIVO. Spiega i concetti in profondità.
+    2. Se il contesto contiene dettagli tecnici (funzioni, architettura), usali tutti.
+    3. Non essere sintetico. L'utente vuole imparare.
+    4. Rispondi SEMPRE nella stessa lingua della domanda (Italiano se la domanda è in Italiano).
+    
+    Se il contesto non contiene la risposta, dì chiaramente: "Non ho informazioni sufficienti nei documenti".
 
-  IMPORTANT: Answer in the same language as the user's question.
-  
-  CONTEXT DATA:
-  {{context}}
-  
-  INSTRUCTIONS:
-  1. Analyze the Context Data above carefully. Pay attention to Document titles.
-  2. Answer the user's Question using ONLY the information present in the Context.
-  3. If the Context contains conflicting information, mention it.
-  4. If the Context does not contain the answer, perform the following check:
-     - Is the question about general knowledge? (e.g., "Write python code"). If yes, answer normally.
-     - Is the question about specific data? (e.g., "What is project X?"). If yes, state: "I don't have that information in my documents."
-  5. Cite the Document name if available.
+    Contesto:
+    {{context}}
 
-  QUESTION:
-  {{query}}
+    Domanda:
+    {{query}}
+
+rag_rewriter_prompt: |
+    Sei un motore di riscrittura query. 
+    Analizza la cronologia della chat e riscrivi l'ULTIMO messaggio utente affinché sia una domanda completa e autonoma.
+    Includi il soggetto se mancante. NON rispondere alla domanda. Restituisci SOLO il testo riscritto.
+    Mantieni la lingua originale.
+
+rag_grounded_hyde_prompt: |
+    Sei un esperto. Scrivi una risposta sintetica ipotetica alla domanda dell'utente.
+    Usa la terminologia tecnica presente nei seguenti frammenti per rendere la risposta realistica (Grounding), ma scrivi un testo discorsivo.
+    Rispondi nella stessa lingua della domanda.
+    
+    Frammenti di contesto:
+    {{context}}
 
 # Firewall (Prompt Guard)
 firewall_enabled: true
@@ -48,7 +60,7 @@ firewall_threshold: 0.25 # Block if distance < 0.25
 block_message: "I cannot fulfill this request as it violates safety policies."
 
 # Semantic Cache
-cache_enabled: true
+cache_enabled: false
 cache_index: "semantic_cache_test"
 # Cache usano DISTANZA (Lower is Better)
 cache_threshold: 0.1 # Cache hit if distance < 0.1
@@ -58,6 +70,12 @@ max_cache_items: 100
 cache_vacuum_interval: "2s" 
 cache_delete_threshold: 0.0 # 0.0 = Pulisci sempre se c'è anche solo 1 cancellazione
 
+# rewriter
+fast_llm:
+  base_url: "http://localhost:11434/v1"
+  model: "gemma3:4b"
+
+# HyDe
 llm:
   base_url: "http://localhost:11434/v1"
   model: "gemma3:4b"

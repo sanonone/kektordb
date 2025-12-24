@@ -4,10 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/sanonone/kektordb/pkg/core/distance"
-	"github.com/sanonone/kektordb/pkg/core/hnsw"
-	"github.com/sanonone/kektordb/pkg/engine"
-	"github.com/sanonone/kektordb/pkg/llm"
 	"io"
 	"log"
 	"net/http"
@@ -17,14 +13,20 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
+	"github.com/sanonone/kektordb/pkg/engine"
+	"github.com/sanonone/kektordb/pkg/llm"
 )
 
 // AIProxy sits between the client and the LLM.
 type AIProxy struct {
-	cfg          Config
-	engine       *engine.Engine // Access to KektorDB for checks
-	reverseProxy *httputil.ReverseProxy
-	llmClient    llm.Client
+	cfg           Config
+	engine        *engine.Engine
+	reverseProxy  *httputil.ReverseProxy
+	llmClient     llm.Client // Smart Brain
+	fastLLMClient llm.Client // Fast Brain
 }
 
 // Structures for manipulating Chat request JSON
@@ -51,69 +53,147 @@ func NewAIProxy(cfg Config, dbEngine *engine.Engine) (*AIProxy, error) {
 		reverseProxy: httputil.NewSingleHostReverseProxy(target),
 	}
 
-	// Inizializza LLM Client solo se HyDe è attivo
-	// (Risparmiamo risorse se l'utente non lo usa)
-	if cfg.RAGUseHyDe {
-		log.Printf("[Proxy] HyDe Enabled. Initializing LLM client (URL: %s, Model: %s)", cfg.LLM.BaseURL, cfg.LLM.Model)
-		p.llmClient = llm.NewClient(cfg.LLM)
+	// Inizializza i client se RAG è attivo
+	if cfg.RAGEnabled {
+		fastConfig := cfg.FastLLM
+		if fastConfig.BaseURL == "" {
+			fastConfig = cfg.LLM
+		}
+		if fastConfig.BaseURL == "" {
+			fastConfig = llm.DefaultConfig()
+		}
+		p.fastLLMClient = llm.NewClient(fastConfig)
+		log.Printf("[Proxy] Fast LLM initialized (Model: %s)", fastConfig.Model)
+
+		if cfg.RAGUseHyDe {
+			mainConfig := cfg.LLM
+			if mainConfig.BaseURL == "" {
+				mainConfig = llm.DefaultConfig()
+			}
+			p.llmClient = llm.NewClient(mainConfig)
+			log.Printf("[Proxy] Smart LLM initialized (Model: %s)", mainConfig.Model)
+		}
 	}
 
 	return p, nil
 }
 
-// ServeHTTP implements the http.Handler interface.
 func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	totalStart := time.Now()
+
 	// 1. Read Body
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "Failed to read request body", http.StatusInternalServerError)
 		return
 	}
-	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes)) // Restore for Proxy
+	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
 	// 2. Extract Text
-	promptText := extractPrompt(bodyBytes)
-	// Check if request asks for streaming
-	// (Ollama/OpenAI use the JSON field "stream": true)
+	lastQuery := extractPrompt(bodyBytes)
 	isStreaming := checkStreaming(bodyBytes)
 
-	var promptVec []float32
-	if promptText != "" && (p.cfg.FirewallEnabled || p.cfg.CacheEnabled || p.cfg.RAGEnabled) {
+	// Filtro Task Automatici
+	if isSystemTask(lastQuery) {
+		log.Printf("[Proxy] ⏭️  Passthrough for System Task.")
+		p.reverseProxy.ServeHTTP(w, r)
+		return
+	}
 
-		textToEmbed := promptText // Default: embedda la domanda utente
+	log.Printf("\n=== 🚀 NEW RAG REQUEST: '%s' ===", limitStr(lastQuery, 50))
 
-		// SE HyDe è attivo, prova a "sognare" una risposta
-		if p.cfg.RAGUseHyDe && p.llmClient != nil {
-			// Nota: Usiamo un prompt di sistema ottimizzato per HyDe
-			sysPrompt := p.cfg.RAGHyDeSystemPrompt
-			if sysPrompt == "" {
-				sysPrompt = "You are a helpful expert. Given a user question, generate a generic, hypothetical answer passage. Write in the same language as the question."
-			}
+	// Variabile che conterrà il testo dell'ipotesi HyDe (se generata)
+	textToEmbed := lastQuery
+	// Variabile che contiene la query riscritta/pulita dell'utente
+	refinedQuery := lastQuery
 
-			log.Printf("[HyDe] Generating hypothetical answer for: '%s'...", promptText)
-			hypothetical, err := p.llmClient.Chat(sysPrompt, promptText)
+	// --- PIPELINE RAG AVANZATA ---
+	if p.cfg.RAGEnabled && lastQuery != "" {
 
-			if err == nil && hypothetical != "" {
-				textToEmbed = hypothetical
-				log.Printf("[HyDe] Generated (first 50 chars): %s...", strings.ReplaceAll(hypothetical[:min(50, len(hypothetical))], "\n", " "))
+		t1 := time.Now()
+		fullHistory := extractFullHistory(bodyBytes)
+		log.Printf("[1/4] 🧠 Rewriting Query (History: %d msgs)...", len(fullHistory))
+
+		// STAGE 1: QUERY REWRITING
+		if len(fullHistory) > 1 {
+			log.Printf("[RAG] Rewriting query using context...")
+			rw, err := p.rewriteQuery(fullHistory)
+			if err == nil && rw != "" {
+				refinedQuery = rw
+				textToEmbed = rw // Default: embeddiamo la query riscritta
+				log.Printf("      ✅ Rewritten in %v: '%s' -> '%s'", time.Since(t1), limitStr(lastQuery, 30), limitStr(refinedQuery, 50))
 			} else {
-				log.Printf("[HyDe] Generation failed or empty: %v. Fallback to original prompt.", err)
+				log.Printf("      ⚠️ Rewrite skipped/failed in %v: %v", time.Since(t1), err)
 			}
 		}
 
-		// Calcola Embedding (del testo originale O di quello ipotetico)
-		v, err := p.cfg.Embedder.Embed(textToEmbed)
-		if err == nil {
-			promptVec = v
-		} else {
-			log.Printf("[Proxy] Embedding failed: %v", err)
+		// STAGE 2: GROUNDED HYDE
+		if p.cfg.RAGUseHyDe && p.llmClient != nil {
+			t2 := time.Now()
+			log.Printf("[2/4] 🔍 Grounding Search (Pre-search)...")
+
+			// Grounding con la query riscritta
+			groundingVec, _ := p.cfg.Embedder.Embed(refinedQuery)
+
+			if groundingVec != nil {
+				// Usiamo una ricerca leggera per trovare contesto
+				snippets, _ := p.engine.VSearchGraph(p.cfg.RAGIndex, groundingVec, 20, "", "", 100, 0.5, nil, true)
+
+				log.Printf("      Found %d snippets for grounding", len(snippets))
+
+				var snippetText strings.Builder
+				for _, s := range snippets {
+					content := getTextFromMeta(s.Node.VectorData.Metadata)
+					if len(content) > 1000 {
+						content = content[:1000] + "..."
+					}
+					content = strings.ReplaceAll(content, "\n", " ")
+					snippetText.WriteString("- " + content + "\n")
+				}
+
+				// Generazione Ipotesi solo se abbiamo trovato grounding
+				if snippetText.Len() > 0 {
+					log.Printf("[3/4] 💭 Generating HyDe Hypothesis...")
+					hypo, err := p.generateGroundedHyDe(refinedQuery, snippetText.String())
+					if err == nil && hypo != "" {
+						textToEmbed = hypo // Ora embedderemo l'ipotesi
+						log.Printf("      ✅ Hypothesis generated in %v (%d chars)", time.Since(t2), len(hypo))
+						log.Printf("      📄 Preview: %s", limitStr(hypo, 100))
+					} else {
+						log.Printf("      ❌ HyDe generation failed: %v", err)
+					}
+				} else {
+					log.Printf("      ⚠️ Grounding found no context. HyDe might drift.")
+				}
+			}
 		}
 	}
 
-	// 3. FIREWALL CHECK
-	if p.cfg.FirewallEnabled && len(promptVec) > 0 {
-		if blocked, reason := p.checkFirewallWithVec(promptVec); blocked {
-			log.Printf("[Firewall] BLOCKED: %s", reason)
+	// STAGE 3: CALCOLO VETTORI (Dual Vector Strategy)
+	// Calcoliamo sia il vettore "Originale" (sicuro) che quello "HyDe" (sperimentale)
+	t4 := time.Now()
+	log.Printf("[4/4] 🔢 Embedding Strategy...")
+
+	var originalVec []float32
+	var hydeVec []float32
+
+	// 1. Calcolo Vettore Originale (sempre utile come fallback o firewall)
+	originalVec, _ = p.cfg.Embedder.Embed(refinedQuery)
+
+	// 2. Calcolo Vettore HyDe (solo se è stato generato un testo diverso dalla query)
+	if textToEmbed != "" && textToEmbed != refinedQuery {
+		v, err := p.cfg.Embedder.Embed(textToEmbed)
+		if err == nil {
+			hydeVec = v
+			log.Printf("      ✅ HyDe Vector computed")
+		}
+	}
+	log.Printf("      ✅ Embedding phase completed in %v", time.Since(t4))
+
+	// FIREWALL CHECK (Usiamo originalVec per sicurezza)
+	if p.cfg.FirewallEnabled && len(originalVec) > 0 {
+		if blocked, reason := p.checkFirewallWithVec(originalVec); blocked {
+			log.Printf("[Firewall] ⛔ BLOCKED: %s", reason)
 			w.WriteHeader(http.StatusForbidden)
 			json.NewEncoder(w).Encode(map[string]string{
 				"error": fmt.Sprintf("Blocked by Semantic Firewall: %s", reason),
@@ -122,22 +202,51 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// RAG INJECTION
-	if p.cfg.RAGEnabled && strings.Contains(r.URL.Path, "/chat/completions") && len(promptVec) > 0 {
-		newBody, err := p.performRAGInjection(bodyBytes, promptVec, promptText)
-		if err == nil && newBody != nil {
-			// Replace the body with the enriched one
-			bodyBytes = newBody
+	// STAGE 4: RAG INJECTION CON FALLBACK
+	if p.cfg.RAGEnabled && strings.Contains(r.URL.Path, "/chat/completions") {
+		tRag := time.Now()
+		log.Printf("[RAG] 🚀 Injecting Context...")
+
+		var finalBody []byte
+		var errInjection error
+		usedStrategy := "Standard"
+
+		// TENTATIVO 1: Usa HyDe (se disponibile)
+		if len(hydeVec) > 0 {
+			log.Printf("      Attempt 1: Using HyDe Vector...")
+			finalBody, errInjection = p.performRAGInjection(bodyBytes, hydeVec, refinedQuery)
+			if finalBody != nil {
+				usedStrategy = "HyDe"
+			}
+		}
+
+		// TENTATIVO 2: Fallback su Originale (Safety Net)
+		// Se HyDe non c'era OPPURE ha fallito (nil body), usa originale
+		if finalBody == nil && len(originalVec) > 0 {
+			if len(hydeVec) > 0 {
+				log.Printf("      ⚠️ HyDe yielded no results. Fallback to Original Vector.")
+			} else {
+				log.Printf("      Attempt 1: Using Standard Search (HyDe skipped).")
+			}
+			finalBody, errInjection = p.performRAGInjection(bodyBytes, originalVec, refinedQuery)
+			usedStrategy = "Fallback/Standard"
+		}
+
+		if errInjection == nil && finalBody != nil {
+			bodyBytes = finalBody
 			r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-			// Update Content-Length, which is fundamental for the HTTP proxy
 			r.ContentLength = int64(len(bodyBytes))
 			r.Header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
+			log.Printf("      ✅ Context Injected (%s) in %v. Forwarding...", usedStrategy, time.Since(tRag))
+		} else {
+			log.Printf("      ❌ CRITICAL: No context found even after fallback. LLM will answer blindly.")
 		}
 	}
 
-	// 4. CACHE READ (Only if not streaming)
-	if !isStreaming && p.cfg.CacheEnabled && len(promptVec) > 0 {
-		if cachedResp, hit := p.checkCache(promptVec); hit {
+	// 4. CACHE READ
+	// Usiamo originalVec per la cache per massimizzare le hit su domande simili
+	if !isStreaming && p.cfg.CacheEnabled && len(originalVec) > 0 {
+		if cachedResp, hit := p.checkCache(originalVec); hit {
 			log.Printf("[Cache] HIT")
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("X-Kektor-Cache", "HIT")
@@ -146,33 +255,91 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 5. FORWARD & CACHE WRITE
-	if isStreaming || !p.cfg.CacheEnabled || len(promptVec) == 0 {
-		// Direct pass-through for streaming or if cache disabled
+	// 5. FORWARD
+	if isStreaming || !p.cfg.CacheEnabled || len(originalVec) == 0 {
 		p.reverseProxy.ServeHTTP(w, r)
 		return
 	}
 
-	// Capture response for caching
 	capturer := &responseCapturer{
 		ResponseWriter: w,
 		body:           new(bytes.Buffer),
-		statusCode:     http.StatusOK, // Default assumption
+		statusCode:     http.StatusOK,
 	}
 
 	p.reverseProxy.ServeHTTP(capturer, r)
 
-	// Save to cache ONLY on success (200 OK)
+	log.Printf("=== ✅ REQUEST COMPLETED in %v ===\n", time.Since(totalStart))
+
 	if capturer.statusCode == http.StatusOK {
-		// Run in background to not block the response
-		go p.saveToCache(promptVec, promptText, capturer.body.Bytes())
+		go p.saveToCache(originalVec, lastQuery, capturer.body.Bytes())
 	}
 }
 
-// checkStreaming parses the JSON body to see if "stream": true is set.
+// --- HELPER FUNCTIONS ---
+
+// FIX: Funzione mancante nel tuo snippet precedente
+func isSystemTask(text string) bool {
+	// Pattern comuni di Open WebUI per task automatici
+	if strings.Contains(text, "### Task:") {
+		return true
+	}
+	if strings.Contains(text, "Generate a concise") && strings.Contains(text, "title") {
+		return true
+	}
+	if strings.Contains(text, "Generate 1-3 broad tags") {
+		return true
+	}
+	if strings.Contains(text, "Suggest 3-5 relevant follow-up") {
+		return true
+	}
+	return false
+}
+
+func (p *AIProxy) rewriteQuery(history []llm.Message) (string, error) {
+	maxHist := 4
+	if len(history) > maxHist {
+		history = history[len(history)-maxHist:]
+	}
+	var chatTxt strings.Builder
+	for _, msg := range history {
+		role := "User"
+		if msg.Role == "assistant" {
+			role = "Assistant"
+		}
+		chatTxt.WriteString(fmt.Sprintf("%s: %s\n", role, msg.Content))
+	}
+	sysPrompt := p.cfg.RAGRewriterPrompt
+	return p.fastLLMClient.Chat(sysPrompt, chatTxt.String())
+}
+
+func (p *AIProxy) generateGroundedHyDe(query string, snippets string) (string, error) {
+	sysPrompt := p.cfg.RAGGroundedHyDePrompt
+	if strings.Contains(sysPrompt, "{{context}}") {
+		sysPrompt = strings.ReplaceAll(sysPrompt, "{{context}}", snippets)
+	} else {
+		sysPrompt += "\nContext:\n" + snippets
+	}
+	return p.llmClient.Chat(sysPrompt, query)
+}
+
+func extractFullHistory(jsonBody []byte) []llm.Message {
+	var data map[string]interface{}
+	_ = json.Unmarshal(jsonBody, &data)
+	var res []llm.Message
+	if msgs, ok := data["messages"].([]interface{}); ok {
+		for _, m := range msgs {
+			if mMap, ok := m.(map[string]interface{}); ok {
+				role, _ := mMap["role"].(string)
+				content, _ := mMap["content"].(string)
+				res = append(res, llm.Message{Role: role, Content: content})
+			}
+		}
+	}
+	return res
+}
+
 func checkStreaming(body []byte) bool {
-	// Fast path check string to avoid full unmarshal if possible?
-	// Safer to unmarshal map.
 	var data map[string]interface{}
 	if err := json.Unmarshal(body, &data); err != nil {
 		return false
@@ -180,10 +347,9 @@ func checkStreaming(body []byte) bool {
 	if val, ok := data["stream"].(bool); ok {
 		return val
 	}
-	return false // Default is usually false for most APIs if omitted, but depends on LLM.
+	return false
 }
 
-// checkFirewallWithVec optimized to use the already calculated vector
 func (p *AIProxy) checkFirewallWithVec(vec []float32) (bool, string) {
 	results, err := p.engine.VSearchWithScores(p.cfg.FirewallIndex, vec, 1)
 	if err != nil || len(results) == 0 {
@@ -196,38 +362,23 @@ func (p *AIProxy) checkFirewallWithVec(vec []float32) (bool, string) {
 	return false, ""
 }
 
-// checkCache looks for an existing response
 func (p *AIProxy) checkCache(vec []float32) (string, bool) {
 	results, err := p.engine.VSearchWithScores(p.cfg.CacheIndex, vec, 1)
 	if err != nil || len(results) == 0 {
 		return "", false
 	}
-
 	best := results[0]
-	// Cache Hit only if very similar
 	if float32(best.Score) < p.cfg.CacheThreshold {
 		data, err := p.engine.VGet(p.cfg.CacheIndex, best.ID)
 		if err == nil {
-
-			// --- TTL LOGIC ---
 			if createdAt, ok := data.Metadata["created_at"].(float64); ok {
 				createdTime := time.Unix(int64(createdAt), 0)
-
-				// If expired...
 				if p.cfg.CacheTTL > 0 && time.Since(createdTime) > p.cfg.CacheTTL {
-					log.Printf("[Cache] Item expired (Age: %v). Triggering cleanup.", time.Since(createdTime))
-
-					// ACTION: Delete the node.
-					// The Vacuum will then free RAM and repair the graph.
-					go func(id string) {
-						_ = p.engine.VDelete(p.cfg.CacheIndex, id)
-					}(best.ID)
-
-					return "", false // It's a Cache Miss for the user
+					log.Printf("[Cache] Item expired. Cleanup.")
+					go func(id string) { _ = p.engine.VDelete(p.cfg.CacheIndex, id) }(best.ID)
+					return "", false
 				}
 			}
-			// ------------------
-
 			if resp, ok := data.Metadata["response"].(string); ok {
 				return resp, true
 			}
@@ -236,127 +387,75 @@ func (p *AIProxy) checkCache(vec []float32) (string, bool) {
 	return "", false
 }
 
-// saveToCache saves the Question/Response pair
 func (p *AIProxy) saveToCache(queryVec []float32, queryText string, responseBytes []byte) {
 	if len(responseBytes) == 0 {
 		return
 	}
-
-	// 1. CHECK SIZE LIMIT
-	// Get info on cache index
 	info, err := p.engine.DB.GetSingleVectorIndexInfoAPI(p.cfg.CacheIndex)
 	if err == nil {
-		// If full, no cache ("Drop New" policy)
-		// Future alternative: Delete old ones with Vacuum
 		if p.cfg.MaxCacheItems > 0 && info.VectorCount >= p.cfg.MaxCacheItems {
-			log.Printf("[Cache] Full (%d items). Skipping save.", info.VectorCount)
 			return
 		}
 	}
-
-	id := fmt.Sprintf("cache_%d_%d", time.Now().UnixNano(), len(queryText)) // Temporal unique ID
-
+	id := fmt.Sprintf("cache_%d_%d", time.Now().UnixNano(), len(queryText))
 	meta := map[string]interface{}{
-		"query":    queryText,
-		"response": string(responseBytes),
-		// 2. SAVE TIMESTAMP (Unix Nano)
+		"query":      queryText,
+		"response":   string(responseBytes),
 		"created_at": float64(time.Now().Unix()),
 	}
-
 	maintConfig := &hnsw.AutoMaintenanceConfig{
-		// We must cast time.Duration to custom type hnsw.Duration
-		// (if we used the wrapper for JSON in hnsw's config.go)
 		VacuumInterval:  hnsw.Duration(p.cfg.CacheVacuumInterval),
 		DeleteThreshold: p.cfg.CacheDeleteThreshold,
 		RefineEnabled:   false,
 	}
-
-	// Pass config to VCreate
-	// If index does not exist, it is created with THIS maintenance configuration.
 	_ = p.engine.VCreate(p.cfg.CacheIndex, distance.Cosine, 16, 200, distance.Float32, "", maintConfig)
-
 	p.engine.VAdd(p.cfg.CacheIndex, id, queryVec, meta)
-
-	// Safe shortened log
-	preview := queryText
-	if len(preview) > 30 {
-		preview = preview[:30]
-	}
-	log.Printf("[Cache] Saved: %s...", preview)
+	log.Printf("[Cache] Saved.")
 }
 
-// checkFirewall returns true if the prompt matches a forbidden pattern.
 func (p *AIProxy) checkFirewall(text string) (bool, string) {
 	vec, err := p.cfg.Embedder.Embed(text)
 	if err != nil {
 		return false, ""
 	}
-
-	// Search for the closest match
 	results, err := p.engine.VSearchWithScores(p.cfg.FirewallIndex, vec, 1)
 	if err != nil || len(results) == 0 {
 		return false, ""
 	}
-
 	bestMatch := results[0]
-
-	// Threshold Logic:
-	// Cosine: Score is 0.0 (equal) -> 2.0 (opposite).
-	// Warning: Does KektorDB return "Distance" (1 - CosineSimilarity) or normalized score?
-	// In original SearchWithScores code: results[i].Score = c.Distance.
-	// And c.Distance for Cosine is (1 - sim). Therefore 0 = identical.
-
-	// If distance is VERY LOW (e.g. < 0.1), it means the prompt is very similar to the attack.
 	if float32(bestMatch.Score) < p.cfg.FirewallThreshold {
-		return true, fmt.Sprintf("Similar to known threat '%s' (Dist: %.4f)", bestMatch.ID, bestMatch.Score)
+		return true, fmt.Sprintf("Similar to known threat '%s'", bestMatch.ID)
 	}
-
 	return false, ""
 }
 
-// extractPrompt extracts the latest user query from the JSON body.
-// It supports both Ollama raw format ("prompt") and OpenAI chat format ("messages").
 func extractPrompt(jsonBody []byte) string {
 	var data map[string]interface{}
 	if err := json.Unmarshal(jsonBody, &data); err != nil {
 		return ""
 	}
-
-	// 1. "prompt" case (Ollama raw / Completion API)
 	if v, ok := data["prompt"].(string); ok {
 		return v
 	}
-
-	// 2. "messages" case (OpenAI Chat API)
 	if msgs, ok := data["messages"].([]interface{}); ok {
 		for i := len(msgs) - 1; i >= 0; i-- {
 			if msgMap, ok := msgs[i].(map[string]interface{}); ok {
-				// Check the role
 				if role, _ := msgMap["role"].(string); role == "user" {
 					if content, _ := msgMap["content"].(string); content != "" {
-						return content // Found the last user input
+						return content
 					}
 				}
 			}
 		}
 	}
-
 	return ""
 }
 
 func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, queryText string) ([]byte, error) {
-	// A. Search Configuration
 	filter := ""
+	hybridQuery := ""
 	if p.cfg.RAGUseHybrid {
-		safeQuery := strings.ReplaceAll(queryText, "'", "")
-		safeQuery = strings.ReplaceAll(safeQuery, "\"", "")
-
-		// This prevents Regex breakage and cleans text for BM25
-		safeQuery = strings.ReplaceAll(safeQuery, "\n", " ")
-		safeQuery = strings.ReplaceAll(safeQuery, "\r", " ")
-		safeQuery = strings.ReplaceAll(safeQuery, "\t", " ")
-
-		filter = fmt.Sprintf("CONTAINS(content, '%s')", safeQuery)
+		hybridQuery = queryText
 	}
 
 	alpha := 0.5
@@ -367,41 +466,26 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 		alpha = 1.0
 	}
 
-	var relations []string
-	if p.cfg.RAGUseGraph {
-		relations = []string{"prev", "next", "parent", "mentions", "mentioned_in"}
-	}
-
 	efSearch := p.cfg.RAGEfSearch
 	if efSearch <= 0 {
 		efSearch = 100
 	}
 
-	// B. Search Execution
-	results, err := p.engine.VSearchGraph(
-		p.cfg.RAGIndex,
-		queryVec,
-		p.cfg.RAGTopK,
-		filter,
-		efSearch,
-		alpha,
-		relations,
-		true, // HYDRATE
-	)
+	var relations []string
+	if p.cfg.RAGUseGraph {
+		relations = []string{"prev", "next", "parent", "mentions", "mentioned_in"}
+	}
 
+	results, err := p.engine.VSearchGraph(p.cfg.RAGIndex, queryVec, p.cfg.RAGTopK, filter, hybridQuery, efSearch, alpha, relations, true)
 	if err != nil || len(results) == 0 {
 		return nil, nil
 	}
 
-	// C. Context Block Construction (Raw Data)
 	var contextBuilder strings.Builder
-
 	foundRelevant := false
-
 	seenContent := make(map[string]struct{})
 
 	for _, res := range results {
-		// Retrieve main node text
 		if float32(res.Score) < p.cfg.RAGThreshold {
 			continue
 		}
@@ -411,12 +495,10 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 			continue
 		}
 
-		// Retrieve Graph context (Prev/Next)
 		prevText := ""
 		if prevNodes, ok := res.Node.Connections["prev"]; ok && len(prevNodes) > 0 {
 			prevText = getTextFromMeta(prevNodes[0].VectorData.Metadata)
 		}
-
 		nextText := ""
 		if nextNodes, ok := res.Node.Connections["next"]; ok && len(nextNodes) > 0 {
 			nextText = getTextFromMeta(nextNodes[0].VectorData.Metadata)
@@ -424,12 +506,10 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 
 		sourceName := "Unknown Source"
 		if parents, ok := res.Node.Connections["parent"]; ok && len(parents) > 0 {
-			// Parent metadata contains "filename" or "source"
 			pMeta := parents[0].VectorData.Metadata
 			if name, ok := pMeta["filename"].(string); ok {
 				sourceName = name
 			} else if src, ok := pMeta["source"].(string); ok {
-				// Extract just the filename from the path
 				sourceName = filepath.Base(src)
 			}
 		}
@@ -437,18 +517,12 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 		var topics []string
 		if entityNodes, ok := res.Node.Connections["mentions"]; ok {
 			for _, en := range entityNodes {
-				// Cerchiamo il nome dell'entità nei metadati
 				if name, ok := en.VectorData.Metadata["name"].(string); ok {
 					topics = append(topics, name)
-				} else if content, ok := en.VectorData.Metadata["content"].(string); ok {
-					topics = append(topics, content)
 				}
 			}
 		}
 
-		// Assembly of clean text block
-		// STRUCTURED BLOCK CONSTRUCTION
-		// Instead of pasting raw text, provide an XML-like or Markdown structure
 		blockHash := sourceName + mainText
 		if _, exists := seenContent[blockHash]; exists {
 			continue
@@ -456,19 +530,16 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 		seenContent[blockHash] = struct{}{}
 
 		contextBuilder.WriteString(fmt.Sprintf("--- Document: %s ---\n", sourceName))
-
 		if len(topics) > 0 {
 			contextBuilder.WriteString(fmt.Sprintf("[Related Topics: %s]\n", strings.Join(topics, ", ")))
 		}
-
 		if prevText != "" {
 			contextBuilder.WriteString(prevText + " ")
 		}
-		contextBuilder.WriteString(mainText) // The found chunk (optionally with ** emphasis)
+		contextBuilder.WriteString(mainText)
 		if nextText != "" {
 			contextBuilder.WriteString(" " + nextText)
 		}
-
 		contextBuilder.WriteString("\n\n")
 		foundRelevant = true
 	}
@@ -477,41 +548,27 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 		return nil, nil
 	}
 
-	// D. Template Application (Prompt Engineering)
-	// Retrieve template from config or use a safe default
 	promptTemplate := p.cfg.RAGSystemPrompt
 	if promptTemplate == "" {
-		// Generic default if not specified in YAML
-		promptTemplate = "Context information is below.\n---------------------\n{{context}}\n---------------------\nGiven the context information and not prior knowledge, answer the query.\nQuery: {{query}}"
+		promptTemplate = "Context:\n{{context}}\nQuestion:\n{{query}}"
 	}
 
-	// Placeholder substitution
 	finalContent := strings.ReplaceAll(promptTemplate, "{{context}}", contextBuilder.String())
 	finalContent = strings.ReplaceAll(finalContent, "{{query}}", queryText)
 
-	// --- DEBUG LOG (Uncomment to see what is sent to the LLM) ---
-	log.Printf("[RAG-DEBUG] Final Prompt:\n%s", finalContent)
-	// ------------------------------------------------------------
-
-	// E. Modify Original JSON
 	var requestData map[string]interface{}
 	if err := json.Unmarshal(originalBody, &requestData); err != nil {
 		return nil, err
 	}
-
 	messages, ok := requestData["messages"].([]interface{})
 	if !ok || len(messages) == 0 {
 		return nil, nil
 	}
-
-	// Modify the last message (User) by replacing it with the enriched prompt
 	lastMsgIdx := len(messages) - 1
 	lastMsg, ok := messages[lastMsgIdx].(map[string]interface{})
 	if !ok {
 		return nil, nil
 	}
-
-	// Verify that there is a content field to replace
 	if _, ok := lastMsg["content"].(string); ok {
 		lastMsg["content"] = finalContent
 		messages[lastMsgIdx] = lastMsg
@@ -523,7 +580,6 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 	return json.Marshal(requestData)
 }
 
-// Helper to flexibly extract text from metadata
 func getTextFromMeta(meta map[string]any) string {
 	if v, ok := meta["content"].(string); ok {
 		return v
@@ -535,4 +591,12 @@ func getTextFromMeta(meta map[string]any) string {
 		return v
 	}
 	return ""
+}
+
+func limitStr(s string, max int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) > max {
+		return s[:max] + "..."
+	}
+	return s
 }

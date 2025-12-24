@@ -65,7 +65,7 @@ func (a *KektorAdapter) CreateVectorIndex(name string, metric string, m int, efC
 
 func (a *KektorAdapter) Search(indexName string, query []float32, k int) ([]string, error) {
 	// Call Engine's VSearch (use default for efSearch and alpha for now)
-	return a.Engine.VSearch(indexName, query, k, "", 0, 0.5)
+	return a.Engine.VSearch(indexName, query, k, "", "", 0, 0.5)
 }
 
 func (a *KektorAdapter) GetMany(indexName string, ids []string) ([]core.VectorData, error) {

@@ -1,6 +1,4 @@
 vectorizers:
- 
-
   # 3. Appunti Obsidian / Markdown
   # Usa strategia "markdown" (taglia sugli header ##)
   - name: "personal_notes"
