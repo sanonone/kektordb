@@ -520,7 +520,7 @@ func (h *Index) MaintenanceRun(forceType string) bool {
 // This method is optimized for throughput, not for single-insert latency.
 // AddBatch optimized
 
-func (h *Index) AddBatch(objects []types.BatchObject) error {
+func (h *Index) AddBatchOldOK(objects []types.BatchObject) error {
 	numVectors := len(objects)
 	if numVectors == 0 {
 		return nil
@@ -647,6 +647,510 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 	}
 
 	// Release the global lock. Now the nodes exist in memory and we can read them.
+	h.metaMu.Unlock()
+
+	// =========================================================================
+	// PHASE 1: PARALLEL NEIGHBOR CALCULATION (CPU Bound)
+	// =========================================================================
+	// Each worker calculates neighbors for its subset of nodes.
+	// We DON'T use channels. Each worker writes to a local slice.
+
+	numWorkers := runtime.NumCPU()
+	if numVectors < numWorkers {
+		numWorkers = numVectors
+	}
+
+	// Worker output: slice of slices of requests
+	workerResults := make([][]LinkRequest, numWorkers)
+
+	var wg sync.WaitGroup
+	batchSize := (numVectors + numWorkers - 1) / numWorkers
+
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		start := i * batchSize
+		end := start + batchSize
+		if end > numVectors {
+			end = numVectors
+		}
+		if start >= end {
+			wg.Done()
+			continue
+		}
+
+		go func(wID int, nodesSubset []*Node) {
+			defer wg.Done()
+
+			// Heuristic pre-allocation to avoid re-allocations
+			localReqs := make([]LinkRequest, 0, len(nodesSubset)*h.maxLevel*2)
+			scratchBuffer := make([]types.Candidate, 0, h.efConstruction+50)
+
+			// Read current entrypoint (with fast RLock or atomic if possible, here we use RLock on meta)
+			h.metaMu.RLock()
+			entryPointID := h.entrypointID
+			currentMaxLevel := h.maxLevel
+			maxID := uint32(h.nodeCounter.Load())
+			h.metaMu.RUnlock()
+
+			for _, node := range nodesSubset {
+				// Query object preparation
+				var queryObj any
+				switch h.precision {
+				case distance.Float32:
+					queryObj = node.VectorF32
+				case distance.Float16:
+					queryObj = node.VectorF16
+				case distance.Int8:
+					queryObj = node.VectorI8
+				}
+
+				nodeLevel := len(node.Connections) - 1
+				currEp := entryPointID
+
+				// 1. Zoom-in from higher levels (no neighbor saving, just approach)
+				for l := currentMaxLevel; l > nodeLevel; l-- {
+					nearest, err := h.searchLayerUnlocked(queryObj, currEp, 1, l, nil, 1, maxID, scratchBuffer)
+					if err == nil && len(nearest) > 0 {
+						currEp = nearest[0].Id
+					}
+				}
+
+				// 2. Insertion at node levels
+				for l := min(nodeLevel, currentMaxLevel); l >= 0; l-- {
+					// Search for efConstruction candidates
+					candidates, err := h.searchLayerUnlocked(queryObj, currEp, h.efConstruction, l, nil, h.efConstruction, maxID, scratchBuffer)
+					if err != nil || len(candidates) == 0 {
+						continue
+					}
+
+					// Save results to local slice
+					neighborIDs := make([]uint32, len(candidates))
+					for k, cand := range candidates {
+						neighborIDs[k] = cand.Id
+					}
+
+					localReqs = append(localReqs, LinkRequest{
+						NodeID:       node.InternalID,
+						Level:        l,
+						NewNeighbors: neighborIDs,
+					})
+
+					// Update entrypoint for the level below
+					currEp = candidates[0].Id
+				}
+			}
+			workerResults[wID] = localReqs
+		}(i, newNodes[start:end])
+	}
+	wg.Wait()
+
+	// =========================================================================
+	// PHASE 2: PARTITIONING (SHUFFLE) - Memory Bound (Fast)
+	// =========================================================================
+	// We organize requests into "buckets" based on Shard ID.
+	// We also generate reverse links here.
+
+	// NumShards is the constant 128 defined in the package
+	shardedReqs := make([][]LinkRequest, NumShards)
+
+	// Estimate allocation to avoid resize
+	estReqs := (numVectors * h.maxLevel * 2) / NumShards
+	for i := range shardedReqs {
+		shardedReqs[i] = make([]LinkRequest, 0, estReqs)
+	}
+
+	for _, reqs := range workerResults {
+		for _, req := range reqs {
+			// A. Direct Link: The new node connects to found neighbors
+			// (This is used to populate the new node's Connections)
+			shardIdx := req.NodeID & (NumShards - 1)
+			shardedReqs[shardIdx] = append(shardedReqs[shardIdx], req)
+
+			// B. Reverse Link: Found neighbors should (possibly) connect to the new node
+			// HNSW is an approximate bidirectional graph.
+			for _, neighborID := range req.NewNeighbors {
+				revShardIdx := neighborID & (NumShards - 1)
+				shardedReqs[revShardIdx] = append(shardedReqs[revShardIdx], LinkRequest{
+					NodeID:       neighborID,
+					Level:        req.Level,
+					NewNeighbors: []uint32{req.NodeID}, // Only 1 neighbor: the new node
+				})
+			}
+		}
+	}
+
+	// =========================================================================
+	// PHASE 3: PARALLEL COMMIT PER SHARD (IO/Lock Bound)
+	// =========================================================================
+	// We process each bucket independently. No lock contention.
+
+	var wgCommit sync.WaitGroup
+
+	// Semaphore to avoid overloading the scheduler if NumShards > CPU
+	sem := make(chan struct{}, runtime.NumCPU())
+
+	for i := 0; i < NumShards; i++ {
+		reqs := shardedReqs[i]
+		if len(reqs) == 0 {
+			continue
+		}
+
+		wgCommit.Add(1)
+		sem <- struct{}{}
+
+		go func(shardID int, requests []LinkRequest) {
+			defer wgCommit.Done()
+			defer func() { <-sem }()
+
+			// FINE-GRAINED LOCK: Lock only this DB fragment
+			h.shardsMu[shardID].Lock()
+			defer h.shardsMu[shardID].Unlock()
+
+			// Sort by NodeID to group updates for the same node
+			slices.SortFunc(requests, func(a, b LinkRequest) int {
+				if a.NodeID < b.NodeID {
+					return -1
+				}
+				if a.NodeID > b.NodeID {
+					return 1
+				}
+				return 0
+			})
+
+			// --- REUSABLE BUFFERS FOR THIS WORKER ---
+			candidatesScratch := make([]types.Candidate, 0, h.m*4)
+			uniqueIDs := make([]uint32, 0, h.m*4)
+
+			// Process one node at a time, aggregating all its requests
+			for idx := 0; idx < len(requests); {
+				currentNodeID := requests[idx].NodeID
+				node := h.nodes[currentNodeID]
+
+				if node == nil {
+					idx++ // Should not happen
+					continue
+				}
+
+				// Find the end of the block for this node
+				endIdx := idx
+				for endIdx < len(requests) && requests[endIdx].NodeID == currentNodeID {
+					endIdx++
+				}
+
+				// Find the max level involved
+				maxLvl := -1
+				if len(node.Connections) > 0 {
+					maxLvl = len(node.Connections) - 1
+				}
+				for k := idx; k < endIdx; k++ {
+					if requests[k].Level > maxLvl {
+						maxLvl = requests[k].Level
+					}
+				}
+
+				for lvl := 0; lvl <= maxLvl; lvl++ {
+					// 1. Reset Buffer
+					candidatesScratch = candidatesScratch[:0]
+					uniqueIDs = uniqueIDs[:0]
+
+					hasUpdates := false
+
+					// 2. Collect current neighbors
+					if lvl < len(node.Connections) {
+						uniqueIDs = append(uniqueIDs, node.Connections[lvl]...)
+					}
+
+					// 3. Collect new candidates from requests (Linear scan is OK here, few reqs)
+					for k := idx; k < endIdx; k++ {
+						if requests[k].Level == lvl {
+							uniqueIDs = append(uniqueIDs, requests[k].NewNeighbors...)
+							hasUpdates = true
+						}
+					}
+
+					if !hasUpdates && lvl < len(node.Connections) {
+						continue // No changes for this level
+					}
+					if len(uniqueIDs) == 0 {
+						continue
+					}
+
+					// 4. Deduplicate and Remove Self-Loop (Without Maps!)
+					// Sorting uint32 is very fast
+					// Note: If you have a sortUint32 helper, use it. Otherwise slice
+					slices.Sort(uniqueIDs)
+
+					// Deduplicate in-place
+					uniqCount := 0
+					if len(uniqueIDs) > 0 {
+						// Skip self-loop if present
+						readHead := 0
+						if uniqueIDs[0] == currentNodeID {
+							readHead = 1
+						}
+
+						if readHead < len(uniqueIDs) {
+							uniqueIDs[0] = uniqueIDs[readHead] // Move first valid element to position 0
+							uniqCount = 1
+							for r := readHead + 1; r < len(uniqueIDs); r++ {
+								val := uniqueIDs[r]
+								if val != currentNodeID && val != uniqueIDs[uniqCount-1] {
+									uniqueIDs[uniqCount] = val
+									uniqCount++
+								}
+							}
+						}
+					}
+					// Now uniqueIDs[:uniqCount] is the clean list of IDs.
+
+					// 5. Pruning Logic
+					maxM := h.m
+					if lvl == 0 {
+						maxM = h.mMax0
+					}
+
+					if uniqCount <= maxM {
+						// Fast path: direct copy
+						finalList := make([]uint32, uniqCount)
+						copy(finalList, uniqueIDs[:uniqCount])
+
+						// Resize node connections if needed
+						if lvl >= len(node.Connections) {
+							// Grow connections slice
+							newConns := make([][]uint32, lvl+1)
+							copy(newConns, node.Connections)
+							node.Connections = newConns
+						}
+						node.Connections[lvl] = finalList
+					} else {
+						// Slow path: Calculate distances
+						// Fill candidatesScratch
+						for i := 0; i < uniqCount; i++ {
+							id := uniqueIDs[i]
+							targetNode := h.nodes[id]
+							dist, _ := h.distanceBetweenNodes(node, targetNode)
+							candidatesScratch = append(candidatesScratch, types.Candidate{Id: id, Distance: dist})
+						}
+
+						slices.SortFunc(candidatesScratch, func(a, b types.Candidate) int {
+							// Explicit comparison for float64
+							if a.Distance < b.Distance {
+								return -1
+							}
+							if a.Distance > b.Distance {
+								return 1
+							}
+							return 0
+						})
+
+						selected := h.selectNeighbors(candidatesScratch, maxM)
+
+						finalList := make([]uint32, len(selected))
+						for k, s := range selected {
+							finalList[k] = s.Id
+						}
+
+						if lvl >= len(node.Connections) {
+							newConns := make([][]uint32, lvl+1)
+							copy(newConns, node.Connections)
+							node.Connections = newConns
+						}
+						node.Connections[lvl] = finalList
+					}
+				}
+				idx = endIdx
+			}
+		}(i, reqs)
+	}
+
+	wgCommit.Wait()
+
+	// =========================================================================
+	// PHASE 4: GLOBAL ENTRYPOINT UPDATE
+	// =========================================================================
+
+	h.metaMu.Lock()
+	updatedMaxLevel := h.maxLevel
+	updatedEntrypoint := h.entrypointID
+
+	for _, node := range newNodes {
+		l := len(node.Connections) - 1
+		if l > updatedMaxLevel {
+			updatedMaxLevel = l
+			updatedEntrypoint = node.InternalID
+		}
+	}
+
+	h.maxLevel = updatedMaxLevel
+	h.entrypointID = updatedEntrypoint
+	h.metaMu.Unlock()
+
+	return nil
+}
+
+// versione ottimizzatra da testare
+func (h *Index) AddBatch(objects []types.BatchObject) error {
+	numVectors := len(objects)
+	if numVectors == 0 {
+		return nil
+	}
+
+	// 1. Check dimensione grafo (Logica esistente per sequenziale su grafi piccoli)
+	h.metaMu.RLock()
+	currentSize := h.nodeCounter.Load()
+	h.metaMu.RUnlock()
+
+	if currentSize < uint64(h.efConstruction) {
+		for _, obj := range objects {
+			_, err := h.Add(obj.Id, obj.Vector)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	// =========================================================================
+	// PHASE 0.A: AUTO-TRAINING QUANTIZER (Safe Pre-check)
+	// =========================================================================
+	// Se siamo in Int8 e il quantizzatore non è allenato, dobbiamo farlo ORA,
+	// prima di lanciare i worker paralleli che ne hanno bisogno.
+	if h.precision == distance.Int8 {
+		// Nota: controlliamo senza lock per velocità, ma se è 0 acquisiamo un lock specifico o usiamo il batch.
+		// Dato che AddBatch è tipicamente chiamato da un singolo thread di ingestione (es. Compress),
+		// o se concorrente, il rischio è basso ma va gestito.
+		// Qui assumiamo che h.quantizer sia inizializzato nel costruttore New().
+
+		if h.quantizer != nil && h.quantizer.AbsMax == 0 {
+			// Raccogliamo i vettori per il training
+			// Usiamo un lock temporaneo sul quantizzatore se necessario, o assumiamo single-writer in questa fase.
+			// Per sicurezza, facciamo il training sul batch corrente qui.
+			log.Printf("[HNSW] Auto-training quantizer on batch of %d vectors", numVectors)
+			trainingData := make([][]float32, len(objects))
+			for i := range objects {
+				trainingData[i] = objects[i].Vector
+			}
+			h.quantizer.Train(trainingData) // Ora Train è veloce grazie al sampling che abbiamo messo!
+		}
+	}
+
+	// =========================================================================
+	// PHASE 0.B: PARALLEL PRE-PROCESSING (CPU Bound - No Global Lock)
+	// =========================================================================
+	// Convertiamo i vettori in parallelo.
+
+	precomputedVectors := make([]interface{}, numVectors)
+	var wgConv sync.WaitGroup
+	workers := runtime.NumCPU()
+	chunkSize := (numVectors + workers - 1) / workers
+
+	for w := 0; w < workers; w++ {
+		start := w * chunkSize
+		end := start + chunkSize
+		if end > numVectors {
+			end = numVectors
+		}
+		if start >= end {
+			continue
+		}
+
+		wgConv.Add(1)
+		go func(start, end int) {
+			defer wgConv.Done()
+
+			// Per Int8 usiamo il quantizzatore (che ora è sicuro essere trainato)
+			var localQuantizer *distance.Quantizer
+			if h.precision == distance.Int8 {
+				localQuantizer = h.quantizer
+			}
+
+			for i := start; i < end; i++ {
+				vec := objects[i].Vector
+
+				if h.metric == distance.Cosine && h.precision == distance.Float32 {
+					// Normalizzazione in-place (safe se la slice è di proprietà del batch)
+					normalize(vec)
+					precomputedVectors[i] = vec
+				} else if h.precision == distance.Float32 {
+					precomputedVectors[i] = vec
+				} else if h.precision == distance.Float16 {
+					// Conversione costosa F32->F16 parallelizzata
+					f16Vec := make([]uint16, len(vec))
+					for j, v := range vec {
+						f16Vec[j] = float16.Fromfloat32(v).Bits()
+					}
+					precomputedVectors[i] = f16Vec
+				} else if h.precision == distance.Int8 {
+					// Quantizzazione costosa parallelizzata
+					if localQuantizer != nil {
+						precomputedVectors[i] = localQuantizer.Quantize(vec)
+					} else {
+						// Fallback (non dovrebbe accadere grazie a Phase 0.A)
+						precomputedVectors[i] = make([]int8, len(vec))
+					}
+				}
+			}
+		}(start, end)
+	}
+	wgConv.Wait() // Aspettiamo che tutti i vettori siano pronti
+
+	// =========================================================================
+	// PHASE 1: GLOBAL ALLOCATION (Metadata - Short Lock)
+	// =========================================================================
+
+	h.metaMu.Lock()
+
+	// Riserva gli ID
+	startID := h.nodeCounter.Add(uint64(numVectors)) - uint64(numVectors)
+	lastID := uint32(startID + uint64(numVectors) - 1)
+
+	h.growNodes(lastID)
+	newNodes := make([]*Node, numVectors)
+
+	for i, obj := range objects {
+		internalID := uint32(startID + uint64(i))
+
+		if _, exists := h.externalToInternalID[obj.Id]; exists {
+			h.metaMu.Unlock()
+			return fmt.Errorf("ID '%s' already exists", obj.Id)
+		}
+
+		// Recuperiamo il vettore già processato (senza rifare calcoli sotto lock)
+		storedVector := precomputedVectors[i]
+
+		// Calcolo Norme Int8 (Veloce, O(d))
+		if h.precision == distance.Int8 {
+			if vecI8, ok := storedVector.([]int8); ok {
+				h.quantizedNorms[internalID] = computeInt8Norm(vecI8)
+			}
+		}
+
+		node := &Node{Id: obj.Id, InternalID: internalID}
+
+		// Assegnamento diretto
+		switch h.precision {
+		case distance.Float32:
+			node.VectorF32 = storedVector.([]float32)
+		case distance.Float16:
+			node.VectorF16 = storedVector.([]uint16)
+		case distance.Int8:
+			node.VectorI8 = storedVector.([]int8)
+		}
+
+		level := h.randomLevel()
+		node.Connections = make([][]uint32, level+1)
+
+		newNodes[i] = node
+		h.nodes[internalID] = node
+		h.externalToInternalID[node.Id] = internalID
+		h.internalToExternalID[internalID] = node.Id
+	}
+
+	if h.maxLevel == -1 {
+		h.entrypointID = newNodes[0].InternalID
+		h.maxLevel = 0
+	}
+
 	h.metaMu.Unlock()
 
 	// =========================================================================

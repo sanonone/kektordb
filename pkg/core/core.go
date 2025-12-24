@@ -787,22 +787,55 @@ func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) err
 	s.bTreeIndex[indexName] = make(map[string]*btree.BTreeG[BTreeItem])
 	//    s.metadataStore[indexName] = make(map[uint32]map[string]interface{})
 
-	// log.Printf("[DEBUG COMPRESS] Repopulating new index and secondary indexes...")
-	for _, data := range allVectors {
-		internalID, err := newIndex.Add(data.ID, data.Vector)
-		if err != nil {
-			log.Printf("WARNING: Failed to add vector %s during compression: %v", data.ID, err)
-			continue
+	// Invece di un batch gigante, processiamo a blocchi per non saturare la RAM/GC.
+	const BatchSize = 5000
+	totalVectors := len(allVectors)
+
+	log.Printf("Starting compression: processing %d vectors in chunks of %d...", totalVectors, BatchSize)
+
+	for start := 0; start < totalVectors; start += BatchSize {
+		end := start + BatchSize
+		if end > totalVectors {
+			end = totalVectors
 		}
-		// Re-associate metadata
-		if len(data.Metadata) > 0 {
-			s.AddMetadataUnlocked(indexName, internalID, data.Metadata)
+
+		chunk := allVectors[start:end]
+
+		// 1. Preparazione Mini-Batch (Allocazione piccola, felice per il GC)
+		batch := make([]types.BatchObject, len(chunk))
+		for i, item := range chunk {
+			batch[i] = types.BatchObject{
+				Id:       item.ID,
+				Vector:   item.Vector,
+				Metadata: item.Metadata,
+			}
+		}
+
+		// 2. Inserimento Parallelo (HNSW)
+		// AddBatch usa internamente i worker, quindi qui sfruttiamo tutti i core
+		if err := newIndex.AddBatch(batch); err != nil {
+			return fmt.Errorf("AddBatch failed at chunk %d: %w", start, err)
+		}
+
+		// 3. Ripristino Metadata (Ancora Sequenziale, ma su dati caldi in cache)
+		// Nota: Parallelizzare questo richiederebbe lock complessi sulle mappe globali.
+		// Spesso è più veloce farlo sequenziale su piccoli chunk che gestire la contenzione dei lock.
+		for _, data := range chunk {
+			if len(data.Metadata) > 0 {
+				// Recuperiamo il nuovo ID interno appena assegnato
+				internalID := newIndex.GetInternalID(data.ID)
+				s.AddMetadataUnlocked(indexName, internalID, data.Metadata)
+			}
+		}
+
+		// Opzionale: Log di progresso per dataset enormi
+		if (start/BatchSize)%10 == 0 && start > 0 {
+			// log.Printf("Compressed %d/%d vectors...", end, totalVectors)
 		}
 	}
 
 	s.vectorIndexes[indexName] = newIndex
-
-	log.Printf("Index '%s' successfully compressed to precision '%s'", indexName, newPrecision)
+	log.Printf("Index '%s' compressed successfully.", indexName)
 	return nil
 }
 
