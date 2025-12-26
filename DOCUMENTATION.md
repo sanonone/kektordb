@@ -159,6 +159,16 @@ vectorizers:
     # GraphRAG: Automatically link sequential chunks (prev/next)
     graph_enabled: true 
 
+    # Entity Extraction: Uses an LLM to identify concepts and link documents semantically.
+    # Connects "islands" of disconnected documents based on shared topics.
+    graph_entity_extraction: true
+
+    # LLM Configuration for Extraction (The "Brain")
+    llm:
+      base_url: "http://localhost:11434/v1"
+      model: "qwen2.5:0.5b" # Small model recommended for speed
+      temperature: 0.0
+
     # Embedding Provider (Ollama or OpenAI-compatible)
     embedder:
       type: "ollama_api"
@@ -208,6 +218,16 @@ This file configures the Middleware that sits between your App/UI and the LLM.
 port: ":9092"
 target_url: "http://localhost:11434" # Where requests are forwarded
 
+# Fast LLM: Used for Query Rewriting (Memory)
+fast_llm:
+  base_url: "http://localhost:11434/v1"
+  model: "qwen2.5:0.5b" 
+
+# Smart LLM: Used for HyDe (Reasoning)
+llm:
+  base_url: "http://localhost:11434/v1"
+  model: "gemma3:4b"
+
 # Embedding setup for analyzing prompts
 embedder_type: "ollama_api"
 embedder_url: "http://localhost:11434/api/embeddings"
@@ -232,9 +252,14 @@ rag_index: "knowledge_base"   # Must match vectorizer index
 rag_top_k: 6
 rag_ef_search: 100            # Search breadth (higher = better recall)
 rag_threshold: 0.6            # Similarity Score Threshold (0.0-1.0).
-                              # Keeps chunks with score >= 0.6. 
+                              # Keeps chunks with score >= 0.6. Lower threshold recommended when using HyDe
 rag_use_graph: true           # Fetch prev/next chunks automatically
 rag_use_hybrid: true          # Use BM25 + Vector for better precision
+
+# Custom Prompts (Optional)
+rag_system_prompt: "You are an expert. Answer based on context..."
+rag_rewriter_prompt: "Rewrite the last user message to be standalone..."
+rag_grounded_hyde_prompt: "Write a hypothetical answer based on these snippets..."
 ```
 
 #### All Available Options
@@ -296,6 +321,19 @@ When `graph_enabled` is active, sequential chunks are linked.
 During search, if you request `hydrate_relations: true`, KektorDB returns the matching chunk **AND** the full text of the previous/next chunks in a single JSON response.
 
 **Self-Repair:** The graph engine includes a self-repair mechanism. If it detects a link to a node that no longer exists (e.g. was deleted), it automatically cleans up the broken link in the background to maintain consistency without impacting query latency.
+
+### 4.4 Advanced RAG Pipeline (v0.4.0)
+KektorDB implements a sophisticated "Agentic" retrieval pipeline to solve common RAG issues:
+
+1.  **Query Rewriting (CQR):** Uses a fast LLM to rewrite user questions based on chat history. Solves the "Memory Problem" (e.g., User: "How to install it?" -> System: "How to install KektorDB?").
+2.  **Grounded HyDe:** Generates a hypothetical answer to the question using context snippets, then embeds that answer for retrieval. drastically improves recall for vague queries.
+3.  **Safety Net:** If HyDe fails to find relevant context, the system automatically falls back to standard vector search in real-time.
+
+### 4.5 Embedded Web UI
+A built-in dashboard is available at `http://localhost:9091/ui/`.
+*   **Graph Explorer:** Visualize the connections between your documents and entities using a force-directed graph.
+*   **Search Debugger:** Test queries and see exactly which chunks and relations are retrieved.
+*   **Zero Dependencies:** The UI is embedded in the single binary. No Node.js required.
 
 ---
 
@@ -573,6 +611,14 @@ Returns detailed status of all running indexing pipelines (files processed, erro
 
 Forces a specific vectorizer to run immediately.
 
+#### UI & Visualization
+**`POST /ui/search`**
+Helper endpoint that converts text to vector (using the server-side embedder) and performs a graph search. Used by the Dashboard.
+
+**`POST /ui/explore`**
+Returns a sample of the graph structure (Nodes + Edges) for visualization.
+**Body:** `{"index_name": "docs", "limit": 500}`
+
 ---
 
 ## 6. Go Library Interface
@@ -612,3 +658,5 @@ In HNSW, a node is more than just a data point; it is a "bridge" for navigation.
 Graph quality in HNSW can be sensitive to the order of insertion.
 *   **Optimization**: The Refine process cycles through the index, re-evaluating the neighbors of each node. It checks if, given the current state of the database, better neighbors exist than those found at insertion time.
 *   **No Blocking**: Refine uses a "yielding" strategy: it processes small batches and releases the global lock between them, ensuring that search QPS remains stable even during heavy optimization.
+
+> **Performance Note:** Starting from v0.4.0, Int8 quantization uses an auto-training mechanism with smart sampling. You can ingest data directly into an `int8` index with zero pre-training delay. Ingestion and Compression are fully parallelized.

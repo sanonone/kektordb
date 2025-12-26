@@ -15,9 +15,9 @@
 > [!TIP]
 > **Docker Support:** Prefer containers? A `Dockerfile` is included in the root for building your own images.
 
-**KektorDB is an embeddable, in-memory vector database designed for simplicity and speed.**
+**KektorDB is the missing memory layer for your Local AI Agents.**
 
-It bridges the gap between raw HNSW libraries and complex distributed databases. Written in pure Go, it runs as a single binary or embeds directly into your application, providing a complete **RAG Pipeline**, **Hybrid Search**, and **Persistence** out of the box.
+It is an embeddable, in-memory vector database written in pure Go. It bridges the gap between raw HNSW libraries and complex distributed systems, providing a complete **Agentic RAG Pipeline**, **Graph Memory**, and **Visual Dashboard** out of the box.
 
 > *Built with the philosophy of SQLite: Serverless option, zero dependencies, and easy to manage.*
 
@@ -27,9 +27,10 @@ It bridges the gap between raw HNSW libraries and complex distributed databases.
 
 Most vector databases require Docker containers, external dependencies, or Python pipelines just to index a few documents. KektorDB takes a different approach: **"Batteries Included"**.
 
-*   **Zero Setup:** No Python scripts required. Point KektorDB to some folders of PDFs/Markdown/Code/Text files, and it handles chunking, embedding, and indexing automatically.
+*   **Zero Setup:** No Python scripts required. Point KektorDB to a folder of PDFs/Markdown/Code, and it handles chunking, embedding, and **Entity Linking** automatically.
+*   **Smart Retrieval (Agentic):** It doesn't just search keywords. It uses **HyDe** (Hypothetical Document Embeddings) and **Query Rewriting** to understand the *intent* behind vague questions.
+*   **Visual Knowledge Graph:** Includes an embedded Web UI to visualize how your documents are semantically connected.
 *   **Embeddable:** Building a Go app? Import `pkg/engine` and run the database inside your process. No network overhead.
-*   **AI Gateway:** Acts as a transparent proxy for OpenAI/Ollama clients (like **Open WebUI**). It automatically injects RAG context and caches responses without you writing a single line of code.
 
 ---
 
@@ -40,20 +41,19 @@ KektorDB is not designed to replace distributed clusters handling billions of ve
 ### 1. Local RAG & Knowledge Base
 Perfect for desktop applications or local AI agents.
 *   **Scenario:** You have a some folders of documentation (`.md`, `.pdf`).
-*   **Solution:** KektorDB watches the folder, syncs changes instantly, and provides a search API with automatic context window (prev/next chunks).
+*   **Solution:** KektorDB watches the folder, extracts entities (e.g., connects "Project X" across different files), and provides a chat API.
 *   **Benefit:** Setup time drops from hours to minutes.
 
-### 2. Embedded Go Search
+### 2. AI Gateway for Open WebUI
+*   **Scenario:** You use a UI like **Open WebUI** + Ollama and want to add long-term memory.
+*   **Solution:** Configure your UI to use `http://localhost:9092/v1` (KektorDB Proxy).
+*   **Benefit:** KektorDB intercepts the chat, rewrites queries to fix memory issues, injects relevant context, and forwards it to the LLM.
+
+### 3. Embedded Go Search
 Ideal for Go developers building monoliths or microservices.
 *   **Scenario:** You need to add semantic search to your Go backend (e.g., "Find similar products").
 *   **Solution:** `import "github.com/sanonone/kektordb/pkg/engine"`.
 *   **Benefit:** Zero deployment complexity. The DB lives and dies with your app process.
-
-### 3. "Drop-in" RAG Backend
-Connect your favorite AI interface directly to your data.
-*   **Scenario:** You want to chat with your local documents using a UI like **Open WebUI**, but don't want to set up complex pipelines.
-*   **Solution:** Configure your UI to use `http://localhost:9092/v1` (KektorDB Proxy) instead of the LLM directly.
-*   **Benefit:** KektorDB intercepts the chat, injects relevant context from your files into the prompt, and forwards it to the LLM.
 
 ---
 
@@ -83,15 +83,20 @@ KektorDB can function as a **smart middleware** between your Chat UI and your LL
 
 *   **HNSW Engine:** Custom implementation optimized for high-concurrency reading.
 *   **Hybrid Search:** Combines Vector Similarity + BM25 (Keyword) + Metadata Filtering.
-*   **Graph Engine:** Supports arbitrary semantic links between vectors. The automated RAG pipeline leverages this to link sequential chunks (`prev`/`next`) for context window retrieval, but custom relationships can be defined via API.
+*   **Graph Engine:** Search isn't just about similarity. KektorDB traverses `prev`, `next`, `parent`, and `mentions` links to provide a holistic context window. Relationships can be defined via API.
 *   **Memory Efficiency:** Supports **Int8 Quantization** (75% RAM savings) and **Float16**.
 *   **Automated Ingestion:** Built-in pipelines for PDF, Text, and Code files.
+*   **Automated Entity Extraction:** Uses a local LLM to identify concepts (People, Projects, Tech) during ingestion and links related documents together.
 *   **Persistence:** A hybrid **AOF + Snapshot** system ensures durability across restarts. 
 *   **Maintenance & Optimization:**
     *   **Vacuum:** A background process that cleans up deleted nodes to reclaim memory and repair graph connections.
     *   **Refine:** An ongoing optimization that re-evaluates graph connections to improve search quality (recall) over time. 
 *   **AI Gateway & Middleware:** Acts as a smart proxy for OpenAI/Ollama compatible clients. Features **Semantic Caching** to serve instant responses for recurring queries and a **Semantic Firewall** to block malicious prompts based on vector similarity, independently of the RAG pipeline.
 *   **Dual Mode:** Run as a standalone **REST Server** or as a **Go Library**.
+
+Available at `http://localhost:9091/ui/`.
+*   **Graph Explorer:** Visualize your knowledge graph with a force-directed layout.
+*   **Search Debugger:** Test your queries and see exactly why a document was retrieved.
 
 ---
 

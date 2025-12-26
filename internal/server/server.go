@@ -52,7 +52,19 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 	mux := http.NewServeMux()
 	s.registerHTTPHandlers(mux)
 
-	handler := s.authMiddleware(mux)
+	// Chain middlewares: Recovery -> Logging -> Auth -> Mux
+	// Order matters! Recovery must be outer-most to catch everything.
+
+	var handler http.Handler = mux
+
+	// 1. Auth (Inner)
+	handler = s.authMiddleware(handler)
+
+	// 2. Logging (Middle) - Logs duration and status
+	handler = s.LoggingMiddleware(handler)
+
+	// 3. Recovery (Outer) - Catches panics
+	handler = s.RecoveryMiddleware(handler)
 
 	s.httpServer = &http.Server{
 		Addr:    httpAddr,

@@ -9,12 +9,14 @@ import (
 type AutoLoader struct {
 	textLoader Loader
 	pdfLoader  Loader
+	docxLoader Loader
 }
 
 func NewAutoLoader() *AutoLoader {
 	return &AutoLoader{
 		textLoader: NewTextLoader(),
 		pdfLoader:  NewPDFLoader(),
+		docxLoader: NewDocxLoader(),
 	}
 }
 
@@ -24,6 +26,8 @@ func (l *AutoLoader) Load(path string) (string, error) {
 	switch ext {
 	case ".pdf":
 		return l.pdfLoader.Load(path)
+	case ".docx":
+		return l.docxLoader.Load(path)
 	// List of known text extensions
 	case ".txt", ".md", ".markdown", ".json", ".yaml", ".yml", ".go", ".py", ".js", ".ts", ".html", ".css", ".csv":
 		return l.textLoader.Load(path)

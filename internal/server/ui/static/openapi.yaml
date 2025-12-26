@@ -1,0 +1,155 @@
+openapi: 3.0.3
+info:
+  title: KektorDB API
+  description: API documentation for KektorDB - The Local Memory Layer for AI Agents.
+  version: 0.4.0
+  license:
+    name: Apache 2.0
+    url: https://opensource.org/licenses/Apache-2.0
+
+servers:
+  - url: http://localhost:9091
+    description: Default Local Server
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    VectorAddRequest:
+      type: object
+      required: [index_name, id, vector]
+      properties:
+        index_name:
+          type: string
+          example: "knowledge_base"
+        id:
+          type: string
+          example: "doc_1"
+        vector:
+          type: array
+          items:
+            type: number
+            format: float
+          example: [0.1, 0.2, 0.3]
+        metadata:
+          type: object
+          additionalProperties: true
+          example: { "category": "docs", "year": 2024 }
+
+    SearchRequest:
+      type: object
+      required: [index_name, k]
+      properties:
+        index_name:
+          type: string
+        k:
+          type: integer
+          default: 10
+        query_vector:
+          type: array
+          items: { type: number, format: float }
+        filter:
+          type: string
+          description: "SQL-like filter (e.g., category='A')"
+        include_relations:
+          type: array
+          items: { type: string }
+          example: ["prev", "next", "parent"]
+        hydrate_relations:
+          type: boolean
+          default: false
+
+    RAGRequest:
+      type: object
+      required: [pipeline_name, query]
+      properties:
+        pipeline_name:
+          type: string
+        query:
+          type: string
+        k:
+          type: integer
+          default: 3
+
+security:
+  - BearerAuth: []
+
+paths:
+  /vector/indexes:
+    get:
+      summary: List all indexes
+      tags: [Index Management]
+      responses:
+        '200':
+          description: List of indexes and stats
+    post:
+      summary: Create a new index
+      tags: [Index Management]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                index_name: { type: string }
+                metric: { type: string, enum: [cosine, euclidean] }
+                precision: { type: string, enum: [float32, float16, int8] }
+      responses:
+        '200': { description: Index created }
+
+  /vector/actions/add:
+    post:
+      summary: Add a single vector
+      tags: [Vector Operations]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VectorAddRequest'
+      responses:
+        '200': { description: Success }
+
+  /vector/actions/search:
+    post:
+      summary: Perform vector/hybrid search
+      tags: [Vector Operations]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+      responses:
+        '200':
+          description: Search results
+
+  /rag/retrieve:
+    post:
+      summary: Retrieve text chunks for RAG
+      tags: [RAG]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RAGRequest'
+      responses:
+        '200': { description: Text chunks returned }
+
+  /graph/actions/link:
+    post:
+      summary: Create a semantic link between nodes
+      tags: [Graph Operations]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_id, target_id, relation_type]
+              properties:
+                source_id: { type: string }
+                target_id: { type: string }
+                relation_type: { type: string }
+                inverse_relation_type: { type: string }
+      responses:
+        '200': { description: Link created }

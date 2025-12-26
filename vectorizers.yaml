@@ -7,7 +7,7 @@ vectorizers:
     source:
       type: "filesystem"
       path: "/home/dash/Documenti/nvim comandi"
-    include_patterns: ["*.md", "*.txt", "*.pdf"]
+    include_patterns: ["*.md", "*.txt", "*.pdf", "*.docx"]
     exclude_patterns: ["draft_*"] # Ignora bozze
     index_config:
       metric: "cosine"

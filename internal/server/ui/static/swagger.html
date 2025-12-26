@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>KektorDB API Reference</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.11.0/swagger-ui.css" />
+  <style>
+      body { margin: 0; padding: 0; background: #0f172a; }
+      /* Dark mode adjustment override */
+      .swagger-ui { filter: invert(88%) hue-rotate(180deg); }
+      .swagger-ui .opblock .opblock-summary-method { filter: invert(100%) hue-rotate(180deg); }
+  </style>
+</head>
+<body>
+<div id="swagger-ui"></div>
+<script src="https://unpkg.com/swagger-ui-dist@5.11.0/swagger-ui-bundle.js" crossorigin></script>
+<script>
+  window.onload = () => {
+    window.ui = SwaggerUIBundle({
+      url: '/ui/openapi.yaml', // Punta al file che abbiamo creato sopra
+      dom_id: '#swagger-ui',
+      deepLinking: true,
+      presets: [
+        SwaggerUIBundle.presets.apis,
+        SwaggerUIBundle.SwaggerUIStandalonePreset
+      ],
+    });
+  };
+</script>
+</body>
+</html>

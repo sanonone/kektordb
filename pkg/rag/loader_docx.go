@@ -1,0 +1,131 @@
+package rag
+
+import (
+	"archive/zip"
+	"encoding/xml"
+	"fmt"
+	"io"
+	"log"
+	"strings"
+)
+
+// DocxLoader extracts text from .docx files preserving basic structure (Headers).
+type DocxLoader struct{}
+
+func NewDocxLoader() *DocxLoader {
+	return &DocxLoader{}
+}
+
+func (l *DocxLoader) Load(path string) (string, error) {
+	// 1. Open the .docx file as a ZIP archive
+	r, err := zip.OpenReader(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to open docx zip: %w", err)
+	}
+	defer r.Close()
+
+	// 2. Find "word/document.xml"
+	var docFile *zip.File
+	for _, f := range r.File {
+		if f.Name == "word/document.xml" {
+			docFile = f
+			break
+		}
+	}
+
+	if docFile == nil {
+		return "", fmt.Errorf("invalid docx: word/document.xml not found")
+	}
+
+	// 3. Open the XML file
+	rc, err := docFile.Open()
+	if err != nil {
+		return "", err
+	}
+	defer rc.Close()
+
+	// 4. Parse XML manually to extract text and styles
+	return parseDocxXML(rc)
+}
+
+// parseDocxXML streams the XML and converts Paragraphs to Markdown-like text
+func parseDocxXML(r io.Reader) (string, error) {
+	decoder := xml.NewDecoder(r)
+	var result strings.Builder
+
+	// State variables
+	var currentParaText strings.Builder
+	var currentStyle string
+
+	inParagraph := false
+	inTextNode := false // Siamo dentro un tag <w:t>?
+
+	for {
+		t, err := decoder.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+
+		switch se := t.(type) {
+		case xml.StartElement:
+			if se.Name.Local == "p" {
+				// Inizio Paragrafo
+				inParagraph = true
+				currentParaText.Reset()
+				currentStyle = ""
+			} else if se.Name.Local == "pStyle" {
+				// Stile (es. Heading1)
+				for _, attr := range se.Attr {
+					if attr.Name.Local == "val" {
+						currentStyle = attr.Value
+					}
+				}
+			} else if se.Name.Local == "t" {
+				// Inizio Testo
+				inTextNode = true
+			}
+
+		case xml.CharData:
+			// Contenuto testuale
+			if inParagraph && inTextNode {
+				currentParaText.Write(se)
+			}
+
+		case xml.EndElement:
+			if se.Name.Local == "t" {
+				inTextNode = false
+			} else if se.Name.Local == "p" {
+				// Fine Paragrafo: Flush
+				if inParagraph {
+					text := currentParaText.String()
+					if strings.TrimSpace(text) != "" {
+						// Debug Log (Rimuovi dopo che funziona)
+						// log.Printf("[DOCX DEBUG] Found Para: style='%s' text='%.20s...'", currentStyle, text)
+
+						prefix := ""
+						// Riconoscimento Heading (migliorato per case-insensitive o varianti)
+						// Word usa spesso "Heading1", "Heading 2", ecc.
+						if strings.Contains(currentStyle, "Heading") || strings.Contains(currentStyle, "heading") {
+							if strings.Contains(currentStyle, "1") {
+								prefix = "# "
+							} else if strings.Contains(currentStyle, "2") {
+								prefix = "## "
+							} else if strings.Contains(currentStyle, "3") {
+								prefix = "### "
+							}
+						}
+						result.WriteString(prefix + text + "\n\n")
+					}
+				}
+				inParagraph = false
+			}
+		}
+	}
+
+	finalText := result.String()
+	log.Printf("[DOCX] Extracted %d chars", len(finalText))
+	return finalText, nil
+}

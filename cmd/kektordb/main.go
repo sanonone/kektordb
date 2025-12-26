@@ -8,6 +8,7 @@ import (
 	"github.com/sanonone/kektordb/pkg/engine"
 	"github.com/sanonone/kektordb/pkg/proxy"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -24,6 +25,33 @@ func getEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// setupLogger configures the global slog logger based on the level.
+func setupLogger(levelStr string) {
+	var level slog.Level
+	switch strings.ToLower(levelStr) {
+	case "debug":
+		level = slog.LevelDebug
+	case "info":
+		level = slog.LevelInfo
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+
+	// Create a text handler (human readable).
+	// Use JSONHandler if you want machine-readable logs for Prometheus/Grafana later.
+	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: level,
+		// AddSource: true, // Uncomment to see file:line in logs (useful for debug)
+	})
+
+	logger := slog.New(handler)
+	slog.SetDefault(logger) // Set as global default
 }
 
 func main() {
@@ -47,6 +75,8 @@ func main() {
 	aofRewritePerc := flag.Int("aof-rewrite-percentage", 100, "Rewrite AOF at X% growth")
 	vectorizersConfig := flag.String("vectorizers-config", "", "Vectorizers YAML config")
 
+	logLevel := flag.String("log-level", "info", "Log level: debug, info, warn, error")
+
 	// Flags proxy
 	enableProxy := flag.Bool("enable-proxy", false, "Enable the AI Semantic Proxy")
 	proxyPort := flag.String("proxy-port", ":9092", "Port for the AI Semantic Proxy")
@@ -55,6 +85,10 @@ func main() {
 	proxyConfigPath := flag.String("proxy-config", "", "Path to proxy.yaml config file")
 
 	flag.Parse()
+
+	// SETUP LOGGER
+	setupLogger(*logLevel)
+	slog.Info("Starting KektorDB...", "version", "v0.4.0", "log_level", *logLevel)
 
 	// Engine Configuration
 	dataDir := filepath.Dir(*aofPath)
