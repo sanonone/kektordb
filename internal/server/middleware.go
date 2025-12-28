@@ -2,9 +2,11 @@ package server
 
 import (
 	"encoding/json"
+	"github.com/sanonone/kektordb/pkg/metrics"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"strconv"
 	"time"
 )
 
@@ -35,7 +37,7 @@ func (s *Server) RecoveryMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// LoggingMiddleware logs incoming requests with their duration and status.
+// LoggingMiddleware logs incoming requests AND records Prometheus metrics with their duration and status.
 // This replaces scatter-shot logging in handlers.
 func (s *Server) LoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -56,6 +58,14 @@ func (s *Server) LoggingMiddleware(next http.Handler) http.Handler {
 			"duration", duration.String(),
 			"ip", r.RemoteAddr,
 		)
+
+		// 2. Metrics (for machines)
+		// Record the duration in the histogram
+		metrics.HttpRequestDuration.WithLabelValues(r.Method, r.URL.Path).Observe(duration.Seconds())
+
+		// Increment the request counter
+		// Use strconv.Itoa to convert 200 to "200"
+		metrics.HttpRequestsTotal.WithLabelValues(r.Method, r.URL.Path, strconv.Itoa(wrapped.statusCode)).Inc()
 	})
 }
 

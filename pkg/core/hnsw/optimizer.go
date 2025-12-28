@@ -1,7 +1,7 @@
 package hnsw
 
 import (
-	"log"
+	"log/slog"
 	"runtime"
 	"sort"
 	"sync"
@@ -35,7 +35,7 @@ func (o *GraphOptimizer) UpdateConfig(cfg AutoMaintenanceConfig) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.config = cfg
-	log.Printf("[Optimizer] Config updated for index. Vacuum: %v, Refine: %v", cfg.VacuumInterval, cfg.RefineEnabled)
+	slog.Info("[Optimizer] Config updated for index", "vacuum", cfg.VacuumInterval, "refine", cfg.RefineEnabled)
 }
 
 // GetConfig returns the current configuration.
@@ -152,7 +152,7 @@ func (o *GraphOptimizer) Vacuum() bool {
 		return false
 	}
 
-	log.Printf("[Optimizer] Vacuum: Found %d deleted nodes. Repairing graph...", len(deletedSet))
+	slog.Info("[Optimizer] Vacuum: Found deleted nodes. Repairing graph", "deleted_nodes", len(deletedSet))
 
 	// =========================================================================
 	// PHASE 2: IDENTIFY NODES NEEDING REPAIR (RLock)
@@ -222,7 +222,7 @@ func (o *GraphOptimizer) Vacuum() bool {
 
 	// Entry Point Fix
 	if _, entryIsDead := deletedSet[o.index.entrypointID]; entryIsDead {
-		log.Println("[Optimizer] Entry point was deleted. Electing new entry point...")
+		slog.Info("[Optimizer] Entry point was deleted. Electing new entry point...")
 		newEntryFound := false
 
 		for i, node := range nodes {
@@ -237,7 +237,7 @@ func (o *GraphOptimizer) Vacuum() bool {
 		if !newEntryFound {
 			o.index.entrypointID = 0
 			o.index.maxLevel = -1
-			log.Println("[Optimizer] Graph is now empty.")
+			slog.Info("[Optimizer] Graph is now empty")
 		}
 	}
 
@@ -250,7 +250,7 @@ func (o *GraphOptimizer) Vacuum() bool {
 		nodes[deadID] = nil // Free RAM
 	}
 
-	log.Printf("[Optimizer] Vacuum complete. Repaired %d parents, removed %d nodes.", repairedCount, len(deletedSet))
+	slog.Info("[Optimizer] Vacuum complete", "repaired_parents", repairedCount, "removed_nodes", len(deletedSet))
 	return true
 }
 

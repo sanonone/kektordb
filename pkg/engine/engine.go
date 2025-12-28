@@ -16,6 +16,7 @@ package engine
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -231,14 +232,14 @@ func (e *Engine) checkMaintenance() {
 		if dirty >= e.opts.AutoSaveThreshold && time.Since(e.lastSaveTime) >= e.opts.AutoSaveInterval {
 			if err := e.SaveSnapshot(); err != nil {
 				// Log error but continue (background task)
-				// In production, use proper logging framework
-				fmt.Fprintf(os.Stderr, "Background snapshot failed: %v\n", err)
+				// Log error but continue (background task)
+				slog.Error("Background snapshot failed", "error", err)
 			}
 		}
 	}
 
 	if err := e.AOF.Flush(); err != nil {
-		fmt.Fprintf(os.Stderr, "Background AOF flush failed: %v\n", err)
+		slog.Error("Background AOF flush failed", "error", err)
 	}
 
 	// AOF Rewrite Policy
@@ -254,7 +255,7 @@ func (e *Engine) checkMaintenance() {
 
 			if e.aofBaseSize > 0 && currentSize > threshold {
 				if err := e.RewriteAOF(); err != nil {
-					fmt.Fprintf(os.Stderr, "Background AOF rewrite failed: %v\n", err)
+					slog.Error("Background AOF rewrite failed", "error", err)
 				}
 			}
 		}

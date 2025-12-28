@@ -5,7 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"strings"
 )
 
@@ -126,6 +126,6 @@ func parseDocxXML(r io.Reader) (string, error) {
 	}
 
 	finalText := result.String()
-	log.Printf("[DOCX] Extracted %d chars", len(finalText))
+	slog.Info("[DOCX] Extracted chars", "count", len(finalText))
 	return finalText, nil
 }

@@ -70,7 +70,7 @@ func main() {
 	// Creazione indice manuale (per sicurezza, anche se la pipeline lo farebbe)
 	db.VCreate("linked_index", distance.Cosine, 16, 200, distance.Float32, "", nil)
 
-	pipeline := rag.NewPipeline(cfg, adapter, embedder)
+	pipeline := rag.NewPipeline(cfg, adapter, embedder, nil)
 
 	// 4. Esecuzione
 	fmt.Println("⏳ Pipeline avviata...")

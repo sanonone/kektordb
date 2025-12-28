@@ -610,3 +610,53 @@ func (c *Client) GetTaskStatus(taskID string) (*Task, error) {
 	task.client = c
 	return &task, nil
 }
+
+// --- UI & Helper Methods ---
+
+type uiSearchRequest struct {
+	IndexName        string   `json:"index_name"`
+	Query            string   `json:"query"`
+	K                int      `json:"k"`
+	IncludeRelations []string `json:"include_relations,omitempty"`
+	Hydrate          bool     `json:"hydrate"`
+}
+
+type uiSearchResponse struct {
+	Results []GraphSearchResult `json:"results"`
+}
+
+// SearchText performs a search using the server-side embedder (same logic as the UI).
+// This is useful for clients that don't want to run a local embedder model.
+func (c *Client) SearchText(indexName, query string, k int, relations []string) ([]GraphSearchResult, error) {
+	req := uiSearchRequest{
+		IndexName:        indexName,
+		Query:            query,
+		K:                k,
+		IncludeRelations: relations,
+		Hydrate:          true,
+	}
+	respBody, err := c.jsonRequest(http.MethodPost, "/ui/search", req)
+	if err != nil {
+		return nil, err
+	}
+	var resp uiSearchResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+	return resp.Results, nil
+}
+
+// GetMetrics returns the raw Prometheus metrics string.
+func (c *Client) GetMetrics() (string, error) {
+	resp, err := c.httpClient.Get(c.baseURL + "/metrics")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}

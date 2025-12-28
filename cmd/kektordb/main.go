@@ -1,10 +1,9 @@
 package main
 
 import (
-	"errors"
+	"context"
 	"flag"
 	"github.com/sanonone/kektordb/internal/server"
-	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/engine"
 	"github.com/sanonone/kektordb/pkg/proxy"
 	"log"
@@ -79,9 +78,10 @@ func main() {
 
 	// Flags proxy
 	enableProxy := flag.Bool("enable-proxy", false, "Enable the AI Semantic Proxy")
-	proxyPort := flag.String("proxy-port", ":9092", "Port for the AI Semantic Proxy")
-	proxyTarget := flag.String("proxy-target", "http://localhost:11434", "Target LLM URL (e.g. Ollama)")
-	firewallIndex := flag.String("firewall-index", "prompt_guard", "Index containing forbidden prompts")
+	//proxyPort := flag.String("proxy-port", ":9092", "Port for the AI Semantic Proxy")
+	//proxyTarget := flag.String("proxy-target", "http://localhost:11434", "Target LLM URL (e.g. Ollama)")
+	//firewallIndex := flag.String("firewall-index", "prompt_guard", "Index containing forbidden prompts")
+	//proxyConfigPath := flag.String("proxy-config", "", "Path to proxy.yaml config file")
 	proxyConfigPath := flag.String("proxy-config", "", "Path to proxy.yaml config file")
 
 	flag.Parse()
@@ -113,99 +113,107 @@ func main() {
 		}
 	}
 
-	log.Printf("Initializing Engine (Data: %s, Save: %v/%d ops)...", dataDir, opts.AutoSaveInterval, opts.AutoSaveThreshold)
+	//log.Printf("Initializing Engine (Data: %s, Save: %v/%d ops)...", dataDir, opts.AutoSaveInterval, opts.AutoSaveThreshold)
 
 	// Engine Startup
 	eng, err := engine.Open(opts)
 	if err != nil {
 		log.Fatalf("Failed to open engine: %v", err)
 	}
-	defer eng.Close() // Close on exit
 
 	// Starting HTTP Server
 	srv, err := server.NewServer(eng, *httpAddr, *vectorizersConfig, *authToken)
 	if err != nil {
-		log.Fatalf("Failed to create server: %v", err)
+		slog.Error("Failed to create server", "error", err)
+		eng.Close()
+		os.Exit(1)
 	}
 
-	// Graceful Shutdown
-	shutdownChan := make(chan os.Signal, 1)
-	signal.Notify(shutdownChan, syscall.SIGINT, syscall.SIGTERM)
-
+	// Avvio Server API in Goroutine
 	go func() {
-		log.Printf("KektorDB is ready on %s", *httpAddr)
-
-		if *authToken != "" {
-			log.Println("Security: API Authentication ENABLED")
-		} else {
-			log.Println("Security: API Authentication DISABLED (Dev Mode)")
-		}
-
-		if err := srv.Run(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("Server error: %v", err)
+		if err := srv.Run(); err != nil && err != http.ErrServerClosed {
+			slog.Error("API Server crashed", "error", err)
+			os.Exit(1) // Se cade il server principale, cade tutto
 		}
 	}()
 
-	// --- AVVIO PROXY (Se abilitato) ---
+	// proxy initialization
+	var proxyServer *http.Server
+
 	if *enableProxy {
-		go func() {
-			log.Printf("Initializing AI Proxy...")
+		var proxyCfg proxy.Config
+		var err error
 
-			// 1. Carica Configurazione
-			var proxyCfg proxy.Config
-			var err error
-
-			if *proxyConfigPath != "" {
-				proxyCfg, err = proxy.LoadConfig(*proxyConfigPath)
-				if err != nil {
-					log.Printf("❌ Failed to load proxy config: %v", err)
-					return
-				}
-				log.Printf("   Loaded config from %s", *proxyConfigPath)
-			} else {
-				// Fallback: Default + Flag overrides (retro-compatibilità rapida)
-				proxyCfg = proxy.DefaultConfig()
-				if *proxyPort != "" {
-					proxyCfg.Port = *proxyPort
-				}
-				if *proxyTarget != "" {
-					proxyCfg.TargetURL = *proxyTarget
-				}
-				if *firewallIndex != "" {
-					proxyCfg.FirewallIndex = *firewallIndex
-				}
-				// Attiva feature se i flag base sono usati
-				proxyCfg.FirewallEnabled = true
-				proxyCfg.CacheEnabled = true
-
-				// Nota: In un refactor futuro, meglio pulire i flag e usare solo il file YAML
-				// per configurazioni complesse come l'embedder del proxy.
-
-				// Dobbiamo configurare l'embedder manualmente se usiamo i flag
-				embedder := embeddings.NewOllamaEmbedder(proxyCfg.EmbedderURL, proxyCfg.EmbedderModel, proxyCfg.EmbedderTimeout)
-				proxyCfg.Embedder = embedder
-			}
-
-			// Se abbiamo caricato da file, l'embedder va inizializzato
-			if proxyCfg.Embedder == nil {
-				proxyCfg.Embedder = embeddings.NewOllamaEmbedder(proxyCfg.EmbedderURL, proxyCfg.EmbedderModel, proxyCfg.EmbedderTimeout)
-			}
-
-			log.Printf("   Proxy listening on %s -> %s", proxyCfg.Port, proxyCfg.TargetURL)
-
-			proxy, err := proxy.NewAIProxy(proxyCfg, eng)
+		if *proxyConfigPath != "" {
+			proxyCfg, err = proxy.LoadConfig(*proxyConfigPath)
 			if err != nil {
-				log.Printf("❌ Failed to create Proxy: %v", err)
-				return
+				slog.Error("Failed to load proxy config", "error", err)
+				eng.Close()
+				os.Exit(1)
+			}
+			slog.Info("Loaded proxy config", "path", *proxyConfigPath)
+		} else {
+			// Fallback default
+			proxyCfg = proxy.DefaultConfig()
+			slog.Warn("Using default proxy config (no yaml provided)")
+		}
+
+		// Init Proxy Handler
+		proxyHandler, err := proxy.NewAIProxy(proxyCfg, eng)
+		if err != nil {
+			slog.Error("Failed to create Proxy", "error", err)
+		} else {
+			// wrap the proxy in an http.Server so we can close it gracefully
+			proxyServer = &http.Server{
+				Addr:    proxyCfg.Port,
+				Handler: proxyHandler,
 			}
 
-			if err := http.ListenAndServe(proxyCfg.Port, proxy); err != nil {
-				log.Printf("❌ Proxy server stopped: %v", err)
-			}
-		}()
+			go func() {
+				slog.Info("AI Proxy listening", "addr", proxyCfg.Port, "target", proxyCfg.TargetURL)
+				if err := proxyServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					slog.Error("Proxy Server crashed", "error", err)
+				}
+			}()
+		}
 	}
 
-	<-shutdownChan
+	// GRACEFUL SHUTDOWN LOGIC
+
+	// Channel to intercept stop signals (CTRL+C, Docker Stop)
+	stopChan := make(chan os.Signal, 1)
+	signal.Notify(stopChan, os.Interrupt, syscall.SIGTERM)
+
+	// Hold until signal arrives
+	<-stopChan
+
+	slog.Info("\nShutting down KektorDB...")
+
+	// context with timeout (e.g. 10 seconds)
+	// If shutdown takes more than 10s, force exit.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// A. Stop Proxy (active)
+	if proxyServer != nil {
+		slog.Info("Stopping Proxy...")
+		if err := proxyServer.Shutdown(ctx); err != nil {
+			slog.Error("Proxy forced shutdown", "error", err)
+		}
+	}
+
+	// B. Stop API Server (The vectorizers stop here)
+	slog.Info("Stopping API Server...")
 	srv.Shutdown()
-	log.Println("KektorDB stopped.")
+
+	// C. Stop Engine (Final flush on disc)
+	// important to avoid losing data
+	slog.Info("Closing Engine (Flushing data)...")
+	if err := eng.Close(); err != nil {
+		slog.Error("Error closing engine", "error", err)
+	} else {
+		slog.Info("Engine closed successfully.")
+	}
+
+	slog.Info("Bye.")
 }

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"math"
 	"regexp"
 	"runtime"
@@ -162,7 +163,7 @@ func (s *DB) Snapshot(writer io.Writer) error {
 				} else if node.VectorI8 != nil {
 					snap.VectorI8 = node.VectorI8
 				} else {
-					log.Printf("WARNING: No vector data found for node %d during snapshot", internalID)
+					slog.Warn("No vector data found for node during snapshot", "node_id", internalID)
 				}
 				nodeSnapshots[internalID] = snap
 			}
@@ -237,7 +238,7 @@ func (s *DB) LoadFromSnapshot(reader io.Reader) error {
 			} else if nodeSnap.VectorI8 != nil {
 				nodeSnap.NodeData.VectorI8 = nodeSnap.VectorI8
 			} else {
-				log.Printf("WARNING: No vector data found for node %d in snapshot", id)
+				slog.Warn("No vector data found for node in snapshot", "node_id", id)
 			}
 			nodesToLoad[id] = nodeSnap.NodeData
 		}
@@ -717,7 +718,7 @@ func (s *DB) DeleteVectorIndex(name string) error {
 
 	delete(s.metadataMap, name)
 
-	log.Printf("Index '%s' and all associated data have been deleted.", name)
+	slog.Info("Index and all associated data have been deleted", "index", name)
 	return nil
 }
 
@@ -791,7 +792,7 @@ func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) err
 	const BatchSize = 5000
 	totalVectors := len(allVectors)
 
-	log.Printf("Starting compression: processing %d vectors in chunks of %d...", totalVectors, BatchSize)
+	slog.Info("Starting compression", "total_vectors", totalVectors, "batch_size", BatchSize)
 
 	for start := 0; start < totalVectors; start += BatchSize {
 		end := start + BatchSize

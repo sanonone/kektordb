@@ -11,6 +11,7 @@ import (
 	// "container/heap"
 	"fmt"
 	"log"
+	"log/slog"
 	"math"
 	"math/rand"
 	"runtime"
@@ -255,7 +256,7 @@ func (h *Index) SearchWithScores(query []float32, k int, allowList map[uint32]st
 
 	candidates, err := h.searchInternal(query, k, allowList, efSearch)
 	if err != nil {
-		log.Printf("Error during HNSW search: %v", err)
+		slog.Error("Error during HNSW search", "error", err)
 		return []types.SearchResult{}
 	}
 
@@ -386,7 +387,7 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 			h.quantizer = &distance.Quantizer{}
 		}
 		if h.quantizer.AbsMax == 0 {
-			log.Printf("[HNSW] Auto-training quantizer on single vector (suboptimal for quality but necessary for progress)")
+			slog.Warn("[HNSW] Auto-training quantizer on single vector (suboptimal for quality but necessary for progress)")
 			h.quantizer.Train([][]float32{vector})
 		}
 
@@ -610,7 +611,7 @@ func (h *Index) AddBatchOldOK(objects []types.BatchObject) error {
 				for k, objTrain := range objects {
 					trainingData[k] = objTrain.Vector // Assuming they are not modified during train
 				}
-				log.Printf("[HNSW] Auto-training quantizer on batch of %d vectors", numVectors)
+				slog.Info("[HNSW] Auto-training quantizer on batch of vectors", "count", numVectors)
 				h.quantizer.Train(trainingData)
 			}
 

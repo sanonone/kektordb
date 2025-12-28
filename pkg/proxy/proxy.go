@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -63,7 +63,7 @@ func NewAIProxy(cfg Config, dbEngine *engine.Engine) (*AIProxy, error) {
 			fastConfig = llm.DefaultConfig()
 		}
 		p.fastLLMClient = llm.NewClient(fastConfig)
-		log.Printf("[Proxy] Fast LLM initialized (Model: %s)", fastConfig.Model)
+		slog.Info("[Proxy] Fast LLM initialized", "model", fastConfig.Model)
 
 		if cfg.RAGUseHyDe {
 			mainConfig := cfg.LLM
@@ -71,7 +71,7 @@ func NewAIProxy(cfg Config, dbEngine *engine.Engine) (*AIProxy, error) {
 				mainConfig = llm.DefaultConfig()
 			}
 			p.llmClient = llm.NewClient(mainConfig)
-			log.Printf("[Proxy] Smart LLM initialized (Model: %s)", mainConfig.Model)
+			slog.Info("[Proxy] Smart LLM initialized", "model", mainConfig.Model)
 		}
 	}
 
@@ -95,12 +95,12 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Filtro Task Automatici
 	if isSystemTask(lastQuery) {
-		log.Printf("[Proxy] ⏭️  Passthrough for System Task.")
+		slog.Info("[Proxy] Passthrough for System Task")
 		p.reverseProxy.ServeHTTP(w, r)
 		return
 	}
 
-	log.Printf("\n=== 🚀 NEW RAG REQUEST: '%s' ===", limitStr(lastQuery, 50))
+	slog.Info("NEW RAG REQUEST", "query", limitStr(lastQuery, 50))
 
 	// Variabile che conterrà il testo dell'ipotesi HyDe (se generata)
 	textToEmbed := lastQuery
@@ -112,25 +112,25 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		t1 := time.Now()
 		fullHistory := extractFullHistory(bodyBytes)
-		log.Printf("[1/4] 🧠 Rewriting Query (History: %d msgs)...", len(fullHistory))
+		slog.Info("[1/4] Rewriting Query", "history_len", len(fullHistory))
 
 		// STAGE 1: QUERY REWRITING
 		if len(fullHistory) > 1 {
-			log.Printf("[RAG] Rewriting query using context...")
+			slog.Debug("[RAG] Rewriting query using context...")
 			rw, err := p.rewriteQuery(fullHistory)
 			if err == nil && rw != "" {
 				refinedQuery = rw
 				textToEmbed = rw // Default: embeddiamo la query riscritta
-				log.Printf("      ✅ Rewritten in %v: '%s' -> '%s'", time.Since(t1), limitStr(lastQuery, 30), limitStr(refinedQuery, 50))
+				slog.Info("Rewritten", "duration", time.Since(t1), "original", limitStr(lastQuery, 30), "rewritten", limitStr(refinedQuery, 50))
 			} else {
-				log.Printf("      ⚠️ Rewrite skipped/failed in %v: %v", time.Since(t1), err)
+				slog.Warn("Rewrite skipped/failed", "duration", time.Since(t1), "error", err)
 			}
 		}
 
 		// STAGE 2: GROUNDED HYDE
 		if p.cfg.RAGUseHyDe && p.llmClient != nil {
 			t2 := time.Now()
-			log.Printf("[2/4] 🔍 Grounding Search (Pre-search)...")
+			slog.Info("[2/4] Grounding Search (Pre-search)...")
 
 			// Grounding con la query riscritta
 			groundingVec, _ := p.cfg.Embedder.Embed(refinedQuery)
@@ -139,7 +139,7 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				// Usiamo una ricerca leggera per trovare contesto
 				snippets, _ := p.engine.VSearchGraph(p.cfg.RAGIndex, groundingVec, 20, "", "", 100, 0.5, nil, true)
 
-				log.Printf("      Found %d snippets for grounding", len(snippets))
+				slog.Debug("Found snippets for grounding", "count", len(snippets))
 
 				var snippetText strings.Builder
 				for _, s := range snippets {
@@ -153,17 +153,17 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 				// Generazione Ipotesi solo se abbiamo trovato grounding
 				if snippetText.Len() > 0 {
-					log.Printf("[3/4] 💭 Generating HyDe Hypothesis...")
+					slog.Info("[3/4] Generating HyDe Hypothesis...")
 					hypo, err := p.generateGroundedHyDe(refinedQuery, snippetText.String())
 					if err == nil && hypo != "" {
 						textToEmbed = hypo // Ora embedderemo l'ipotesi
-						log.Printf("      ✅ Hypothesis generated in %v (%d chars)", time.Since(t2), len(hypo))
-						log.Printf("      📄 Preview: %s", limitStr(hypo, 100))
+						slog.Info("Hypothesis generated", "duration", time.Since(t2), "chars", len(hypo))
+						slog.Debug("Preview", "text", limitStr(hypo, 100))
 					} else {
-						log.Printf("      ❌ HyDe generation failed: %v", err)
+						slog.Warn("HyDe generation failed", "error", err)
 					}
 				} else {
-					log.Printf("      ⚠️ Grounding found no context. HyDe might drift.")
+					slog.Warn("Grounding found no context. HyDe might drift.")
 				}
 			}
 		}
@@ -172,7 +172,7 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// STAGE 3: CALCOLO VETTORI (Dual Vector Strategy)
 	// Calcoliamo sia il vettore "Originale" (sicuro) che quello "HyDe" (sperimentale)
 	t4 := time.Now()
-	log.Printf("[4/4] 🔢 Embedding Strategy...")
+	slog.Info("[4/4] Embedding Strategy...")
 
 	var originalVec []float32
 	var hydeVec []float32
@@ -185,15 +185,15 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		v, err := p.cfg.Embedder.Embed(textToEmbed)
 		if err == nil {
 			hydeVec = v
-			log.Printf("      ✅ HyDe Vector computed")
+			slog.Debug("HyDe Vector computed")
 		}
 	}
-	log.Printf("      ✅ Embedding phase completed in %v", time.Since(t4))
+	slog.Info("Embedding phase completed", "duration", time.Since(t4))
 
 	// FIREWALL CHECK (Usiamo originalVec per sicurezza)
 	if p.cfg.FirewallEnabled && len(originalVec) > 0 {
 		if blocked, reason := p.checkFirewallWithVec(originalVec); blocked {
-			log.Printf("[Firewall] ⛔ BLOCKED: %s", reason)
+			slog.Warn("[Firewall] BLOCKED", "reason", reason)
 			w.WriteHeader(http.StatusForbidden)
 			json.NewEncoder(w).Encode(map[string]string{
 				"error": fmt.Sprintf("Blocked by Semantic Firewall: %s", reason),
@@ -205,7 +205,7 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// STAGE 4: RAG INJECTION CON FALLBACK
 	if p.cfg.RAGEnabled && strings.Contains(r.URL.Path, "/chat/completions") {
 		tRag := time.Now()
-		log.Printf("[RAG] 🚀 Injecting Context...")
+		slog.Info("[RAG] Injecting Context...")
 
 		var finalBody []byte
 		var errInjection error
@@ -213,7 +213,7 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// TENTATIVO 1: Usa HyDe (se disponibile)
 		if len(hydeVec) > 0 {
-			log.Printf("      Attempt 1: Using HyDe Vector...")
+			slog.Debug("Attempt 1: Using HyDe Vector...")
 			finalBody, errInjection = p.performRAGInjection(bodyBytes, hydeVec, refinedQuery)
 			if finalBody != nil {
 				usedStrategy = "HyDe"
@@ -224,9 +224,9 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Se HyDe non c'era OPPURE ha fallito (nil body), usa originale
 		if finalBody == nil && len(originalVec) > 0 {
 			if len(hydeVec) > 0 {
-				log.Printf("      ⚠️ HyDe yielded no results. Fallback to Original Vector.")
+				slog.Warn("HyDe yielded no results. Fallback to Original Vector")
 			} else {
-				log.Printf("      Attempt 1: Using Standard Search (HyDe skipped).")
+				slog.Debug("Attempt 1: Using Standard Search (HyDe skipped)")
 			}
 			finalBody, errInjection = p.performRAGInjection(bodyBytes, originalVec, refinedQuery)
 			usedStrategy = "Fallback/Standard"
@@ -237,9 +237,9 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 			r.ContentLength = int64(len(bodyBytes))
 			r.Header.Set("Content-Length", strconv.Itoa(len(bodyBytes)))
-			log.Printf("      ✅ Context Injected (%s) in %v. Forwarding...", usedStrategy, time.Since(tRag))
+			slog.Info("Context Injected", "strategy", usedStrategy, "duration", time.Since(tRag))
 		} else {
-			log.Printf("      ❌ CRITICAL: No context found even after fallback. LLM will answer blindly.")
+			slog.Warn("CRITICAL: No context found even after fallback. LLM will answer blindly")
 		}
 	}
 
@@ -247,7 +247,7 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Usiamo originalVec per la cache per massimizzare le hit su domande simili
 	if !isStreaming && p.cfg.CacheEnabled && len(originalVec) > 0 {
 		if cachedResp, hit := p.checkCache(originalVec); hit {
-			log.Printf("[Cache] HIT")
+			slog.Info("[Cache] HIT")
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("X-Kektor-Cache", "HIT")
 			w.Write([]byte(cachedResp))
@@ -269,7 +269,7 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	p.reverseProxy.ServeHTTP(capturer, r)
 
-	log.Printf("=== ✅ REQUEST COMPLETED in %v ===\n", time.Since(totalStart))
+	slog.Info("REQUEST COMPLETED", "duration", time.Since(totalStart))
 
 	if capturer.statusCode == http.StatusOK {
 		go p.saveToCache(originalVec, lastQuery, capturer.body.Bytes())
@@ -374,7 +374,7 @@ func (p *AIProxy) checkCache(vec []float32) (string, bool) {
 			if createdAt, ok := data.Metadata["created_at"].(float64); ok {
 				createdTime := time.Unix(int64(createdAt), 0)
 				if p.cfg.CacheTTL > 0 && time.Since(createdTime) > p.cfg.CacheTTL {
-					log.Printf("[Cache] Item expired. Cleanup.")
+					slog.Info("[Cache] Item expired. Cleanup.")
 					go func(id string) { _ = p.engine.VDelete(p.cfg.CacheIndex, id) }(best.ID)
 					return "", false
 				}
@@ -410,7 +410,7 @@ func (p *AIProxy) saveToCache(queryVec []float32, queryText string, responseByte
 	}
 	_ = p.engine.VCreate(p.cfg.CacheIndex, distance.Cosine, 16, 200, distance.Float32, "", maintConfig)
 	p.engine.VAdd(p.cfg.CacheIndex, id, queryVec, meta)
-	log.Printf("[Cache] Saved.")
+	slog.Info("[Cache] Saved")
 }
 
 func (p *AIProxy) checkFirewall(text string) (bool, string) {

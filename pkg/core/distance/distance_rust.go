@@ -18,17 +18,18 @@ import "C"
 import (
 	"errors"
 	"fmt"
-	"gonum.org/v1/gonum/blas/gonum"
-	"log"
+	"log/slog"
 	"unsafe"
+
+	"gonum.org/v1/gonum/blas/gonum"
 )
 
 func init() {
-	log.Println("KektorDB compute engine: using SMART DISPATCH (RUST CGO + GO) implementation.")
-	log.Printf("  - Euclidean (float32): Smart Dispatch (Go/Rust)")
-	log.Printf("  - Cosine (float32):    Gonum (SIMD)")
-	log.Printf("  - Euclidean (float16): Rust (CGO SIMD)")
-	log.Printf("  - Cosine (int8):       Smart Dispatch (Go/Rust)")
+	slog.Info("KektorDB compute engine: using SMART DISPATCH (RUST CGO + GO) implementation.")
+	slog.Info("  - Euclidean (float32): Smart Dispatch (Go/Rust)")
+	slog.Info("  - Cosine (float32):    Gonum (SIMD)")
+	slog.Info("  - Euclidean (float16): Rust (CGO SIMD)")
+	slog.Info("  - Cosine (int8):       Smart Dispatch (Go/Rust)")
 }
 
 // --- Public Types ---

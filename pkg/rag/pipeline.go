@@ -3,7 +3,7 @@ package rag
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,7 +59,7 @@ func NewPipeline(cfg Config, store Store, embedder embeddings.Embedder, llmClien
 
 // Start launches the background watcher in a goroutine.
 func (p *Pipeline) Start() {
-	log.Printf("[RAG] Starting pipeline '%s' watching '%s'", p.cfg.Name, p.cfg.SourcePath)
+	slog.Info("[RAG] Starting pipeline", "name", p.cfg.Name, "path", p.cfg.SourcePath)
 	go p.loop()
 
 	if p.cfg.GraphEntityExtraction {
@@ -72,7 +72,7 @@ func (p *Pipeline) extractionWorker() {
 		// Chiama la funzione di estrazione (quella con l'idempotenza che abbiamo scritto prima)
 		if err := p.extractAndLinkEntities(job.ChunkID, job.Text); err != nil {
 			// Logghiamo solo warning per non intasare
-			log.Printf("[RAG-Background] Extraction failed for %s: %v", job.ChunkID, err)
+			slog.Warn("[RAG-Background] Extraction failed", "chunk_id", job.ChunkID, "error", err)
 		}
 	}
 }
@@ -103,13 +103,13 @@ func (p *Pipeline) loop() {
 func (p *Pipeline) scanAndProcess() {
 	// Try to acquire lock (0 -> 1)
 	if !atomic.CompareAndSwapInt32(&p.isScanning, 0, 1) {
-		log.Printf("[RAG] Scan already in progress, skipping.")
+		slog.Info("[RAG] Scan already in progress, skipping")
 		return
 	}
 	defer atomic.StoreInt32(&p.isScanning, 0)
 	// Ensure index exists
 	if !p.store.IndexExists(p.cfg.IndexName) {
-		log.Printf("[RAG] Index '%s' missing. Auto-creating...", p.cfg.IndexName)
+		slog.Info("[RAG] Index missing. Auto-creating...", "index", p.cfg.IndexName)
 
 		// Pass parameters from config
 		err := p.store.CreateVectorIndex(
@@ -122,7 +122,7 @@ func (p *Pipeline) scanAndProcess() {
 		)
 
 		if err != nil {
-			log.Printf("[RAG] Failed to create index: %v", err)
+			slog.Error("[RAG] Failed to create index", "error", err)
 			return
 		}
 	}
@@ -174,14 +174,14 @@ func (p *Pipeline) scanAndProcess() {
 		shouldProcess, oldState := p.needsProcessing(path, info)
 		if shouldProcess {
 			if err := p.processFile(path, info, oldState); err != nil {
-				log.Printf("[RAG] Error processing '%s': %v", path, err)
+				slog.Error("[RAG] Error processing file", "path", path, "error", err)
 			}
 		}
 		return nil
 	})
 
 	if err != nil {
-		log.Printf("[RAG] Scan error: %v", err)
+		slog.Error("[RAG] Scan error", "error", err)
 	}
 }
 
@@ -206,7 +206,7 @@ func (p *Pipeline) needsProcessing(path string, info os.FileInfo) (bool, *fileSt
 
 // processFile executes the Load -> Split -> Embed -> Store flow.
 func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileState) error {
-	log.Printf("[RAG] Processing: %s", path)
+	slog.Info("[RAG] Processing file", "path", path)
 
 	// 0. CLEANUP: Remove old chunks to avoid orphan IDs
 	if oldState != nil && oldState.ChunkCount > 0 {
@@ -262,7 +262,7 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 		// Embed
 		vec, err := p.embedder.Embed(chunkText)
 		if err != nil {
-			log.Printf("[RAG] Embedding failed for chunk %d of %s: %v", i, path, err)
+			slog.Error("[RAG] Embedding failed", "chunk_index", i, "path", path, "error", err)
 			continue
 		}
 
@@ -316,7 +316,7 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 				// Atomic bidirectional: Prev <-> Curr
 				err := p.store.Link(prevChunkID, id, "next", "prev")
 				if err != nil {
-					log.Printf("[RAG] Link seq error: %v", err)
+					slog.Warn("[RAG] Link seq error", "error", err)
 				}
 			}
 			prevChunkID = id
@@ -326,7 +326,7 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 			// Doc --(child)--> Chunk
 			err := p.store.Link(id, parentID, "parent", "child")
 			if err != nil {
-				log.Printf("[RAG] Link parent error: %v", err)
+				slog.Warn("[RAG] Link parent error", "error", err)
 			}
 
 		}
@@ -376,7 +376,7 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 				case p.extractionChan <- extractionJob{ChunkID: parentID, Text: jobText}:
 					// Job accodato
 				default:
-					log.Printf("[RAG] Extraction queue full, skipping entity extraction for doc %s", parentID)
+					slog.Warn("[RAG] Extraction queue full, skipping entity extraction", "doc_id", parentID)
 				}
 			}
 		}
@@ -506,7 +506,7 @@ func (p *Pipeline) extractAndLinkEntities(chunkID, text string) error {
 
 		// Linkiamo SUBITO (VLink è safe e gestisce i duplicati internamente)
 		if err := p.store.Link(chunkID, entityID, "mentions", "mentioned_in"); err != nil {
-			log.Printf("[RAG] Failed to link entity %s: %v", entityName, err)
+			slog.Warn("[RAG] Failed to link entity", "entity_name", entityName, "error", err)
 		}
 
 		candidates[entityID] = entityName

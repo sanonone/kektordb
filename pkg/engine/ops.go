@@ -7,17 +7,17 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/sanonone/kektordb/pkg/core"
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
+	"github.com/sanonone/kektordb/pkg/core/types"
+	"github.com/sanonone/kektordb/pkg/metrics"
+	"github.com/sanonone/kektordb/pkg/persistence"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-
-	"github.com/sanonone/kektordb/pkg/core"
-	"github.com/sanonone/kektordb/pkg/core/distance"
-	"github.com/sanonone/kektordb/pkg/core/hnsw"
-	"github.com/sanonone/kektordb/pkg/core/types"
-	"github.com/sanonone/kektordb/pkg/persistence"
 )
 
 // --- KV Operations ---
@@ -62,6 +62,8 @@ func (e *Engine) KVDelete(key string) error {
 	if err := e.AOF.Flush(); err != nil {
 		return fmt.Errorf("CRITICAL: persistence flush failed: %w", err)
 	}
+
+	metrics.TotalVectors.WithLabelValues(key).Dec()
 
 	atomic.AddInt64(&e.dirtyCounter, 1)
 	return nil
@@ -185,6 +187,8 @@ func (e *Engine) VAdd(indexName, id string, vector []float32, metadata map[strin
 	if err := e.AOF.Flush(); err != nil {
 		return fmt.Errorf("CRITICAL: persistence flush failed: %w", err)
 	}
+
+	metrics.TotalVectors.WithLabelValues(indexName).Inc()
 
 	atomic.AddInt64(&e.dirtyCounter, 1)
 	return nil
@@ -675,6 +679,8 @@ func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 	if err := e.AOF.Flush(); err != nil {
 		return fmt.Errorf("batch persistence flush failed: %w", err)
 	}
+
+	metrics.TotalVectors.WithLabelValues(indexName).Add(float64(len(items)))
 
 	atomic.AddInt64(&e.dirtyCounter, int64(len(items)))
 	return nil

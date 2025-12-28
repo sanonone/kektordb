@@ -7,8 +7,9 @@
 package distance
 
 import (
-	"log"
+	"log/slog"
 	"math"
+
 	//"math/rand"
 	"sort"
 )
@@ -48,7 +49,7 @@ func (q *Quantizer) Train(vectors [][]float32) {
 func (q *Quantizer) Train(vectors [][]float32) {
 	totalVectors := len(vectors)
 	if totalVectors == 0 || len(vectors[0]) == 0 {
-		log.Println("[Quantizer] Warning: Empty dataset provided for training. Skipping.")
+		slog.Warn("[Quantizer] Warning: Empty dataset provided for training. Skipping.")
 		return
 	}
 
@@ -72,7 +73,7 @@ func (q *Quantizer) Train(vectors [][]float32) {
 			targetSize = MinThreshold
 		}
 
-		log.Printf("[Quantizer] Sampling: Training on %d vectors (source: %d)...", targetSize, totalVectors)
+		slog.Info("[Quantizer] Sampling: Training on vectors", "source_total", totalVectors, "sample_size", targetSize)
 
 		sampled := make([][]float32, 0, targetSize)
 
@@ -127,7 +128,7 @@ func (q *Quantizer) Train(vectors [][]float32) {
 	q.AbsMax = allAbsValues[quantileIndex]
 
 	// Add a log for debugging.
-	log.Printf("[DEBUG QUANTIZER] Training complete on %d vectors. AbsMax set to the 99.9th percentile value: %f", len(trainingSet), q.AbsMax)
+	slog.Debug("[DEBUG QUANTIZER] Training complete", "vectors_count", len(trainingSet), "abs_max", q.AbsMax)
 }
 
 // Quantize converts a float32 vector into its int8 representation.

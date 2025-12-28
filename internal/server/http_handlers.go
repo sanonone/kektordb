@@ -10,16 +10,16 @@ package server
 import (
 	"encoding/json"
 	"fmt"
-	"log"
-	"net/http"
-	"net/http/pprof"
-	"strings"
-
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sanonone/kektordb/internal/server/ui"
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/engine"
+	"log"
+	"net/http"
+	"net/http/pprof"
+	"strings"
 )
 
 // registerHTTPHandlers sets up all HTTP routes using Go 1.22+ routing.
@@ -88,6 +88,9 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	// 2. UI Helper Endpoint (Text to Vector Search)
 	mux.HandleFunc("POST /ui/search", s.handleUISearch)
 	mux.HandleFunc("POST /ui/explore", s.handleUIExplore)
+
+	// promhttp.Handler() Create a standard handler that formats data for Prometheus
+	mux.Handle("GET /metrics", promhttp.Handler())
 }
 
 // --- INDEX HANDLERS ---
