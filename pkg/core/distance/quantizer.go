@@ -48,6 +48,7 @@ func (q *Quantizer) Train(vectors [][]float32) {
 func (q *Quantizer) Train(vectors [][]float32) {
 	totalVectors := len(vectors)
 	if totalVectors == 0 || len(vectors[0]) == 0 {
+		log.Println("[Quantizer] Warning: Empty dataset provided for training. Skipping.")
 		return
 	}
 

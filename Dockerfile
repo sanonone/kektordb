@@ -9,23 +9,24 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o kektordb cmd/kektordb/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -trimpath -o kektordb ./cmd/kektordb
 
 FROM alpine:latest
 
-RUN apk --no-cache add ca-certificates
+RUN apk --no-cache add ca-certificates tzdata
 
 WORKDIR /root/
 
 COPY --from=builder /app/kektordb .
 
-RUN mkdir -p /data
+RUN mkdir -p /data /docs
 
 ENV KEKTOR_PORT=:9091
 ENV KEKTOR_DATA_DIR=/data
-ENV KEKTOR_TOKEN="" 
+ENV KEKTOR_TOKEN=""
 
 EXPOSE 9091
+EXPOSE 9092
 
 VOLUME ["/data"]
 

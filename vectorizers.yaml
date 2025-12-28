@@ -18,7 +18,7 @@ vectorizers:
     embedder:
       type: "ollama_api"
       url: "http://localhost:11434/api/embeddings"
-      model: "nomic-embed-text"
+      model: "nomic-embed-text-v2-moe:latest"
     document_processor:
       chunking_strategy: "markdown" # <--- Rispetta la struttura MD
       chunk_size: 1000

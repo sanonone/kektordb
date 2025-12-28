@@ -269,9 +269,15 @@ func (h *Index) SearchWithScores(query []float32, k int, allowList map[uint32]st
 // searchInternal handles query pre-processing (normalization/quantization) once and orchestrates the search.
 func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]struct{}, efSearch int) ([]types.Candidate, error) {
 	h.metaMu.RLock()
-	defer h.metaMu.RUnlock()
+	// defer h.metaMu.RUnlock()
 
-	if h.maxLevel == -1 {
+	h.metaMu.RLock()
+	currentEntryPoint := h.entrypointID
+	currentMaxLevel := h.maxLevel
+	currentCounter := uint32(h.nodeCounter.Load()) // Leggiamo anche questo sotto lock per coerenza
+	h.metaMu.RUnlock()
+
+	if currentMaxLevel == -1 {
 		return []types.Candidate{}, nil
 	}
 
@@ -310,8 +316,6 @@ func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]stru
 		finalQuery = h.quantizer.Quantize(queryF32)
 	}
 
-	currentEntryPoint := h.entrypointID
-
 	// Smart Entry Point Selection
 	if allowList != nil {
 		if _, ok := allowList[currentEntryPoint]; !ok {
@@ -328,8 +332,8 @@ func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]stru
 	}
 
 	// 1) Iterative top-down search
-	for l := h.maxLevel; l > 0; l-- {
-		nearest, err := h.searchLayerUnlocked(finalQuery, currentEntryPoint, 1, l, allowList, 0, uint32(h.nodeCounter.Load()), scratchOut)
+	for l := currentMaxLevel; l > 0; l-- {
+		nearest, err := h.searchLayerUnlocked(finalQuery, currentEntryPoint, 1, l, allowList, 0, currentCounter, scratchOut)
 		if err != nil {
 			return nil, err
 		}
@@ -340,7 +344,7 @@ func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]stru
 	}
 
 	// 2) Base layer search
-	nearestNeighbors, err := h.searchLayerUnlocked(finalQuery, currentEntryPoint, k, 0, allowList, efSearch, uint32(h.nodeCounter.Load()), scratchOut)
+	nearestNeighbors, err := h.searchLayerUnlocked(finalQuery, currentEntryPoint, k, 0, allowList, efSearch, currentCounter, scratchOut)
 	if err != nil {
 		return nil, err
 	}
