@@ -100,6 +100,12 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if lastQuery == "" {
+		// slog.Debug("[Proxy] Passthrough for Empty Query (Init/Ping)")
+		p.reverseProxy.ServeHTTP(w, r)
+		return
+	}
+
 	slog.Info("NEW RAG REQUEST", "query", limitStr(lastQuery, 50))
 
 	// Variabile che conterrà il testo dell'ipotesi HyDe (se generata)

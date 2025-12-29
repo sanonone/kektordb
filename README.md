@@ -12,24 +12,36 @@
 
 [English](README.md) | [Italiano](README.it.md)
 
+<p align="center">
+  <a href="#quick-start">🚀 Quick Start</a> •
+  <a href="DOCUMENTATION.md#configuration-guide">⚙️ Configuration</a> •
+  <a href="DOCUMENTATION.md#http-api-reference">🔌 API Reference</a> •
+  <a href="DOCUMENTATION.md#go-library-interface">📦 Go Library</a> •
+  <a href="docs/guides/zero_code_rag.md">🤖 Open WebUI Guide</a>
+</p>
+
 > [!TIP]
 > **Docker Support:** Prefer containers? A `Dockerfile` is included in the root for building your own images.
 
-**KektorDB is the missing memory layer for your Local AI Agents.**
+**KektorDB is an embeddable, in-memory vector database acting as a Memory Layer for Local AI Agents.**
 
-It is an embeddable, in-memory vector database written in pure Go. It bridges the gap between raw HNSW libraries and complex distributed systems, providing a complete **Agentic RAG Pipeline**, **Graph Memory**, and **Visual Dashboard** out of the box.
+Written in pure Go, it bridges the gap between raw HNSW libraries and complex distributed systems. It provides a complete **Agentic RAG Pipeline**, **Semantic Graph Memory**, and **Visual Dashboard** out of the box, running as a single binary without external dependencies.
 
 > *Built with the philosophy of SQLite: Serverless option, zero dependencies, and easy to manage.*
+
+<p align="center">
+  <img src="docs/images/kektordb-demo.gif" alt="KektorDB Graph Demo" width="800">
+</p>
 
 ---
 
 ## Why KektorDB?
 
-Most vector databases require Docker containers, external dependencies, or Python pipelines just to index a few documents. KektorDB takes a different approach: **"Batteries Included"**.
+Most vector databases are just storage engines. To build a RAG system, you still need to write complex Python code for chunking, embedding, and retrieval logic. KektorDB takes a different approach: **"Batteries Included"**.
 
-*   **Zero Setup:** No Python scripts required. Point KektorDB to a folder of PDFs/Markdown/Code, and it handles chunking, embedding, and **Entity Linking** automatically.
-*   **Smart Retrieval (Agentic):** It doesn't just search keywords. It uses **HyDe** (Hypothetical Document Embeddings) and **Query Rewriting** to understand the *intent* behind vague questions.
-*   **Visual Knowledge Graph:** Includes an embedded Web UI to visualize how your documents are semantically connected.
+*   **Zero-Config RAG:** Point KektorDB to a folder of PDFs/Markdown/DOCX files. It handles chunking, embedding, and **Entity Linking** automatically using local LLMs.
+*   **Agentic Retrieval:** It doesn't just search keywords. It uses **HyDe** (Hypothetical Document Embeddings) and **Query Rewriting** to understand the intent behind vague questions and fix chat memory context.
+*   **Visual Knowledge Graph:** Includes an embedded Web UI (`/ui`) to visualize how your documents are semantically connected (e.g. which documents talk about the same "Entity").
 *   **Embeddable:** Building a Go app? Import `pkg/engine` and run the database inside your process. No network overhead.
 
 ---
@@ -40,9 +52,9 @@ KektorDB is not designed to replace distributed clusters handling billions of ve
 
 ### 1. Local RAG & Knowledge Base
 Perfect for desktop applications or local AI agents.
-*   **Scenario:** You have a some folders of documentation (`.md`, `.pdf`).
-*   **Solution:** KektorDB watches the folder, extracts entities (e.g., connects "Project X" across different files), and provides a chat API.
-*   **Benefit:** Setup time drops from hours to minutes.
+*   **Scenario:** You have a folder of documentation (`.md`, `.pdf`, `.docx`) and want to chat with it.
+*   **Solution:** KektorDB watches the folder, extracts entities (e.g., connects "Project X" mentions across files), and provides a search API.
+*   **Benefit:** Turns static files into a structured Knowledge Graph in minutes.
 
 ### 2. AI Gateway for Open WebUI
 *   **Scenario:** You use a UI like **Open WebUI** + Ollama and want to add long-term memory.
@@ -66,14 +78,16 @@ KektorDB can function as a **smart middleware** between your Chat UI and your LL
 
 **How to set it up:**
 
-1.  **Run KektorDB** with the proxy enabled:
+1.  **Configure `vectorizers.yaml`** to point to your documents and enable Entity Extraction.
+2.  **Configure `proxy.yaml`** to point to your Local LLM (Ollama) or OpenAI.
+3.  **Run KektorDB** with the proxy enabled:
     ```bash
-    ./kektordb -vectorizers-config='vectorizers.yaml' -enable-proxy -proxy-target "http://localhost:11434"
+    ./kektordb -vectorizers-config='vectorizers.yaml' -enable-proxy -proxy-config='proxy.yaml'
     ```
-2.  **Configure Open WebUI:**
+4.  **Configure Open WebUI:**
     *   **Base URL:** `http://localhost:9092/v1`
     *   **API Key:** `kektor` (or any string).
-3.  **Chat:** Just ask questions about your documents. KektorDB handles the rest.
+5.  **Chat:** Just ask questions about your documents. KektorDB handles the rest.
 
 👉 **[Read the Full Guide: Building a Fast RAG System with Open WebUI](docs/guides/zero_code_rag.md)**
 
@@ -81,72 +95,37 @@ KektorDB can function as a **smart middleware** between your Chat UI and your LL
 
 ## ✨ Core Features
 
+### 🧠 Agentic RAG Pipeline
+*   **Query Rewriting (CQR):** Automatically rewrites user questions based on chat history (e.g., "How to install it?" -> "How to install KektorDB?"). Solves short-term memory issues.
+*   **Grounded HyDe:** Generates hypothetical answers to improve recall on vague queries, using real data fragments to ground the hallucination.
+*   **Safety Net:** Automatically falls back to standard vector search if the advanced pipeline fails to find relevant context.
+
+### 🕸️ Semantic Graph Engine
+*   **Automated Entity Extraction:** Uses a local LLM to identify concepts (People, Projects, Tech) during ingestion and links related documents together ("Connecting the dots").
+*   **Graph Traversal:** Search traverses `prev`, `next`, `parent`, and `mentions` links to provide a holistic context window.
+
+<p align="center">
+  <img src="docs/images/kektordb-graph-entities.png" alt="Knowledge Graph Visualization" width="700">
+  <br>
+  <em>Visualizing semantic connections between documents via extracted entities.</em>
+</p>
+
+### ⚡ Performance & Engineering
 *   **HNSW Engine:** Custom implementation optimized for high-concurrency reading.
 *   **Hybrid Search:** Combines Vector Similarity + BM25 (Keyword) + Metadata Filtering.
-*   **Graph Engine:** Search isn't just about similarity. KektorDB traverses `prev`, `next`, `parent`, and `mentions` links to provide a holistic context window. Relationships can be defined via API.
-*   **Memory Efficiency:** Supports **Int8 Quantization** (75% RAM savings) and **Float16**.
-*   **Automated Ingestion:** Built-in pipelines for PDF, Text, and Code files.
-*   **Automated Entity Extraction:** Uses a local LLM to identify concepts (People, Projects, Tech) during ingestion and links related documents together.
-*   **Persistence:** A hybrid **AOF + Snapshot** system ensures durability across restarts. 
+*   **Memory Efficiency:** Supports **Int8 Quantization** (75% RAM savings) with zero-shot auto-training and **Float16**.
 *   **Maintenance & Optimization:**
     *   **Vacuum:** A background process that cleans up deleted nodes to reclaim memory and repair graph connections.
     *   **Refine:** An ongoing optimization that re-evaluates graph connections to improve search quality (recall) over time. 
 *   **AI Gateway & Middleware:** Acts as a smart proxy for OpenAI/Ollama compatible clients. Features **Semantic Caching** to serve instant responses for recurring queries and a **Semantic Firewall** to block malicious prompts based on vector similarity, independently of the RAG pipeline.
+*   **Persistence:** Hybrid **AOF + Snapshot** ensures durability.
+*   **Observability:** Prometheus metrics (`/metrics`) and structured logging.
 *   **Dual Mode:** Run as a standalone **REST Server** or as a **Go Library**.
 
+### 🖥️ Embedded Dashboard
 Available at `http://localhost:9091/ui/`.
 *   **Graph Explorer:** Visualize your knowledge graph with a force-directed layout.
 *   **Search Debugger:** Test your queries and see exactly why a document was retrieved.
-
----
-
-## Preliminary Benchmarks
-
-Benchmarks were performed on a local Linux machine (Consumer Hardware, Intel i5-12500). The comparison runs against **Qdrant** and **ChromaDB** (via Docker with host networking) to ensure a fair baseline.
-
-> **Disclaimer:** Benchmarking databases is complex. These results reflect a specific scenario (**single-node, read-heavy, Python client**) on my development machine. They are intended to demonstrate KektorDB's capabilities as a high-performance embedded engine, not to claim absolute superiority in distributed production scenarios.
-
-#### 1. NLP Workload (GloVe-100d, Cosine)
-*400k vectors, float32 precision.*
-KektorDB leverages optimized Go Assembly (Gonum) for Cosine similarity. In this specific setup, it shows very high throughput.
-
-| Database | Recall@10 | **QPS (Queries/sec)** | Indexing Time (s) |
-| :--- | :--- | :--- | :--- |
-| **KektorDB** | 0.9664 | **1073** | 102.9s |
-| Qdrant | 0.9695 | 848 | **32.3s** |
-| ChromaDB | 0.9519 | 802 | 51.5s |
-
-#### 2. Computer Vision Workload (SIFT-1M, Euclidean)
-*1 Million vectors, float32 precision.*
-KektorDB uses a hybrid Go/Rust engine (`-tags rust`) for this test. Despite the CGO overhead for 128d vectors, performance is competitive with native C++/Rust engines.
-
-| Database | Recall@10 | **QPS (Queries/sec)** | Indexing Time (s) |
-| :--- | :--- | :--- | :--- |
-| **KektorDB** | 0.9906 | **881** | 481.4s |
-| Qdrant | 0.998 | 845 | **88.5s** |
-| ChromaDB | 0.9956 | 735 | 211.2s |
-
-> *Note on Indexing Speed:* KektorDB is currently slower at ingestion compared to mature engines. This is partly because it builds the full queryable graph immediately upon insertion, but mostly due to the current single-graph architecture. **Optimizing bulk ingestion speed is the top priority for the next major release.**
-
-> [!TIP]
-> **Performance Optimization: "Ingest Fast, Refine Later"**
->
-> If you need to index large datasets quickly, create the index with a lower `ef_construction` (e.g., 40). This significantly reduces indexing time. 
-> You can then enable the **Refine** process in the background with a higher target quality (e.g., 200). KektorDB will progressively optimize the graph connections in the background while remaining available for queries.
-
-#### Memory Efficiency (Compression & Quantization)
-KektorDB offers significant memory savings through quantization and compression, allowing you to fit larger datasets into RAM with minimal impact on performance or recall.
-
-| Scenario | Config | Memory Impact | QPS | Recall |
-| :--- | :--- | :--- | :--- | :--- |
-| **NLP (GloVe-100d)** | Float32 | 100% (Baseline) | ~1073 | 0.9664 |
-| | **Int8** | **~25%** | ~858 | 0.905 |
-| **Vision (SIFT-1M)** | Float32 | 100% (Baseline) | ~881 | 0.9906 |
-| | **Float16** | **~50%** | ~834 | 0.9770 |
-
-*(The "Smart Dispatch" logic in the Rust-accelerated build automatically selects the best implementation—Go, Gonum, or Rust—for each operation based on vector dimensions. The pure Go `float16` and `int8` versions serve as portable fallbacks.)*
-
-[Full Benchmark Report](BENCHMARKS.md)
 
 ---
 
@@ -279,6 +258,56 @@ from kektordb_client.langchain import KektorVectorStore
 
 ---
 
+## Preliminary Benchmarks
+
+Benchmarks were performed on a local Linux machine (Consumer Hardware, Intel i5-12500). The comparison runs against **Qdrant** and **ChromaDB** (via Docker with host networking) to ensure a fair baseline.
+
+> **Disclaimer:** Benchmarking databases is complex. These results reflect a specific scenario (**single-node, read-heavy, Python client**) on my development machine. They are intended to demonstrate KektorDB's capabilities as a high-performance embedded engine, not to claim absolute superiority in distributed production scenarios.
+
+#### 1. NLP Workload (GloVe-100d, Cosine)
+*400k vectors, float32 precision.*
+KektorDB leverages optimized Go Assembly (Gonum) for Cosine similarity. In this specific setup, it shows very high throughput.
+
+| Database | Recall@10 | **QPS (Queries/sec)** | Indexing Time (s) |
+| :--- | :--- | :--- | :--- |
+| **KektorDB** | 0.9664 | **1073** | 102.9s |
+| Qdrant | 0.9695 | 848 | **32.3s** |
+| ChromaDB | 0.9519 | 802 | 51.5s |
+
+#### 2. Computer Vision Workload (SIFT-1M, Euclidean)
+*1 Million vectors, float32 precision.*
+KektorDB uses a hybrid Go/Rust engine (`-tags rust`) for this test. Despite the CGO overhead for 128d vectors, performance is competitive with native C++/Rust engines.
+
+| Database | Recall@10 | **QPS (Queries/sec)** | Indexing Time (s) |
+| :--- | :--- | :--- | :--- |
+| **KektorDB** | 0.9906 | **881** | 481.4s |
+| Qdrant | 0.998 | 845 | **88.5s** |
+| ChromaDB | 0.9956 | 735 | 211.2s |
+
+> *Note on Indexing Speed:* KektorDB is currently slower at ingestion compared to mature engines. This is partly because it builds the full queryable graph immediately upon insertion, but mostly due to the current single-graph architecture. **Optimizing bulk ingestion speed is the top priority for the next major release.**
+
+> [!TIP]
+> **Performance Optimization: "Ingest Fast, Refine Later"**
+>
+> If you need to index large datasets quickly, create the index with a lower `ef_construction` (e.g., 40). This significantly reduces indexing time. 
+> You can then enable the **Refine** process in the background with a higher target quality (e.g., 200). KektorDB will progressively optimize the graph connections in the background while remaining available for queries.
+
+#### Memory Efficiency (Compression & Quantization)
+KektorDB offers significant memory savings through quantization and compression, allowing you to fit larger datasets into RAM with minimal impact on performance or recall.
+
+| Scenario | Config | Memory Impact | QPS | Recall |
+| :--- | :--- | :--- | :--- | :--- |
+| **NLP (GloVe-100d)** | Float32 | 100% (Baseline) | ~1073 | 0.9664 |
+| | **Int8** | **~25%** | ~858 | 0.905 |
+| **Vision (SIFT-1M)** | Float32 | 100% (Baseline) | ~881 | 0.9906 |
+| | **Float16** | **~50%** | ~834 | 0.9770 |
+
+*(The "Smart Dispatch" logic in the Rust-accelerated build automatically selects the best implementation—Go, Gonum, or Rust—for each operation based on vector dimensions. The pure Go `float16` and `int8` versions serve as portable fallbacks.)*
+
+[Full Benchmark Report](BENCHMARKS.md)
+
+---
+
 ## API Reference (Summary)
 
 For a complete guide to all features and API endpoints, please see the **[Full Documentation](DOCUMENTATION.md)**.
@@ -298,8 +327,10 @@ For a complete guide to all features and API endpoints, please see the **[Full D
 
 KektorDB is a young project under active development.
 
-*   **Near-Term:** Roaring Bitmaps for filtering, Native Snapshotting, Concurrency Polish.
-*   **Long-Term:** Disk-Based Indexes, Replication.
+*   **v0.4.0 (Current):** Agentic RAG, HyDe, Entity Extraction, Web UI, Observability.
+*   **Near-Term:** Roaring Bitmaps for filtering, simd avo optimizations.
+*   **v0.5.0 (Next):** Hybrid Disk Storage (Disk-backed vectors) to break the RAM limit.
+*   **Long-Term:** **maybe** Replication and Distributed Consensus.
 
 ---
 

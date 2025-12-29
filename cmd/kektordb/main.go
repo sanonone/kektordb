@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"github.com/sanonone/kektordb/internal/server"
+	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/engine"
 	"github.com/sanonone/kektordb/pkg/proxy"
 	"log"
@@ -156,6 +157,29 @@ func main() {
 			// Fallback default
 			proxyCfg = proxy.DefaultConfig()
 			slog.Warn("Using default proxy config (no yaml provided)")
+		}
+
+		if proxyCfg.Embedder == nil {
+			slog.Info("Initializing Proxy Embedder",
+				"type", proxyCfg.EmbedderType,
+				"url", proxyCfg.EmbedderURL,
+				"model", proxyCfg.EmbedderModel,
+			)
+
+			switch proxyCfg.EmbedderType {
+			case "openai", "openai_compatible":
+				proxyCfg.Embedder = embeddings.NewOllamaEmbedder(
+					proxyCfg.EmbedderURL,
+					proxyCfg.EmbedderModel,
+					proxyCfg.EmbedderTimeout,
+				)
+			default:
+				proxyCfg.Embedder = embeddings.NewOllamaEmbedder(
+					proxyCfg.EmbedderURL,
+					proxyCfg.EmbedderModel,
+					proxyCfg.EmbedderTimeout,
+				)
+			}
 		}
 
 		// Init Proxy Handler

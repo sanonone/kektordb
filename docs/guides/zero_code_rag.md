@@ -19,7 +19,7 @@ graph LR
 
 ## Prerequisites
 
-1.  **KektorDB** (v0.3.0+) installed.
+1.  **KektorDB** (v0.4.0+) installed.
 2.  **Ollama** running locally on port `11434` (with `nomic-embed-text` and a chat model like `llama3` or `deepseek-r1` pulled).
 3.  **Open WebUI** (or Chatbox, Cursor, etc.) installed.
 
@@ -36,7 +36,7 @@ This tells KektorDB which folder to watch. It will automatically chunk and index
 vectorizers:
   - name: "my_knowledge_base"
     kektor_index: "docs_kb"
-    schedule: "30s"
+    schedule: "60s"
     
     # Where your files are located
     source:
@@ -45,6 +45,16 @@ vectorizers:
       
     # Automatic Context Window (Prev/Next chunks)
     graph_enabled: true 
+    
+    # Entity Extraction
+    # Connects documents that talk about the same topics
+    graph_entity_extraction: true
+    
+    # Brain for extraction (Small model recommended)
+    llm:
+      base_url: "http://localhost:11434/v1"
+      model: "qwen2.5:0.5b" # Fast & efficient
+      temperature: 0.0
 
     # Embedding Model (Must match what you have in Ollama)
     embedder:
@@ -62,16 +72,31 @@ port: ":9092"
 # Forwards requests to this LLM
 target_url: "http://localhost:11434"
 
-# Embedding settings for the query (Must match vectorizers.yaml)
+# Embedder (Must match vectorizers.yaml)
 embedder_type: "ollama_api"
 embedder_url: "http://localhost:11434/api/embeddings"
 embedder_model: "nomic-embed-text"
 
-# Enable RAG Injection
+# Agentic Brains
+# Fast LLM for Query Rewriting (Memory Fix)
+fast_llm:
+  base_url: "http://localhost:11434/v1"
+  model: "qwen2.5:0.5b" 
+
+# Smart LLM for HyDe (Reasoning)
+llm:
+  base_url: "http://localhost:11434/v1"
+  model: "gemma3:4b" # Or llama3
+
+# RAG Pipeline
 rag_enabled: true
-rag_index: "docs_kb"  # Must match 'kektor_index' in vectorizers.yaml
-rag_top_k: 3          # Inject top 3 relevant chunks
-rag_use_graph: true   # Fetch surrounding context (prev/next) automatically
+rag_index: "docs_kb"
+rag_top_k: 6
+rag_threshold: 0.7            # Lower threshold if hybrid true (0.45)
+rag_use_graph: true           # Enables Entity Graph traversal
+rag_use_hyde: true            # Enables Hypothetical Document Embeddings
+rag_use_hybrid: false         # Hybrid Search
+rag_hybrid_alpha: 0.9         # 90% Vector priority (Recommended)
 ```
 
 ---
@@ -109,10 +134,10 @@ Now we need to tell Open WebUI to talk to KektorDB instead of talking directly t
     *   **API Key:** `kektor`
         *   *(Any string works unless you enabled auth in KektorDB)*.
 
-> **[IMAGE]** TODO
-> *Screenshot of Open WebUI "Connections" settings page showing the URL `http://localhost:9092/v1` inserted into the OpenAI field.*
-
 4.  Click **Save/Verify**. You should see your Ollama models appear in the list (KektorDB forwards the model list request to Ollama).
+
+![Open WebUI Connection Settings](../../docs/images/openwebui-connection-setup.png)
+*Set the Base URL to KektorDB Proxy (default :9092).*
 
 ---
 
@@ -125,14 +150,13 @@ Now we need to tell Open WebUI to talk to KektorDB instead of talking directly t
 > *User:* "What is the refund policy mentioned in the documents?"
 
 **What happens in the background:**
-1.  KektorDB intercepts the prompt.
-2.  It finds the relevant chunk in your PDF.
-3.  It fetches the previous and next sentences via the Graph Engine for full context.
-4.  It rewrites the prompt: *"Context: [PDF Content]... Query: What is the refund policy?"*
-5.  Ollama answers using that data.
+1.  **Memory Fix (CQR):** KektorDB intercepts the prompt. If the user asks "How do I install it?", it rewrites the query to "How do I install [Project Name]?" based on chat history.
+2.  **Reasoning (HyDe):** It generates a hypothetical answer using the LLM to understand the *intent* beyond keywords.
+3.  **Graph Retrieval:** It performs a vector search using the hypothetical answer, traversing the graph to find connected entities and context.
+4.  **Injection:** It rewrites the prompt with the enriched context and forwards it to Ollama.
 
-> **[GIF/IMAGE]** TODO
-> *A GIF showing the user typing a question about a private document and the LLM answering correctly.*
+![RAG Chat Demo](../../docs/images/kektordb-rag-demo.gif)
+*KektorDB automatically injecting context into the chat.*
 
 ---
 

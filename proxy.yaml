@@ -4,7 +4,7 @@ target_url: "http://localhost:11434"
 # Configurazione Embedder (usa il tuo modello locale)
 embedder_type: "ollama_api"
 embedder_url: "http://localhost:11434/api/embeddings"
-embedder_model: "nomic-embed-text:latest"
+embedder_model: "nomic-embed-text-v2-moe:latest"
 embedder_timeout: 60s
 
 # RAG Automatico
@@ -12,45 +12,15 @@ rag_enabled: true
 rag_index: "knowledge_base"  # Deve coincidere con l'indice popolato dai Vectorizer!
 rag_top_k: 8
 # RAG usa SIMILARITÀ (Higher is Better, 0.0-1.0)
-rag_threshold: 0.4         # Ignore chunks with similarity score < 0.6
-rag_use_hybrid: true # Cerca anche per parole chiave
+rag_threshold: 0.7         # Ignore chunks with similarity score < 0.6
+rag_use_hybrid: false # Cerca anche per parole chiave
 rag_hybrid_alpha: 0.9      # 70% Vettore, 30% Keywords
 rag_use_graph: true        # Recupera automaticamente contesto prev/next
 rag_use_hyde: true
 # System Prompt Template
 # Usa {{context}} per iniettare i dati trovati e {{query}} per la domanda originale.
 # Il simbolo '|' permette stringhe multilinea in YAML.
-rag_system_prompt: |
-    Sei un assistente tecnico senior ed esperto.
-    Il tuo compito è rispondere alla domanda dell'utente usando ESCLUSIVAMENTE le informazioni fornite nel contesto sottostante.
-    
-    LINEE GUIDA:
-    1. Sii DETTAGLIATO ed ESAUSTIVO. Spiega i concetti in profondità.
-    2. Se il contesto contiene dettagli tecnici (funzioni, architettura), usali tutti.
-    3. Non essere sintetico. L'utente vuole imparare.
-    4. Rispondi SEMPRE nella stessa lingua della domanda (Italiano se la domanda è in Italiano).
-    
-    Se il contesto non contiene la risposta, dì chiaramente: "Non ho informazioni sufficienti nei documenti".
 
-    Contesto:
-    {{context}}
-
-    Domanda:
-    {{query}}
-
-rag_rewriter_prompt: |
-    Sei un motore di riscrittura query. 
-    Analizza la cronologia della chat e riscrivi l'ULTIMO messaggio utente affinché sia una domanda completa e autonoma.
-    Includi il soggetto se mancante. NON rispondere alla domanda. Restituisci SOLO il testo riscritto.
-    Mantieni la lingua originale.
-
-rag_grounded_hyde_prompt: |
-    Sei un esperto. Scrivi una risposta sintetica ipotetica alla domanda dell'utente.
-    Usa la terminologia tecnica presente nei seguenti frammenti per rendere la risposta realistica (Grounding), ma scrivi un testo discorsivo.
-    Rispondi nella stessa lingua della domanda.
-    
-    Frammenti di contesto:
-    {{context}}
 
 # Firewall (Prompt Guard)
 firewall_enabled: true
