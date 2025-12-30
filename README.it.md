@@ -4,20 +4,19 @@
   <img src="docs/images/logo.png" alt="KektorDB Logo" width="500">
 </p>
 
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor-sanonone-pink?logo=github)](https://github.com/sponsors/sanonone)
+[![Ko-fi](https://img.shields.io/badge/Support%20me-Ko--fi-orange?logo=ko-fi)](https://ko-fi.com/sanon)
 [![Go Reference](https://pkg.go.dev/badge/github.com/sanonone/kektordb.svg)](https://pkg.go.dev/github.com/sanonone/kektordb)
 [![PyPI version](https://badge.fury.io/py/kektordb-client.svg)](https://badge.fury.io/py/kektordb-client)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Docker](https://img.shields.io/docker/pulls/sanonone/kektordb)](https://hub.docker.com/r/sanonone/kektordb)
-
-[English](README.md) | [Italiano](README.it.md)
 
 <p align="center">
-  <a href="#quick-start">🚀 Quick Start</a> •
-  <a href="DOCUMENTATION.md#configuration-guide">⚙️ Configuration</a> •
-  <a href="DOCUMENTATION.md#http-api-reference">🔌 API Reference</a> •
-  <a href="DOCUMENTATION.md#go-library-interface">📦 Go Library</a> •
-  <a href="docs/guides/zero_code_rag.md">🤖 Open WebUI Guide</a>
+  <a href="DOCUMENTATION.md">📚 Documentation</a> •
+  <a href="CONTRIBUTING.md">🤝 Contributing</a> •
+  <a href="docs/guides/zero_code_rag.md">🤖 RAG Open WebUI Guide</a>
 </p>
+
+[English](README.md) | [Italiano](README.it.md)
 
 > [!TIP]
 > **Supporto Docker:** Preferisci i container? Un `Dockerfile` è incluso nella root per creare le tue immagini.
@@ -340,6 +339,8 @@ KektorDB è un progetto giovane in sviluppo attivo.
 Come unico manutentore, ho costruito questo motore per esplorare CGO, SIMD e ottimizzazioni Go a basso livello. Sono orgoglioso delle prestazioni raggiunte finora, ma so che c'è sempre un modo migliore per scrivere codice.
 
 Se noti race conditions, ottimizzazioni mancate o pattern Go non idiomatici, **per favore apri una Issue o una PR**.
+
+👉 **[Per saperne di più](CONTRIBUTING.md)**
 
 ---
 

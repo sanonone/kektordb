@@ -10,15 +10,13 @@
 [![PyPI version](https://badge.fury.io/py/kektordb-client.svg)](https://badge.fury.io/py/kektordb-client)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-[English](README.md) | [Italiano](README.it.md)
-
 <p align="center">
-  <a href="#quick-start">🚀 Quick Start</a> •
-  <a href="DOCUMENTATION.md#configuration-guide">⚙️ Configuration</a> •
-  <a href="DOCUMENTATION.md#http-api-reference">🔌 API Reference</a> •
-  <a href="DOCUMENTATION.md#go-library-interface">📦 Go Library</a> •
-  <a href="docs/guides/zero_code_rag.md">🤖 Open WebUI Guide</a>
+  <a href="DOCUMENTATION.md">📚 Documentation</a> •
+  <a href="CONTRIBUTING.md">🤝 Contributing</a> •
+  <a href="docs/guides/zero_code_rag.md">🤖 RAG Open WebUI Guide</a>
 </p>
+
+[English](README.md) | [Italiano](README.it.md)
 
 > [!TIP]
 > **Docker Support:** Prefer containers? A `Dockerfile` is included in the root for building your own images.
@@ -341,6 +339,8 @@ KektorDB is a young project under active development.
 As the sole maintainer, I built this engine to explore CGO, SIMD, and low-level Go optimizations. I am proud of the performance achieved so far, but I know there is always a better way to write code.
 
 If you spot race conditions, missed optimizations, or unidiomatic Go patterns, **please open an Issue or a PR**.
+
+👉 **[Read more](CONTRIBUTING.md)**
 
 ---
 
