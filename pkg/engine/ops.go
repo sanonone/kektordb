@@ -5,19 +5,23 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+
 	"github.com/sanonone/kektordb/pkg/core"
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/core/types"
 	"github.com/sanonone/kektordb/pkg/metrics"
 	"github.com/sanonone/kektordb/pkg/persistence"
-	"sort"
-	"strconv"
-	"strings"
-	"sync"
-	"sync/atomic"
 )
 
 // --- KV Operations ---
@@ -427,7 +431,14 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 	if explicitTextQuery != "" {
 		booleanFilters = filter // Il filtro è puro (es. category='A')
 		textQuery = explicitTextQuery
-		textQueryField = "content" // Default field per ibrido esplicito
+		// Auto-detect text field instead of hardcoded "content"
+		textQueryField = e.detectTextFieldForIndex(indexName)
+		if textQueryField == "" {
+			slog.Warn("[Hybrid Search] No text field found in index, falling back to vector-only search",
+				"index", indexName,
+				"hint", "Make sure metadata contains one of: content, text, page_content, body, description")
+			textQuery = "" // Disable hybrid search
+		}
 	} else {
 		// Fallback alla vecchia logica CONTAINS
 		booleanFilters, textQuery, textQueryField = parseHybridFilter(filter)
@@ -508,6 +519,36 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 		}()
 	}
 	wg.Wait()
+
+	// Diagnostic Logging (Fix #5)
+	slog.Info("[Hybrid Search] Search completed",
+		"vector_results", len(vectorResults),
+		"text_results", len(textResults),
+		"text_field", textQueryField,
+		"alpha", alpha,
+	)
+
+	// Warning if text search failed
+	if len(textResults) == 0 && textQuery != "" {
+		slog.Warn("[Hybrid Search] Text search returned 0 results",
+			"query", textQuery,
+			"field", textQueryField,
+			"hint", "Check if field exists in metadata and is properly indexed")
+	}
+
+	// Debug: Show top results before normalization (for tuning)
+	if len(vectorResults) > 0 && slog.Default().Enabled(context.TODO(), slog.LevelDebug) {
+		slog.Debug("[Hybrid Search] Top 3 vector results (raw distances)")
+		for i := 0; i < min(3, len(vectorResults)); i++ {
+			slog.Debug(fmt.Sprintf("  #%d distance: %.4f", i+1, vectorResults[i].Score))
+		}
+	}
+	if len(textResults) > 0 && slog.Default().Enabled(context.TODO(), slog.LevelDebug) {
+		slog.Debug("[Hybrid Search] Top 3 text results (raw BM25 scores)")
+		for i := 0; i < min(3, len(textResults)); i++ {
+			slog.Debug(fmt.Sprintf("  #%d score: %.4f", i+1, textResults[i].Score))
+		}
+	}
 
 	// Fusion Logic
 	if textQuery == "" {
@@ -787,4 +828,40 @@ func (e *Engine) VTriggerMaintenance(indexName string, taskType string) error {
 
 	hnswIdx.MaintenanceRun(taskType) // forceType = "vacuum" or "refine"
 	return nil
+}
+
+// detectTextFieldForIndex identifies which field should be used for text search.
+// It checks a list of common field names against the text index.
+func (e *Engine) detectTextFieldForIndex(indexName string) string {
+	// 1. Get the text index map for this index
+	// Note: We access DB structure directly. Ensure lock if necessary,
+	// but textIndex map reference itself is stable usually.
+	// DB.textIndex is map[string]map[string]map[string]PostingList
+	// i.e., map[indexName][fieldName][token]...
+
+	e.DB.RLock()
+	defer e.DB.RUnlock()
+
+	idxTextFields, ok := e.DB.GetTextIndexMap(indexName)
+	if !ok || len(idxTextFields) == 0 {
+		return ""
+	}
+
+	// 2. Priority list of fields
+	candidates := []string{"content", "text", "page_content", "body", "description", "summary"}
+
+	for _, field := range candidates {
+		if _, exists := idxTextFields[field]; exists {
+			slog.Debug("[Hybrid Search] Auto-detected text field", "index", indexName, "field", field)
+			return field
+		}
+	}
+
+	// 3. Fallback: return the first available field if any
+	for field := range idxTextFields {
+		slog.Debug("[Hybrid Search] Fallback to first available text field", "index", indexName, "field", field)
+		return field
+	}
+
+	return ""
 }

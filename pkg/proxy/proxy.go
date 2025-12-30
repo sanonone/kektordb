@@ -487,6 +487,8 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 		return nil, nil
 	}
 
+	slog.Debug("Found snippets for grounding", "count", len(results))
+
 	var contextBuilder strings.Builder
 	foundRelevant := false
 	seenContent := make(map[string]struct{})

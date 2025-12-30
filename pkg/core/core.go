@@ -1488,3 +1488,22 @@ func (db *DB) calculateBM25TermScore(token string, docID uint32, tf int, stats *
 
 	return idf * (numerator / denominator)
 }
+
+// GetTextIndexMap returns a copy of the available fields in the text index for a given index name.
+// It returns map[fieldName]map[token]PostingList (though usually we just need keys).
+// This is used for auto-detecting which field contains text.
+func (s *DB) GetTextIndexMap(indexName string) (map[string]map[string]PostingList, bool) {
+	// Assumes caller holds lock if needed, but RLock is safer
+	// s.mu.RLock() // Caller (Engine) usually holds lock or we can lock here?
+	// Given Engine calls this inside its own logic, let's just return the map reference.
+	// Since accessing the map itself requires locking, we should ensure safety.
+	// However, Engine.detectTextFieldForIndex already holds RLock on DB.
+	// So we can just return the map.
+
+	// Check if index exists in textIndex
+	if s.textIndex == nil {
+		return nil, false
+	}
+	fields, ok := s.textIndex[indexName]
+	return fields, ok
+}

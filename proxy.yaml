@@ -12,9 +12,9 @@ rag_enabled: true
 rag_index: "knowledge_base"  # Deve coincidere con l'indice popolato dai Vectorizer!
 rag_top_k: 8
 # RAG usa SIMILARITÀ (Higher is Better, 0.0-1.0)
-rag_threshold: 0.7         # Ignore chunks with similarity score < 0.6
-rag_use_hybrid: false # Cerca anche per parole chiave
-rag_hybrid_alpha: 0.9      # 70% Vettore, 30% Keywords
+rag_threshold: 0.6         # Ignore chunks with similarity score < 0.6
+rag_use_hybrid: true # Cerca anche per parole chiave
+rag_hybrid_alpha: 0.7      # 70% Vettore, 30% Keywords
 rag_use_graph: true        # Recupera automaticamente contesto prev/next
 rag_use_hyde: true
 # System Prompt Template

@@ -42,6 +42,7 @@ func parseHybridFilter(filter string) (booleanFilter, textQuery, textField strin
 
 // normalizeVectorScores maps distance (lower is better) to score (0..1, higher is better).
 // Logic: 1 / (1 + distance)
+// REVERTED from MinMax to maintain absolute score stability for RAG thresholds.
 func normalizeVectorScores(results []types.SearchResult) {
 	for i := range results {
 		results[i].Score = 1.0 / (1.0 + results[i].Score)
