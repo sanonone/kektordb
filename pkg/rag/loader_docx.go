@@ -16,11 +16,11 @@ func NewDocxLoader() *DocxLoader {
 	return &DocxLoader{}
 }
 
-func (l *DocxLoader) Load(path string) (string, error) {
+func (l *DocxLoader) Load(path string) (*Document, error) {
 	// 1. Open the .docx file as a ZIP archive
 	r, err := zip.OpenReader(path)
 	if err != nil {
-		return "", fmt.Errorf("failed to open docx zip: %w", err)
+		return nil, fmt.Errorf("failed to open docx zip: %w", err)
 	}
 	defer r.Close()
 
@@ -34,18 +34,28 @@ func (l *DocxLoader) Load(path string) (string, error) {
 	}
 
 	if docFile == nil {
-		return "", fmt.Errorf("invalid docx: word/document.xml not found")
+		return nil, fmt.Errorf("invalid docx: word/document.xml not found")
 	}
 
 	// 3. Open the XML file
 	rc, err := docFile.Open()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer rc.Close()
 
 	// 4. Parse XML manually to extract text and styles
-	return parseDocxXML(rc)
+	text, err := parseDocxXML(rc)
+	if err != nil {
+		return nil, err
+	}
+
+	// 5. Wrap in the Document struct
+	// Note: We leave Images as nil for now.
+	return &Document{
+		Text:   text,
+		Images: nil,
+	}, nil
 }
 
 // parseDocxXML streams the XML and converts Paragraphs to Markdown-like text

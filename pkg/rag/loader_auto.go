@@ -8,19 +8,19 @@ import (
 // AutoLoader automatically selects the correct loader based on file extension.
 type AutoLoader struct {
 	textLoader Loader
-	pdfLoader  Loader
+	pdfLoader  *PDFAdvancedLoader
 	docxLoader Loader
 }
 
-func NewAutoLoader() *AutoLoader {
+func NewAutoLoader(extractImages bool) *AutoLoader {
 	return &AutoLoader{
 		textLoader: NewTextLoader(),
-		pdfLoader:  NewPDFLoader(),
+		pdfLoader:  NewPDFAdvancedLoader(extractImages),
 		docxLoader: NewDocxLoader(),
 	}
 }
 
-func (l *AutoLoader) Load(path string) (string, error) {
+func (l *AutoLoader) Load(path string) (*Document, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 
 	switch ext {

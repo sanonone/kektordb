@@ -95,6 +95,7 @@ func NewVectorizerService(server *Server) (*VectorizerService, error) {
 			GraphEnabled:          cfg.GraphEnabled,
 			GraphEntityExtraction: cfg.GraphEntityExtraction,
 			LLMConfig:             cfg.LLM,
+			VisionLLMConfig:       cfg.VisionLLM,
 
 			IndexMetric:         idxMetric,
 			IndexPrecision:      idxPrec,
@@ -142,8 +143,15 @@ func NewVectorizerService(server *Server) (*VectorizerService, error) {
 			llmClient = llm.NewClient(ragConfig.LLMConfig)
 		}
 
+		var visionClient llm.Client
+		// Se l'URL è settato, vuol dire che l'utente vuole la visione
+		if ragConfig.VisionLLMConfig.BaseURL != "" {
+			log.Printf("[Vectorizer] Enabling Vision Pipeline using (%s)", ragConfig.VisionLLMConfig.Model)
+			visionClient = llm.NewClient(ragConfig.VisionLLMConfig)
+		}
+
 		// 5. Create Pipeline
-		pipeline := rag.NewPipeline(ragConfig, storeAdapter, embedder, llmClient)
+		pipeline := rag.NewPipeline(ragConfig, storeAdapter, embedder, llmClient, visionClient)
 
 		service.pipelines = append(service.pipelines, pipeline)
 		log.Printf("RAG Pipeline '%s' configured (Mode: %s, Source: %s)", cfg.Name, ragConfig.ChunkingStrategy, cfg.Source.Path)

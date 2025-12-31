@@ -22,12 +22,13 @@ type extractionJob struct {
 
 // Pipeline orchestrates the ingestion process: Load -> Split -> Embed -> Store.
 type Pipeline struct {
-	cfg       Config
-	loader    Loader
-	splitter  Splitter
-	embedder  embeddings.Embedder
-	llmClient llm.Client
-	store     Store
+	cfg          Config
+	loader       Loader
+	splitter     Splitter
+	embedder     embeddings.Embedder
+	llmClient    llm.Client
+	visionClient llm.Client
+	store        Store
 
 	stopCh chan struct{}
 
@@ -44,13 +45,17 @@ type fileState struct {
 
 // NewPipeline creates a ready-to-run pipeline.
 // We inject the Embedder to allow testing with mocks or swapping providers.
-func NewPipeline(cfg Config, store Store, embedder embeddings.Embedder, llmClient llm.Client) *Pipeline {
+func NewPipeline(cfg Config, store Store, embedder embeddings.Embedder, llmClient llm.Client, visionClient llm.Client) *Pipeline {
+
+	extractImages := (visionClient != nil)
+
 	return &Pipeline{
 		cfg:            cfg,
-		loader:         NewAutoLoader(),
+		loader:         NewAutoLoader(extractImages),
 		splitter:       NewSplitterFactory(cfg),
 		embedder:       embedder,
 		llmClient:      llmClient,
+		visionClient:   visionClient,
 		store:          store,
 		stopCh:         make(chan struct{}),
 		extractionChan: make(chan extractionJob, 100),
@@ -220,17 +225,49 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 		_ = p.store.Delete(p.cfg.IndexName, oldParentID)
 	}
 
-	// 1. Load Text
-	text, err := p.loader.Load(path)
+	// 1. LOAD: Ora ritorna *Document (Testo + Immagini)
+	doc, err := p.loader.Load(path)
 	if err != nil {
 		return err
 	}
-	if text == "" {
-		return nil // Empty file
+	// Se vuoto, esci
+	if doc == nil || (doc.Text == "" && len(doc.Images) == 0) {
+		return nil
 	}
 
-	// 2. Split
-	chunks := p.splitter.SplitText(text)
+	fullText := doc.Text
+
+	// --- VISION PIPELINE (NUOVA) ---
+	// Se ci sono immagini e abbiamo il client Vision
+	slog.Info("[RAG] Vision Check", "filename", info.Name(), "image_count", len(doc.Images), "vision_enabled", (p.visionClient != nil))
+
+	if len(doc.Images) > 0 && p.visionClient != nil {
+		slog.Info("[RAG] Analyzing images with Vision Model...", "filename", info.Name(), "count", len(doc.Images))
+
+		for i, img := range doc.Images {
+			// Limitiamo l'analisi alle prime X immagini per non esplodere coi tempi?
+			// Per ora facciamo tutto.
+
+			prompt := "Describe this image in detail. Identify charts, data points, or text inside it. Be concise."
+
+			// Usiamo ChatWithImages del client LLM
+			// img.Data è []byte
+			desc, err := p.visionClient.ChatWithImages(prompt, "", [][]byte{img.Data})
+
+			if err == nil {
+				// Appendiamo la descrizione al testo principale come un blocco speciale
+				descBlock := fmt.Sprintf("\n\n--- [IMAGE ANALYSIS #%d] ---\n%s\n--------------------------\n", i+1, desc)
+				fullText += descBlock
+				slog.Info("[RAG] Image analyzed successfully", "image_index", i+1, "filename", info.Name())
+			} else {
+				slog.Error("[RAG] Vision analysis failed", "image_index", i, "filename", info.Name(), "error", err)
+			}
+		}
+	}
+	// ------------------------------
+
+	// 2. Split (Usiamo fullText che ora include le descrizioni delle immagini)
+	chunks := p.splitter.SplitText(fullText)
 	if len(chunks) == 0 {
 		return nil
 	}

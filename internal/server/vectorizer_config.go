@@ -31,6 +31,7 @@ type VectorizerConfig struct {
 	Source                SourceConfig        `yaml:"source"`
 	Embedder              EmbedderConfig      `yaml:"embedder"`
 	LLM                   llm.Config          `yaml:"llm"`
+	VisionLLM             llm.Config          `yaml:"vision_llm"`
 	DocProcessor          DocProcessorConfig  `yaml:"document_processor"`
 	MetadataTemplate      map[string]string   `yaml:"metadata_template"`
 	IncludePatterns       []string            `yaml:"include_patterns"`

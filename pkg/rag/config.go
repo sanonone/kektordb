@@ -42,6 +42,8 @@ type Config struct {
 	GraphEntityExtraction  bool
 	EntityExtractionPrompt string
 
+	VisionLLMConfig llm.Config
+
 	IndexMetric         string
 	IndexPrecision      string
 	IndexM              int
