@@ -537,7 +537,7 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 		}
 		seenContent[blockHash] = struct{}{}
 
-		contextBuilder.WriteString(fmt.Sprintf("--- Document: %s ---\n", sourceName))
+		contextBuilder.WriteString(fmt.Sprintf("--- Source Document: %s ---\n", sourceName))
 		if len(topics) > 0 {
 			contextBuilder.WriteString(fmt.Sprintf("[Related Topics: %s]\n", strings.Join(topics, ", ")))
 		}

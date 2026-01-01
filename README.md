@@ -325,10 +325,25 @@ For a complete guide to all features and API endpoints, please see the **[Full D
 
 KektorDB is a young project under active development.
 
-*   **v0.4.0 (Current):** Agentic RAG, HyDe, Entity Extraction, Web UI, Observability.
-*   **Near-Term:** Roaring Bitmaps for filtering, simd avo optimizations.
-*   **v0.5.0 (Next):** Hybrid Disk Storage (Disk-backed vectors) to break the RAM limit.
-*   **Long-Term:** **maybe** Replication and Distributed Consensus.
+### Coming Next (v0.5.0) - The Scalability Update
+The main focus for the next major release is breaking the RAM limit without sacrificing the simplicity of a single binary.
+*   [ ] **Hybrid Disk Storage:** Implement a pluggable storage engine. Keep the HNSW graph in RAM (or Int8) for speed, but offload full vector data to disk using standard I/O or memory mapping.
+*   [ ] **Native Backup/Restore:** Simple API to snapshot data to S3/MinIO/Local without stopping the server.
+
+### Planned (Short Term)
+Features we intend to build to make KektorDB production-ready and faster.
+*   [ ] **SIMD/AVX Optimizations:** Extending pure Go Assembly optimizations (currently used for Cosine) to Euclidean distance and Float16 operations to maximize throughput on modern CPUs.
+*   [ ] **Roaring Bitmaps:** Replace current map-based filtering with Roaring Bitmaps for lightning-fast metadata filtering (e.g. `WHERE user_id = X`).
+*   [ ] **RBAC & Security:** Implement Role-Based Access Control (Admin vs Read-Only tokens) and finer granularity for multi-tenant apps.
+*   [ ] **Official TypeScript Client:** To better serve the JS/Node.js AI ecosystem.
+
+### Future Vision (Long Term)
+Features under research. Implementation depends on community adoption and feedback.
+*   **Distributed Replication:** Raft-based consensus for High Availability (Leader-Follower).
+*   **Semantic "Gardener":** A background process that uses LLMs to merge duplicate chunks and resolve conflicting information in the Knowledge Graph automatically.
+*   **Multimodal UI:** Extending the dashboard to visualize and search images natively.
+
+> **Want to influence the roadmap?** [Open an Issue](https://github.com/sanonone/kektordb/issues) or vote on existing ones!
 
 ---
 

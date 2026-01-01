@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/ledongthuc/pdf"
@@ -131,13 +133,30 @@ func (l *PDFAdvancedLoader) extractImagesFromPDF(path string) ([]Image, error) {
 		images = append(images, Image{
 			Data: imgData,
 			Ext:  ext,
+			Name: entry.Name(),
 			// Page: ... parsing filename logic could go here
 		})
 	}
 
-	// Sort images by filename to maintain some order
+	// Sort images by filename numbers (Page-Index) to maintain context order
+	// pdfcpu typically outputs "im<Page>-<Index>" (e.g. im1-0.png)
+	reNum := regexp.MustCompile(`\d+`)
+
 	sort.Slice(images, func(i, j int) bool {
-		return len(images[i].Data) < len(images[j].Data) // Arbitrary stable sort
+		// Extract all numbers from filenames
+		umsI := reNum.FindAllString(images[i].Name, -1)
+		umsJ := reNum.FindAllString(images[j].Name, -1)
+
+		// Compare number by number
+		for k := 0; k < len(umsI) && k < len(umsJ); k++ {
+			nI, _ := strconv.Atoi(umsI[k])
+			nJ, _ := strconv.Atoi(umsJ[k])
+			if nI != nJ {
+				return nI < nJ
+			}
+		}
+		// Fallback to string comparison if numbers equal
+		return images[i].Name < images[j].Name
 	})
 
 	return images, nil

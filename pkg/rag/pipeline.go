@@ -250,6 +250,13 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 
 			prompt := "Describe this image in detail. Identify charts, data points, or text inside it. Be concise."
 
+			// --- VISION OCR EXTENSION ---
+			// If the document has no text (scanned PDF), we ask the Vision Model to transcribe it.
+			if len(doc.Text) < 50 {
+				prompt = "Transcribe the text in this image strictly. Do not describe the layout, just return the text found."
+				slog.Info("[RAG] Vision OCR Triggered", "filename", info.Name(), "reason", "empty_text_fallback")
+			}
+
 			// Usiamo ChatWithImages del client LLM
 			// img.Data è []byte
 			desc, err := p.visionClient.ChatWithImages(prompt, "", [][]byte{img.Data})

@@ -13,8 +13,12 @@ func DefaultConfig() Config {
 	// 1. Prompt RAG
 	defaultRAGPrompt := `You are a helpful expert assistant. 
 Use the following context to answer the user's question.
-If the answer is not in the context, say you don't know.
-IMPORTANT: Answer in the same language as the user's question.
+RULES:
+1. Answer ONLY based on the provided context.
+2. If the answer is not in the context, say you don't know.
+3. CITATIONS: You MUST cite the source document for every key piece of information.
+   - Use the format: [Source: filename]
+4. LANGUAGE: Answer in the same language as the user's question.
 
 Context:
 {{context}}

@@ -325,10 +325,25 @@ Per una guida completa a tutte le funzionalità e agli endpoint API, consulta la
 
 KektorDB è un progetto giovane in sviluppo attivo.
 
-*   **v0.4.0 (Corrente):** RAG Agentico, HyDe, Estrazione Entità, Web UI, Osservabilità.
-*   **A breve termine:** Roaring Bitmaps per filtri, ottimizzazioni simd avo.
-*   **v0.5.0 (Prossimo):** Archiviazione Ibrida su Disco (Vettori su disco) per superare il limite della RAM.
-*   **A lungo termine:** **forse** Replicazione e Consenso Distribuito.
+### Prossimamente (v0.5.0) - L'Aggiornamento Scalabilità
+L'obiettivo principale della prossima major release è superare il limite della RAM senza sacrificare la semplicità del binario singolo.
+*   [ ] **Storage Ibrido su Disco:** Implementazione di un engine di storage "pluggable". Mantiene il grafo HNSW in RAM (o Int8) per la velocità, ma sposta i dati vettoriali completi su disco.
+*   [ ] **Backup/Restore Nativo:** API semplice per salvare snapshot su S3/MinIO/Locale senza fermare il server.
+
+### Pianificati (Breve Termine)
+Funzionalità previste per rendere KektorDB pronto per la produzione e ancora più veloce.
+*   [ ] **Ottimizzazioni SIMD/AVX:** Estendere le ottimizzazioni Assembly (attualmente usate per il Coseno) alla distanza Euclidea e alle operazioni Float16 per massimizzare il throughput sulle CPU moderne.
+*   [ ] **Roaring Bitmaps:** Sostituire l'attuale filtro basato su mappe con Roaring Bitmaps per filtri sui metadati ultra-veloci (es. `WHERE user_id = X`).
+*   [ ] **RBAC & Sicurezza:** Implementare il controllo accessi basato sui ruoli (Admin vs Read-Only) per applicazioni multi-tenant.
+*   [ ] **Client TypeScript Ufficiale:** Per supportare meglio l'ecosistema JS/Node.js e gli agenti web.
+
+### Visione Futura (Lungo Termine)
+Funzionalità in fase di ricerca. L'implementazione dipenderà dall'adozione e dal feedback della community.
+*   **Replicazione Distribuita:** Consenso basato su Raft per l'Alta Disponibilità (Leader-Follower).
+*   **"Giardiniere" Semantico:** Un processo in background che usa gli LLM per unire chunk duplicati e risolvere conflitti nel Knowledge Graph automaticamente.
+*   **UI Multimodale:** Estensione della dashboard per visualizzare e cercare nativamente le immagini.
+
+> **Vuoi influenzare la roadmap?** [Apri una Issue](https://github.com/sanonone/kektordb/issues) o vota quelle esistenti!
 
 ---
 
