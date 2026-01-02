@@ -68,7 +68,7 @@ func parseDocxXML(r io.Reader) (string, error) {
 	var currentStyle string
 
 	inParagraph := false
-	inTextNode := false // Siamo dentro un tag <w:t>?
+	inTextNode := false // Are we inside a <w:t> tag?
 
 	for {
 		t, err := decoder.Token()
@@ -82,24 +82,24 @@ func parseDocxXML(r io.Reader) (string, error) {
 		switch se := t.(type) {
 		case xml.StartElement:
 			if se.Name.Local == "p" {
-				// Inizio Paragrafo
+				// Paragraph Start
 				inParagraph = true
 				currentParaText.Reset()
 				currentStyle = ""
 			} else if se.Name.Local == "pStyle" {
-				// Stile (es. Heading1)
+				// Style (e.g. Heading1)
 				for _, attr := range se.Attr {
 					if attr.Name.Local == "val" {
 						currentStyle = attr.Value
 					}
 				}
 			} else if se.Name.Local == "t" {
-				// Inizio Testo
+				// Text Start
 				inTextNode = true
 			}
 
 		case xml.CharData:
-			// Contenuto testuale
+			// Text Content
 			if inParagraph && inTextNode {
 				currentParaText.Write(se)
 			}
@@ -108,16 +108,16 @@ func parseDocxXML(r io.Reader) (string, error) {
 			if se.Name.Local == "t" {
 				inTextNode = false
 			} else if se.Name.Local == "p" {
-				// Fine Paragrafo: Flush
+				// Paragraph End: Flush
 				if inParagraph {
 					text := currentParaText.String()
 					if strings.TrimSpace(text) != "" {
-						// Debug Log (Rimuovi dopo che funziona)
+						// Debug Log (Remove after active dev)
 						// log.Printf("[DOCX DEBUG] Found Para: style='%s' text='%.20s...'", currentStyle, text)
 
 						prefix := ""
-						// Riconoscimento Heading (migliorato per case-insensitive o varianti)
-						// Word usa spesso "Heading1", "Heading 2", ecc.
+						// Heading Recognition (improved for case-insensitive or variants)
+						// Word often uses "Heading1", "Heading 2", etc.
 						if strings.Contains(currentStyle, "Heading") || strings.Contains(currentStyle, "heading") {
 							if strings.Contains(currentStyle, "1") {
 								prefix = "# "

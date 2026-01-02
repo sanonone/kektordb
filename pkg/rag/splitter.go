@@ -78,7 +78,7 @@ func NewRecursiveSplitter(chunkSize, chunkOverlap int) *RecursiveCharacterSplitt
 }
 
 // NewCodeSplitter creates a splitter optimized for code (Go, Python, etc).
-// TODO: improvement add specific separators for languages
+// TODO: implement language-specific separators (e.g., for Ruby, Java) to improve splitting accuracy.
 func NewCodeSplitter(chunkSize, chunkOverlap int) *RecursiveCharacterSplitter {
 	return &RecursiveCharacterSplitter{
 		ChunkSize:    chunkSize,

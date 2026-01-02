@@ -134,7 +134,6 @@ func (l *PDFAdvancedLoader) extractImagesFromPDF(path string) ([]Image, error) {
 			Data: imgData,
 			Ext:  ext,
 			Name: entry.Name(),
-			// Page: ... parsing filename logic could go here
 		})
 	}
 

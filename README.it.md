@@ -21,9 +21,9 @@
 > [!TIP]
 > **Supporto Docker:** Preferisci i container? Un `Dockerfile` è incluso nella root per creare le tue immagini.
 
-**KektorDB è un database vettoriale in-memory integrabile che agisce come Livello di Memoria per Agenti AI Locali.**
+**KektorDB è un database Vettoriale + Grafo in-memory, integrabile (embeddable) e scritto in puro Go.**
 
-Scritto in puro Go, colma il divario tra librerie HNSW grezze e complessi sistemi distribuiti. Fornisce una **Pipeline RAG Agentica** completa, una **Memoria a Grafo Semantico** e una **Dashboard Visiva** pronte all'uso, eseguite come un singolo binario senza dipendenze esterne.
+Fonde un solido **Motore HNSW** con un **Grafo Semantico leggero**, permettendoti di combinare la similarità vettoriale con relazioni esplicite (come `parent`, `next`, `mentions`) senza la complessità e l'overhead dei tradizionali Database a Grafo.
 
 > *Costruito con la filosofia di SQLite: opzione serverless, zero dipendenze e facile da gestire.*
 
@@ -35,12 +35,11 @@ Scritto in puro Go, colma il divario tra librerie HNSW grezze e complessi sistem
 
 ## Perché KektorDB?
 
-La maggior parte dei database vettoriali sono solo motori di archiviazione. Per costruire un sistema RAG, devi comunque scrivere codice Python complesso per logiche di chunking, embedding e recupero. KektorDB adotta un approccio diverso: **"Batterie Incluse"**.
+KektorDB semplifica lo stack unificando il **Database**, il **Motore di Ricerca** e il **Middleware AI** in un singolo binario privo di dipendenze.
 
-*   **RAG Zero-Configurazione:** Punta KektorDB verso una cartella di file PDF/Markdown/DOCX. Gestisce automaticamente il chunking, l'embedding e il **Collegamento delle Entità (Entity Linking)** utilizzando LLM locali.
-*   **Recupero Agentico:** Non cerca solo parole chiave. Utilizza **HyDe** (Hypothetical Document Embeddings) e **Riscritura delle Query** per comprendere l'intento dietro domande vaghe e correggere il contesto della memoria della chat.
-*   **Grafo di Conoscenza Visivo:** Include una Web UI integrata (`/ui`) per visualizzare come i tuoi documenti sono connessi semanticamente (es. quali documenti parlano della stessa "Entità").
-*   **Integrabile (Embeddable):** Stai costruendo un'app Go? Importa `pkg/engine` ed esegui il database all'interno del tuo processo. Nessun overhead di rete.
+*   **Database First:** Uno store robusto e persistente (AOF+Snapshot) con ricerca ibrida (BM25 + Vettore) e filtri sui metadati.
+*   **Architettura Embedded:** Progettato per girare a fianco del tuo processo applicativo (come SQLite) o come microservizio leggero, eliminando la latenza di rete.
+*   **Livello Grafo Leggero:** A differenza degli store vettoriali "piatti", KektorDB comprende le connessioni. Fornisce un motore a grafo snello, ottimizzato per l'**attraversamento N-Hop** e il **Recupero del Contesto**, colmando il divario tra similarità e struttura.
 
 ---
 
@@ -48,22 +47,23 @@ La maggior parte dei database vettoriali sono solo motori di archiviazione. Per 
 
 KektorDB non è progettato per sostituire cluster distribuiti che gestiscono miliardi di vettori. Invece, brilla in scenari specifici e ad alto valore:
 
-### 1. RAG Locale & Knowledge Base
-Perfetto per applicazioni desktop o agenti AI locali.
-*   **Scenario:** Hai una cartella di documentazione (`.md`, `.pdf`, `.docx`) e vuoi chattare con essa.
-*   **Soluzione:** KektorDB sorveglia la cartella, estrae entità (es. collega menzioni di "Progetto X" tra i file) e fornisce un'API di ricerca.
-*   **Beneficio:** Trasforma file statici in un Grafo di Conoscenza strutturato in pochi minuti.
+### 1. Ricerca Embedded per Applicazioni Go
+Ideale per sviluppatori che costruiscono monoliti o microservizi e necessitano di ricerca semantica senza l'overhead operativo di un cluster distribuito.
+*   **Scenario:** Implementare "Prodotti Correlati" o "Ricerca Semantica" in un backend Go.
+*   **Soluzione:** `import "github.com/sanonone/kektordb/pkg/engine"` per eseguire il DB in-process.
+*   **Vantaggio:** Zero complessità di deployment. Il DB scala insieme alla tua app.
 
-### 2. AI Gateway per Open WebUI
-*   **Scenario:** Usi una UI come **Open WebUI** + Ollama e vuoi aggiungere memoria a lungo termine.
-*   **Soluzione:** Configura la tua UI per usare `http://localhost:9092/v1` (KektorDB Proxy).
-*   **Beneficio:** KektorDB intercetta la chat, riscrive le query per risolvere problemi di memoria, inietta il contesto rilevante e inoltra il tutto all'LLM.
+### 2. RAG Locale & Knowledge Base
+Perfetto per applicazioni desktop, agenti AI locali o ricerca su documentazione privata dove la privacy dei dati è fondamentale.
+*   **Scenario:** Devi indicizzare file sensibili (PDF/Markdown/Docx) e chattare con essi usando LLM locali (Ollama).
+*   **Soluzione:** Punta KektorDB alla tua cartella. Lui gestisce l'intera pipeline di ingestione (OCR, chunking, linking).
+*   **Vantaggio:** Il tempo di setup scende da giorni a minuti. Nessun dato lascia la tua macchina.
 
-### 3. Ricerca Go Integrata
-Ideale per sviluppatori Go che costruiscono monoliti o microservizi.
-*   **Scenario:** Devi aggiungere ricerca semantica al tuo backend Go (es. "Trova prodotti simili").
-*   **Soluzione:** `import "github.com/sanonone/kektordb/pkg/engine"`.
-*   **Beneficio:** Zero complessità di deployment. Il DB vive e muore con il processo della tua app.
+### 3. AI Gateway & Cache Semantica
+Agisce come un proxy intelligente per ottimizzare costi e latenza delle applicazioni LLM.
+*   **Scenario:** Stai costruendo un Chatbot usando API OpenAI/Anthropic.
+*   **Soluzione:** Usa KektorDB come middleware. Mette in cache le risposte semanticamente (risparmiando sui costi API) e agisce da firewall per bloccare prompt malevoli prima che raggiungano l'LLM.
+*   **Vantaggio:** Miglioramento immediato delle performance e riduzione dei costi senza modificare il codice del client.
 
 ---
 
@@ -93,6 +93,18 @@ KektorDB può funzionare come **middleware intelligente** tra la tua Chat UI e i
 
 ## ✨ Caratteristiche Principali
 
+### ⚡ Performance & Ingegneria
+*   **Motore HNSW:** Implementazione personalizzata ottimizzata per letture ad alta concorrenza.
+*   **Ricerca Ibrida:** Combina Similarità Vettoriale + BM25 (Parole chiave) + Filtri Metadati.
+*   **Efficienza della Memoria:** Supporta **Quantizzazione Int8** (75% di risparmio RAM) con auto-training zero-shot e **Float16**.
+*   **Manutenzione & Ottimizzazione:**
+    *   **Vacuum:** Un processo in background che pulisce i nodi eliminati per recuperare memoria e riparare le connessioni del grafo.
+    *   **Refine:** Un'ottimizzazione continua che rivaluta le connessioni del grafo per migliorare la qualità della ricerca (recall) nel tempo.
+*   **AI Gateway & Middleware:** Agisce come proxy intelligente per client compatibili con OpenAI/Ollama. Dispone di **Caching Semantico** per servire risposte istantanee a query ricorrenti e un **Firewall Semantico** per bloccare prompt dannosi basandosi sulla similarità vettoriale, indipendentemente dalla pipeline RAG.
+*   **Persistenza:** Ibrida **AOF + Snapshot** assicura durabilità.
+*   **Osservabilità:** Metriche Prometheus (`/metrics`) e logging strutturato.
+*   **Doppia Modalità:** Esegui come **Server REST** autonomo o come **Libreria Go**.
+
 ### 🧠 Pipeline RAG Agentica
 *   **Riscritura Query (CQR):** Riscrive automaticamente le domande dell'utente basandosi sulla cronologia della chat (es. "Come installarlo?" -> "Come installare KektorDB?"). Risolve problemi di memoria a breve termine.
 *   **Grounded HyDe:** Genera risposte ipotetiche per migliorare il recall su query vaghe, usando frammenti di dati reali per ancorare l'allucinazione.
@@ -108,18 +120,6 @@ KektorDB può funzionare come **middleware intelligente** tra la tua Chat UI e i
   <em>Visualizzazione delle connessioni semantiche tra documenti tramite entità estratte.</em>
 </p>
 
-### ⚡ Performance & Ingegneria
-*   **Motore HNSW:** Implementazione personalizzata ottimizzata per letture ad alta concorrenza.
-*   **Ricerca Ibrida:** Combina Similarità Vettoriale + BM25 (Parole chiave) + Filtri Metadati.
-*   **Efficienza della Memoria:** Supporta **Quantizzazione Int8** (75% di risparmio RAM) con auto-training zero-shot e **Float16**.
-*   **Manutenzione & Ottimizzazione:**
-    *   **Vacuum:** Un processo in background che pulisce i nodi eliminati per recuperare memoria e riparare le connessioni del grafo.
-    *   **Refine:** Un'ottimizzazione continua che rivaluta le connessioni del grafo per migliorare la qualità della ricerca (recall) nel tempo.
-*   **AI Gateway & Middleware:** Agisce come proxy intelligente per client compatibili con OpenAI/Ollama. Dispone di **Caching Semantico** per servire risposte istantanee a query ricorrenti e un **Firewall Semantico** per bloccare prompt dannosi basandosi sulla similarità vettoriale, indipendentemente dalla pipeline RAG.
-*   **Persistenza:** Ibrida **AOF + Snapshot** assicura durabilità.
-*   **Osservabilità:** Metriche Prometheus (`/metrics`) e logging strutturato.
-*   **Doppia Modalità:** Esegui come **Server REST** autonomo o come **Libreria Go**.
-
 ### 🖥️ Dashboard Integrata
 Disponibile su `http://localhost:9091/ui/`.
 *   **Graph Explorer:** Visualizza il tuo grafo di conoscenza con un layout force-directed.
@@ -130,7 +130,6 @@ Disponibile su `http://localhost:9091/ui/`.
 ## Installazione
 
 ### Come Server (Docker)
-Il modo più semplice per eseguire KektorDB.
 
 ```bash
 docker run -p 9091:9091 -p 9092:9092 -v $(pwd)/data:/data sanonone/kektordb:latest
@@ -325,25 +324,44 @@ Per una guida completa a tutte le funzionalità e agli endpoint API, consulta la
 
 KektorDB è un progetto giovane in sviluppo attivo.
 
-### Prossimamente (v0.5.0) - L'Aggiornamento Scalabilità
-L'obiettivo principale della prossima major release è superare il limite della RAM senza sacrificare la semplicità del binario singolo.
-*   [ ] **Storage Ibrido su Disco:** Implementazione di un engine di storage "pluggable". Mantiene il grafo HNSW in RAM (o Int8) per la velocità, ma sposta i dati vettoriali completi su disco.
-*   [ ] **Backup/Restore Nativo:** API semplice per salvare snapshot su S3/MinIO/Locale senza fermare il server.
+### Prossimamente (v0.5.0) - L'Aggiornamento Scalabilità & Integrità
+Il prossimo importante traguardo si concentra sul superamento del limite della RAM e sul miglioramento delle garanzie di coerenza dei dati.
+*   [ ] **Storage Ibrido su Disco:** Implementazione di un motore di storage "pluggable". Mantiene il grafo HNSW in RAM (o Int8) per la velocità, ma sposta i dati vettoriali completi su disco utilizzando I/O standard o memory mapping.
+*   [ ] **Integrità Transazionale del Grafo:** Introduzione di **Batch Atomici** per garantire la consistenza dei dati durante la creazione di link bidirezionali o l'aggiornamento dei vettori (comportamento simil-ACID per il livello Grafo).
+*   [ ] **Reverse Indexing:** Gestione automatica degli archi in entrata per consentire il recupero O(1) di "chi punta al nodo X", essenziale per l'attraversamento efficiente del grafo e la pulizia.
+*   [ ] **Backup/Restore Nativo:** API semplice per salvare snapshot su S3/MinIO/Locale senza dover fermare il server.
 
 ### Pianificati (Breve Termine)
-Funzionalità previste per rendere KektorDB pronto per la produzione e ancora più veloce.
-*   [ ] **Ottimizzazioni SIMD/AVX:** Estendere le ottimizzazioni Assembly (attualmente usate per il Coseno) alla distanza Euclidea e alle operazioni Float16 per massimizzare il throughput sulle CPU moderne.
+Funzionalità che intendo sviluppare per rendere KektorDB pronto per la produzione e ancora più veloce.
+*   [ ] **Filtri sul Grafo:** Combinare la ricerca vettoriale con filtri sulla topologia del grafo (es. "cerca solo nei figli del Documento X"), potenziato dai Roaring Bitmaps.
+*   [ ] **Relazioni RAG Configurabili:** Permettere agli utenti di definire percorsi di attraversamento del grafo personalizzati nel `proxy.yaml` invece di affidarsi ai default hardcodati.
+*   [ ] **Ottimizzazioni SIMD/AVX:** Estendere le ottimizzazioni Assembly Go puro (attualmente usate per il Coseno) alla distanza Euclidea e alle operazioni Float16 per massimizzare il throughput sulle CPU moderne.
 *   [ ] **Roaring Bitmaps:** Sostituire l'attuale filtro basato su mappe con Roaring Bitmaps per filtri sui metadati ultra-veloci (es. `WHERE user_id = X`).
-*   [ ] **RBAC & Sicurezza:** Implementare il controllo accessi basato sui ruoli (Admin vs Read-Only) per applicazioni multi-tenant.
-*   [ ] **Client TypeScript Ufficiale:** Per supportare meglio l'ecosistema JS/Node.js e gli agenti web.
+*   [ ] **RBAC & Sicurezza:** Implementare il controllo accessi basato sui ruoli (Admin vs Read-Only) e una granularità più fine per applicazioni multi-tenant.
+*   [ ] **Client TypeScript Ufficiale:** Per supportare meglio l'ecosistema AI JS/Node.js.
 
 ### Visione Futura (Lungo Termine)
-Funzionalità in fase di ricerca. L'implementazione dipenderà dall'adozione e dal feedback della community.
+Funzionalità in fase di ricerca. La loro implementazione dipende dall'adozione nel mondo reale, dal feedback e dal tempo di sviluppo disponibile.
+*   **Property Graphs:** Supporto per "Rich Edges" con attributi (pesi, timestamp) per abilitare algoritmi di raccomandazione complessi.
 *   **Replicazione Distribuita:** Consenso basato su Raft per l'Alta Disponibilità (Leader-Follower).
-*   **"Giardiniere" Semantico:** Un processo in background che usa gli LLM per unire chunk duplicati e risolvere conflitti nel Knowledge Graph automaticamente.
-*   **UI Multimodale:** Estensione della dashboard per visualizzare e cercare nativamente le immagini.
+*   **Semantic "Gardener:** Un processo in background che usa gli LLM per unire chunk duplicati e risolvere conflitti nel Knowledge Graph automaticamente.
 
 > **Vuoi influenzare la roadmap?** [Apri una Issue](https://github.com/sanonone/kektordb/issues) o vota quelle esistenti!
+
+---
+
+## 🛑 Limitazioni attuali (v0.4.0)
+* **Singolo nodo:** KektorDB attualmente non supporta il clustering. Scala verticalmente entro i limiti delle risorse della macchina.
+* **Limite RAM:** Fino alla v0.5.0 (archiviazione su disco), il set di dati deve essere contenuto nella RAM.
+* **Software beta:** Sebbene stabili per uso personale, le API potrebbero evolversi.
+
+---
+
+### ⚠️ Stato del Progetto e Filosofia
+
+Sebbene l'ambizione sia alta, la velocità di sviluppo dipende dal tempo libero disponibile e dai contributi della community. La roadmap rappresenta la **visione** tecnica, ma le priorità potrebbero cambiare in base al feedback degli utenti e alle necessità di stabilità.
+
+Se ti piace la visione e vuoi accelerare il processo, le **Pull Request sono le benvenute!**
 
 ---
 
@@ -367,7 +385,6 @@ Distribuito sotto Licenza Apache 2.0. Vedi il file `LICENSE` per i dettagli.
 
 ## ☕ Supporta il Progetto
 
-KektorDB è un progetto open-source sviluppato da un singolo manutentore.
 Se trovi questo strumento utile per il tuo setup RAG locale o le tue applicazioni Go, per favore considera di supportare lo sviluppo.
 
 Il tuo supporto mi aiuta a dedicare più tempo alla manutenzione, a nuove funzionalità e alla documentazione.

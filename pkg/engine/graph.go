@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+
 	//"strings"
 
-	"github.com/sanonone/kektordb/pkg/persistence"
 	"sync/atomic"
+
+	"github.com/sanonone/kektordb/pkg/persistence"
 )
 
 // Graph Relationship Model
@@ -26,16 +28,16 @@ func (e *Engine) VLink(sourceID, targetID, relationType, inverseRelationType str
 	e.adminMu.Lock()
 	defer e.adminMu.Unlock()
 
-	// 1. Link Diretto (Source -> Target)
+	// 1. Direct Link (Source -> Target)
 	if err := e.setLinkInternal(sourceID, targetID, relationType); err != nil {
 		return err
 	}
 
-	// 2. Link Inverso (Target -> Source) - Opzionale
+	// 2. Inverse Link (Target -> Source) - Optional
 	if inverseRelationType != "" {
 		if err := e.setLinkInternal(targetID, sourceID, inverseRelationType); err != nil {
-			// Nota: Se fallisce qui, potremmo avere un grafo inconsistente a metà.
-			// In un sistema di produzione servirebbe rollback, ma per ora logghiamo/ritorniamo errore.
+			// Note: If this fails, we might have a partially inconsistent graph.
+			// TODO: Implement rollback for production systems. For now, log/return error.
 			return fmt.Errorf("failed to create inverse link: %w", err)
 		}
 	}
@@ -44,14 +46,14 @@ func (e *Engine) VLink(sourceID, targetID, relationType, inverseRelationType str
 	return nil
 }
 
-// setLinkInternal è la logica raw di scrittura (senza lock globale, perché lo ha il chiamante)
+// setLinkInternal is the raw write logic (without global lock, as the caller holds it)
 func (e *Engine) setLinkInternal(src, dst, rel string) error {
 	key := makeRelKey(src, rel)
 
 	var targets []string
 	val, found := e.DB.GetKVStore().Get(key)
 	if found {
-		_ = json.Unmarshal(val, &targets) // Ignora errori di unmarshal su dati corrotti
+		_ = json.Unmarshal(val, &targets) // Ignore unmarshal errors on corrupt data
 	}
 
 	if slices.Contains(targets, dst) {
@@ -64,7 +66,7 @@ func (e *Engine) setLinkInternal(src, dst, rel string) error {
 		return err
 	}
 
-	// AOF & Memoria
+	// AOF & Memory
 	cmd := persistence.FormatCommand("SET", []byte(key), newVal)
 	if err := e.AOF.Write(cmd); err != nil {
 		return err
@@ -77,12 +79,12 @@ func (e *Engine) VUnlink(sourceID, targetID, relationType, inverseRelationType s
 	e.adminMu.Lock()
 	defer e.adminMu.Unlock()
 
-	// Unlink Diretto
+	// Direct Unlink
 	if err := e.removeLinkInternal(sourceID, targetID, relationType); err != nil {
 		return err
 	}
 
-	// Unlink Inverso
+	// Inverse Unlink
 	if inverseRelationType != "" {
 		if err := e.removeLinkInternal(targetID, sourceID, inverseRelationType); err != nil {
 			return fmt.Errorf("failed to remove inverse link: %w", err)
@@ -93,7 +95,7 @@ func (e *Engine) VUnlink(sourceID, targetID, relationType, inverseRelationType s
 	return nil
 }
 
-// removeLinkInternal (logica estratta dal vecchio VUnlink)
+// removeLinkInternal (logic extracted from VUnlink)
 func (e *Engine) removeLinkInternal(src, dst, rel string) error {
 	key := makeRelKey(src, rel)
 	val, found := e.DB.GetKVStore().Get(key)
@@ -153,14 +155,13 @@ func (e *Engine) VGetLinks(sourceID, relationType string) ([]string, bool) {
 // Useful for debugging or full context retrieval.
 // Returns map[relation_type] -> []target_ids
 func (e *Engine) VGetRelations(sourceID string) map[string][]string {
-	// Nota: KVStore standard non supporta prefix scan efficiente.
-	// Per ora facciamo una iterazione brute-force sul KVStore?
-	// NO, è troppo lento se il KV ha milioni di chiavi.
+	// Note: Standard KVStore does not support efficient prefix scan.
+	// We cannot iterate brute-force on the KVStore as it would be too slow with millions of keys.
 	//
-	// SOLUZIONE V1: L'utente deve sapere il 'relationType' per cercare.
-	// Se vogliamo "dammi tutto", dovremmo strutturare la chiave diversamente
-	// o mantenere un indice dei tipi di relazione per nodo.
+	// SOLUTION V1: User must know 'relationType' to search.
+	// If we want "give me everything", we should structure the key differently
+	// or maintain an index of relation types per node.
 	//
-	// Per mantenere "Lightweight", per ora implementiamo solo GetLinks specifici.
+	// To keep it "Lightweight", we currently only implement specific GetLinks.
 	return nil
 }

@@ -74,9 +74,9 @@ func (p *Pipeline) Start() {
 
 func (p *Pipeline) extractionWorker() {
 	for job := range p.extractionChan {
-		// Chiama la funzione di estrazione (quella con l'idempotenza che abbiamo scritto prima)
+		// Calls the extraction function (idempotent logic).
 		if err := p.extractAndLinkEntities(job.ChunkID, job.Text); err != nil {
-			// Logghiamo solo warning per non intasare
+			// Log only warnings to avoid cluttering.
 			slog.Warn("[RAG-Background] Extraction failed", "chunk_id", job.ChunkID, "error", err)
 		}
 	}
@@ -225,28 +225,28 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 		_ = p.store.Delete(p.cfg.IndexName, oldParentID)
 	}
 
-	// 1. LOAD: Ora ritorna *Document (Testo + Immagini)
+	// 1. LOAD: Returns *Document (Text + Images)
 	doc, err := p.loader.Load(path)
 	if err != nil {
 		return err
 	}
-	// Se vuoto, esci
+	// If empty, exit
 	if doc == nil || (doc.Text == "" && len(doc.Images) == 0) {
 		return nil
 	}
 
 	fullText := doc.Text
 
-	// --- VISION PIPELINE (NUOVA) ---
-	// Se ci sono immagini e abbiamo il client Vision
+	// --- VISION PIPELINE (NEW) ---
+	// If there are images and we have the Vision client
 	slog.Info("[RAG] Vision Check", "filename", info.Name(), "image_count", len(doc.Images), "vision_enabled", (p.visionClient != nil))
 
 	if len(doc.Images) > 0 && p.visionClient != nil {
 		slog.Info("[RAG] Analyzing images with Vision Model...", "filename", info.Name(), "count", len(doc.Images))
 
 		for i, img := range doc.Images {
-			// Limitiamo l'analisi alle prime X immagini per non esplodere coi tempi?
-			// Per ora facciamo tutto.
+			// TODO: limit analysis to the first X images to avoid timeout?
+			// For now, process all.
 
 			prompt := "Describe this image in detail. Identify charts, data points, or text inside it. Be concise."
 
@@ -257,12 +257,12 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 				slog.Info("[RAG] Vision OCR Triggered", "filename", info.Name(), "reason", "empty_text_fallback")
 			}
 
-			// Usiamo ChatWithImages del client LLM
-			// img.Data è []byte
+			// Use ChatWithImages from the LLM client
+			// img.Data is []byte
 			desc, err := p.visionClient.ChatWithImages(prompt, "", [][]byte{img.Data})
 
 			if err == nil {
-				// Appendiamo la descrizione al testo principale come un blocco speciale
+				// Append description to main text as a special block
 				descBlock := fmt.Sprintf("\n\n--- [IMAGE ANALYSIS #%d] ---\n%s\n--------------------------\n", i+1, desc)
 				fullText += descBlock
 				slog.Info("[RAG] Image analyzed successfully", "image_index", i+1, "filename", info.Name())
@@ -273,15 +273,15 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 	}
 	// ------------------------------
 
-	// 2. Split (Usiamo fullText che ora include le descrizioni delle immagini)
+	// 2. Split (Use fullText which now includes image descriptions)
 	chunks := p.splitter.SplitText(fullText)
 	if len(chunks) == 0 {
 		return nil
 	}
 
-	// Variabili per l'estrazione Parent-Level
+	// Variables for Parent-Level extraction
 	var fullTextPreview strings.Builder
-	const maxPreviewChars = 6000 // Abbastanza per dare contesto all'LLM
+	const maxPreviewChars = 6000 // Enough to provide context to the LLM
 
 	// 3. Embed & Prepare Batch
 	var batch []types.BatchObject
@@ -297,7 +297,7 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 	parentID := fmt.Sprintf("doc:%s", path)
 
 	for i, chunkText := range chunks {
-		// --- Accumula testo per l'estrazione sul Parent ---
+		// --- Accumulate text for Parent extraction ---
 		if fullTextPreview.Len() < maxPreviewChars {
 			fullTextPreview.WriteString(chunkText)
 			fullTextPreview.WriteString("\n")
@@ -407,18 +407,18 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 			Metadata: docMeta,
 		})
 
-		// === NUOVA LOGICA: ESTRAZIONE SUL PARENT (Una volta per file) ===
+		// === NEW LOGIC: PARENT EXTRACTION (Once per file) ===
 		if p.cfg.GraphEntityExtraction && p.llmClient != nil {
-			// Usiamo il worker asincrono per non bloccare, ma lavoriamo sul PARENT ID
-			// Il testo passato è la preview accumulata (i primi X caratteri del file)
+			// Use async worker to avoid blocking, but work on PARENT ID
+			// Text passed is the accumulated preview (first X chars)
 
 			jobText := fullTextPreview.String()
 
-			// Se il testo è troppo breve, magari non vale la pena? (Opzionale)
+			// If text is too short, maybe skip? (Optional)
 			if len(jobText) > 50 {
 				select {
 				case p.extractionChan <- extractionJob{ChunkID: parentID, Text: jobText}:
-					// Job accodato
+					// Job enqueued
 				default:
 					slog.Warn("[RAG] Extraction queue full, skipping entity extraction", "doc_id", parentID)
 				}
@@ -501,22 +501,22 @@ func (p *Pipeline) GetEmbedder() embeddings.Embedder {
 	return p.embedder
 }
 
-// NUOVA FUNZIONE: Estrae entità e crea nodi/link
+// NEW FUNCTION: Extracts entities and creates nodes/links
 func (p *Pipeline) extractAndLinkEntities(chunkID, text string) error {
-	// 1. Costruisci il prompt
+	// 1. Build prompt
 	sysPrompt := "You are an entity extraction system. Identify the top 3-5 key entities (Concepts, Projects, Technologies, People) in the text. Return a JSON array of strings. Example: [\"Project Alpha\", \"Golang\"]. Return ONLY JSON."
 
 	if p.cfg.EntityExtractionPrompt != "" {
 		sysPrompt = p.cfg.EntityExtractionPrompt
 	}
 
-	// 2. Chiama LLM
+	// 2. Call LLM
 	jsonResponse, err := p.llmClient.Chat(sysPrompt, text)
 	if err != nil {
 		return err
 	}
 
-	// 3. Pulisci la risposta
+	// 3. Clean response
 	jsonResponse = strings.ReplaceAll(jsonResponse, "```json", "")
 	jsonResponse = strings.ReplaceAll(jsonResponse, "```", "")
 	jsonResponse = strings.TrimSpace(jsonResponse)
@@ -524,7 +524,7 @@ func (p *Pipeline) extractAndLinkEntities(chunkID, text string) error {
 	// 4. Parse JSON
 	var entities []string
 	if err := json.Unmarshal([]byte(jsonResponse), &entities); err != nil {
-		// Logghiamo ma non blocchiamo: gli LLM piccoli a volte sbagliano il JSON
+		// Log but don't block: small LLMs sometimes mess up JSON
 		return fmt.Errorf("llm json error: %v", err)
 	}
 
@@ -532,9 +532,9 @@ func (p *Pipeline) extractAndLinkEntities(chunkID, text string) error {
 		return nil
 	}
 
-	// --- FASE DI FILTRAGGIO (Idempotenza) ---
+	// --- FILTERING PHASE (Idempotency) ---
 
-	// Mappa per tenere traccia degli ID e dei nomi originali
+	// Map to track IDs and original names
 	// Map[EntityID] -> OriginalName
 	candidates := make(map[string]string)
 	var candidateIDs []string
@@ -542,13 +542,13 @@ func (p *Pipeline) extractAndLinkEntities(chunkID, text string) error {
 	for _, entityName := range entities {
 		safeName := strings.ToLower(strings.TrimSpace(entityName))
 		safeName = strings.ReplaceAll(safeName, " ", "_")
-		// Pulizia base caratteri illegali per ID se necessario
+		// Basic cleaning of illegal characters for ID if necessary
 		safeName = strings.ReplaceAll(safeName, "'", "")
 		safeName = strings.ReplaceAll(safeName, "\"", "")
 
 		entityID := fmt.Sprintf("entity:%s", safeName)
 
-		// Linkiamo SUBITO (VLink è safe e gestisce i duplicati internamente)
+		// Link IMMEDIATELY (VLink is safe and handles duplicates internally)
 		if err := p.store.Link(chunkID, entityID, "mentions", "mentioned_in"); err != nil {
 			slog.Warn("[RAG] Failed to link entity", "entity_name", entityName, "error", err)
 		}
@@ -557,29 +557,29 @@ func (p *Pipeline) extractAndLinkEntities(chunkID, text string) error {
 		candidateIDs = append(candidateIDs, entityID)
 	}
 
-	// Controlliamo quali entità esistono già nel DB
-	// GetMany ritorna solo quelli trovati.
+	// Check which entities already exist in DB
+	// GetMany returns only found ones.
 	existingItems, err := p.store.GetMany(p.cfg.IndexName, candidateIDs)
 	if err != nil {
 		return err
 	}
 
-	// Creiamo un Set degli esistenti
+	// Create Set of existing
 	existingSet := make(map[string]struct{})
 	for _, item := range existingItems {
 		existingSet[item.ID] = struct{}{}
 	}
 
-	// --- CREAZIONE BATCH (Solo Nuovi) ---
+	// --- BATCH CREATION (New Only) ---
 	var entityBatch []types.BatchObject
 
 	for entityID, entityName := range candidates {
-		// Se esiste già, saltiamo la creazione del nodo
+		// If exists, skip node creation
 		if _, exists := existingSet[entityID]; exists {
 			continue
 		}
 
-		// Se è nuovo, calcoliamo il vettore e lo aggiungiamo
+		// If new, calculate vector and add
 		vec, err := p.embedder.Embed(entityName)
 		if err != nil {
 			continue
@@ -596,7 +596,7 @@ func (p *Pipeline) extractAndLinkEntities(chunkID, text string) error {
 		})
 	}
 
-	// 6. Salva i nodi entità nel DB (Se ce ne sono di nuovi)
+	// 6. Save entity nodes to DB (If there are new ones)
 	if len(entityBatch) > 0 {
 		return p.store.AddBatch(p.cfg.IndexName, entityBatch)
 	}
