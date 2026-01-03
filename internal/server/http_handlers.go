@@ -10,16 +10,17 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"log"
+	"net/http"
+	"net/http/pprof"
+	"strings"
+
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sanonone/kektordb/internal/server/ui"
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/engine"
-	"log"
-	"net/http"
-	"net/http/pprof"
-	"strings"
 )
 
 // registerHTTPHandlers sets up all HTTP routes using Go 1.22+ routing.
@@ -789,6 +790,10 @@ func (s *Server) handleUISearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": results})
+}
+
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleUIExplore(w http.ResponseWriter, r *http.Request) {

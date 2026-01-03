@@ -3,10 +3,11 @@ package server
 import (
 	"context"
 	"fmt"
-	"github.com/sanonone/kektordb/pkg/engine"
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/sanonone/kektordb/pkg/engine"
 )
 
 // Server holds the HTTP interface and the underlying Database Engine.
@@ -66,9 +67,12 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 	// 3. Recovery (Outer) - Catches panics
 	handler = s.RecoveryMiddleware(handler)
 
+	rootMux := http.NewServeMux()
+	rootMux.HandleFunc("GET /healthz", s.handleHealthz)
+	rootMux.Handle("/", handler)
 	s.httpServer = &http.Server{
 		Addr:    httpAddr,
-		Handler: handler,
+		Handler: rootMux,
 	}
 
 	return s, nil
