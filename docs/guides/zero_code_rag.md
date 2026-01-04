@@ -53,8 +53,15 @@ vectorizers:
     # Brain for extraction (Small model recommended)
     llm:
       base_url: "http://localhost:11434/v1"
-      model: "qwen2.5:0.5b" # Fast & efficient
+      model: "gemma3:4b" # Fast & efficient
       temperature: 0.0
+
+    # Model vision for analyzing images
+    vision_llm:
+      base_url: "http://localhost:11434/v1"
+      model: "gemma3:4b" 
+      temperature: 0.0
+      max_tokens: 300 # description token limit
 
     # Embedding Model (Must match what you have in Ollama)
     embedder:
@@ -110,11 +117,7 @@ Create a `documents` folder and put some files inside. Then start the server:
 mkdir -p documents kektor_data
 
 # Run KektorDB with both configs enabled
-./kektordb \
-  -vectorizers-config vectorizers.yaml \
-  -enable-proxy \
-  -proxy-config proxy.yaml \
-  -aof-path kektor_data/kektordb.aof
+./kektordb -vectorizers-config="vectorizers.yaml" -enable-proxy -proxy-config="proxy.yaml"
 ```
 
 You should see logs indicating that the **Vectorizer** is processing files and the **Proxy** is listening on `:9092`.
