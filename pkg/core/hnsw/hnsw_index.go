@@ -210,45 +210,6 @@ func (h *Index) distanceBetweenNodes(n1, n2 *Node) (float64, error) {
 	}
 }
 
-/*
-// distanceToNode calculates distance from query to a node
-func (h *Index) distanceToNode(query any, node *Node) (float64, error) {
-	switch h.precision {
-	case distance.Float32:
-		return h.distFuncF32(query.([]float32), node.VectorF32)
-	case distance.Float16:
-		return h.distFuncF16(query.([]uint16), node.VectorF16)
-	case distance.Int8:
-		q := query.([]int8)
-		stored := node.VectorI8
-		dot, err := h.distFuncI8(q, stored)
-
-
-		var norm1 int64
-		for i := range q {
-			norm1 += int64(q[i]) * int64(q[i])
-		}
-
-		// Use cached norm for stored vector
-		norm2 := h.quantizedNorms[node.InternalID]
-
-		if norm1 == 0 || norm2 == 0 {
-			return 1.0, nil
-		}
-		similarity := float64(dot) / (math.Sqrt(float64(norm1)) * float64(norm2))
-		if similarity > 1.0 {
-			similarity = 1.0
-		}
-		if similarity < -1.0 {
-			similarity = -1.0
-		}
-		return 1.0 - similarity, err
-	default:
-		return 0, fmt.Errorf("invalid precision")
-	}
-}
-*/
-
 // SearchWithScores finds the K nearest neighbors to a query vector, returning their scores (distances)
 func (h *Index) SearchWithScores(query []float32, k int, allowList map[uint32]struct{}, efSearch int) []types.SearchResult {
 	h.metaMu.RLock()
@@ -1018,18 +979,9 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 	// =========================================================================
 	// PHASE 0.A: AUTO-TRAINING QUANTIZER (Safe Pre-check)
 	// =========================================================================
-	// Se siamo in Int8 e il quantizzatore non è allenato, dobbiamo farlo ORA,
-	// prima di lanciare i worker paralleli che ne hanno bisogno.
 	if h.precision == distance.Int8 {
-		// Nota: controlliamo senza lock per velocità, ma se è 0 acquisiamo un lock specifico o usiamo il batch.
-		// Dato che AddBatch è tipicamente chiamato da un singolo thread di ingestione (es. Compress),
-		// o se concorrente, il rischio è basso ma va gestito.
-		// Qui assumiamo che h.quantizer sia inizializzato nel costruttore New().
-
 		if h.quantizer != nil && h.quantizer.AbsMax == 0 {
 			// Raccogliamo i vettori per il training
-			// Usiamo un lock temporaneo sul quantizzatore se necessario, o assumiamo single-writer in questa fase.
-			// Per sicurezza, facciamo il training sul batch corrente qui.
 			log.Printf("[HNSW] Auto-training quantizer on batch of %d vectors", numVectors)
 			trainingData := make([][]float32, len(objects))
 			for i := range objects {
@@ -1496,165 +1448,6 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 
 	return nil
 }
-
-/*
-func (h *Index) AddBatchOld(objects []types.BatchObject) error {
-	numVectors := len(objects)
-	if numVectors == 0 {
-		return nil
-	}
-	numWorkers := runtime.NumCPU()
-
-	h.metaMu.RLock()
-	currentSize := h.nodeCounter.Load()
-	h.metaMu.RUnlock()
-
-	if currentSize < uint64(h.efConstruction) {
-		for _, obj := range objects {
-			h.Add(obj.Id, obj.Vector)
-		}
-		return nil
-	}
-
-	if numVectors < numWorkers {
-		numWorkers = numVectors
-	}
-
-	h.metaMu.Lock()
-	startID := h.nodeCounter.Add(uint64(numVectors)) - uint64(numVectors)
-	lastID := uint32(startID + uint64(numVectors) - 1)
-
-	// Pre-allocate all necessary space at once
-	h.growNodes(lastID)
-	// Note: newNodes is used to pass nodes to workers, but we also populate the global h.nodes
-	newNodes := make([]*Node, numVectors)
-
-	for i, obj := range objects {
-		internalID := uint32(startID + uint64(i))
-
-		// Normalize in-place if F32/Cosine
-		if h.metric == distance.Cosine && h.precision == distance.Float32 {
-			normalize(obj.Vector)
-		}
-
-		var storedVector interface{}
-		switch h.precision {
-		case distance.Float32:
-			storedVector = obj.Vector
-		case distance.Float16:
-			f16Vec := make([]uint16, len(obj.Vector))
-			for j, v := range obj.Vector {
-				f16Vec[j] = float16.Fromfloat32(v).Bits()
-			}
-			storedVector = f16Vec
-		case distance.Int8:
-			if h.quantizer == nil || h.quantizer.AbsMax == 0 {
-				h.metaMu.Unlock()
-				return fmt.Errorf("quantizer not trained")
-			}
-			storedVector = h.quantizer.Quantize(obj.Vector)
-		}
-
-		if h.precision == distance.Int8 {
-			if vecI8, ok := storedVector.([]int8); ok {
-				h.quantizedNorms[internalID] = computeInt8Norm(vecI8)
-			}
-		}
-
-		node := &Node{Id: obj.Id, InternalID: internalID}
-		switch h.precision {
-		case distance.Float32:
-			node.VectorF32 = storedVector.([]float32)
-		case distance.Float16:
-			node.VectorF16 = storedVector.([]uint16)
-		case distance.Int8:
-			node.VectorI8 = storedVector.([]int8)
-		}
-		newNodes[i] = node
-		h.nodes[internalID] = node
-		h.externalToInternalID[node.Id] = internalID
-		h.internalToExternalID[internalID] = node.Id
-	}
-	h.metaMu.Unlock()
-
-	linkQueue := make(chan LinkRequest, numVectors*h.mMax0)
-	var wg sync.WaitGroup
-	batchSizePerWorker := numVectors / numWorkers
-
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
-		start := i * batchSizePerWorker
-		end := start + batchSizePerWorker
-		if i == numWorkers-1 {
-			end = numVectors
-		}
-		go h.batchWorker(newNodes[start:end], linkQueue, &wg)
-	}
-
-	wg.Wait()
-	close(linkQueue)
-	h.commitLinks(linkQueue, newNodes)
-	return nil
-}
-
-// batchWorker processes a subset of nodes for AddBatch, calculating their
-// optimal neighbors without modifying the global graph topology yet.
-func (h *Index) batchWorker(nodesToProcess []*Node, linkQueue chan<- LinkRequest, wg *sync.WaitGroup) {
-	defer wg.Done()
-	h.metaMu.RLock()
-	defer h.metaMu.RUnlock()
-
-	for _, node := range nodesToProcess {
-		// The vector in the node is already "stored" (f32 normalized, f16 or i8).
-		// We can use it directly as a query for distanceToQuery.
-		var queryObj any
-		switch h.precision {
-		case distance.Float32:
-			queryObj = node.VectorF32
-		case distance.Float16:
-			queryObj = node.VectorF16
-		case distance.Int8:
-			queryObj = node.VectorI8
-		}
-
-		level := h.randomLevel()
-		node.Connections = make([][]uint32, level+1)
-
-		if h.maxLevel == -1 {
-			continue
-		}
-
-		currentEntryPoint := h.entrypointID
-		for l := h.maxLevel; l > level; l-- {
-			nearest, err := h.searchLayerUnlocked(queryObj, currentEntryPoint, 1, l, nil, 1, uint32(h.nodeCounter.Load()))
-			if err != nil || len(nearest) == 0 {
-				currentEntryPoint = h.entrypointID
-				continue
-			}
-			currentEntryPoint = nearest[0].Id
-		}
-
-		for l := min(level, h.maxLevel); l >= 0; l-- {
-			candidates, err := h.searchLayerUnlocked(queryObj, currentEntryPoint, h.efConstruction, l, nil, h.efConstruction, uint32(h.nodeCounter.Load()))
-			if err != nil || len(candidates) == 0 {
-				currentEntryPoint = h.entrypointID
-				continue
-			}
-
-			neighborIDs := make([]uint32, len(candidates))
-			for i, neighbor := range candidates {
-				neighborIDs[i] = neighbor.Id
-			}
-			linkQueue <- LinkRequest{
-				NodeID:       node.InternalID,
-				Level:        l,
-				NewNeighbors: neighborIDs,
-			}
-			currentEntryPoint = candidates[0].Id
-		}
-	}
-}
-*/
 
 // commitLinks applies the queued connection changes to the graph.
 // It handles bidirectional connections and performs pruning.

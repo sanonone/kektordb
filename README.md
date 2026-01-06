@@ -69,6 +69,10 @@ Acts as a smart proxy to optimize costs and latency for LLM applications.
 
 ## Zero-Code RAG (Open WebUI Integration)
 
+<p align="center">
+  <img src="docs/images/kektordb-rag-demo.gif" alt="KektorDB RAG Demo" width="800">
+</p>
+
 KektorDB can function as a **smart middleware** between your Chat UI and your LLM. It intercepts requests, performs retrieval, and injects context automatically.
 
 **Architecture:**
