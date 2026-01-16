@@ -4,10 +4,11 @@ package rag
 
 // Image represents a visual asset extracted from a document.
 type Image struct {
-	Data []byte // Raw binary data
-	Ext  string // e.g., "png", "jpg"
-	Name string // Filename (e.g. "im1-3.png"), useful for sorting
-	Page int    // Page number where it was found
+	ID      string
+	Data    []byte // Raw binary data
+	Ext     string // e.g., "png", "jpg"
+	Page    int    // Page number where it was found
+	URLPath string // e.g. /assets/image_24892.png
 }
 
 // Document represents the extracted content of a file.

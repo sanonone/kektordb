@@ -3,10 +3,6 @@ package main
 import (
 	"context"
 	"flag"
-	"github.com/sanonone/kektordb/internal/server"
-	"github.com/sanonone/kektordb/pkg/embeddings"
-	"github.com/sanonone/kektordb/pkg/engine"
-	"github.com/sanonone/kektordb/pkg/proxy"
 	"log"
 	"log/slog"
 	"net/http"
@@ -17,6 +13,11 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/sanonone/kektordb/internal/server"
+	"github.com/sanonone/kektordb/pkg/embeddings"
+	"github.com/sanonone/kektordb/pkg/engine"
+	"github.com/sanonone/kektordb/pkg/proxy"
 )
 
 // getEnv retrieves an environment variable or returns a default value.
@@ -79,10 +80,10 @@ func main() {
 
 	// Flags proxy
 	enableProxy := flag.Bool("enable-proxy", false, "Enable the AI Semantic Proxy")
-	//proxyPort := flag.String("proxy-port", ":9092", "Port for the AI Semantic Proxy")
-	//proxyTarget := flag.String("proxy-target", "http://localhost:11434", "Target LLM URL (e.g. Ollama)")
-	//firewallIndex := flag.String("firewall-index", "prompt_guard", "Index containing forbidden prompts")
-	//proxyConfigPath := flag.String("proxy-config", "", "Path to proxy.yaml config file")
+	// proxyPort := flag.String("proxy-port", ":9092", "Port for the AI Semantic Proxy")
+	// proxyTarget := flag.String("proxy-target", "http://localhost:11434", "Target LLM URL (e.g. Ollama)")
+	// firewallIndex := flag.String("firewall-index", "prompt_guard", "Index containing forbidden prompts")
+	// proxyConfigPath := flag.String("proxy-config", "", "Path to proxy.yaml config file")
 	proxyConfigPath := flag.String("proxy-config", "", "Path to proxy.yaml config file")
 
 	flag.Parse()
@@ -114,7 +115,7 @@ func main() {
 		}
 	}
 
-	//log.Printf("Initializing Engine (Data: %s, Save: %v/%d ops)...", dataDir, opts.AutoSaveInterval, opts.AutoSaveThreshold)
+	// log.Printf("Initializing Engine (Data: %s, Save: %v/%d ops)...", dataDir, opts.AutoSaveInterval, opts.AutoSaveThreshold)
 
 	// Engine Startup
 	eng, err := engine.Open(opts)
@@ -123,7 +124,7 @@ func main() {
 	}
 
 	// Starting HTTP Server
-	srv, err := server.NewServer(eng, *httpAddr, *vectorizersConfig, *authToken)
+	srv, err := server.NewServer(eng, *httpAddr, *vectorizersConfig, *authToken, dataDir)
 	if err != nil {
 		slog.Error("Failed to create server", "error", err)
 		eng.Close()
