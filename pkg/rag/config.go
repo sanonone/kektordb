@@ -1,8 +1,9 @@
 package rag
 
 import (
-	"github.com/sanonone/kektordb/pkg/llm"
 	"time"
+
+	"github.com/sanonone/kektordb/pkg/llm"
 )
 
 // Config holds all parameters to set up a RAG pipeline.
@@ -43,6 +44,8 @@ type Config struct {
 	EntityExtractionPrompt string
 
 	VisionLLMConfig llm.Config
+
+	AssetsOutputDir string
 
 	IndexMetric         string
 	IndexPrecision      string

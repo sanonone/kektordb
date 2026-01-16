@@ -502,6 +502,8 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 			continue
 		}
 
+		mainText = strings.ReplaceAll(mainText, "](/assets/", "](http://localhost:9091/assets/")
+
 		prevText := ""
 		if prevNodes, ok := res.Node.Connections["prev"]; ok && len(prevNodes) > 0 {
 			prevText = getTextFromMeta(prevNodes[0].VectorData.Metadata)
@@ -549,6 +551,11 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 		}
 		contextBuilder.WriteString("\n\n")
 		foundRelevant = true
+
+		// Debug
+		if strings.Contains(mainText, "![") {
+			slog.Info("[DEBUG IMAGE] Found image tag in chunk: %s", mainText)
+		}
 	}
 
 	if !foundRelevant {

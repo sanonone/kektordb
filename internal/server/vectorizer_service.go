@@ -19,7 +19,7 @@ type VectorizerService struct {
 }
 
 // NewVectorizerService initializes the service based on the YAML config.
-func NewVectorizerService(server *Server) (*VectorizerService, error) {
+func NewVectorizerService(server *Server, assetsDir string) (*VectorizerService, error) {
 	service := &VectorizerService{
 		server: server,
 	}
@@ -96,6 +96,8 @@ func NewVectorizerService(server *Server) (*VectorizerService, error) {
 			GraphEntityExtraction: cfg.GraphEntityExtraction,
 			LLMConfig:             cfg.LLM,
 			VisionLLMConfig:       cfg.VisionLLM,
+
+			AssetsOutputDir: assetsDir,
 
 			IndexMetric:         idxMetric,
 			IndexPrecision:      idxPrec,

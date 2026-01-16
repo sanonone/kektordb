@@ -22,6 +22,9 @@
 *.zip
 *.gz
 
+# Ignore data directory
+assets/
+
 # Benchmark
 *.pprof
 
