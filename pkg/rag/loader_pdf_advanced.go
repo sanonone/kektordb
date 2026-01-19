@@ -6,9 +6,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"regexp"
+
+	//"regexp"
 	"sort"
-	"strconv"
+	//"strconv"
+	"crypto/sha256"
 	"strings"
 
 	"github.com/ledongthuc/pdf"
@@ -19,12 +21,14 @@ import (
 // PDFAdvancedLoader extracts both text (via ledongthuc/pdf) and images (via pdfcpu).
 // It uses a temporary directory to buffer images extracted by pdfcpu.
 type PDFAdvancedLoader struct {
-	extractImages bool
+	extractImages   bool
+	assetsOutputDir string
 }
 
-func NewPDFAdvancedLoader(extractImages bool) *PDFAdvancedLoader {
+func NewPDFAdvancedLoader(extractImages bool, assetsOutputDir string) *PDFAdvancedLoader {
 	return &PDFAdvancedLoader{
-		extractImages: extractImages,
+		extractImages:   extractImages,
+		assetsOutputDir: assetsOutputDir,
 	}
 }
 
@@ -41,7 +45,7 @@ func (l *PDFAdvancedLoader) Load(path string) (*Document, error) {
 
 	// 2. Extract Images (if enabled)
 	if l.extractImages {
-		imgs, err := l.extractImagesFromPDF(path)
+		imgs, err := l.extractAndSaveImages(path)
 		if err != nil {
 			slog.Warn("[PDF] Image extraction warning", "path", path, "error", err)
 		} else {
@@ -78,6 +82,96 @@ func (l *PDFAdvancedLoader) extractText(path string) (string, error) {
 	return buf.String(), nil
 }
 
+// extractAndSaveImages usa pdfcpu, salva su disco permanente e prepara struct Image
+func (l *PDFAdvancedLoader) extractAndSaveImages(sourcePath string) ([]Image, error) {
+	slog.Debug("[PDF] Extracting images", "file", filepath.Base(sourcePath))
+
+	// 1. Usa cartella temp per estrazione raw
+	tempDir, err := os.MkdirTemp("", "kektor_img_extract_*")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tempDir) // Pulizia temp
+
+	conf := model.NewDefaultConfiguration()
+	conf.Cmd = model.EXTRACTIMAGES
+	conf.ValidationMode = model.ValidationRelaxed
+
+	err = api.ExtractImagesFile(sourcePath, tempDir, nil, conf)
+	if err != nil {
+		return nil, fmt.Errorf("pdfcpu extraction failed: %w", err)
+	}
+
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. Processa, Hasha e Salva in Asset Dir
+	var images []Image
+
+	// Verifica che la dir di output esista (sicurezza)
+	if l.assetsOutputDir != "" {
+		if err := os.MkdirAll(l.assetsOutputDir, 0o755); err != nil {
+			return nil, fmt.Errorf("failed to ensure assets dir: %w", err)
+		}
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		tempFilePath := filepath.Join(tempDir, entry.Name())
+		imgData, err := os.ReadFile(tempFilePath)
+		if err != nil {
+			continue
+		}
+
+		ext := strings.TrimPrefix(filepath.Ext(entry.Name()), ".")
+
+		// 3. Generazione ID Univoco (Hash del contenuto)
+		// Questo evita duplicati se la stessa icona è su 100 pagine.
+		hash := sha256.Sum256(imgData)
+		fileName := fmt.Sprintf("%x.%s", hash[:8], ext) // Primi 16 char dell'hash sono sufficienti
+
+		targetPath := ""
+		publicURL := ""
+
+		if l.assetsOutputDir != "" {
+			targetPath = filepath.Join(l.assetsOutputDir, fileName)
+			// Verifica se esiste già per non sovrascrivere inutilmente
+			if _, err := os.Stat(targetPath); os.IsNotExist(err) {
+				if err := os.WriteFile(targetPath, imgData, 0o644); err != nil {
+					slog.Warn("[PDF] Failed to save asset", "file", fileName, "error", err)
+					continue
+				}
+			}
+			// Costruiamo il path relativo per il server HTTP
+			publicURL = "/assets/" + fileName
+		}
+
+		images = append(images, Image{
+			ID:      fileName,
+			Data:    imgData,
+			Ext:     ext,
+			URLPath: publicURL, // <--- Ecco il link per il Markdown!
+		})
+	}
+
+	// Ordina per stabilità
+	sort.Slice(images, func(i, j int) bool {
+		return images[i].ID < images[j].ID
+	})
+
+	if len(images) > 0 {
+		slog.Debug("[PDF] Images extracted", "count", len(images))
+	}
+
+	return images, nil
+}
+
+/*
 // extractImagesFromPDF uses pdfcpu to extract images to a temp dir, then reads them back.
 func (l *PDFAdvancedLoader) extractImagesFromPDF(path string) ([]Image, error) {
 	slog.Info("[PDF] Starting image extraction", "filename", filepath.Base(path))
@@ -160,3 +254,4 @@ func (l *PDFAdvancedLoader) extractImagesFromPDF(path string) ([]Image, error) {
 
 	return images, nil
 }
+*/

@@ -12,10 +12,10 @@ type AutoLoader struct {
 	docxLoader Loader
 }
 
-func NewAutoLoader(extractImages bool) *AutoLoader {
+func NewAutoLoader(extractImages bool, assetsDir string) *AutoLoader {
 	return &AutoLoader{
 		textLoader: NewTextLoader(),
-		pdfLoader:  NewPDFAdvancedLoader(extractImages),
+		pdfLoader:  NewPDFAdvancedLoader(extractImages, assetsDir),
 		docxLoader: NewDocxLoader(),
 	}
 }

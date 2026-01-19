@@ -46,12 +46,11 @@ type fileState struct {
 // NewPipeline creates a ready-to-run pipeline.
 // We inject the Embedder to allow testing with mocks or swapping providers.
 func NewPipeline(cfg Config, store Store, embedder embeddings.Embedder, llmClient llm.Client, visionClient llm.Client) *Pipeline {
-
 	extractImages := (visionClient != nil)
 
 	return &Pipeline{
 		cfg:            cfg,
-		loader:         NewAutoLoader(extractImages),
+		loader:         NewAutoLoader(extractImages, cfg.AssetsOutputDir),
 		splitter:       NewSplitterFactory(cfg),
 		embedder:       embedder,
 		llmClient:      llmClient,
@@ -125,7 +124,6 @@ func (p *Pipeline) scanAndProcess() {
 			p.cfg.IndexPrecision,
 			p.cfg.IndexTextLanguage,
 		)
-
 		if err != nil {
 			slog.Error("[RAG] Failed to create index", "error", err)
 			return
@@ -184,7 +182,6 @@ func (p *Pipeline) scanAndProcess() {
 		}
 		return nil
 	})
-
 	if err != nil {
 		slog.Error("[RAG] Scan error", "error", err)
 	}
@@ -242,32 +239,30 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 	slog.Info("[RAG] Vision Check", "filename", info.Name(), "image_count", len(doc.Images), "vision_enabled", (p.visionClient != nil))
 
 	if len(doc.Images) > 0 && p.visionClient != nil {
-		slog.Info("[RAG] Analyzing images with Vision Model...", "filename", info.Name(), "count", len(doc.Images))
+		slog.Debug("[RAG] Analyzing images", "file", info.Name(), "count", len(doc.Images))
 
 		for i, img := range doc.Images {
-			// TODO: limit analysis to the first X images to avoid timeout?
-			// For now, process all.
-
 			prompt := "Describe this image in detail. Identify charts, data points, or text inside it. Be concise."
 
-			// --- VISION OCR EXTENSION ---
-			// If the document has no text (scanned PDF), we ask the Vision Model to transcribe it.
-			if len(doc.Text) < 50 {
-				prompt = "Transcribe the text in this image strictly. Do not describe the layout, just return the text found."
-				slog.Info("[RAG] Vision OCR Triggered", "filename", info.Name(), "reason", "empty_text_fallback")
-			}
-
-			// Use ChatWithImages from the LLM client
-			// img.Data is []byte
 			desc, err := p.visionClient.ChatWithImages(prompt, "", [][]byte{img.Data})
 
 			if err == nil {
-				// Append description to main text as a special block
-				descBlock := fmt.Sprintf("\n\n--- [IMAGE ANALYSIS #%d] ---\n%s\n--------------------------\n", i+1, desc)
+				// MARKDOWN RICCO
+				// Se l'immagine ha un URL pubblico (salvata su assets), lo includiamo.
+				imgMarkdown := ""
+				if img.URLPath != "" {
+					// Sintassi Markdown immagine: ![alt text](url)
+					// Nota: Inseriamo l'URL relativo. Il frontend (o Open WebUI) lo risolverà rispetto al server.
+					// Se Open WebUI è su un'altra macchina, servirà l'URL assoluto.
+					// Per ora usiamo il path relativo che funziona nella Dashboard UI locale.
+					imgMarkdown = fmt.Sprintf("\n![Diagram](%s)\n", img.URLPath)
+				}
+
+				// Appendiamo descrizione + immagine
+				descBlock := fmt.Sprintf("\n\n--- [IMAGE ANALYSIS #%d] ---\n%s\n%s--------------------------\n", i+1, desc, imgMarkdown)
 				fullText += descBlock
-				slog.Info("[RAG] Image analyzed successfully", "image_index", i+1, "filename", info.Name())
 			} else {
-				slog.Error("[RAG] Vision analysis failed", "image_index", i, "filename", info.Name(), "error", err)
+				slog.Warn("[RAG] Vision analysis failed", "img_index", i, "error", err)
 			}
 		}
 	}

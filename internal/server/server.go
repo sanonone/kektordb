@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/sanonone/kektordb/pkg/engine"
@@ -24,8 +26,7 @@ type Server struct {
 
 // NewServer initializes the HTTP server using an existing Engine.
 // Note: The Engine must be initialized (Open) before passing it here.
-func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string, authToken string) (*Server, error) {
-
+func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string, authToken string, dataDir string) (*Server, error) {
 	// Load Vectorizer Configuration
 	vecConfig, err := LoadVectorizersConfig(vectorizersConfigPath)
 	if err != nil {
@@ -33,6 +34,12 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 	}
 	if len(vecConfig.Vectorizers) > 0 {
 		log.Printf("Loaded %d Vectorizer configurations", len(vecConfig.Vectorizers))
+	}
+
+	// create directory
+	assetsPath := filepath.Join(dataDir, "assets")
+	if err := os.MkdirAll(assetsPath, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create assets dir: %w", err)
 	}
 
 	s := &Server{
@@ -43,7 +50,7 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 	}
 
 	// Initialize Vectorizer Service
-	vecService, err := NewVectorizerService(s)
+	vecService, err := NewVectorizerService(s, assetsPath)
 	if err != nil {
 		log.Printf("WARNING: Vectorizer service failed to start: %v", err)
 	}
@@ -55,6 +62,9 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 
 	// Chain middlewares: Recovery -> Logging -> Auth -> Mux
 	// Order matters! Recovery must be outer-most to catch everything.
+
+	fileServer := http.FileServer(http.Dir(assetsPath))
+	mux.Handle("GET /assets/", http.StripPrefix("/assets/", fileServer))
 
 	var handler http.Handler = mux
 
