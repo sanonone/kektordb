@@ -553,6 +553,61 @@ Performs a recursive graph traversal starting from a specific node ID. This allo
 
 **Response:** Returns a nested `GraphNode` structure containing the fully hydrated data (Vectors + Metadata) for every node found along the requested paths.
 
+#### Get Incoming Links (Reverse Index)
+**`POST /graph/actions/get-incoming`**
+
+Efficiently retrieves "Who points to me?" using the reverse index. This is an O(1) operation.
+
+**Body:**
+```json
+{
+  "target_id": "chunk_2",
+  "relation_type": "next"
+}
+```
+
+**Response:**
+```json
+{
+  "target_id": "chunk_2",
+  "relation_type": "next",
+  "sources": ["chunk_1"] 
+}
+```
+
+#### Extract Subgraph (Local Neighborhood)
+**`POST /graph/actions/extract-subgraph`**
+
+Extracts the local topology around a Root Node up to a specified depth (BFS). Useful for visualization (UI) or detailed analysis of a specific cluster.
+This hydration fetches both metadata and relationships (outgoing and incoming).
+
+**Body:**
+```json
+{
+  "index_name": "docs",
+  "root_id": "chunk_5",
+  "relations": ["parent", "next"],
+  "max_depth": 2
+}
+```
+
+**Response:**
+Returns a `SubgraphResult` containing a list of unique Nodes (hydrated) and all Edges found during exploration.
+
+```json
+{
+  "root_id": "chunk_5",
+  "nodes": [
+    {"id": "chunk_5", "metadata": {...}},
+    {"id": "doc_1", "metadata": {...}}
+  ],
+  "edges": [
+    {"source": "chunk_5", "target": "doc_1", "relation": "parent", "dir": "out"},
+    {"source": "chunk_4", "target": "chunk_5", "relation": "next", "dir": "in"}
+  ]
+}
+```
+
 ---
 
 ### 5.4 Key-Value Store

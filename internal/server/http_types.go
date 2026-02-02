@@ -93,6 +93,26 @@ type GraphTraverseRequest struct {
 	Paths     []string `json:"paths"` // e.g. ["parent.child"]
 }
 
+type GraphGetIncomingRequest struct {
+	TargetID     string `json:"target_id"`
+	RelationType string `json:"relation_type"`
+}
+
+type GraphGetIncomingResponse struct {
+	TargetID     string   `json:"target_id"`
+	RelationType string   `json:"relation_type"`
+	Sources      []string `json:"sources"`
+}
+
+type GraphExtractSubgraphRequest struct {
+	IndexName string   `json:"index_name"`
+	RootID    string   `json:"root_id"`
+	Relations []string `json:"relations"` // List of relation types to follow
+	MaxDepth  int      `json:"max_depth"`
+}
+
+// Response uses engine.SubgraphResult directly
+
 type UIExploreRequest struct {
 	IndexName string `json:"index_name"`
 	Limit     int    `json:"limit"`

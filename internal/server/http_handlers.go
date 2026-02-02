@@ -68,6 +68,8 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /graph/actions/get-links", s.handleGraphGetLinks)
 	mux.HandleFunc("POST /graph/actions/get-connections", s.handleGraphGetConnections)
 	mux.HandleFunc("POST /graph/actions/traverse", s.handleGraphTraverse)
+	mux.HandleFunc("POST /graph/actions/get-incoming", s.handleGraphGetIncoming)
+	mux.HandleFunc("POST /graph/actions/extract-subgraph", s.handleGraphExtractSubgraph)
 
 	mux.HandleFunc("POST /rag/retrieve", s.handleRagRetrieve)
 
@@ -601,6 +603,51 @@ func (s *Server) handleGraphTraverse(w http.ResponseWriter, r *http.Request) {
 	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
 		"result": result,
 	})
+}
+
+func (s *Server) handleGraphGetIncoming(w http.ResponseWriter, r *http.Request) {
+	var req GraphGetIncomingRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON"))
+		return
+	}
+
+	if req.TargetID == "" || req.RelationType == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("target_id and relation_type are required"))
+		return
+	}
+
+	sources, found := s.Engine.VGetIncoming(req.TargetID, req.RelationType)
+	if !found {
+		sources = []string{}
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, GraphGetIncomingResponse{
+		TargetID:     req.TargetID,
+		RelationType: req.RelationType,
+		Sources:      sources,
+	})
+}
+
+func (s *Server) handleGraphExtractSubgraph(w http.ResponseWriter, r *http.Request) {
+	var req GraphExtractSubgraphRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON"))
+		return
+	}
+
+	if req.RootID == "" || req.IndexName == "" || len(req.Relations) == 0 {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("root_id, index_name and relations list are required"))
+		return
+	}
+
+	result, err := s.Engine.VExtractSubgraph(req.IndexName, req.RootID, req.Relations, req.MaxDepth)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, result)
 }
 
 // handleRagRetrieve performs a semantic search using a configured pipeline.
