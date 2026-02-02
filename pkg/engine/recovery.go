@@ -2,9 +2,12 @@ package engine
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,16 +21,26 @@ import (
 	"github.com/sanonone/kektordb/pkg/persistence"
 )
 
-// replayAOF reads the AOF file and reconstructs the state.
-// It handles the logic of compacting commands (loading into a map first).
+// replayAOF reads the AOF file using the Framed Binary Protocol (RFC 003).
+// It reconstructs the database state by replaying commands.
+//
+// CRASH RECOVERY:
+// If the file is corrupted (e.g., due to power loss during write), this function
+// will detect the corruption (checksum mismatch or incomplete frame), log a warning,
+// and automatically TRUNCATE the file to the last valid offset. This ensures the
+// database can always start, potentially losing only the last partially written instruction.
 func (e *Engine) replayAOF() error {
-	file, err := os.Open(e.aofPath)
+	// We need Read/Write access to perform Truncate if necessary.
+	file, err := os.OpenFile(e.aofPath, os.O_RDWR, 0666)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // No AOF file implies a fresh start.
+		}
 		return err
 	}
 	defer file.Close()
 
-	// Temporary state structures for compaction
+	// Temporary state structures for compaction (Map-Reduce style loading)
 	type vectorEntry struct {
 		vector   []float32
 		metadata map[string]any
@@ -45,20 +58,45 @@ func (e *Engine) replayAOF() error {
 	kvData := make(map[string][]byte)
 	indexes := make(map[string]*indexState)
 
-	reader := bufio.NewReader(file)
+	// validOffset tracks the end position of the last successfully verified frame.
+	var validOffset int64 = 0
+	corrupted := false
 
-	// Phase 1: Read and Aggregate (Compaction logic)
+	// Loop through the file, frame by frame.
 	for {
-		cmd, err := persistence.ParseCommand(reader)
+		// 1. Read binary frame (header + payload) with Checksum validation.
+		payload, frameSize, err := persistence.ReadFrame(file)
 		if err == io.EOF {
-			break
+			break // Clean end of file.
 		}
+
 		if err != nil {
-			// Log error but try to continue or break?
-			// For robustness we assume the file might have a partial write at the end.
+			// --- ERROR HANDLING & RECOVERY STRATEGY ---
+
+			// Case A: Legacy File Detection
+			if errors.Is(err, persistence.ErrInvalidMagic) && validOffset == 0 {
+				slog.Error("CRITICAL: Detected legacy/invalid AOF format. Auto-migration not supported in this version.", "path", e.aofPath)
+				return fmt.Errorf("AOF format mismatch: file does not start with magic byte 0xA5")
+			}
+
+			// Case B: Corruption (Incomplete write or Bit rot)
+			slog.Warn("AOF Corruption Detected", "error", err, "offset", validOffset)
+			corrupted = true
+			break // Stop reading, we will truncate later.
+		}
+
+		// 2. Parse the payload (The actual RESP command)
+		// We wrap the payload byte slice in a reader to reuse the existing RESP parser.
+		cmdReader := bufio.NewReader(bytes.NewReader(payload))
+		cmd, err := persistence.ParseCommand(cmdReader)
+		if err != nil {
+			slog.Warn("AOF contains valid frame but invalid RESP command", "offset", validOffset)
+			corrupted = true
 			break
 		}
 
+		// 3. Aggregate Command (Compaction Logic)
+		// This logic buffers changes in memory maps before applying them to the core DB.
 		switch cmd.Name {
 		case "SET":
 			if len(cmd.Args) == 2 {
@@ -75,7 +113,6 @@ func (e *Engine) replayAOF() error {
 		case "VCREATE":
 			if len(cmd.Args) >= 1 {
 				name := string(cmd.Args[0])
-				// Parse args... (simplified logic)
 				idx := &indexState{
 					metric:    distance.Euclidean,
 					precision: distance.Float32,
@@ -92,13 +129,13 @@ func (e *Engine) replayAOF() error {
 						if m, err := strconv.Atoi(val); err == nil {
 							idx.m = m
 						} else {
-							idx.m = 16 // default value
+							idx.m = 16
 						}
 					case "EF_CONSTRUCTION":
 						if efC, err := strconv.Atoi(val); err == nil {
 							idx.efConstruction = efC
 						} else {
-							idx.efConstruction = 200 // default value
+							idx.efConstruction = 200
 						}
 					case "PRECISION":
 						idx.precision = distance.PrecisionType(val)
@@ -142,17 +179,7 @@ func (e *Engine) replayAOF() error {
 			if len(cmd.Args) == 2 {
 				idxName := string(cmd.Args[0])
 				cfgJSON := cmd.Args[1]
-
-				// Find the index (must have been created by a previous VCREATE in the log)
-				// Note: we are working on the temporary 'indexes' map, not yet on the core DB
 				if idxState, ok := indexes[idxName]; ok {
-					// Since indexState is a temporary struct for replay,
-					// we need to add a field to save this config and apply it later.
-					// Or, apply it directly to the created index.
-
-					// BEST SOLUTION FOR NOW:
-					// Since the 'indexState' struct in recovery.go is simple,
-					// we add a 'maintenanceCfg' field there.
 					var cfg hnsw.AutoMaintenanceConfig
 					if json.Unmarshal(cfgJSON, &cfg) == nil {
 						idxState.maintenanceCfg = &cfg
@@ -160,17 +187,33 @@ func (e *Engine) replayAOF() error {
 				}
 			}
 		}
+
+		// Advance the valid offset pointer.
+		validOffset += int64(frameSize)
 	}
 
-	// Phase 2: Apply to Core
-	// KV
+	// 4. Auto-Truncate if corruption was found
+	if corrupted {
+		slog.Warn("Repairing AOF file...", "original_size", "unknown", "truncated_to", validOffset)
+		if err := file.Truncate(validOffset); err != nil {
+			return fmt.Errorf("failed to truncate corrupted AOF: %w", err)
+		}
+		// Sync ensures the OS writes the truncation to disk.
+		if err := file.Sync(); err != nil {
+			return fmt.Errorf("failed to sync repaired AOF: %w", err)
+		}
+		slog.Info("AOF repair successful. Database will start with recovered data.")
+	}
+
+	// 5. Apply Reconstructed State to Core DB
+	// KV Store
 	for k, v := range kvData {
 		e.DB.GetKVStore().Set(k, v)
 	}
 
 	// Indexes
 	for name, state := range indexes {
-		// Create Index if not exists
+		// Create Index if it doesn't exist
 		if _, ok := e.DB.GetVectorIndex(name); !ok {
 			e.DB.CreateVectorIndex(name, state.metric, state.m, state.efConstruction, state.precision, state.textLanguage)
 		}
@@ -180,19 +223,17 @@ func (e *Engine) replayAOF() error {
 			continue
 		}
 
-		// Applica config se presente nel replay
+		// Apply maintenance config if present
 		if state.maintenanceCfg != nil {
 			if h, ok := idx.(*hnsw.Index); ok {
 				h.UpdateMaintenanceConfig(*state.maintenanceCfg)
 			}
 		}
 
-		// Bulk Load items
+		// Bulk Load vectors
 		for id, entry := range state.entries {
-			// Internal Add
 			internalID, err := idx.Add(id, entry.vector)
 			if err == nil && len(entry.metadata) > 0 {
-				// Clean internal flags if present
 				if _, ok := entry.metadata["__deleted"]; ok {
 					delete(entry.metadata, "__deleted")
 				}
@@ -211,7 +252,7 @@ func (e *Engine) SaveSnapshot() error {
 	return e.saveSnapshotLocked()
 }
 
-// saveSnapshotLocked creates a .kdb snapshot and truncates the AOF.
+// saveSnapshotLocked performs the actual snapshotting logic.
 func (e *Engine) saveSnapshotLocked() error {
 	tempSnap := e.snapPath + ".tmp"
 	f, err := os.Create(tempSnap)
@@ -238,28 +279,34 @@ func (e *Engine) saveSnapshotLocked() error {
 	return nil
 }
 
-// RewriteAOF compacts the AOF file in background.
+// RewriteAOF compacts the AOF file in the background.
+// Updated to use the new binary framing format.
 func (e *Engine) RewriteAOF() error {
-	e.DB.Lock() // Global lock to ensure consistent state reading
+	e.DB.Lock() // Global lock to ensure consistent state
 	defer e.DB.Unlock()
 
 	tempAof := filepath.Join(e.opts.DataDir, "rewrite.tmp")
-	f, err := os.Create(tempAof)
+
+	// Open using standard file, but wrap in AOFWriter to get framing logic
+	writer, err := persistence.NewAOFWriter(tempAof)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tempAof)
+	defer func() {
+		writer.Close()
+		os.Remove(tempAof) // Cleanup if not replaced
+	}()
 
 	// 1. Write KV
 	e.DB.IterateKVUnlocked(func(pair core.KVPair) {
 		cmd := persistence.FormatCommand("SET", []byte(pair.Key), pair.Value)
-		f.WriteString(cmd)
+		// AOFWriter.Write handles framing automatically
+		writer.Write(cmd)
 	})
 
 	// 2. Write Indexes & Vectors
 	infoList, _ := e.DB.GetVectorIndexInfoUnlocked()
 	for _, info := range infoList {
-		// VCREATE
 		cmd := persistence.FormatCommand("VCREATE",
 			[]byte(info.Name),
 			[]byte("METRIC"), []byte(info.Metric),
@@ -268,7 +315,7 @@ func (e *Engine) RewriteAOF() error {
 			[]byte("EF_CONSTRUCTION"), []byte(strconv.Itoa(info.EfConstruction)),
 			[]byte("TEXT_LANGUAGE"), []byte(info.TextLanguage),
 		)
-		f.WriteString(cmd)
+		writer.Write(cmd)
 	}
 
 	e.DB.IterateVectorIndexesUnlocked(func(idxName string, _ *hnsw.Index, data core.VectorData) {
@@ -278,18 +325,22 @@ func (e *Engine) RewriteAOF() error {
 			var err error
 			meta, err = json.Marshal(data.Metadata)
 			if err != nil {
-				// Log warning, continue without metadata
 				fmt.Fprintf(os.Stderr, "Warning: failed to marshal metadata for %s during AOF rewrite: %v\n", data.ID, err)
 				meta = nil
 			}
 		}
 		cmd := persistence.FormatCommand("VADD", []byte(idxName), []byte(data.ID), []byte(vecStr), meta)
-		f.WriteString(cmd)
+		writer.Write(cmd)
 	})
 
-	f.Close()
+	// Force flush before swapping
+	if err := writer.Flush(); err != nil {
+		return err
+	}
+	// Close explicitly to release handle
+	writer.Close()
 
-	// Atomic swap managed by AOFWriter
+	// Atomic swap managed by the MAIN AOFWriter
 	if err := e.AOF.ReplaceWith(tempAof); err != nil {
 		return err
 	}
