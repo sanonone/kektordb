@@ -94,6 +94,7 @@ type IndexConfig struct {
 	M              int
 	EfConstruction int
 	TextLanguage   string // e.g., "english", "italian", or "" to disable
+	AutoLinks      []hnsw.AutoLinkRule
 }
 
 // Snapshot serializes the current state of the store in gob format to an io.Writer.
@@ -175,6 +176,7 @@ func (s *DB) Snapshot(writer io.Writer) error {
 					M:              m,
 					EfConstruction: efc,
 					TextLanguage:   textLang,
+					AutoLinks:      hnswIndex.GetAutoLinks(),
 				},
 				Nodes:              nodeSnapshots,
 				ExternalToInternal: extToInt,
@@ -223,6 +225,11 @@ func (s *DB) LoadFromSnapshot(reader io.Reader) error {
 		idx, err := hnsw.New(indexSnap.Config.M, indexSnap.Config.EfConstruction, indexSnap.Config.Metric, indexSnap.Config.Precision, indexSnap.Config.TextLanguage)
 		if err != nil {
 			return fmt.Errorf("failed to recreate index '%s' from snapshot: %w", name, err)
+		}
+
+		// Restore AutoLinks
+		if len(indexSnap.Config.AutoLinks) > 0 {
+			idx.SetAutoLinks(indexSnap.Config.AutoLinks)
 		}
 
 		// Prepare the map of nodes to load into HNSW

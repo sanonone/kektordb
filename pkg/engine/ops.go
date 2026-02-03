@@ -80,46 +80,62 @@ func (e *Engine) KVDelete(key string) error {
 // 'metric' defines the distance function (e.g., distance.Cosine, distance.Euclidean).
 // 'prec' defines the storage precision (float32, float16, int8).
 // 'lang' enables hybrid search features (e.g., "english", "italian") or "" to disable.
+// accept AutoLinkRules.
 //
 // Returns an error if an index with the same name already exists.
-func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int, prec distance.PrecisionType, lang string, config *hnsw.AutoMaintenanceConfig) error {
-	cmd := persistence.FormatCommand("VCREATE",
+func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int, prec distance.PrecisionType, lang string, config *hnsw.AutoMaintenanceConfig, autoLinks []hnsw.AutoLinkRule) error {
+	// 1. Prepare AOF Command Arguments
+	args := [][]byte{
 		[]byte(name),
 		[]byte("METRIC"), []byte(metric),
 		[]byte("M"), []byte(strconv.Itoa(m)),
 		[]byte("EF_CONSTRUCTION"), []byte(strconv.Itoa(efC)),
 		[]byte("PRECISION"), []byte(prec),
 		[]byte("TEXT_LANGUAGE"), []byte(lang),
-	)
+	}
+
+	// 2. Serialize AutoLinks to JSON for AOF
+	if len(autoLinks) > 0 {
+		rulesBytes, err := json.Marshal(autoLinks)
+		if err == nil {
+			args = append(args, []byte("AUTO_LINKS"), rulesBytes)
+		}
+	}
+
+	// 3. Write to AOF
+	cmd := persistence.FormatCommand("VCREATE", args...)
 	if err := e.AOF.Write(cmd); err != nil {
 		return fmt.Errorf("persistence error: %w", err)
 	}
 
+	// 4. Create Index in Memory
 	err := e.DB.CreateVectorIndex(name, metric, m, efC, prec, lang)
 	if err == nil {
 		atomic.AddInt64(&e.dirtyCounter, 1)
 
-		if config != nil {
-			idx, _ := e.DB.GetVectorIndex(name)
-			// Safe type assertion because CreateVectorIndex always creates HNSW
-			hnswIdx := idx.(*hnsw.Index)
-
-			// Apply in RAM
-			hnswIdx.UpdateMaintenanceConfig(*config)
-
-			// Write VCONFIG command to AOF
-			cfgBytes, err := json.Marshal(*config)
-			if err == nil {
+		// 5. Apply Configurations
+		idx, _ := e.DB.GetVectorIndex(name)
+		// Safe assertion (we know it's HNSW)
+		if hnswIdx, ok := idx.(*hnsw.Index); ok {
+			// Apply Maintenance Config
+			if config != nil {
+				hnswIdx.UpdateMaintenanceConfig(*config)
+				// Persist config separately (legacy behavior kept for compatibility)
+				cfgBytes, _ := json.Marshal(*config)
 				cmdConfig := persistence.FormatCommand("VCONFIG", []byte(name), cfgBytes)
 				e.AOF.Write(cmdConfig)
 			}
+
+			// Apply AutoLink Rules
+			if len(autoLinks) > 0 {
+				hnswIdx.SetAutoLinks(autoLinks)
+			}
 		}
 
-		// Instant flush for single operations (durability)
+		// Instant flush
 		if errF := e.AOF.Flush(); errF != nil {
 			return fmt.Errorf("CRITICAL: persistence flush failed: %w", errF)
 		}
-
 	}
 	return err
 }
@@ -195,6 +211,19 @@ func (e *Engine) VAdd(indexName, id string, vector []float32, metadata map[strin
 	metrics.TotalVectors.WithLabelValues(indexName).Inc()
 
 	atomic.AddInt64(&e.dirtyCounter, 1)
+
+	// AUTO-LINKING (NEW)
+	// We check if the index has rules and apply them.
+	// Safe casting to HNSW index to retrieve rules.
+	if hnswIdx, ok := idx.(*hnsw.Index); ok {
+		rules := hnswIdx.GetAutoLinks()
+		if len(rules) > 0 {
+			// This performs VLink calls which have their own locking (adminMu).
+			// VAdd holds no locks at this point, so it is safe.
+			e.processAutoLinks(indexName, id, metadata, rules)
+		}
+	}
+
 	return nil
 }
 
@@ -724,6 +753,18 @@ func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 	metrics.TotalVectors.WithLabelValues(indexName).Add(float64(len(items)))
 
 	atomic.AddInt64(&e.dirtyCounter, int64(len(items)))
+
+	// AUTO-LINKING (NEW)
+	// Retrieve rules once
+	rules := hnswIdx.GetAutoLinks()
+	if len(rules) > 0 {
+		for _, item := range items {
+			if len(item.Metadata) > 0 {
+				e.processAutoLinks(indexName, item.Id, item.Metadata, rules)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -864,4 +905,45 @@ func (e *Engine) detectTextFieldForIndex(indexName string) string {
 	}
 
 	return ""
+}
+
+// processAutoLinks evaluates the index rules against the provided metadata
+// and creates graph connections automatically.
+// It logs errors but does not stop execution (best effort).
+func (e *Engine) processAutoLinks(indexName, sourceID string, metadata map[string]any, rules []hnsw.AutoLinkRule) {
+	if len(metadata) == 0 || len(rules) == 0 {
+		return
+	}
+
+	for _, rule := range rules {
+		// Check if the metadata field exists
+		val, ok := metadata[rule.MetadataField]
+		if !ok {
+			continue
+		}
+
+		// The target ID must be a string.
+		// If it's a number/bool, we convert it to string format.
+		targetID := fmt.Sprintf("%v", val)
+		if targetID == "" {
+			continue
+		}
+
+		// Create the Link (Bidirectional by default via VLink)
+		// Source -> (Relation) -> Target
+		// Example: Chunk_1 -> (belongs_to_chat) -> Chat_123
+		if err := e.VLink(sourceID, targetID, rule.RelationType, ""); err != nil {
+			slog.Warn("Auto-linking failed",
+				"index", indexName,
+				"source", sourceID,
+				"target", targetID,
+				"rel", rule.RelationType,
+				"error", err)
+		}
+
+		// NOTE: 'rule.CreateNode' is ignored for now.
+		// VLink implicitly creates the graph node in the KV store.
+		// If we wanted to create a searchable vector node, we would need to call VAdd
+		// with a zero-vector, which might pollute the index.
+	}
 }

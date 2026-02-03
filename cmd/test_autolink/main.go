@@ -68,7 +68,7 @@ func main() {
 	embedder := &MockEmbedder{}
 
 	// Creazione indice manuale (per sicurezza, anche se la pipeline lo farebbe)
-	db.VCreate("linked_index", distance.Cosine, 16, 200, distance.Float32, "", nil)
+	db.VCreate("linked_index", distance.Cosine, 16, 200, distance.Float32, "", nil, nil)
 
 	pipeline := rag.NewPipeline(cfg, adapter, embedder, nil, nil)
 

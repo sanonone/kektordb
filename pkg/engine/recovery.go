@@ -53,6 +53,7 @@ func (e *Engine) replayAOF() error {
 		textLanguage   string
 		entries        map[string]vectorEntry
 		maintenanceCfg *hnsw.AutoMaintenanceConfig
+		autoLinks      []hnsw.AutoLinkRule
 	}
 
 	kvData := make(map[string][]byte)
@@ -141,6 +142,12 @@ func (e *Engine) replayAOF() error {
 						idx.precision = distance.PrecisionType(val)
 					case "TEXT_LANGUAGE":
 						idx.textLanguage = val
+					case "AUTO_LINKS":
+						var rules []hnsw.AutoLinkRule
+						// val is the JSON string
+						if json.Unmarshal([]byte(val), &rules) == nil {
+							idx.autoLinks = rules
+						}
 					}
 				}
 				if _, exists := indexes[name]; !exists {
@@ -223,11 +230,17 @@ func (e *Engine) replayAOF() error {
 			continue
 		}
 
-		// Apply maintenance config if present
-		if state.maintenanceCfg != nil {
-			if h, ok := idx.(*hnsw.Index); ok {
-				h.UpdateMaintenanceConfig(*state.maintenanceCfg)
-			}
+		/// Cast to HNSW
+		hnswIdx, isHnsw := idx.(*hnsw.Index)
+
+		// Apply maintenance config
+		if state.maintenanceCfg != nil && isHnsw {
+			hnswIdx.UpdateMaintenanceConfig(*state.maintenanceCfg)
+		}
+
+		// Apply AutoLinks
+		if len(state.autoLinks) > 0 && isHnsw {
+			hnswIdx.SetAutoLinks(state.autoLinks)
 		}
 
 		// Bulk Load vectors
@@ -307,15 +320,34 @@ func (e *Engine) RewriteAOF() error {
 	// 2. Write Indexes & Vectors
 	infoList, _ := e.DB.GetVectorIndexInfoUnlocked()
 	for _, info := range infoList {
-		cmd := persistence.FormatCommand("VCREATE",
+		// Retrieve the actual index object to get the rules
+		// We need to lock the DB briefly or access unlocked if we are sure (RewriteAOF holds Lock)
+		idx, _ := e.DB.GetVectorIndex(info.Name)
+		var rulesBytes []byte
+
+		if hnswIdx, ok := idx.(*hnsw.Index); ok {
+			rules := hnswIdx.GetAutoLinks()
+			if len(rules) > 0 {
+				rulesBytes, _ = json.Marshal(rules)
+			}
+		}
+
+		// Build arguments dynamically
+		args := [][]byte{
 			[]byte(info.Name),
 			[]byte("METRIC"), []byte(info.Metric),
 			[]byte("PRECISION"), []byte(info.Precision),
 			[]byte("M"), []byte(strconv.Itoa(info.M)),
 			[]byte("EF_CONSTRUCTION"), []byte(strconv.Itoa(info.EfConstruction)),
 			[]byte("TEXT_LANGUAGE"), []byte(info.TextLanguage),
-		)
-		writer.Write(cmd)
+		}
+
+		if len(rulesBytes) > 0 {
+			args = append(args, []byte("AUTO_LINKS"), rulesBytes)
+		}
+
+		cmd := persistence.FormatCommand("VCREATE", args...)
+		writer.Write(cmd) // Note: using 'writer' from the previous refactoring
 	}
 
 	e.DB.IterateVectorIndexesUnlocked(func(idxName string, _ *hnsw.Index, data core.VectorData) {

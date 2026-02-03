@@ -17,7 +17,7 @@ func TestHealthzEndpoint(t *testing.T) {
 	}
 	defer eng.Close()
 
-	s, err := NewServer(eng, ":9092", "", "test-secret-token")
+	s, err := NewServer(eng, ":9092", "", "test-secret-token", "")
 	if err != nil {
 		t.Fatal(err)
 	}

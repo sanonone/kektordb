@@ -82,6 +82,9 @@ type Index struct {
 
 	textLanguage string
 
+	// autoLinks stores the configuration for metadata-driven graph connections.
+	autoLinks []AutoLinkRule
+
 	visitedPool sync.Pool
 
 	minHeapPool sync.Pool
@@ -2426,4 +2429,22 @@ func computeInt8Norm(vec []int8) float32 {
 		sum += int64(v) * int64(v)
 	}
 	return float32(math.Sqrt(float64(sum)))
+}
+
+// SetAutoLinks updates the auto-linking rules for the index.
+func (h *Index) SetAutoLinks(rules []AutoLinkRule) {
+	h.metaMu.Lock()
+	defer h.metaMu.Unlock()
+	// Create a copy to prevent external mutation
+	h.autoLinks = make([]AutoLinkRule, len(rules))
+	copy(h.autoLinks, rules)
+}
+
+// GetAutoLinks returns a copy of the current auto-linking rules.
+func (h *Index) GetAutoLinks() []AutoLinkRule {
+	h.metaMu.RLock()
+	defer h.metaMu.RUnlock()
+	rules := make([]AutoLinkRule, len(h.autoLinks))
+	copy(rules, h.autoLinks)
+	return rules
 }

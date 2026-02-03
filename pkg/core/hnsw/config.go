@@ -68,3 +68,17 @@ func DefaultMaintenanceConfig() AutoMaintenanceConfig {
 		RefineEfConstruction: 0,
 	}
 }
+
+// AutoLinkRule defines a rule for automatically creating graph connections
+// based on metadata fields during vector insertion.
+type AutoLinkRule struct {
+	// MetadataField is the key in the metadata map to look for (e.g., "chat_id").
+	MetadataField string `json:"metadata_field"`
+
+	// RelationType is the type of the link to create (e.g., "belongs_to_chat").
+	RelationType string `json:"relation_type"`
+
+	// CreateNode indicates whether to create a "stub" node for the target
+	// if it doesn't exist. Default should be true for most cases.
+	CreateNode bool `json:"create_node"`
+}

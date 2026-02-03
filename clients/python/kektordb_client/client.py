@@ -168,7 +168,7 @@ class KektorDBClient:
 
     # --- Vector Index Management Methods ---
 
-    def vcreate(self, index_name: str, metric: str = "euclidean", precision: str = "float32", m: int = 0, ef_construction: int = 0, text_language: str = "", maintenance_config: Dict[str, Any] = None) -> None:
+    def vcreate(self, index_name: str, metric: str = "euclidean", precision: str = "float32", m: int = 0, ef_construction: int = 0, text_language: str = "", maintenance_config: Dict[str, Any] = None, auto_links: List[Dict[str, Any]] = None) -> None:
         """
         Creates a new vector index.
 
@@ -180,6 +180,7 @@ class KektorDBClient:
             ef_construction: HNSW efConstruction parameter. Server default if 0.
             text_language: Enables hybrid search ('english', 'italian').
             maintenance_config: Optional dict for background tasks (vacuum/refine settings).
+            auto_links: Optional list of rules for auto-linking graph nodes based on metadata.
         
         Raises:
             APIError: If the index already exists or parameters are invalid.
@@ -193,6 +194,9 @@ class KektorDBClient:
 
         if maintenance_config:
             payload["maintenance"] = maintenance_config
+        
+        if auto_links:
+            payload["auto_links"] = auto_links
 
         self._request("POST", "/vector/actions/create", json=payload)
 
@@ -434,6 +438,7 @@ class KektorDBClient:
         return data.get("results", [])
 
 
+
     def vupdate_config(self, index_name: str, config: Dict[str, Any]) -> None:
         """
         Updates the background maintenance configuration for an index.
@@ -449,6 +454,31 @@ class KektorDBClient:
                     - refine_ef_construction (int)
         """
         self._request("POST", f"/vector/indexes/{index_name}/config", json=config)
+
+    def get_incoming(self, target_id: str, relation_type: str) -> List[str]:
+        """
+        Retrieves all source IDs that link TO the target_id with a specific relation type.
+        (Reverse Index Lookup: Who points to me?)
+        """
+        payload = {
+            "target_id": target_id,
+            "relation_type": relation_type
+        }
+        resp = self._request("POST", "/graph/actions/get-incoming", json=payload)
+        return resp.get("sources", [])
+
+    def extract_subgraph(self, index_name: str, root_id: str, relations: List[str], max_depth: int = 2) -> Dict[str, Any]:
+        """
+        Extracts the local topology around a Root Node up to a specified depth (BFS).
+        Returns a SubgraphResult with Nodes (hydrated) and Edges.
+        """
+        payload = {
+            "index_name": index_name,
+            "root_id": root_id,
+            "relations": relations,
+            "max_depth": max_depth
+        }
+        return self._request("POST", "/graph/actions/extract-subgraph", json=payload)
 
     # --- Mantainance ---
 
