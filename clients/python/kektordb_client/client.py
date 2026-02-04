@@ -1,26 +1,35 @@
 # File: clients/python/kektordb_client/client.py
 
-import requests
 import time
-from typing import List, Dict, Any, Union
+from typing import Any, Dict, List, Union
+
+import requests
 
 # --- Custom Exceptions ---
 
+
 class KektorDBError(Exception):
     """Base exception class for KektorDB client errors."""
+
     pass
+
 
 class APIError(KektorDBError):
     """Raised for status codes >= 400, indicating an API-level error."""
+
     pass
+
 
 class ConnectionError(KektorDBError):
     """Raised for network-related errors (e.g., connection refused)."""
+
     pass
+
 
 class Task:
     """Rappresenta un task asincrono sul server KektorDB."""
-    def __init__(self, client: 'KektorDBClient', data: Dict[str, Any]):
+
+    def __init__(self, client: "KektorDBClient", data: Dict[str, Any]):
         self._client = client
         self.id = data.get("id")
         self.status = data.get("status")
@@ -38,7 +47,7 @@ class Task:
         self.error = data.get("error")
         return self
 
-    def wait(self, interval: int = 10, timeout: int = 7200) -> 'Task':
+    def wait(self, interval: int = 10, timeout: int = 7200) -> "Task":
         """
         Attende il completamento del task, controllando lo stato a intervalli regolari.
 
@@ -48,7 +57,7 @@ class Task:
 
         Returns:
             L'oggetto Task aggiornato al suo stato finale.
-            
+
         Raises:
             TimeoutError: Se il task non termina entro il timeout.
         """
@@ -57,18 +66,28 @@ class Task:
             self.refresh()
             if self.status in ("completed", "failed"):
                 return self
-            print(f"  ... stato del task '{self.id}': {self.status} (controllo tra {interval}s)")
+            print(
+                f"  ... stato del task '{self.id}': {self.status} (controllo tra {interval}s)"
+            )
             time.sleep(interval)
-        
-        raise TimeoutError(f"Il task '{self.id}' non è terminato entro il timeout di {timeout} secondi.")
 
+        raise TimeoutError(
+            f"Il task '{self.id}' non è terminato entro il timeout di {timeout} secondi."
+        )
 
 
 class KektorDBClient:
     """
     The official Python client for interacting with a KektorDB server via its REST API.
     """
-    def __init__(self, host: str = "localhost", port: int = 9091, timeout: int = 30, api_key: str = None):
+
+    def __init__(
+        self,
+        host: str = "localhost",
+        port: int = 9091,
+        timeout: int = 30,
+        api_key: str = None,
+    ):
         """
         Initializes the KektorDB client.
 
@@ -83,9 +102,11 @@ class KektorDBClient:
         self.api_key = api_key
         self._session = requests.Session()
 
-    def _request(self, method: str, endpoint: str, **kwargs) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+    def _request(
+        self, method: str, endpoint: str, **kwargs
+    ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
         """Internal helper method for making HTTP requests."""
-        
+
         headers = kwargs.get("headers", {})
 
         if self.api_key:
@@ -95,17 +116,14 @@ class KektorDBClient:
 
         try:
             response = self._session.request(
-                method,
-                f"{self.base_url}{endpoint}",
-                timeout=self.timeout,
-                **kwargs 
+                method, f"{self.base_url}{endpoint}", timeout=self.timeout, **kwargs
             )
             response.raise_for_status()
-            
+
             if response.status_code == 204:
                 return {}
             return response.json()
-            
+
         except requests.exceptions.HTTPError as e:
             try:
                 msg = e.response.json().get("error", str(e))
@@ -124,13 +142,13 @@ class KektorDBClient:
         Args:
             key: The key to set.
             value: The value to store (str or bytes).
-        
+
         Raises:
             APIError: If the server returns an error.
             ConnectionError: If a network error occurs.
         """
         if isinstance(value, bytes):
-            value_str = value.decode('utf-8')
+            value_str = value.decode("utf-8")
         else:
             value_str = value
         payload = {"value": value_str}
@@ -145,7 +163,7 @@ class KektorDBClient:
 
         Returns:
             The value as a string.
-        
+
         Raises:
             APIError: If the key is not found (404) or another error occurs.
             ConnectionError: If a network error occurs.
@@ -159,7 +177,7 @@ class KektorDBClient:
 
         Args:
             key: The key to delete.
-        
+
         Raises:
             APIError: If the server returns an error.
             ConnectionError: If a network error occurs.
@@ -168,7 +186,17 @@ class KektorDBClient:
 
     # --- Vector Index Management Methods ---
 
-    def vcreate(self, index_name: str, metric: str = "euclidean", precision: str = "float32", m: int = 0, ef_construction: int = 0, text_language: str = "", maintenance_config: Dict[str, Any] = None, auto_links: List[Dict[str, Any]] = None) -> None:
+    def vcreate(
+        self,
+        index_name: str,
+        metric: str = "euclidean",
+        precision: str = "float32",
+        m: int = 0,
+        ef_construction: int = 0,
+        text_language: str = "",
+        maintenance_config: Dict[str, Any] = None,
+        auto_links: List[Dict[str, Any]] = None,
+    ) -> None:
         """
         Creates a new vector index.
 
@@ -181,20 +209,22 @@ class KektorDBClient:
             text_language: Enables hybrid search ('english', 'italian').
             maintenance_config: Optional dict for background tasks (vacuum/refine settings).
             auto_links: Optional list of rules for auto-linking graph nodes based on metadata.
-        
+
         Raises:
             APIError: If the index already exists or parameters are invalid.
             ConnectionError: If a network error occurs.
         """
         payload = {"index_name": index_name, "metric": metric, "precision": precision}
-        if m > 0: payload["m"] = m
-        if ef_construction > 0: payload["ef_construction"] = ef_construction
+        if m > 0:
+            payload["m"] = m
+        if ef_construction > 0:
+            payload["ef_construction"] = ef_construction
         if text_language:
             payload["text_language"] = text_language
 
         if maintenance_config:
             payload["maintenance"] = maintenance_config
-        
+
         if auto_links:
             payload["auto_links"] = auto_links
 
@@ -229,14 +259,20 @@ class KektorDBClient:
         payload = {"index_name": index_name, "precision": precision}
         task_data = self._request("POST", "/vector/actions/compress", json=payload)
         task = Task(self, task_data)
-        
+
         if wait:
             return task.wait()
-        return task 
+        return task
 
     # --- Vector Data Methods ---
-    
-    def vadd(self, index_name: str, item_id: str, vector: List[float], metadata: Dict[str, Any] = None) -> None:
+
+    def vadd(
+        self,
+        index_name: str,
+        item_id: str,
+        vector: List[float],
+        metadata: Dict[str, Any] = None,
+    ) -> None:
         """
         Adds a vector to an index.
 
@@ -245,23 +281,26 @@ class KektorDBClient:
             item_id: A unique ID for the vector.
             vector: The vector embedding as a list of floats.
             metadata: An optional dictionary of metadata.
-        
+
         Raises:
             APIError: If the index does not exist or the vector is invalid.
             ConnectionError: If a network error occurs.
         """
         payload = {"index_name": index_name, "id": item_id, "vector": vector}
-        if metadata: payload["metadata"] = metadata
+        if metadata:
+            payload["metadata"] = metadata
         self._request("POST", "/vector/actions/add", json=payload)
 
-    def vadd_batch(self, index_name: str, vectors: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def vadd_batch(
+        self, index_name: str, vectors: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
         """
         Adds a batch of vectors to an index in a single request.
 
         Args:
             index_name: The name of the index.
             vectors: A list of dictionaries, where each dictionary must contain
-                     'id' (str), 'vector' (List[float]), and optionally 
+                     'id' (str), 'vector' (List[float]), and optionally
                      'metadata' (Dict[str, Any]).
                      Example:
                      [
@@ -271,36 +310,32 @@ class KektorDBClient:
 
         Returns:
             A dictionary containing the status and number of vectors added.
-        
+
         Raises:
             APIError: If the index does not exist or an error occurs during ingestion.
             ConnectionError: If a network error occurs.
         """
-        payload = {
-            "index_name": index_name,
-            "vectors": vectors
-        }
+        payload = {"index_name": index_name, "vectors": vectors}
         return self._request("POST", "/vector/actions/add-batch", json=payload)
 
-    def vimport(self, index_name: str, vectors: List[Dict[str, Any]], wait: bool = True) -> Task:
+    def vimport(
+        self, index_name: str, vectors: List[Dict[str, Any]], wait: bool = True
+    ) -> Task:
         """
         Importa massivamente vettori (Async).
-        
+
         Args:
             index_name: Nome indice.
             vectors: Lista vettori.
             wait: Se True, blocca finché l'import non è finito.
         """
-        payload = {
-            "index_name": index_name,
-            "vectors": vectors
-        }
+        payload = {"index_name": index_name, "vectors": vectors}
         # Non serve più il timeout gigante qui, la risposta è immediata
         response = self._request("POST", "/vector/actions/import", json=payload)
-        
+
         task = Task(self, response)
         if wait:
-            return task.wait(interval=1, timeout=600) # Timeout lungo per il polling
+            return task.wait(interval=1, timeout=600)  # Timeout lungo per il polling
         return task
 
     def vdelete(self, index_name: str, item_id: str) -> None:
@@ -310,7 +345,7 @@ class KektorDBClient:
         Args:
             index_name: The name of the index.
             item_id: The ID of the vector to delete.
-        
+
         Raises:
             APIError: If the index does not exist.
             ConnectionError: If a network error occurs.
@@ -332,7 +367,7 @@ class KektorDBClient:
 
         Returns:
             A list of dictionaries, where each dictionary represents a found vector.
-        
+
         Raises:
             APIError: If the index does not exist.
             ConnectionError: If a network error occurs.
@@ -340,7 +375,18 @@ class KektorDBClient:
         payload = {"index_name": index_name, "ids": item_ids}
         return self._request("POST", "/vector/actions/get-vectors", json=payload)
 
-    def vsearch(self, index_name: str, query_vector: List[float], k: int, filter_str: str = "", ef_search: int = 0, alpha: float = 0.5, include_relations: List[str] = None, hydrate_relations: bool = False) -> Union[List[str], List[Dict[str, Any]]]: 
+    def vsearch(
+        self,
+        index_name: str,
+        query_vector: List[float],
+        k: int,
+        filter_str: str = "",
+        graph_filter: Dict[str, Any] = None,
+        ef_search: int = 0,
+        alpha: float = 0.5,
+        include_relations: List[str] = None,
+        hydrate_relations: bool = False,
+    ) -> Union[List[str], List[Dict[str, Any]]]:
         """
         Performs a nearest neighbor search in an index.
 
@@ -361,7 +407,7 @@ class KektorDBClient:
 
         Returns:
             A list of item IDs of the nearest neighbors.
-        
+
         Raises:
             APIError: If the index does not exist or the query is invalid.
             ConnectionError: If a network error occurs.
@@ -373,7 +419,10 @@ class KektorDBClient:
         }
         if filter_str:
             payload["filter"] = filter_str
-        
+
+        if graph_filter:
+            payload["graph_filter"] = graph_filter
+
         if ef_search > 0:
             payload["ef_search"] = ef_search
 
@@ -385,7 +434,7 @@ class KektorDBClient:
 
         if hydrate_relations:
             payload["hydrate_relations"] = True
-            
+
         data = self._request("POST", "/vector/actions/search", json=payload)
         return data.get("results", [])
 
@@ -399,7 +448,7 @@ class KektorDBClient:
         payload = {
             "source_id": source_id,
             "target_id": target_id,
-            "relation_type": relation_type
+            "relation_type": relation_type,
         }
         self._request("POST", "/graph/actions/link", json=payload)
 
@@ -410,7 +459,7 @@ class KektorDBClient:
         payload = {
             "source_id": source_id,
             "target_id": target_id,
-            "relation_type": relation_type
+            "relation_type": relation_type,
         }
         self._request("POST", "/graph/actions/unlink", json=payload)
 
@@ -418,31 +467,28 @@ class KektorDBClient:
         """
         Retrieves all target IDs linked from source_id with a specific relation type.
         """
-        payload = {
-            "source_id": source_id,
-            "relation_type": relation_type
-        }
+        payload = {"source_id": source_id, "relation_type": relation_type}
         resp = self._request("POST", "/graph/actions/get-links", json=payload)
         return resp.get("targets", [])
 
-    def vget_connections(self, index_name: str, source_id: str, relation_type: str) -> List[Dict[str, Any]]:
+    def vget_connections(
+        self, index_name: str, source_id: str, relation_type: str
+    ) -> List[Dict[str, Any]]:
         """
         Retrieves full data (vector + metadata) of nodes linked to source_id.
         """
         payload = {
             "index_name": index_name,
             "source_id": source_id,
-            "relation_type": relation_type
+            "relation_type": relation_type,
         }
         data = self._request("POST", "/graph/actions/get-connections", json=payload)
         return data.get("results", [])
 
-
-
     def vupdate_config(self, index_name: str, config: Dict[str, Any]) -> None:
         """
         Updates the background maintenance configuration for an index.
-        
+
         Args:
             index_name: The index to update.
             config: Dictionary with configuration keys:
@@ -460,14 +506,13 @@ class KektorDBClient:
         Retrieves all source IDs that link TO the target_id with a specific relation type.
         (Reverse Index Lookup: Who points to me?)
         """
-        payload = {
-            "target_id": target_id,
-            "relation_type": relation_type
-        }
+        payload = {"target_id": target_id, "relation_type": relation_type}
         resp = self._request("POST", "/graph/actions/get-incoming", json=payload)
         return resp.get("sources", [])
 
-    def extract_subgraph(self, index_name: str, root_id: str, relations: List[str], max_depth: int = 2) -> Dict[str, Any]:
+    def extract_subgraph(
+        self, index_name: str, root_id: str, relations: List[str], max_depth: int = 2
+    ) -> Dict[str, Any]:
         """
         Extracts the local topology around a Root Node up to a specified depth (BFS).
         Returns a SubgraphResult with Nodes (hydrated) and Edges.
@@ -476,24 +521,27 @@ class KektorDBClient:
             "index_name": index_name,
             "root_id": root_id,
             "relations": relations,
-            "max_depth": max_depth
+            "max_depth": max_depth,
         }
         return self._request("POST", "/graph/actions/extract-subgraph", json=payload)
 
     # --- Mantainance ---
 
-    def vtrigger_maintenance(self, index_name: str, task_type: str, wait: bool = True) -> Task:
+    def vtrigger_maintenance(
+        self, index_name: str, task_type: str, wait: bool = True
+    ) -> Task:
         """
         Trigger manuale maintenance (Async).
         """
         payload = {"type": task_type}
-        response = self._request("POST", f"/vector/indexes/{index_name}/maintenance", json=payload)
-        
+        response = self._request(
+            "POST", f"/vector/indexes/{index_name}/maintenance", json=payload
+        )
+
         task = Task(self, response)
         if wait:
-            return task.wait() # Timeout default
+            return task.wait()  # Timeout default
         return task
-        
 
     # --- System Methods ---
 
@@ -501,7 +549,7 @@ class KektorDBClient:
     def aof_rewrite(self) -> None:
         """
         Requests the server to perform an AOF compaction.
-        
+
         Raises:
             APIError: If the server fails to rewrite the AOF.
             ConnectionError: If a network error occurs.
@@ -510,12 +558,15 @@ class KektorDBClient:
 
 
     '''
+
     def aof_rewrite(self, wait: bool = True) -> Task:
         """
         AVVIA la compattazione dell'AOF.
         Operazione asincrona.
         """
-        task_data = self._request("POST", "/system/aof-rewrite") # Assumendo che lo modificheremo
+        task_data = self._request(
+            "POST", "/system/aof-rewrite"
+        )  # Assumendo che lo modificheremo
         task = Task(self, task_data)
 
         if wait:
@@ -527,8 +578,6 @@ class KektorDBClient:
         Requests the server to perform a database snapshot (SAVE).
         """
         self._request("POST", "/system/save")
-    
-
 
     def get_task_status(self, task_id: str) -> Dict[str, Any]:
         """Recupera lo stato di un task a lunga esecuzione."""
