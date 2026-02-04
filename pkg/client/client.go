@@ -169,6 +169,31 @@ type extractSubgraphRequest struct {
 	MaxDepth  int      `json:"max_depth"`
 }
 
+// Graph Entity types
+type graphSetPropertiesRequest struct {
+	IndexName  string                 `json:"index_name"`
+	NodeID     string                 `json:"node_id"`
+	Properties map[string]interface{} `json:"properties"`
+}
+
+type graphGetPropertiesRequest struct {
+	IndexName string `json:"index_name"`
+	NodeID    string `json:"node_id"`
+}
+
+type graphSearchNodesRequest struct {
+	IndexName      string `json:"index_name"`
+	PropertyFilter string `json:"property_filter"`
+	Limit          int    `json:"limit"`
+}
+
+type graphSearchNodesResponse struct {
+	Nodes []struct {
+		ID         string                 `json:"id"`
+		Properties map[string]interface{} `json:"properties"`
+	} `json:"nodes"`
+}
+
 // --- Client ---
 
 type Client struct {
@@ -193,6 +218,31 @@ func (c *Client) jsonRequest(method, endpoint string, payload any) ([]byte, erro
 			return nil, fmt.Errorf("failed to marshal JSON payload: %w", err)
 		}
 		reqBody = bytes.NewBuffer(jsonData)
+	}
+
+	// Graph Entity types
+	type graphSetPropertiesRequest struct {
+		IndexName  string                 `json:"index_name"`
+		NodeID     string                 `json:"node_id"`
+		Properties map[string]interface{} `json:"properties"`
+	}
+
+	type graphGetPropertiesRequest struct {
+		IndexName string `json:"index_name"`
+		NodeID    string `json:"node_id"`
+	}
+
+	type graphSearchNodesRequest struct {
+		IndexName      string `json:"index_name"`
+		PropertyFilter string `json:"property_filter"`
+		Limit          int    `json:"limit"`
+	}
+
+	type graphSearchNodesResponse struct {
+		Nodes []struct {
+			ID         string                 `json:"id"`
+			Properties map[string]interface{} `json:"properties"`
+		} `json:"nodes"`
 	}
 
 	req, err := http.NewRequest(method, c.baseURL+endpoint, reqBody)
@@ -413,11 +463,16 @@ func (c *Client) VTriggerMaintenance(indexName string, taskType string) error {
 
 // --- Vector Data ---
 
+// VAdd inserts a vector. If vector is nil, creates a "Graph Entity" (Zero Vector).
 func (c *Client) VAdd(indexName, id string, vector []float32, metadata map[string]interface{}) error {
 	payload := map[string]interface{}{
 		"index_name": indexName,
 		"id":         id,
-		"vector":     vector,
+	}
+	if vector != nil {
+		payload["vector"] = vector
+	} else {
+		payload["vector"] = []float32{} // Empty list for Entity
 	}
 	if metadata != nil {
 		payload["metadata"] = metadata
@@ -700,6 +755,67 @@ func (c *Client) VExtractSubgraph(indexName, rootID string, relations []string, 
 		return nil, fmt.Errorf("invalid JSON response: %w", err)
 	}
 	return &resp, nil
+}
+
+// Graph Entities Methods
+
+// SetNodeProperties updates metadata for a node (Upsert behavior).
+func (c *Client) SetNodeProperties(indexName, nodeID string, properties map[string]interface{}) error {
+	req := graphSetPropertiesRequest{
+		IndexName:  indexName,
+		NodeID:     nodeID,
+		Properties: properties,
+	}
+	_, err := c.jsonRequest(http.MethodPost, "/graph/actions/set-node-properties", req)
+	return err
+}
+
+// GetNodeProperties retrieves metadata for a node.
+func (c *Client) GetNodeProperties(indexName, nodeID string) (map[string]interface{}, error) {
+	req := graphGetPropertiesRequest{
+		IndexName: indexName,
+		NodeID:    nodeID,
+	}
+	respBody, err := c.jsonRequest(http.MethodPost, "/graph/actions/get-node-properties", req)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Properties map[string]interface{} `json:"properties"`
+	}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+	return resp.Properties, nil
+}
+
+// SearchNodes finds nodes based only on their properties (metadata filter).
+func (c *Client) SearchNodes(indexName, propertyFilter string, limit int) ([]GraphNode, error) {
+	req := graphSearchNodesRequest{
+		IndexName:      indexName,
+		PropertyFilter: propertyFilter,
+		Limit:          limit,
+	}
+	respBody, err := c.jsonRequest(http.MethodPost, "/graph/actions/search-nodes", req)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp graphSearchNodesResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+
+	// Convert to GraphNode for consistency
+	nodes := make([]GraphNode, len(resp.Nodes))
+	for i, n := range resp.Nodes {
+		nodes[i] = GraphNode{
+			ID:       n.ID,
+			Metadata: n.Properties,
+		}
+	}
+	return nodes, nil
 }
 
 // --- Administration Methods ---

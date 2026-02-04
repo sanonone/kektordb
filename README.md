@@ -116,6 +116,7 @@ KektorDB can function as a **smart middleware** between your Chat UI and your LL
 
 ### Semantic Graph Engine
 *   **Automated Entity Extraction:** Uses a local LLM to identify concepts (People, Projects, Tech) during ingestion and links related documents together ("Connecting the dots").
+*   **Graph Entities:** Support for nodes without vectors (pure metadata nodes) to represent abstract entities like "Users" or "Categories" within the same graph structure.
 *   **Graph Traversal:** Search traverses `prev`, `next`, `parent`, and `mentions` links to provide a holistic context window.
 
 <p align="center">

@@ -116,6 +116,7 @@ KektorDB può funzionare come **middleware intelligente** tra la tua Chat UI e i
 
 ### Motore a Grafo Semantico
 *   **Estrazione Entità Automatizzata:** Usa un LLM locale per identificare concetti (Persone, Progetti, Tecnologie) durante l'ingestione e collega documenti correlati ("Unire i puntini").
+*   **Entità di Grafo:** Supporto per nodi senza vettore (solo metadati) per rappresentare entità astratte come "Utenti" o "Categorie" nella stessa struttura a grafo.
 *   **Attraversamento del Grafo:** La ricerca attraversa i link `prev` (precedente), `next` (successivo), `parent` (genitore) e `mentions` (menziona) per fornire una finestra di contesto olistica.
 
 <p align="center">

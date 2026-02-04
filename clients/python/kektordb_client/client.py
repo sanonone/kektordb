@@ -270,23 +270,28 @@ class KektorDBClient:
         self,
         index_name: str,
         item_id: str,
-        vector: List[float],
+        vector: List[float] = None,
         metadata: Dict[str, Any] = None,
     ) -> None:
         """
-        Adds a vector to an index.
+        Adds a vector to an index. If vector is None, it creates a "Graph Entity" (Zero Vector).
 
         Args:
             index_name: The name of the index.
             item_id: A unique ID for the vector.
-            vector: The vector embedding as a list of floats.
+            vector: The vector embedding as a list of floats. Can be None for entities.
             metadata: An optional dictionary of metadata.
 
         Raises:
             APIError: If the index does not exist or the vector is invalid.
             ConnectionError: If a network error occurs.
         """
-        payload = {"index_name": index_name, "id": item_id, "vector": vector}
+        payload = {"index_name": index_name, "id": item_id}
+        if vector is not None:
+            payload["vector"] = vector
+        else:
+            payload["vector"] = [] # Send empty list to signal "Entity" behavior
+
         if metadata:
             payload["metadata"] = metadata
         self._request("POST", "/vector/actions/add", json=payload)
@@ -524,6 +529,45 @@ class KektorDBClient:
             "max_depth": max_depth,
         }
         return self._request("POST", "/graph/actions/extract-subgraph", json=payload)
+
+        return self._request("POST", "/graph/actions/extract-subgraph", json=payload)
+
+    def set_node_properties(
+        self, index_name: str, node_id: str, properties: Dict[str, Any]
+    ) -> None:
+        """
+        Updates the properties (metadata) of a node without changing its vector.
+        Acts as an Upsert for metadata.
+        """
+        payload = {
+            "index_name": index_name,
+            "node_id": node_id,
+            "properties": properties,
+        }
+        self._request("POST", "/graph/actions/set-node-properties", json=payload)
+
+    def get_node_properties(self, index_name: str, node_id: str) -> Dict[str, Any]:
+        """
+        Retrieves the properties (metadata) of a node.
+        """
+        payload = {"index_name": index_name, "node_id": node_id}
+        resp = self._request("POST", "/graph/actions/get-node-properties", json=payload)
+        return resp.get("properties", {})
+
+    def search_nodes(
+        self, index_name: str, property_filter: str, limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """
+        Searches for nodes based ONLY on their properties (metadata).
+        Useful for finding entities (e.g. type='person') without a vector query.
+        """
+        payload = {
+            "index_name": index_name,
+            "property_filter": property_filter,
+            "limit": limit,
+        }
+        resp = self._request("POST", "/graph/actions/search-nodes", json=payload)
+        return resp.get("nodes", [])
 
     # --- Mantainance ---
 

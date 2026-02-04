@@ -324,7 +324,7 @@ During search, if you request `hydrate_relations: true`, KektorDB returns the ma
 
 **Self-Repair:** The graph engine includes a self-repair mechanism. If it detects a link to a node that no longer exists (e.g. was deleted), it automatically cleans up the broken link in the background to maintain consistency without impacting query latency.
 
-### 4.4 Metadata Auto-Linking (v0.4.0)
+### 4.4 Metadata Auto-Linking (v0.4.1)
 KektorDB can automatically create graph connections between nodes based on metadata fields. This is useful for reconstructing relationships from flat data (e.g., maintaining parent-child hierarchy from SQL foreign keys).
 
 **How it works:**
@@ -332,7 +332,14 @@ KektorDB can automatically create graph connections between nodes based on metad
 2.  When you add a vector with `{"parent_id": "123"}`, KektorDB automatically creates a directional link: `ThisNode -> [child_of] -> Node("123")`.
 3.  Best-effort: If the target node doesn't exist yet, the link is created in the forward direction anyway. Incoming links (Reverse Index) will work as soon as the target node is created.
 
-### 4.5 Advanced RAG Pipeline (v0.4.0)
+3.  Best-effort: If the target node doesn't exist yet, the link is created in the forward direction anyway. Incoming links (Reverse Index) will work as soon as the target node is created.
+
+### 4.5 "Graph Entities" (Nodes without Vectors)
+Starting from v0.4.1, KektorDB supports **First-Class Graph Entities**. You can insert a node with a `null` vector. 
+*   **Use Case:** Represents people, categories, or concepts that you want to link strictly via relationships (e.g. `Author:John`) but don't need to search via vector similarity alongside documents. 
+*   **Behavior:** These nodes have a zero-vector [0,0...] internally. They can be retrieved via `SearchNodes` (property filter) or Graph Traversal, but will appear at the "bottom" of vector similarity searches unless the query is also [0,0...].
+
+### 4.6 Advanced RAG Pipeline (v0.4.0)
 KektorDB implements a sophisticated "Agentic" retrieval pipeline to solve common RAG issues:
 
 1.  **Query Rewriting (CQR):** Uses a fast LLM to rewrite user questions based on chat history. Solves the "Memory Problem" (e.g., User: "How to install it?" -> System: "How to install KektorDB?").
