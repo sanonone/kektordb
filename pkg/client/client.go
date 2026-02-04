@@ -63,6 +63,13 @@ type VectorAddObject struct {
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
+type AutoLinkRule struct {
+	SourceRegex   string `json:"source_regex"`   // Regex to match source metadata field
+	TargetRegex   string `json:"target_regex"`   // Regex to match target metadata field
+	Relation      string `json:"relation"`       // The relation name (e.g. "parent")
+	MetadataField string `json:"metadata_field"` // The specific metadata field to inspect
+}
+
 type Task struct {
 	ID              string `json:"id"`
 	Status          string `json:"status"`
@@ -126,6 +133,40 @@ type graphTraverseRequest struct {
 
 type traverseResponse struct {
 	Result GraphNode `json:"result"`
+}
+
+// GraphQuery defines the criteria for graph-based filtering.
+type GraphQuery struct {
+	RootID    string   `json:"root_id"`
+	Relations []string `json:"relations"`
+	Direction string   `json:"direction,omitempty"` // "out", "in", "both"
+	MaxDepth  int      `json:"max_depth"`
+}
+
+// Subgraph structures for VExtractSubgraph
+type SubgraphNode struct {
+	ID       string                 `json:"id"`
+	Metadata map[string]interface{} `json:"metadata"`
+}
+
+type SubgraphEdge struct {
+	Source   string `json:"source"`
+	Target   string `json:"target"`
+	Relation string `json:"relation"`
+	Dir      string `json:"dir"` // "out" or "in"
+}
+
+type SubgraphResult struct {
+	RootID string         `json:"root_id"`
+	Nodes  []SubgraphNode `json:"nodes"`
+	Edges  []SubgraphEdge `json:"edges"`
+}
+
+type extractSubgraphRequest struct {
+	IndexName string   `json:"index_name"`
+	RootID    string   `json:"root_id"`
+	Relations []string `json:"relations"`
+	MaxDepth  int      `json:"max_depth"`
 }
 
 // --- Client ---
@@ -284,6 +325,32 @@ func (c *Client) VCreate(indexName, metric, precision string, m, efConstruction 
 	return err
 }
 
+// VCreateWithAutoLinks creates a new vector index with auto-linking rules.
+func (c *Client) VCreateWithAutoLinks(indexName, metric, precision string, m, efConstruction int, maintenance *MaintenanceConfig, autoLinks []AutoLinkRule) error {
+	payload := map[string]interface{}{"index_name": indexName}
+	if metric != "" {
+		payload["metric"] = metric
+	}
+	if precision != "" {
+		payload["precision"] = precision
+	}
+	if m > 0 {
+		payload["m"] = m
+	}
+	if efConstruction > 0 {
+		payload["ef_construction"] = efConstruction
+	}
+	if maintenance != nil {
+		payload["maintenance"] = maintenance
+	}
+	if len(autoLinks) > 0 {
+		payload["auto_links"] = autoLinks
+	}
+
+	_, err := c.jsonRequest(http.MethodPost, "/vector/actions/create", payload)
+	return err
+}
+
 func (c *Client) ListIndexes() ([]IndexInfo, error) {
 	respBody, err := c.jsonRequest(http.MethodGet, "/vector/indexes", nil)
 	if err != nil {
@@ -397,7 +464,7 @@ func (c *Client) VImport(indexName string, vectors []VectorAddObject) (map[strin
 	return resp, nil
 }
 
-func (c *Client) VSearch(indexName string, k int, queryVector []float32, filter string, efSearch int, alpha float64) ([]string, error) {
+func (c *Client) VSearch(indexName string, k int, queryVector []float32, filter string, efSearch int, alpha float64, graphFilter *GraphQuery) ([]string, error) {
 	payload := map[string]interface{}{
 		"index_name":   indexName,
 		"k":            k,
@@ -411,6 +478,9 @@ func (c *Client) VSearch(indexName string, k int, queryVector []float32, filter 
 	}
 	if alpha != 0 {
 		payload["alpha"] = alpha
+	}
+	if graphFilter != nil {
+		payload["graph_filter"] = graphFilter
 	}
 
 	respBody, err := c.jsonRequest(http.MethodPost, "/vector/actions/search", payload)
@@ -505,6 +575,30 @@ func (c *Client) VGetLinks(sourceID, relationType string) ([]string, error) {
 	return resp.Targets, nil
 }
 
+// VGetIncoming retrieves all source IDs that link TO the target ID with a specific relation.
+// VGetIncoming retrieves all source IDs that link TO the target ID with a specific relation.
+func (c *Client) VGetIncoming(targetID, relationType string) ([]string, error) {
+	// API expects key "target_id" for get-incoming
+	payload := map[string]string{
+		"target_id":     targetID,
+		"relation_type": relationType,
+	}
+
+	respBody, err := c.jsonRequest(http.MethodPost, "/graph/actions/get-incoming", payload)
+	if err != nil {
+		return nil, err
+	}
+
+	// Response format is {"sources": ["id1", "id2"]}
+	var resp struct {
+		Sources []string `json:"sources"`
+	}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response: %w", err)
+	}
+	return resp.Sources, nil
+}
+
 // VGetConnections retrieves fully hydrated nodes linked to the source.
 func (c *Client) VGetConnections(indexName, sourceID, relationType string) ([]VectorData, error) {
 	req := graphGetConnectionsRequest{
@@ -526,7 +620,7 @@ func (c *Client) VGetConnections(indexName, sourceID, relationType string) ([]Ve
 
 // VSearchGraph performs a search and returns detailed results including scores and graph relations.
 // 'includeRelations' is a list of relation types to fetch (e.g. []string{"parent", "next"}).
-func (c *Client) VSearchGraph(indexName string, queryVector []float32, k int, filter string, efSearch int, alpha float64, includeRelations []string, hydrate bool) ([]GraphSearchResult, error) {
+func (c *Client) VSearchGraph(indexName string, queryVector []float32, k int, filter string, efSearch int, alpha float64, includeRelations []string, hydrate bool, graphFilter *GraphQuery) ([]GraphSearchResult, error) {
 	payload := map[string]interface{}{
 		"index_name":   indexName,
 		"k":            k,
@@ -548,6 +642,10 @@ func (c *Client) VSearchGraph(indexName string, queryVector []float32, k int, fi
 
 	if hydrate {
 		payload["hydrate_relations"] = true
+	}
+
+	if graphFilter != nil {
+		payload["graph_filter"] = graphFilter
 	}
 
 	respBody, err := c.jsonRequest(http.MethodPost, "/vector/actions/search", payload)
@@ -581,6 +679,27 @@ func (c *Client) VTraverse(indexName, sourceID string, paths []string) (*GraphNo
 		return nil, fmt.Errorf("invalid JSON response: %w", err)
 	}
 	return &resp.Result, nil
+}
+
+// VExtractSubgraph retrieves a local subgraph (nodes and edges) around a root ID.
+func (c *Client) VExtractSubgraph(indexName, rootID string, relations []string, maxDepth int) (*SubgraphResult, error) {
+	req := extractSubgraphRequest{
+		IndexName: indexName,
+		RootID:    rootID,
+		Relations: relations,
+		MaxDepth:  maxDepth,
+	}
+
+	respBody, err := c.jsonRequest(http.MethodPost, "/graph/actions/extract-subgraph", req)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp SubgraphResult
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response: %w", err)
+	}
+	return &resp, nil
 }
 
 // --- Administration Methods ---

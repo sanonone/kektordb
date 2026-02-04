@@ -189,7 +189,7 @@ func TestClientIntegration(t *testing.T) {
 		k := 10
 
 		// 1. "Fast" search with low efSearch
-		fastResults, err := client.VSearch(idxName, k, queryVector, "", 12, 0) // efSearch = 12
+		fastResults, err := client.VSearch(idxName, k, queryVector, "", 12, 0, nil) // efSearch = 12
 		if err != nil {
 			t.Fatalf("Fast search (low efSearch) failed: %v", err)
 		}
@@ -199,7 +199,7 @@ func TestClientIntegration(t *testing.T) {
 		t.Logf(" -> Fast search (ef=12) returned %d results", len(fastResults))
 
 		// 2. "Accurate" search with high efSearch
-		accurateResults, err := client.VSearch(idxName, k, queryVector, "", 100, 0) // efSearch = 100
+		accurateResults, err := client.VSearch(idxName, k, queryVector, "", 100, 0, nil) // efSearch = 100
 		if err != nil {
 			t.Fatalf("Accurate search (high efSearch) failed: %v", err)
 		}

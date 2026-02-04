@@ -13,7 +13,9 @@
 4.  [Core Features & Usage](#4-core-features--usage)
     *   [Quantization (Int8 & Float16)](#41-quantization--compression)
     *   [Hybrid Search (BM25 + Vector)](#42-hybrid-search)
+    *   [Hybrid Search (BM25 + Vector)](#42-hybrid-search)
     *   [GraphRAG (Automatic Context)](#43-graphrag--context-window)
+    *   [Metadata Auto-Linking](#44-metadata-auto-linking)
 5.  [HTTP API Reference](#5-http-api-reference)
     *   [Vector Operations](#51-vector-operations)
     *   [Index Management](#52-index-management)
@@ -322,14 +324,22 @@ During search, if you request `hydrate_relations: true`, KektorDB returns the ma
 
 **Self-Repair:** The graph engine includes a self-repair mechanism. If it detects a link to a node that no longer exists (e.g. was deleted), it automatically cleans up the broken link in the background to maintain consistency without impacting query latency.
 
-### 4.4 Advanced RAG Pipeline (v0.4.0)
+### 4.4 Metadata Auto-Linking (v0.4.0)
+KektorDB can automatically create graph connections between nodes based on metadata fields. This is useful for reconstructing relationships from flat data (e.g., maintaining parent-child hierarchy from SQL foreign keys).
+
+**How it works:**
+1.  Define a rule at index creation time: "If a node has metadata field `parent_id`, link it to the node with that ID using relation `child_of`".
+2.  When you add a vector with `{"parent_id": "123"}`, KektorDB automatically creates a directional link: `ThisNode -> [child_of] -> Node("123")`.
+3.  Best-effort: If the target node doesn't exist yet, the link is created in the forward direction anyway. Incoming links (Reverse Index) will work as soon as the target node is created.
+
+### 4.5 Advanced RAG Pipeline (v0.4.0)
 KektorDB implements a sophisticated "Agentic" retrieval pipeline to solve common RAG issues:
 
 1.  **Query Rewriting (CQR):** Uses a fast LLM to rewrite user questions based on chat history. Solves the "Memory Problem" (e.g., User: "How to install it?" -> System: "How to install KektorDB?").
 2.  **Grounded HyDe:** Generates a hypothetical answer to the question using context snippets, then embeds that answer for retrieval. drastically improves recall for vague queries.
 3.  **Safety Net:** If HyDe fails to find relevant context, the system automatically falls back to standard vector search in real-time.
 
-### 4.5 Embedded Web UI
+### 4.6 Embedded Web UI
 A built-in dashboard is available at `http://localhost:9091/ui/`.
 *   **Graph Explorer:** Visualize the connections between your documents and entities using a force-directed graph.
 *   **Search Debugger:** Test queries and see exactly which chunks and relations are retrieved.
@@ -360,9 +370,20 @@ Performs a nearest neighbor search. Supports hybrid search, filtering, and Deep 
   "include_relations": ["prev", "next", "parent.child"], 
   "hydrate_relations": true,
   
+  // Graph Filtering (Topology Restriction)
+  "graph_filter": {
+    "root_id": "chunk_100",
+    "relations": ["next", "parent"],
+    "max_depth": 2,
+    "direction": "out"
+  },
+
   "alpha": 0.5
 }
 ```
+*   `graph_filter`: Restricts the search space to nodes reachable from `root_id` within `max_depth` hops via specified `relations`. Useful for searching only within a specific document or sub-tree.
+    *   `direction`: `"out"` (default), `"in"`, or `"both"`.
+
 
 *   `alpha`: `1.0` = Pure Vector, `0.0` = Pure BM25.
 *   `hydrate_relations`: If `true`, returns the full data (Metadata + Vector) of the main results and all related nodes in a nested structure. If false, returns only IDs.
@@ -463,7 +484,16 @@ Creates a new vector index.
   "maintenance": {
      "vacuum_interval": "1m",
      "delete_threshold": 0.2
-  }
+  },
+
+  // Optional: Metadata Auto-Linking Rules
+  "auto_links": [
+    {
+      "metadata_field": "parent_id", // Field to look for in metadata
+      "relation_type": "child_of",   // Relation to create
+      "create_node": true            // Placeholder (always true for now)
+    }
+  ]
 }
 ```
 
@@ -695,8 +725,33 @@ defer db.Close()
 // Bulk Load
 db.VImport("idx", items)
 
-// Search
-results, _ := db.VSearch("idx", queryVec, 10, "", 0, 0.5)
+// Search (Note the nil graphFilter parameter)
+results, _ := db.VSearch("idx", queryVec, 10, "", 0, 0.5, nil)
+```
+
+### Advanced Go Features
+
+#### Metadata Auto-Linking
+Create an index that automatically links documents based on metadata fields.
+
+```go
+rules := []client.AutoLinkRule{
+    {
+        MetadataField: "parent_id",
+        Relation:      "parent",
+    },
+}
+err := c.VCreateWithAutoLinks("my_index", "cosine", "float32", 16, 200, nil, rules)
+```
+
+#### Subgraph Extraction
+Retrieve the local topology around a node for visualization or context analysis.
+
+```go
+subgraph, err := c.VExtractSubgraph("my_index", "root_node_id", []string{"parent", "next"}, 2)
+for _, edge := range subgraph.Edges {
+    fmt.Printf("%s --[%s]--> %s (%s)\n", edge.Source, edge.Relation, edge.Target, edge.Dir)
+}
 ```
 
 ---

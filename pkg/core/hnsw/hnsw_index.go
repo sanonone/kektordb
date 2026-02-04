@@ -2121,15 +2121,17 @@ func (h *Index) IterateRaw(callback func(id string, vector interface{})) {
 }
 
 // GetInternalID retrieves the internal ID for a given external ID.
-func (h *Index) GetInternalID(externalID string) uint32 {
+func (h *Index) GetInternalID(externalID string) (uint32, bool) {
 	h.metaMu.RLock()
 	defer h.metaMu.RUnlock()
-	return h.externalToInternalID[externalID]
+	val, ok := h.externalToInternalID[externalID]
+	return val, ok
 }
 
 // GetInternalIDUnlocked retrieves the internal ID without locking. Caller must ensure safety.
-func (h *Index) GetInternalIDUnlocked(externalID string) uint32 {
-	return h.externalToInternalID[externalID]
+func (h *Index) GetInternalIDUnlocked(externalID string) (uint32, bool) {
+	val, ok := h.externalToInternalID[externalID]
+	return val, ok
 }
 
 // GetParameters returns the configuration parameters of the index.

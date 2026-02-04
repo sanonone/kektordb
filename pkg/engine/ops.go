@@ -286,9 +286,9 @@ type GraphSearchResult struct {
 // 'alpha': weight for hybrid fusion (1.0 = vector only, 0.0 = text only, 0.5 = balanced).
 //
 // Returns a list of external IDs sorted by relevance.
-func (e *Engine) VSearch(indexName string, query []float32, k int, filter string, explicitTextQuery string, efSearch int, alpha float64) ([]string, error) {
+func (e *Engine) VSearch(indexName string, query []float32, k int, filter string, explicitTextQuery string, efSearch int, alpha float64, graphQuery *GraphQuery) ([]string, error) {
 	// Calls internal helper
-	results, err := e.searchWithFusion(indexName, query, k, filter, explicitTextQuery, efSearch, alpha)
+	results, err := e.searchWithFusion(indexName, query, k, filter, explicitTextQuery, efSearch, alpha, graphQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -303,9 +303,9 @@ func (e *Engine) VSearch(indexName string, query []float32, k int, filter string
 
 // VSearchGraph performs a search and traverses the graph based on relation paths.
 // relations example: ["prev", "next", "parent.child"]
-func (e *Engine) VSearchGraph(indexName string, query []float32, k int, filter string, explicitTextQuery string, efSearch int, alpha float64, relations []string, hydrate bool) ([]GraphSearchResult, error) {
+func (e *Engine) VSearchGraph(indexName string, query []float32, k int, filter string, explicitTextQuery string, efSearch int, alpha float64, relations []string, hydrate bool, graphQuery *GraphQuery) ([]GraphSearchResult, error) {
 	// 1. Core Search
-	rawResults, err := e.searchWithFusion(indexName, query, k, filter, explicitTextQuery, efSearch, alpha)
+	rawResults, err := e.searchWithFusion(indexName, query, k, filter, explicitTextQuery, efSearch, alpha, graphQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -444,7 +444,7 @@ func (e *Engine) traversePath(indexName, currentID string, path []string, hydrat
 }
 
 // Contains all Parsing, Filtering, Hybrid Fusion logic
-func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filter string, explicitTextQuery string, efSearch int, alpha float64) ([]fusedResult, error) {
+func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filter string, explicitTextQuery string, efSearch int, alpha float64, graphQuery *GraphQuery) ([]fusedResult, error) {
 	idx, ok := e.DB.GetVectorIndex(indexName)
 	if !ok {
 		return nil, fmt.Errorf("index '%s' not found", indexName)
@@ -474,6 +474,7 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 	}
 
 	// Pre-Filtering
+	// metadata allowlist
 	var allowList map[uint32]struct{}
 	var err error
 	if booleanFilters != "" {
@@ -481,6 +482,32 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 		if err != nil {
 			return nil, fmt.Errorf("invalid filter: %w", err)
 		}
+	}
+
+	// Graph AllowList (NEW)
+	if graphQuery != nil && graphQuery.RootID != "" {
+		graphAllowList, err := e.resolveGraphFilter(indexName, *graphQuery)
+		if err != nil {
+			return nil, err
+		}
+
+		// INTERSECTION Logic
+		if allowList == nil {
+			// No metadata filter, just use graph filter
+			allowList = graphAllowList
+		} else {
+			// Both filters exist: calculate Intersection (AND)
+			// Keep only IDs present in BOTH lists
+			intersected := make(map[uint32]struct{})
+			for id := range allowList {
+				if _, ok := graphAllowList[id]; ok {
+					intersected[id] = struct{}{}
+				}
+			}
+			allowList = intersected
+		}
+
+		// If intersection resulted in empty set, return immediately
 		if len(allowList) == 0 {
 			return []fusedResult{}, nil
 		}
@@ -721,7 +748,7 @@ func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 	e.DB.Lock()
 	for _, item := range items {
 		if len(item.Metadata) > 0 {
-			id := hnswIdx.GetInternalID(item.Id)
+			id, _ := hnswIdx.GetInternalID(item.Id)
 			e.DB.AddMetadataUnlocked(indexName, id, item.Metadata) // Covered by e.DB.Lock()
 		}
 	}
@@ -798,7 +825,7 @@ func (e *Engine) VImport(indexName string, items []types.BatchObject) error {
 	e.DB.Lock()
 	for _, item := range items {
 		if len(item.Metadata) > 0 {
-			id := hnswIdx.GetInternalID(item.Id)
+			id, _ := hnswIdx.GetInternalID(item.Id)
 			e.DB.AddMetadataUnlocked(indexName, id, item.Metadata)
 		}
 	}

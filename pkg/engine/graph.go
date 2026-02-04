@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sync/atomic"
 
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/persistence"
 )
 
@@ -182,6 +183,97 @@ func (e *Engine) getAdjacencyList(prefix, nodeID, relType string) ([]string, boo
 		return nil, false
 	}
 	return targets, true
+}
+
+// resolveGraphFilter traverses the graph and returns a set of allowed Internal IDs.
+func (e *Engine) resolveGraphFilter(indexName string, q GraphQuery) (map[uint32]struct{}, error) {
+	if q.RootID == "" {
+		return nil, nil // No filter applied if RootID is empty
+	}
+
+	// 1. Get the Index
+	idx, ok := e.DB.GetVectorIndex(indexName)
+	if !ok {
+		return nil, fmt.Errorf("index not found")
+	}
+	hnswIdx, ok := idx.(*hnsw.Index)
+	if !ok {
+		return nil, fmt.Errorf("index does not support graph operations")
+	}
+
+	allowedSet := make(map[uint32]struct{})
+	visited := make(map[string]struct{})
+
+	// Queue holds ID and Depth
+	type queueItem struct {
+		id    string
+		depth int
+	}
+	queue := []queueItem{{id: q.RootID, depth: 0}}
+	visited[q.RootID] = struct{}{}
+
+	// 2. Add Root Node to allowed set (if it exists as a vector)
+	// FIX: Use the updated GetInternalID signature
+	if rootIntID, found := hnswIdx.GetInternalID(q.RootID); found {
+		allowedSet[rootIntID] = struct{}{}
+	}
+
+	// Safety caps
+	maxDepth := q.MaxDepth
+	if maxDepth <= 0 {
+		maxDepth = 1
+	}
+	if maxDepth > 5 {
+		maxDepth = 5 // Hard cap
+	}
+
+	// 3. BFS Traversal
+	for len(queue) > 0 {
+		curr := queue[0]
+		queue = queue[1:]
+
+		if curr.depth >= maxDepth {
+			continue
+		}
+
+		// Helper to process neighbors list
+		processNeighbors := func(neighbors []string) {
+			for _, target := range neighbors {
+				// Only visit if not already visited
+				if _, seen := visited[target]; !seen {
+					visited[target] = struct{}{}
+
+					// FIX: Check if this graph node corresponds to a vector node
+					// Only vector nodes can be returned by VSearch
+					if internalID, found := hnswIdx.GetInternalID(target); found {
+						allowedSet[internalID] = struct{}{}
+					}
+
+					// Add to queue for next hop
+					queue = append(queue, queueItem{id: target, depth: curr.depth + 1})
+				}
+			}
+		}
+
+		// A. Forward Links (Source -> Target)
+		if q.Direction == "out" || q.Direction == "both" || q.Direction == "" {
+			for _, rel := range q.Relations {
+				// VGetLinks is safe (uses RLock internally on KVStore)
+				targets, _ := e.VGetLinks(curr.id, rel)
+				processNeighbors(targets)
+			}
+		}
+
+		// B. Backward Links (Target <- Source)
+		if q.Direction == "in" || q.Direction == "both" {
+			for _, rel := range q.Relations {
+				sources, _ := e.VGetIncoming(curr.id, rel)
+				processNeighbors(sources)
+			}
+		}
+	}
+
+	return allowedSet, nil
 }
 
 // VGetRelations retrieves ALL relationships for a node is technically possible by scanning keys,

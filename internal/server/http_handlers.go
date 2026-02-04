@@ -374,6 +374,7 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 			req.Alpha,
 			req.IncludeRelations,
 			req.HydrateRelations,
+			req.GraphFilter,
 		)
 		if err != nil {
 			if strings.Contains(err.Error(), "not found") {
@@ -397,6 +398,7 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 			"",
 			req.EfSearch,
 			req.Alpha,
+			req.GraphFilter,
 		)
 
 		if err != nil {
@@ -829,6 +831,7 @@ func (s *Server) handleUISearch(w http.ResponseWriter, r *http.Request) {
 		0.5, // Default alpha
 		req.IncludeRelations,
 		req.Hydrate,
+		nil,
 	)
 
 	if err != nil {

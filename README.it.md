@@ -97,7 +97,7 @@ KektorDB può funzionare come **middleware intelligente** tra la tua Chat UI e i
 
 ## ✨ Caratteristiche Principali
 
-### ⚡ Performance & Ingegneria
+### Performance & Ingegneria
 *   **Motore HNSW:** Implementazione personalizzata ottimizzata per letture ad alta concorrenza.
 *   **Ricerca Ibrida:** Combina Similarità Vettoriale + BM25 (Parole chiave) + Filtri Metadati.
 *   **Efficienza della Memoria:** Supporta **Quantizzazione Int8** (75% di risparmio RAM) con auto-training zero-shot e **Float16**.
@@ -109,12 +109,12 @@ KektorDB può funzionare come **middleware intelligente** tra la tua Chat UI e i
 *   **Osservabilità:** Metriche Prometheus (`/metrics`) e logging strutturato.
 *   **Doppia Modalità:** Esegui come **Server REST** autonomo o come **Libreria Go**.
 
-### 🧠 Pipeline RAG Agentica
+### Pipeline RAG Agentica
 *   **Riscritura Query (CQR):** Riscrive automaticamente le domande dell'utente basandosi sulla cronologia della chat (es. "Come installarlo?" -> "Come installare KektorDB?"). Risolve problemi di memoria a breve termine.
 *   **Grounded HyDe:** Genera risposte ipotetiche per migliorare il recall su query vaghe, usando frammenti di dati reali per ancorare l'allucinazione.
 *   **Safety Net:** Ritorna automaticamente alla ricerca vettoriale standard se la pipeline avanzata non riesce a trovare contesto rilevante.
 
-### 🕸️ Motore a Grafo Semantico
+### Motore a Grafo Semantico
 *   **Estrazione Entità Automatizzata:** Usa un LLM locale per identificare concetti (Persone, Progetti, Tecnologie) durante l'ingestione e collega documenti correlati ("Unire i puntini").
 *   **Attraversamento del Grafo:** La ricerca attraversa i link `prev` (precedente), `next` (successivo), `parent` (genitore) e `mentions` (menziona) per fornire una finestra di contesto olistica.
 
@@ -124,7 +124,7 @@ KektorDB può funzionare come **middleware intelligente** tra la tua Chat UI e i
   <em>Visualizzazione delle connessioni semantiche tra documenti tramite entità estratte.</em>
 </p>
 
-### 🖥️ Dashboard Integrata
+### Dashboard Integrata
 Disponibile su `http://localhost:9091/ui/`.
 *   **Graph Explorer:** Visualizza il tuo grafo di conoscenza con un layout force-directed.
 *   **Debugger di Ricerca:** Testa le tue query e vedi esattamente perché un documento è stato recuperato.
@@ -182,7 +182,7 @@ func main() {
 	db.VAdd("products", "p1", []float32{0.1, 0.2}, map[string]any{"category": "electronics"})
 
 	// 4. Cerca
-	results, _ := db.VSearch("products", []float32{0.1, 0.2}, 10, "category=electronics", 100, 0.5)
+	results, _ := db.VSearch("products", []float32{0.1, 0.2}, 10, "category=electronics", 100, 0.5, nil)
 	fmt.Println("Trovati ID:", results)
 }
 ```
@@ -332,12 +332,12 @@ KektorDB è un progetto giovane in sviluppo attivo.
 Il prossimo importante traguardo si concentra sul superamento del limite della RAM e sul miglioramento delle garanzie di coerenza dei dati.
 *   [ ] **Storage Ibrido su Disco:** Implementazione di un motore di storage "pluggable". Mantiene il grafo HNSW in RAM (o Int8) per la velocità, ma sposta i dati vettoriali completi su disco utilizzando I/O standard o memory mapping.
 *   [ ] **Integrità Transazionale del Grafo:** Introduzione di **Batch Atomici** per garantire la consistenza dei dati durante la creazione di link bidirezionali o l'aggiornamento dei vettori (comportamento simil-ACID per il livello Grafo).
-*   [ ] **Reverse Indexing:** Gestione automatica degli archi in entrata per consentire il recupero O(1) di "chi punta al nodo X", essenziale per l'attraversamento efficiente del grafo e la pulizia.
+*   [x] **Reverse Indexing:** Gestione automatica degli archi in entrata per consentire il recupero O(1) di "chi punta al nodo X", essenziale per l'attraversamento efficiente del grafo e la pulizia.
 *   [ ] **Backup/Restore Nativo:** API semplice per salvare snapshot su S3/MinIO/Locale senza dover fermare il server.
 
 ### Pianificati (Breve Termine)
 Funzionalità che intendo sviluppare per rendere KektorDB pronto per la produzione e ancora più veloce.
-*   [ ] **Filtri sul Grafo:** Combinare la ricerca vettoriale con filtri sulla topologia del grafo (es. "cerca solo nei figli del Documento X"), potenziato dai Roaring Bitmaps.
+*   [x] **Filtri sul Grafo:** Combinare la ricerca vettoriale con filtri sulla topologia del grafo (es. "cerca solo nei figli del Documento X"), potenziato dai Roaring Bitmaps.
 *   [ ] **Relazioni RAG Configurabili:** Permettere agli utenti di definire percorsi di attraversamento del grafo personalizzati nel `proxy.yaml` invece di affidarsi ai default hardcodati.
 *   [ ] **Ottimizzazioni SIMD/AVX:** Estendere le ottimizzazioni Assembly Go puro (attualmente usate per il Coseno) alla distanza Euclidea e alle operazioni Float16 per massimizzare il throughput sulle CPU moderne.
 *   [ ] **Roaring Bitmaps:** Sostituire l'attuale filtro basato su mappe con Roaring Bitmaps per filtri sui metadati ultra-veloci (es. `WHERE user_id = X`).

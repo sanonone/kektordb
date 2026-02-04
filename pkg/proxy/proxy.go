@@ -143,7 +143,7 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			if groundingVec != nil {
 				// Use a lightweight search to find context
-				snippets, _ := p.engine.VSearchGraph(p.cfg.RAGIndex, groundingVec, 20, "", "", 100, 0.5, nil, true)
+				snippets, _ := p.engine.VSearchGraph(p.cfg.RAGIndex, groundingVec, 20, "", "", 100, 0.5, nil, true, nil)
 
 				slog.Debug("Found snippets for grounding", "count", len(snippets))
 
@@ -481,7 +481,7 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 		relations = []string{"prev", "next", "parent", "mentions", "mentioned_in"}
 	}
 
-	results, err := p.engine.VSearchGraph(p.cfg.RAGIndex, queryVec, p.cfg.RAGTopK, filter, hybridQuery, efSearch, alpha, relations, true)
+	results, err := p.engine.VSearchGraph(p.cfg.RAGIndex, queryVec, p.cfg.RAGTopK, filter, hybridQuery, efSearch, alpha, relations, true, nil)
 	if err != nil || len(results) == 0 {
 		return nil, nil
 	}

@@ -78,7 +78,7 @@ func TestHybridSearchFixes(t *testing.T) {
 
 	t.Run("Field Auto-Detection", func(t *testing.T) {
 		// Alpha 0.0 = Pure Text Search
-		results, err := eng.VSearch(indexName, targetVec, 5, "", "zanzibar", 100, 0.0)
+		results, err := eng.VSearch(indexName, targetVec, 5, "", "zanzibar", 100, 0.0, nil)
 		if err != nil {
 			t.Fatalf("VSearch failed: %v", err)
 		}
@@ -99,14 +99,14 @@ func TestHybridSearchFixes(t *testing.T) {
 	queryVec := []float32{1.0, 0.0, 0.0}
 
 	t.Run("Alpha 1.0 (Vector Only)", func(t *testing.T) {
-		results, _ := eng.VSearch(indexName, queryVec, 1, "", "zanzibar", 100, 1.0)
+		results, _ := eng.VSearch(indexName, queryVec, 1, "", "zanzibar", 100, 1.0, nil)
 		if results[0] != "doc1" {
 			t.Errorf("With Alpha 1.0, expected doc1 (vector match), got %s", results[0])
 		}
 	})
 
 	t.Run("Alpha 0.0 (Text Only)", func(t *testing.T) {
-		results, _ := eng.VSearch(indexName, queryVec, 1, "", "zanzibar", 100, 0.0)
+		results, _ := eng.VSearch(indexName, queryVec, 1, "", "zanzibar", 100, 0.0, nil)
 		if results[0] != "doc4" {
 			t.Errorf("With Alpha 0.0, expected doc4 (text match), got %s", results[0])
 		}
@@ -118,7 +118,7 @@ func TestHybridSearchFixes(t *testing.T) {
 		// Doc4: Vector Score=0.0 (Distance ~1.0), Text Score=1.0 -> Fused=0.5
 		// Doc3: Vector Score~0.5, Text Score=0.0 -> Fused=0.25
 
-		results, _ := eng.VSearch(indexName, queryVec, 3, "", "zanzibar", 100, 0.5)
+		results, _ := eng.VSearch(indexName, queryVec, 3, "", "zanzibar", 100, 0.5, nil)
 
 		// We verify that we get results. Exact order might depend on float precision tie-breaking
 		// But doc1 and doc4 should be top 2.

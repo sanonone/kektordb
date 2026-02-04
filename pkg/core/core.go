@@ -322,7 +322,7 @@ func (s *DB) IterateVectorIndexes(callback func(indexName string, index *hnsw.In
 		if hnswIndex, ok := idx.(*hnsw.Index); ok {
 			hnswIndex.Iterate(func(id string, vector []float32) {
 				// retrieve data from the main store
-				internalID := hnswIndex.GetInternalID(id)
+				internalID, _ := hnswIndex.GetInternalID(id)
 				metadata := s.getMetadataForNode(name, internalID)
 
 				callback(name, hnswIndex, VectorData{
@@ -341,7 +341,7 @@ func (s *DB) IterateVectorIndexesUnlocked(callback func(indexName string, index 
 	for name, idx := range s.vectorIndexes {
 		if hnswIndex, ok := idx.(*hnsw.Index); ok {
 			hnswIndex.Iterate(func(id string, vector []float32) {
-				internalID := hnswIndex.GetInternalID(id)
+				internalID, _ := hnswIndex.GetInternalID(id)
 				metadata := s.getMetadataForNodeUnlocked(name, internalID)
 
 				callback(name, hnswIndex, VectorData{
@@ -757,7 +757,7 @@ func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) err
 	oldHNSWIndex.IterateRaw(func(id string, vector interface{}) {
 		// We make a type assertion to be sure
 		if vecF32, ok := vector.([]float32); ok {
-			internalID := oldHNSWIndex.GetInternalID(id)
+			internalID, _ := oldHNSWIndex.GetInternalID(id)
 			metadata := s.getMetadataForNodeUnlocked(indexName, internalID)
 			allVectors = append(allVectors, rawData{
 				ID:       id,
@@ -831,7 +831,7 @@ func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) err
 		for _, data := range chunk {
 			if len(data.Metadata) > 0 {
 				// Recuperiamo il nuovo ID interno appena assegnato
-				internalID := newIndex.GetInternalID(data.ID)
+				internalID, _ := newIndex.GetInternalID(data.ID)
 				s.AddMetadataUnlocked(indexName, internalID, data.Metadata)
 			}
 		}

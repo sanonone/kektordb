@@ -3,6 +3,7 @@ package server
 import (
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/core/types"
+	"github.com/sanonone/kektordb/pkg/engine"
 )
 
 // VectorCreateRequest defines the body for index creation.
@@ -38,14 +39,15 @@ type BatchGetVectorsRequest struct {
 
 // VectorSearchRequest defines the body for search operations.
 type VectorSearchRequest struct {
-	IndexName        string    `json:"index_name"`
-	K                int       `json:"k"`
-	QueryVector      []float32 `json:"query_vector"`
-	Filter           string    `json:"filter,omitempty"`
-	EfSearch         int       `json:"ef_search,omitempty"`
-	Alpha            float64   `json:"alpha,omitempty"`
-	IncludeRelations []string  `json:"include_relations,omitempty"`
-	HydrateRelations bool      `json:"hydrate_relations,omitempty"`
+	IndexName        string             `json:"index_name"`
+	K                int                `json:"k"`
+	QueryVector      []float32          `json:"query_vector"`
+	Filter           string             `json:"filter,omitempty"`
+	EfSearch         int                `json:"ef_search,omitempty"`
+	Alpha            float64            `json:"alpha,omitempty"`
+	IncludeRelations []string           `json:"include_relations,omitempty"`
+	HydrateRelations bool               `json:"hydrate_relations,omitempty"`
+	GraphFilter      *engine.GraphQuery `json:"graph_filter,omitempty"`
 }
 
 // VectorDeleteRequest defines the body for vector deletion.
