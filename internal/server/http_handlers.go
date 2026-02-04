@@ -70,6 +70,9 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /graph/actions/traverse", s.handleGraphTraverse)
 	mux.HandleFunc("POST /graph/actions/get-incoming", s.handleGraphGetIncoming)
 	mux.HandleFunc("POST /graph/actions/extract-subgraph", s.handleGraphExtractSubgraph)
+	mux.HandleFunc("POST /graph/actions/set-node-properties", s.handleGraphSetProperties)
+	mux.HandleFunc("POST /graph/actions/get-node-properties", s.handleGraphGetProperties)
+	mux.HandleFunc("POST /graph/actions/search-nodes", s.handleGraphSearchNodes)
 
 	mux.HandleFunc("POST /rag/retrieve", s.handleRagRetrieve)
 
@@ -650,6 +653,133 @@ func (s *Server) handleGraphExtractSubgraph(w http.ResponseWriter, r *http.Reque
 	}
 
 	s.writeHTTPResponse(w, http.StatusOK, result)
+}
+
+func (s *Server) handleGraphSetProperties(w http.ResponseWriter, r *http.Request) {
+	var req GraphSetPropertiesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON"))
+		return
+	}
+	if req.IndexName == "" || req.NodeID == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name and node_id required"))
+		return
+	}
+
+	// "Set Properties" is semantically an Upsert with no vector change.
+	// Passing nil vector triggers the Zero-Vector logic in Engine.
+	err := s.Engine.VAdd(req.IndexName, req.NodeID, nil, req.Properties)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
+		"node_id":    req.NodeID,
+		"properties": req.Properties,
+		"status":     "updated",
+	})
+}
+
+func (s *Server) handleGraphGetProperties(w http.ResponseWriter, r *http.Request) {
+	var req GraphGetPropertiesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON"))
+		return
+	}
+
+	// Use VGet to retrieve metadata
+	data, err := s.Engine.VGet(req.IndexName, req.NodeID)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusNotFound, err)
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
+		"node_id":    data.ID,
+		"properties": data.Metadata,
+	})
+}
+
+func (s *Server) handleGraphSearchNodes(w http.ResponseWriter, r *http.Request) {
+	var req GraphSearchNodesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON"))
+		return
+	}
+	if req.IndexName == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name required"))
+		return
+	}
+	if req.Limit <= 0 {
+		req.Limit = 10
+	}
+
+	// "Search Nodes" is a Vector Search with NO query vector (only filter).
+	// Currently VSearch requires a query vector.
+	// We can pass a zero-vector if we knew the dimension, OR we can implement a pure-filter search.
+	// Since VSearch implementation supports "Text Only" (Alpha=0), let's try to leverage that or add logic.
+
+	// OPTION A: Add a specialized method in Engine for "Filter Only".
+	// OPTION B: Use VSearch with a dummy vector.
+
+	// Let's use Option B for reuse, fetching dimension first.
+	// This is a bit inefficient but safe for this sprint.
+
+	// 1. Get dimension
+	idx, ok := s.Engine.DB.GetVectorIndex(req.IndexName)
+	if !ok {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("index not found"))
+		return
+	}
+
+	var dim int
+	if hnswIdx, ok := idx.(*hnsw.Index); ok {
+		dim = hnswIdx.GetDimension()
+	}
+	if dim == 0 {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index empty or invalid"))
+		return
+	}
+
+	dummyQuery := make([]float32, dim) // Zero vector
+
+	// Execute Search
+	// We use Alpha=0.0 to rely mostly on text/filter?
+	// Actually if vector is 0, distance will be constant or 0.
+	// The filter is a hard constraint (allowList).
+
+	results, err := s.Engine.VSearch(
+		req.IndexName,
+		dummyQuery,
+		req.Limit,
+		req.PropertyFilter,
+		"", // no text query
+		0,
+		1.0, // Alpha 1.0 (Vector) - but vector is 0. Filter does the job.
+		nil,
+	)
+
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	// Hydrate results (we need properties back)
+	fullData, err := s.Engine.VGetMany(req.IndexName, results)
+
+	// Format response to hide the vector part (we only want node properties)
+	var nodes []map[string]any
+	for _, item := range fullData {
+		nodes = append(nodes, map[string]any{
+			"id":         item.ID,
+			"properties": item.Metadata,
+		})
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
+		"nodes": nodes,
+	})
 }
 
 // handleRagRetrieve performs a semantic search using a configured pipeline.

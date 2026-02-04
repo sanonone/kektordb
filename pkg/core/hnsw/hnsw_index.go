@@ -2450,3 +2450,30 @@ func (h *Index) GetAutoLinks() []AutoLinkRule {
 	copy(rules, h.autoLinks)
 	return rules
 }
+
+// GetDimension returns the vector dimension of the index.
+func (h *Index) GetDimension() int {
+	h.metaMu.RLock()
+	defer h.metaMu.RUnlock()
+
+	// Try to find ANY valid node to check dimension
+	for _, node := range h.nodes {
+		if node != nil && !node.Deleted {
+			switch h.precision {
+			case distance.Float32:
+				if len(node.VectorF32) > 0 {
+					return len(node.VectorF32)
+				}
+			case distance.Float16:
+				if len(node.VectorF16) > 0 {
+					return len(node.VectorF16)
+				}
+			case distance.Int8:
+				if len(node.VectorI8) > 0 {
+					return len(node.VectorI8)
+				}
+			}
+		}
+	}
+	return 0
+}

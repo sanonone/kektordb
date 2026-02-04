@@ -175,6 +175,21 @@ func (e *Engine) VAdd(indexName, id string, vector []float32, metadata map[strin
 		return fmt.Errorf("index not found")
 	}
 
+	// --- ZERO VECTOR LOGIC (NEW) ---
+	if len(vector) == 0 {
+		// We need to fetch the HNSW index to ask for dimension
+		if hnswIdx, ok := idx.(*hnsw.Index); ok {
+			dim := hnswIdx.GetDimension()
+			if dim == 0 {
+				return fmt.Errorf("cannot add entity without vector to an empty index (dimension unknown)")
+			}
+			// Create a zero-vector of the correct size
+			vector = make([]float32, dim)
+		} else {
+			return fmt.Errorf("index type does not support inference")
+		}
+	}
+
 	// 1. Memory Add
 	internalID, err := idx.Add(id, vector)
 	if err != nil {
@@ -737,6 +752,40 @@ func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 	hnswIdx, ok := idx.(*hnsw.Index)
 	if !ok {
 		return fmt.Errorf("not hnsw")
+	}
+
+	// --- ZERO VECTOR LOGIC ---
+
+	// 1. Determine Target Dimension
+	targetDim := hnswIdx.GetDimension()
+
+	// If index is empty (0), try to find dimension from the batch itself
+	if targetDim == 0 {
+		for _, item := range items {
+			if len(item.Vector) > 0 {
+				targetDim = len(item.Vector)
+				break
+			}
+		}
+	}
+
+	// 2. Fix vectors in the batch
+	for i := range items {
+		// Use a pointer to the item in the slice to ensure modification applies
+		item := &items[i]
+
+		if len(item.Vector) == 0 {
+			if targetDim == 0 {
+				return fmt.Errorf("cannot add zero-vector entity: index is empty and batch contains no reference vectors")
+			}
+			// Allocate zero vector
+			item.Vector = make([]float32, targetDim)
+		} else {
+			// Validation: Ensure provided vector matches dimension
+			if targetDim > 0 && len(item.Vector) != targetDim {
+				return fmt.Errorf("dimension mismatch for item %s: expected %d, got %d", item.Id, targetDim, len(item.Vector))
+			}
+		}
 	}
 
 	// 1. Memory Batch

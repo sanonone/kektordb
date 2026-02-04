@@ -114,6 +114,23 @@ type GraphExtractSubgraphRequest struct {
 	MaxDepth  int      `json:"max_depth"`
 }
 
+type GraphSetPropertiesRequest struct {
+	IndexName  string                 `json:"index_name"`
+	NodeID     string                 `json:"node_id"`
+	Properties map[string]interface{} `json:"properties"`
+}
+
+type GraphGetPropertiesRequest struct {
+	IndexName string `json:"index_name"`
+	NodeID    string `json:"node_id"`
+}
+
+type GraphSearchNodesRequest struct {
+	IndexName      string `json:"index_name"`
+	PropertyFilter string `json:"property_filter"` // e.g. "type='person'"
+	Limit          int    `json:"limit"`
+}
+
 // Response uses engine.SubgraphResult directly
 
 type UIExploreRequest struct {
