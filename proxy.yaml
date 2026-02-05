@@ -34,7 +34,7 @@ firewall_threshold: 0.25 # Block if distance < 0.25
 block_message: "I cannot fulfill this request as it violates safety policies."
 
 # Semantic Cache
-cache_enabled: false
+cache_enabled: true
 cache_index: "semantic_cache_test"
 # Cache usano DISTANZA (Lower is Better)
 cache_threshold: 0.1 # Cache hit if distance < 0.1

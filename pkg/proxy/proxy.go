@@ -88,6 +88,12 @@ func NewAIProxy(cfg Config, dbEngine *engine.Engine) (*AIProxy, error) {
 func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	totalStart := time.Now()
 
+	// Intercept Admin Routes
+	if r.Method == http.MethodPost && r.URL.Path == "/cache/invalidate" {
+		p.handleCacheInvalidate(w, r)
+		return
+	}
+
 	// 1. Read Body
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -226,6 +232,8 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var sourceIDs []string // Variable to hold sources
+
 	// STAGE 4: RAG INJECTION WITH FALLBACK
 	if p.cfg.RAGEnabled && strings.Contains(r.URL.Path, "/chat/completions") {
 		tRag := time.Now()
@@ -238,7 +246,7 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// ATTEMPT 1: Use HyDe (if available)
 		if len(hydeVec) > 0 {
 			slog.Debug("Attempt 1: Using HyDe Vector...")
-			finalBody, errInjection = p.performRAGInjection(bodyBytes, hydeVec, refinedQuery)
+			finalBody, sourceIDs, errInjection = p.performRAGInjection(bodyBytes, hydeVec, refinedQuery)
 			if finalBody != nil {
 				usedStrategy = "HyDe"
 			}
@@ -252,7 +260,7 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			} else {
 				slog.Debug("Attempt 1: Using Standard Search (HyDe skipped)")
 			}
-			finalBody, errInjection = p.performRAGInjection(bodyBytes, originalVec, refinedQuery)
+			finalBody, sourceIDs, errInjection = p.performRAGInjection(bodyBytes, originalVec, refinedQuery)
 			usedStrategy = "Fallback/Standard"
 		}
 
@@ -296,7 +304,7 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	slog.Info("REQUEST COMPLETED", "duration", time.Since(totalStart))
 
 	if capturer.statusCode == http.StatusOK {
-		go p.saveToCache(originalVec, lastQuery, capturer.body.Bytes())
+		go p.saveToCache(originalVec, lastQuery, capturer.body.Bytes(), sourceIDs)
 	}
 }
 
@@ -410,7 +418,7 @@ func (p *AIProxy) checkCache(vec []float32) (string, bool) {
 	return "", false
 }
 
-func (p *AIProxy) saveToCache(queryVec []float32, queryText string, responseBytes []byte) {
+func (p *AIProxy) saveToCache(queryVec []float32, queryText string, responseBytes []byte, sourceIDs []string) {
 	if len(responseBytes) == 0 {
 		return
 	}
@@ -420,11 +428,17 @@ func (p *AIProxy) saveToCache(queryVec []float32, queryText string, responseByte
 			return
 		}
 	}
+
+	// Join IDs into a space-separated string for Full-Text Search indexing
+	// e.g. "chunk_1 chunk_5 chunk_9"
+	sourcesStr := strings.Join(sourceIDs, " ")
+
 	id := fmt.Sprintf("cache_%d_%d", time.Now().UnixNano(), len(queryText))
 	meta := map[string]interface{}{
 		"query":      queryText,
 		"response":   string(responseBytes),
 		"created_at": float64(time.Now().Unix()),
+		"sources":    sourcesStr, // for invalidation cache
 	}
 	maintConfig := &hnsw.AutoMaintenanceConfig{
 		VacuumInterval:  hnsw.Duration(p.cfg.CacheVacuumInterval),
@@ -474,7 +488,7 @@ func extractPrompt(jsonBody []byte) string {
 	return ""
 }
 
-func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, queryText string) ([]byte, error) {
+func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, queryText string) ([]byte, []string, error) {
 	filter := ""
 	hybridQuery := ""
 	if p.cfg.RAGUseHybrid {
@@ -501,7 +515,7 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 
 	results, err := p.engine.VSearchGraph(p.cfg.RAGIndex, queryVec, p.cfg.RAGTopK, filter, hybridQuery, efSearch, alpha, relations, true, nil)
 	if err != nil || len(results) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	slog.Debug("Found snippets for grounding", "count", len(results))
@@ -509,6 +523,8 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 	var contextBuilder strings.Builder
 	foundRelevant := false
 	seenContent := make(map[string]struct{})
+
+	var usedSourceIDs []string
 
 	for _, res := range results {
 		if float32(res.Score) < p.cfg.RAGThreshold {
@@ -550,6 +566,8 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 			}
 		}
 
+		usedSourceIDs = append(usedSourceIDs, res.ID)
+
 		blockHash := sourceName + mainText
 		if _, exists := seenContent[blockHash]; exists {
 			continue
@@ -577,7 +595,7 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 	}
 
 	if !foundRelevant {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	promptTemplate := p.cfg.RAGSystemPrompt
@@ -590,26 +608,31 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 
 	var requestData map[string]interface{}
 	if err := json.Unmarshal(originalBody, &requestData); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	messages, ok := requestData["messages"].([]interface{})
 	if !ok || len(messages) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	lastMsgIdx := len(messages) - 1
 	lastMsg, ok := messages[lastMsgIdx].(map[string]interface{})
 	if !ok {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if _, ok := lastMsg["content"].(string); ok {
 		lastMsg["content"] = finalContent
 		messages[lastMsgIdx] = lastMsg
 		requestData["messages"] = messages
 	} else {
-		return nil, nil
+		return nil, nil, nil
 	}
 
-	return json.Marshal(requestData)
+	reqD, err := json.Marshal(requestData)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return reqD, usedSourceIDs, nil
 }
 
 func getTextFromMeta(meta map[string]any) string {
@@ -631,4 +654,63 @@ func limitStr(s string, max int) string {
 		return s[:max] + "..."
 	}
 	return s
+}
+
+type InvalidateRequest struct {
+	DocumentID string `json:"document_id"`
+}
+
+func (p *AIProxy) handleCacheInvalidate(w http.ResponseWriter, r *http.Request) {
+	var req InvalidateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if req.DocumentID == "" {
+		http.Error(w, "document_id required", http.StatusBadRequest)
+		return
+	}
+
+	// LOGIC: Find cache entries where 'sources' field contains the DocumentID.
+	// We use the Engine's text search capabilities (BM25/Inverted Index).
+	// The Cache Index is p.cfg.CacheIndex (usually "semantic_cache").
+
+	// 1. Search for IDs
+	// "sources" is the field name we used in saveToCache
+	results, _ := p.engine.DB.FindIDsByTextSearch(p.cfg.CacheIndex, "sources", req.DocumentID)
+
+	if len(results) == 0 {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "ok",
+			"deleted": 0,
+			"message": "No cache entries found for this document",
+		})
+		return
+	}
+
+	// 2. Delete them
+	count := 0
+	for _, res := range results {
+		// We need ExternalID to delete via Engine.VDelete
+		// FindIDsByTextSearch returns InternalIDs (uint32) in types.SearchResult
+		// We need to resolve Internal -> External using HNSW index map.
+
+		idx, _ := p.engine.DB.GetVectorIndex(p.cfg.CacheIndex)
+		if hnswIdx, ok := idx.(*hnsw.Index); ok {
+			if extID, found := hnswIdx.GetExternalID(res.DocID); found {
+				_ = p.engine.VDelete(p.cfg.CacheIndex, extID)
+				count++
+			}
+		}
+	}
+
+	slog.Info("[Cache] Invalidated entries", "reason", "dependency_change", "doc_id", req.DocumentID, "count", count)
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "ok",
+		"deleted": count,
+	})
 }

@@ -14,8 +14,8 @@ type Analyzer interface {
 // --- Reusable Components ---
 
 // tokenizerRegex is a regular expression to extract words.
-// \p{L}+ matches sequences of letters in any language (better than \w+).
-var tokenizerRegex = regexp.MustCompile(`\p{L}+`)
+// [\p{L}0-9_]+ matches letters, numbers, and underscores.
+var tokenizerRegex = regexp.MustCompile(`[\p{L}0-9_]+`)
 
 // Tokenize splits text into a slice of lowercase words.
 func Tokenize(text string) []string {
