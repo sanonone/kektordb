@@ -1,9 +1,10 @@
 package proxy
 
 import (
+	"time"
+
 	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/llm"
-	"time"
 )
 
 type Config struct {
@@ -23,10 +24,11 @@ type Config struct {
 	LLM     llm.Config `yaml:"llm"`
 
 	// Firewall (Prompt Guard)
-	FirewallEnabled   bool    `yaml:"firewall_enabled"`
-	FirewallIndex     string  `yaml:"firewall_index"`
-	FirewallThreshold float32 `yaml:"firewall_threshold"` // e.g., 0.25
-	BlockMessage      string  `yaml:"block_message"`      // Custom error msg
+	FirewallEnabled   bool     `yaml:"firewall_enabled"`
+	FirewallDenyList  []string `yaml:"firewall_deny_list"`
+	FirewallIndex     string   `yaml:"firewall_index"`
+	FirewallThreshold float32  `yaml:"firewall_threshold"` // e.g., 0.25
+	BlockMessage      string   `yaml:"block_message"`      // Custom error msg
 
 	// Semantic Cache
 	CacheEnabled         bool          `yaml:"cache_enabled"`

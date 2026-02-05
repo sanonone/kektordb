@@ -9,22 +9,26 @@ embedder_timeout: 60s
 
 # RAG Automatico
 rag_enabled: true
-rag_index: "knowledge_base"  # Deve coincidere con l'indice popolato dai Vectorizer!
+rag_index: "knowledge_base" # Deve coincidere con l'indice popolato dai Vectorizer!
 rag_top_k: 8
 # RAG usa SIMILARITÀ (Higher is Better, 0.0-1.0)
-rag_threshold: 0.6         # Ignore chunks with similarity score < 0.6
+rag_threshold: 0.6 # Ignore chunks with similarity score < 0.6
 rag_use_hybrid: true # Cerca anche per parole chiave
-rag_hybrid_alpha: 0.7      # 70% Vettore, 30% Keywords
-rag_use_graph: true        # Recupera automaticamente contesto prev/next
+rag_hybrid_alpha: 0.7 # 70% Vettore, 30% Keywords
+rag_use_graph: true # Recupera automaticamente contesto prev/next
 rag_use_hyde: true
 # System Prompt Template
 # Usa {{context}} per iniettare i dati trovati e {{query}} per la domanda originale.
 # Il simbolo '|' permette stringhe multilinea in YAML.
 
-
 # Firewall (Prompt Guard)
 firewall_enabled: true
-firewall_index: "prompt_guard"
+firewall_deny_list: # regex firewall
+  - "ignore previous instructions"
+  - "system prompt"
+  - "password"
+  - "scemo"
+firewall_index: "prompt_guard" #semantic firewall
 # Firewall usa DISTANZA (Lower is Better)
 firewall_threshold: 0.25 # Block if distance < 0.25
 block_message: "I cannot fulfill this request as it violates safety policies."
@@ -34,10 +38,10 @@ cache_enabled: false
 cache_index: "semantic_cache_test"
 # Cache usano DISTANZA (Lower is Better)
 cache_threshold: 0.1 # Cache hit if distance < 0.1
-cache_ttl: "5s"        
+cache_ttl: "5s"
 max_cache_items: 100
 
-cache_vacuum_interval: "2s" 
+cache_vacuum_interval: "2s"
 cache_delete_threshold: 0.0 # 0.0 = Pulisci sempre se c'è anche solo 1 cancellazione
 
 # rewriter
@@ -53,18 +57,18 @@ llm:
 rag_system_prompt: |
   Sei un assistente tecnico esperto.
   Il tuo compito è rispondere alla domanda dell'utente usando ESCLUSIVAMENTE le informazioni fornite nel contesto sottostante.
-  
+
   LINEE GUIDA:
   1. Sii DETTAGLIATO ed ESAUSTIVO.
   2. CITAZIONI: Usa [Fonte: nomefile].
   3. LINGUA: Rispondi nella stessa lingua della domanda.
-  
+
    REGOLE RIGIDE:
   1. Se nel testo vedi un link immagine che inizia con http://.../assets/..., devi mostrarlo.
   2. Per mostrarlo, usa ESATTAMENTE questa sintassi Markdown col punto esclamativo davanti:
      ![Diagramma](http://...il-tuo-url...)
   3. Non usare mai la sintassi [Testo](Link) per le immagini, usa sempre ![Testo](Link).
-     
+
   Se il contesto non contiene la risposta, dì chiaramente: "Non ho informazioni sufficienti nei documenti".
 
   Contesto:

@@ -10,6 +10,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -22,11 +23,12 @@ import (
 
 // AIProxy sits between the client and the LLM.
 type AIProxy struct {
-	cfg           Config
-	engine        *engine.Engine
-	reverseProxy  *httputil.ReverseProxy
-	llmClient     llm.Client // Smart Brain
-	fastLLMClient llm.Client // Fast Brain
+	cfg              Config
+	engine           *engine.Engine
+	reverseProxy     *httputil.ReverseProxy
+	llmClient        llm.Client       // Smart Brain
+	fastLLMClient    llm.Client       // Fast Brain
+	firewallPatterns []*regexp.Regexp // Compiled regex cache
 }
 
 // Structures for manipulating Chat request JSON
@@ -51,6 +53,11 @@ func NewAIProxy(cfg Config, dbEngine *engine.Engine) (*AIProxy, error) {
 		cfg:          cfg,
 		engine:       dbEngine,
 		reverseProxy: httputil.NewSingleHostReverseProxy(target),
+	}
+
+	// Init Regex
+	if err := p.initFirewall(); err != nil {
+		return nil, err
 	}
 
 	// Initialize clients if RAG is enabled
@@ -103,6 +110,17 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if lastQuery == "" {
 		// slog.Debug("[Proxy] Passthrough for Empty Query (Init/Ping)")
 		p.reverseProxy.ServeHTTP(w, r)
+		return
+	}
+
+	// --- FIREWALL (Static) ---
+	// Check text BEFORE doing anything expensive (Embedding/RAG)
+	if blocked, reason := p.checkStaticFirewall(lastQuery); blocked {
+		slog.Warn("[Firewall] BLOCKED (Static)", "reason", reason, "query", limitStr(lastQuery, 50))
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": reason,
+		})
 		return
 	}
 
@@ -199,7 +217,7 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// FIREWALL CHECK (Use originalVec for safety)
 	if p.cfg.FirewallEnabled && len(originalVec) > 0 {
 		if blocked, reason := p.checkFirewallWithVec(originalVec); blocked {
-			slog.Warn("[Firewall] BLOCKED", "reason", reason)
+			slog.Warn("[Firewall] BLOCKED (Semantic)", "reason", reason)
 			w.WriteHeader(http.StatusForbidden)
 			json.NewEncoder(w).Encode(map[string]string{
 				"error": fmt.Sprintf("Blocked by Semantic Firewall: %s", reason),
