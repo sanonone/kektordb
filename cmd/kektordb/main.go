@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	mcpi "github.com/sanonone/kektordb/internal/mcp"
 	"github.com/sanonone/kektordb/internal/server"
 	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/engine"
@@ -86,6 +88,8 @@ func main() {
 	// proxyConfigPath := flag.String("proxy-config", "", "Path to proxy.yaml config file")
 	proxyConfigPath := flag.String("proxy-config", "", "Path to proxy.yaml config file")
 
+	modeMCP := flag.Bool("mcp", false, "Run as MCP Server (Stdio)")
+
 	flag.Parse()
 
 	// SETUP LOGGER
@@ -121,6 +125,42 @@ func main() {
 	eng, err := engine.Open(opts)
 	if err != nil {
 		log.Fatalf("Failed to open engine: %v", err)
+	}
+
+	if *modeMCP {
+		// Redirect logs to file to keep Stdio clean for JSON-RPC
+		logFile, _ := os.OpenFile("kektordb_mcp.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+		slog.SetDefault(slog.New(slog.NewTextHandler(logFile, nil)))
+
+		// MCP needs an embedder. Use Ollama default or env vars.
+		embedderURL := getEnv("MCP_EMBEDDER_URL", "http://localhost:11434/api/embeddings")
+		embedderModel := getEnv("MCP_EMBEDDER_MODEL", "nomic-embed-text")
+
+		embedder := embeddings.NewOllamaEmbedder(embedderURL, embedderModel, 60*time.Second)
+
+		// Init MCP Server
+		mcpSrv := mcpi.NewMCPServer(eng, embedder) // mcpi = internal/mcp package
+
+		// Create a Stdio transport
+		// Note from docs/server.md: "The server will have the 'tools' capability if any tool is added..."
+		// We can just use the server instance we created.
+
+		// Serve on Stdio
+		// Protocol: JSON-RPC 2.0 over Stdio
+		slog.Info("Starting MCP Server on Stdio...")
+		// var t mcp.Transport = &mcp.StdioTransport{} // Use pointer to satisfy interface if needed, or check SDK
+		// Using the example pattern:
+		// t := &mcp.LoggingTransport{Transport: &mcp.StdioTransport{}, Writer: logFile} // Optional logging transport
+
+		// Direct Stdio transport
+		stdioTransport := &mcp.StdioTransport{}
+
+		// Run the server
+		if err := mcpSrv.Run(context.Background(), stdioTransport); err != nil {
+			slog.Error("MCP Server Error", "err", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	// Starting HTTP Server

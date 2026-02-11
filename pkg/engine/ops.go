@@ -73,6 +73,12 @@ func (e *Engine) KVDelete(key string) error {
 	return nil
 }
 
+// IndexExists checks if an index with the given name exists in the database.
+func (e *Engine) IndexExists(name string) bool {
+	_, found := e.DB.GetVectorIndex(name)
+	return found
+}
+
 // --- Vector Operations ---
 
 // VCreate initializes a new vector index with the specified configuration.

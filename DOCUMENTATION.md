@@ -22,7 +22,8 @@
     *   [Graph Operations](#53-graph-operations)
     *   [Key-Value Store](#54-key-value-store)
     *   [RAG Retrieval](#55-rag-retrieval)
-    *   [System & Maintenance](#56-system--maintenance)
+    *   [Model Context Protocol (MCP)](#56-model-context-protocol-mcp)
+    *   [System & Maintenance](#57-system--maintenance)
 6.  [Go Library Interface](#6-go-library-interface)
 7.  [Maintenance & Internals](#7-maintenance--internals)
 
@@ -127,6 +128,7 @@ These control the database engine itself.
 | `-auth-token` | `KEKTOR_TOKEN` | `""` | If set, enables `Authorization: Bearer <token>` check. |
 | `-save` | - | `"60 1000"` | Auto-snapshot policy `"seconds changes"`. Set to `""` to disable. |
 | `-aof-rewrite-percentage` | - | `100` | Trigger AOF compaction when file grows by X%. |
+| `-mcp` | `KEKTOR_ENABLE_MCP` | `false` | Enables the MCP Memory Server on Standard I/O. |
 | `-enable-proxy` | `-KEKTOR_ENABLE_PROXY` | `false` | Enables the AI Gateway/Proxy service on the port specified by -proxy-port. |
 | `-proxy-config` | - | `""` | Path to `proxy.yaml`. Enables Proxy if set. |
 | `-vectorizers-config` | - | `""` | Path to `vectorizers.yaml`. Enables RAG if set. |
@@ -676,7 +678,31 @@ Uses a configured *Vectorizer Pipeline* to convert text to vectors -> Search -> 
 
 ---
 
-### 5.6 System & Maintenance
+### 5.6 Model Context Protocol (MCP)
+
+KektorDB implements the [Model Context Protocol](https://modelcontextprotocol.io/) as a **Memory Server**. This allows LLM agents to perform persistent memory operations.
+
+**Activation:**
+Run KektorDB with the `--mcp` flag. It will listen for JSON-RPC messages on standard input.
+
+**Available Tools:**
+
+| Tool | Description |
+| :--- | :--- |
+| `save_memory` | Stores a text chunk with optional tags and graph links. |
+| `create_entity` | Creates a named graph entity (e.g., "Project Kektor"). |
+| `connect_entities` | Creates a semantic link between two graph nodes. |
+| `recall_memory` | Performs a global hybrid search for memories. |
+| `scoped_recall` | Performs a semantic search within a specific sub-graph. |
+| `explore_connections` | Traverses the knowledge graph to find context for a node. |
+
+**Environment Variables:**
+*   `MCP_EMBEDDER_URL`: URL for the embedding service (default: Ollama LOCAL).
+*   `MCP_EMBEDDER_MODEL`: Model name for embeddings.
+
+---
+
+### 5.7 System & Maintenance
 
 #### Check Task Status
 **`GET /system/tasks/{id}`**

@@ -125,6 +125,17 @@ KektorDB può funzionare come **middleware intelligente** tra la tua Chat UI e i
   <em>Visualizzazione delle connessioni semantiche tra documenti tramite entità estratte.</em>
 </p>
 
+### Supporto Model Context Protocol (MCP)
+KektorDB ora funziona come un **MCP Memory Server**. Questo permette agli LLM (come Claude tramite Claude Desktop) di usare direttamente KektorDB come memoria a lungo termine.
+*   **Strumenti inclusi:** `save_memory`, `recall_memory`, `create_entity`, `connect_entities`, `scoped_recall` e `explore_connections`.
+*   **Come avviarlo:**
+    ```bash
+    ./kektordb --mcp
+    ```
+*   **Integrazione:** Aggiungi KektorDB alla configurazione del tuo client MCP usando il flag `--mcp`.
+
+---
+
 ### Dashboard Integrata
 Disponibile su `http://localhost:9091/ui/`.
 *   **Graph Explorer:** Visualizza il tuo grafo di conoscenza con un layout force-directed.

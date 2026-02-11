@@ -16,11 +16,17 @@
 *.aof
 *.kdb
 
+# File MCP Log
+*.log
+
 # Data files
 *.npy
 *.txt
 *.zip
 *.gz
+
+# Dev files
+/tempMcpDocs
 
 # Ignore data directory
 assets/
