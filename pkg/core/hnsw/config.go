@@ -45,6 +45,13 @@ type AutoMaintenanceConfig struct {
 	// Percentage of deleted nodes (0.0-1.0) to trigger vacuum. Default: 0.1 (10%).
 	DeleteThreshold float64 `json:"delete_threshold"`
 
+	// Graph Vacuum Settings
+	// How often to scan for expired edges (e.g. "1h").
+	GraphVacuumInterval Duration `json:"graph_vacuum_interval"`
+	// How long to keep soft-deleted edges (e.g. "720h" = 30 days).
+	// If 0, history is kept forever (Time Travel).
+	GraphRetention Duration `json:"graph_retention"`
+
 	// Refine (Optimization) Settings
 	// If true, runs background optimization to improve recall. Default: false.
 	RefineEnabled bool `json:"refine_enabled"`
@@ -60,8 +67,11 @@ type AutoMaintenanceConfig struct {
 // DefaultMaintenanceConfig returns safe defaults: Vacuum ON, Refine OFF.
 func DefaultMaintenanceConfig() AutoMaintenanceConfig {
 	return AutoMaintenanceConfig{
-		VacuumInterval:       Duration(5 * time.Minute),
-		DeleteThreshold:      0.1, // 10% dirty
+		VacuumInterval:  Duration(5 * time.Minute),
+		DeleteThreshold: 0.1, // 10% dirty
+		// Default: Run check every day, but keep history forever (Safety first)
+		GraphVacuumInterval:  Duration(24 * time.Hour),
+		GraphRetention:       Duration(0),
 		RefineEnabled:        false,
 		RefineInterval:       Duration(30 * time.Minute),
 		RefineBatchSize:      500,

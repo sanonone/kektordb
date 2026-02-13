@@ -116,8 +116,11 @@ KektorDB can function as a **smart middleware** between your Chat UI and your LL
 
 ### Semantic Graph Engine
 *   **Automated Entity Extraction:** Uses a local LLM to identify concepts (People, Projects, Tech) during ingestion and links related documents together ("Connecting the dots").
+*   **Weighted & Property Graphs:** Supports "Rich Edges" with attributes (weights, arbitrary properties) to enable complex recommendation and ranking algorithms.
+*   **Temporal Graph (Time Travel):** Every relationship is versioned with `CreatedAt` and `DeletedAt` timestamps. Soft delete support allows querying the graph status at any point in the past.
+*   **Bi-directional Navigation:** Automatic management of incoming edges to enable O(1) retrieval of "who points to node X", powering efficient graph traversal.
 *   **Graph Entities:** Support for nodes without vectors (pure metadata nodes) to represent abstract entities like "Users" or "Categories" within the same graph structure.
-*   **Graph Traversal:** Search traverses `prev`, `next`, `parent`, and `mentions` links to provide a holistic context window.
+*   **Graph Traversal:** Search traverses any relationship type (like `prev`, `next`, `parent`, `mentions`) to provide a holistic context window.
 
 <p align="center">
   <img src="docs/images/kektordb-graph-entities.png" alt="Knowledge Graph Visualization" width="700">
@@ -340,11 +343,10 @@ For a complete guide to all features and API endpoints, please see the **[Full D
 
 KektorDB is a young project under active development.
 
-### Coming Next (v0.5.0) - The Scalability & Integrity Update
+### Coming Next (v0.5.0) - The Scalability Update
 The next major milestone focuses on breaking the RAM limit and improving data consistency guarantees.
 *   [ ] **Hybrid Disk Storage:** Implement a pluggable storage engine. Keep the HNSW graph in RAM (or Int8) for speed, but offload full vector data to disk using standard I/O or memory mapping.
 *   [ ] **Transactional Graph Integrity:** Introduction of **Atomic Batches** to ensure data consistency when creating bidirectional links or updating vectors (ACID-like behavior for the Graph layer).
-*   [x] **Reverse Indexing:** Automatic management of incoming edges to enable O(1) retrieval of "who points to node X", essential for efficient graph traversal and cleanup.
 *   [ ] **Native Backup/Restore:** Simple API to snapshot data to S3/MinIO/Local without stopping the server.
 
 ### Planned (Short Term)

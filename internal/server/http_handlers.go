@@ -73,6 +73,7 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /graph/actions/set-node-properties", s.handleGraphSetProperties)
 	mux.HandleFunc("POST /graph/actions/get-node-properties", s.handleGraphGetProperties)
 	mux.HandleFunc("POST /graph/actions/search-nodes", s.handleGraphSearchNodes)
+	mux.HandleFunc("POST /graph/actions/get-edges", s.handleGraphGetEdges)
 
 	mux.HandleFunc("POST /rag/retrieve", s.handleRagRetrieve)
 
@@ -652,7 +653,7 @@ func (s *Server) handleGraphExtractSubgraph(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	result, err := s.Engine.VExtractSubgraph(req.IndexName, req.RootID, req.Relations, req.MaxDepth)
+	result, err := s.Engine.VExtractSubgraph(req.IndexName, req.RootID, req.Relations, req.MaxDepth, req.AtTime)
 	if err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, err)
 		return
@@ -786,6 +787,44 @@ func (s *Server) handleGraphSearchNodes(w http.ResponseWriter, r *http.Request) 
 	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
 		"nodes": nodes,
 	})
+}
+
+func (s *Server) handleGraphGetEdges(w http.ResponseWriter, r *http.Request) {
+	var req GraphGetEdgesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON"))
+		return
+	}
+
+	if req.RelationType == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("relation_type required"))
+		return
+	}
+
+	var edges []engine.GraphEdge
+	var found bool
+
+	// Default direction is Out (Forward)
+	if req.Direction == "in" {
+		if req.TargetID == "" {
+			s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("target_id required for 'in' direction"))
+			return
+		}
+		edges, found = s.Engine.VGetIncomingEdges(req.TargetID, req.RelationType, req.AtTime)
+	} else {
+		// Out / Forward
+		if req.SourceID == "" {
+			s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("source_id required for 'out' direction"))
+			return
+		}
+		edges, found = s.Engine.VGetEdges(req.SourceID, req.RelationType, req.AtTime)
+	}
+
+	if !found {
+		edges = []engine.GraphEdge{}
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, GraphGetEdgesResponse{Edges: edges})
 }
 
 // handleRagRetrieve performs a semantic search using a configured pipeline.

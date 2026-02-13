@@ -100,6 +100,20 @@ type GraphGetConnectionsRequest struct {
 	RelationType string `json:"relation_type"`
 }
 
+// GraphGetEdgesRequest is used to fetch rich edges and perform time travel.
+type GraphGetEdgesRequest struct {
+	SourceID     string `json:"source_id"`     // Required for Forward
+	TargetID     string `json:"target_id"`     // Required for Incoming
+	RelationType string `json:"relation_type"` // Required
+	Direction    string `json:"direction"`     // "out" (default) or "in"
+	AtTime       int64  `json:"at_time"`       // Optional: Unix Nano timestamp. 0 = Now.
+}
+
+// GraphGetEdgesResponse returns the list of rich edges.
+type GraphGetEdgesResponse struct {
+	Edges []engine.GraphEdge `json:"edges"`
+}
+
 type GraphTraverseRequest struct {
 	IndexName string   `json:"index_name"`
 	SourceID  string   `json:"source_id"`
@@ -122,6 +136,7 @@ type GraphExtractSubgraphRequest struct {
 	RootID    string   `json:"root_id"`
 	Relations []string `json:"relations"` // List of relation types to follow
 	MaxDepth  int      `json:"max_depth"`
+	AtTime    int64    `json:"at_time"`
 }
 
 type GraphSetPropertiesRequest struct {

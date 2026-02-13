@@ -54,6 +54,20 @@ func (s *KVStore) Delete(key string) {
 	delete(s.data, key)
 }
 
+// Keys returns a snapshot of all keys currently in the store.
+// This operation holds a read lock while copying keys, so it's relatively fast
+// but linear to the number of keys.
+func (s *KVStore) Keys() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	keys := make([]string, 0, len(s.data))
+	for k := range s.data {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // RLock locks the store for reading.
 // It should be used in conjunction with RUnlock for operations that require a
 // consistent read-only view across multiple steps at a higher level.

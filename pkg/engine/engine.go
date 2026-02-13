@@ -209,6 +209,9 @@ func (e *Engine) backgroundTasks() {
 	maintTicker := time.NewTicker(interval)
 	defer maintTicker.Stop()
 
+	graphTicker := time.NewTicker(1 * time.Hour) // Check hourly
+	defer graphTicker.Stop()
+
 	for {
 		select {
 		case <-e.closed:
@@ -217,6 +220,8 @@ func (e *Engine) backgroundTasks() {
 			e.checkMaintenance()
 		case <-maintTicker.C:
 			e.DB.RunMaintenance() // Graph Healing/Refine logic
+		case <-graphTicker.C:
+			e.RunGraphVacuum() // Global Graph Vacuum
 		}
 	}
 }

@@ -292,6 +292,8 @@ KektorDB runs background tasks to keep indexes healthy. You can tune these per-i
 | `refine_interval` | Duration | `30m` | Time between refinement cycles. |
 | `refine_batch_size` | Int | `500` | Nodes processed per refine cycle. |
 | `refine_ef_construction` | Int | `0` | Quality of refinement (0 = uses index default). Higher is slower but better. |
+| `graph_vacuum_interval` | Duration | `24h` | Interval between scans for expired graph edges. |
+| `graph_retention` | Duration | `0` | How long to keep soft-deleted edges (e.g. "720h"). If 0, history is kept forever (Time Travel). |
 
 ---
 
@@ -547,30 +549,49 @@ Semantically link ANY two items in the database, regardless of which index they 
 #### Link Nodes
 **`POST /graph/actions/link`**
 
-Creates a directed edge.
+Creates a directed edge. Supports weights and properties.
 
 **Body:**
 ```json
 {
   "source_id": "doc_1_chunk_1",
   "target_id": "doc_1_chunk_2",
-  "relation_type": "next"
+  "relation_type": "next",
+  "inverse_relation_type": "prev", // Optional: Auto-create reverse semantic
+  "weight": 0.5,                   // Optional: Defaults to 1.0
+  "props": {"type": "direct"}      // Optional: Property Graph attributes
 }
 ```
 
 #### Unlink Nodes
 **`POST /graph/actions/unlink`**
 
-Removes a specific edge.
+Removes or soft-deletes a specific edge.
 
-#### Get Connections
-**`POST /graph/actions/get-connections`**
+**Body:**
+```json
+{
+  "source_id": "doc_1",
+  "target_id": "doc_2",
+  "relation_type": "related",
+  "hard_delete": false // Default: false (Soft Delete for Time Travel)
+}
+```
 
-Retrieves all nodes connected to the source ID by a specific relation type. Detailed result.
+#### Get Edges (Time Travel)
+**`POST /graph/actions/get-edges`**
 
-**Body:** `{"index_name": "docs", "source_id": "1", "relation_type": "next"}`
+Retrieves rich edges (weights, props, timestamps). Supports snapshots at a specific point in time.
 
-> **Note:** The API currently supports retrieving links by explicit `relation_type`. Retrieving ALL relationships for a node without specifying the type is not yet supported.
+**Body:**
+```json
+{
+  "source_id": "doc_1",
+  "relation_type": "authored",
+  "direction": "out",  // "out" (default) or "in"
+  "at_time": 170000000 // Optional: Unix Nano. 0 = Now.
+}
+```
 
 #### Deep Traversal (N-Hop)
 **`POST /graph/actions/traverse`**
@@ -618,7 +639,7 @@ Efficiently retrieves "Who points to me?" using the reverse index. This is an O(
 **`POST /graph/actions/extract-subgraph`**
 
 Extracts the local topology around a Root Node up to a specified depth (BFS). Useful for visualization (UI) or detailed analysis of a specific cluster.
-This hydration fetches both metadata and relationships (outgoing and incoming).
+This hydration fetches both metadata and relationships (outgoing and incoming). Supports Time Travel.
 
 **Body:**
 ```json
@@ -626,7 +647,8 @@ This hydration fetches both metadata and relationships (outgoing and incoming).
   "index_name": "docs",
   "root_id": "chunk_5",
   "relations": ["parent", "next"],
-  "max_depth": 2
+  "max_depth": 2,
+  "at_time": 0 // 0 = Now
 }
 ```
 
@@ -796,6 +818,12 @@ In HNSW, a node is more than just a data point; it is a "bridge" for navigation.
 *   **Soft Delete**: When you call `VDelete`, the node is flagged but remains in the graph to preserve connectivity.
 *   **The Healer**: The Vacuum process identifies these "zombie" nodes, finds all neighboring nodes that point to them, and performs a local search to "re-wire" the graph. 
 *   **Memory Recovery**: Once the graph is repaired, the node's vector data is set to `nil`, allowing the Go Garbage Collector to reclaim the memory.
+
+### Graph Vacuum (History Cleanup)
+Since the Graph Engine uses **Soft Deletes** to support Time Travel, deleted edges accumulate in the KV store.
+*   **Retention Policy**: Configured via `graph_retention`.
+*   **Process**: A background task (`RunGraphVacuum`) scans for edges marked as deleted for longer than the retention period and physically removes them.
+*   **Default**: Retention is 0 (keep forever).
 
 ### Refine (Dynamic Optimization)
 Graph quality in HNSW can be sensitive to the order of insertion.

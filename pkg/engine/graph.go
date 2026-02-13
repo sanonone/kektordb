@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync/atomic"
 	"time"
 
@@ -353,7 +354,7 @@ type SubgraphResult struct {
 // VExtractSubgraph performs a Breadth-First Search (BFS) to retrieve the local neighborhood
 // of a root node up to a specified depth.
 // It traverses both outgoing ("rel") and incoming ("rev") edges for the specified relation types.
-func (e *Engine) VExtractSubgraph(indexName, rootID string, relations []string, maxDepth int) (*SubgraphResult, error) {
+func (e *Engine) VExtractSubgraph(indexName, rootID string, relations []string, maxDepth int, atTime int64) (*SubgraphResult, error) {
 	if maxDepth <= 0 {
 		maxDepth = 1
 	}
@@ -388,11 +389,14 @@ func (e *Engine) VExtractSubgraph(indexName, rootID string, relations []string, 
 
 		// Explore neighbors for each relation type requested
 		for _, rel := range relations {
-			// A. Outgoing Edges (Source -> Target)
-			targets, found := e.VGetLinks(current.id, rel)
+			// A. Outgoing Edges (Source -> Target) Time aware
+			// We use getFilteredEdges directly to respect 'atTime'
+			// prefixRel = "rel"
+			outEdges, found := e.getFilteredEdges(prefixRel, current.id, rel, atTime)
 			if found {
-				for _, target := range targets {
-					// Add Edge
+				for _, edge := range outEdges {
+					target := edge.TargetID
+
 					edges = append(edges, SubgraphEdge{
 						Source:   current.id,
 						Target:   target,
@@ -400,23 +404,22 @@ func (e *Engine) VExtractSubgraph(indexName, rootID string, relations []string, 
 						Dir:      "out",
 					})
 
-					// Visit Node
 					if !visited[target] {
 						visited[target] = true
-						// Fetch Metadata (Hydration)
 						data, _ := e.VGet(indexName, target)
 						nodesMap[target] = SubgraphNode{ID: target, Metadata: data.Metadata}
-						// Enqueue
 						queue = append(queue, queueItem{id: target, depth: current.depth + 1})
 					}
 				}
 			}
 
 			// B. Incoming Edges (Source <- Target)
-			sources, found := e.VGetIncoming(current.id, rel)
+			// prefixRev = "rev"
+			inEdges, found := e.getFilteredEdges(prefixRev, current.id, rel, atTime)
 			if found {
-				for _, source := range sources {
-					// Add Edge (Direction is IN relative to current)
+				for _, edge := range inEdges {
+					source := edge.TargetID // In reverse index, TargetID is the Source
+
 					edges = append(edges, SubgraphEdge{
 						Source:   source,
 						Target:   current.id,
@@ -446,4 +449,183 @@ func (e *Engine) VExtractSubgraph(indexName, rootID string, relations []string, 
 		Nodes:  nodeList,
 		Edges:  edges,
 	}, nil
+}
+
+// --- Time Travel & Rich Data Access ---
+
+// VGetEdges retrieves full edge details (weights, props) relative to a specific point in time.
+// atTime: Unix Nano timestamp. If 0, returns the current active state.
+func (e *Engine) VGetEdges(sourceID, relationType string, atTime int64) ([]GraphEdge, bool) {
+	return e.getFilteredEdges(prefixRel, sourceID, relationType, atTime)
+}
+
+// VGetIncomingEdges retrieves incoming rich edges relative to a specific point in time.
+func (e *Engine) VGetIncomingEdges(targetID, relationType string, atTime int64) ([]GraphEdge, bool) {
+	return e.getFilteredEdges(prefixRev, targetID, relationType, atTime)
+}
+
+// getFilteredEdges reads the raw list and applies the Time Travel logic.
+func (e *Engine) getFilteredEdges(prefix, nodeID, relType string, atTime int64) ([]GraphEdge, bool) {
+	key := makeGraphKey(prefix, nodeID, relType)
+	val, found := e.DB.GetKVStore().Get(key)
+	if !found {
+		return nil, false
+	}
+
+	var allEdges EdgeList
+	if err := json.Unmarshal(val, &allEdges); err != nil {
+		return nil, false
+	}
+
+	var visibleEdges []GraphEdge
+
+	// TIME TRAVEL LOGIC
+	for _, edge := range allEdges {
+		if atTime == 0 {
+			// Mode: CURRENT STATE
+			// We only want currently active edges.
+			if edge.DeletedAt == 0 {
+				visibleEdges = append(visibleEdges, edge)
+			}
+		} else {
+			// Mode: SNAPSHOT AT 'atTime'
+			// 1. Must exist at that time
+			if edge.CreatedAt <= atTime {
+				// 2. Must NOT be deleted yet at that time
+				// (DeletedAt == 0 means never deleted, > atTime means deleted in the future relative to query)
+				if edge.DeletedAt == 0 || edge.DeletedAt > atTime {
+					visibleEdges = append(visibleEdges, edge)
+				}
+			}
+		}
+	}
+
+	if len(visibleEdges) == 0 {
+		return nil, false
+	}
+
+	return visibleEdges, true
+}
+
+// PruneEdgeList removes edges that have been soft-deleted for longer than the retention period.
+// Returns true if modifications were made.
+// retention: Duration. If 0, nothing is pruned.
+func (e *Engine) PruneEdgeList(key string, retention time.Duration) (bool, error) {
+	if retention <= 0 {
+		return false, nil
+	}
+
+	e.adminMu.Lock()
+	defer e.adminMu.Unlock()
+
+	val, found := e.DB.GetKVStore().Get(key)
+	if !found {
+		return false, nil // Key might have been deleted concurrently
+	}
+
+	// Unmarshal directly (assuming migrated data)
+	var edges EdgeList
+	if err := json.Unmarshal(val, &edges); err != nil {
+		// If unmarshal fails (e.g. legacy data or corrupted), we skip it safely.
+		// We could log a warning here.
+		return false, nil
+	}
+
+	cutoffTime := time.Now().Add(-retention).UnixNano()
+	changed := false
+	activeEdges := make(EdgeList, 0, len(edges))
+
+	for _, edge := range edges {
+		// Condition to KEEP the edge:
+		// 1. It is active (DeletedAt == 0)
+		// 2. OR It is deleted, but RECENTLY (DeletedAt > cutoffTime)
+		if edge.DeletedAt == 0 || edge.DeletedAt > cutoffTime {
+			activeEdges = append(activeEdges, edge)
+		} else {
+			changed = true // We are dropping this edge (Hard Delete)
+		}
+	}
+
+	if !changed {
+		return false, nil
+	}
+
+	// Persist changes
+	if len(activeEdges) == 0 {
+		// List became empty -> Delete Key
+		cmd := persistence.FormatCommand("DEL", []byte(key))
+		if err := e.AOF.Write(cmd); err != nil {
+			return false, err
+		}
+		e.DB.GetKVStore().Delete(key)
+	} else {
+		// Update List
+		newVal, err := json.Marshal(activeEdges)
+		if err != nil {
+			return false, err
+		}
+		cmd := persistence.FormatCommand("SET", []byte(key), newVal)
+		if err := e.AOF.Write(cmd); err != nil {
+			return false, err
+		}
+		e.DB.GetKVStore().Set(key, newVal)
+	}
+
+	return true, nil
+}
+
+// RunGraphVacuum executes the cleanup of old soft-deleted edges.
+// It scans ALL keys in the KV store (Global Vacuum).
+func (e *Engine) RunGraphVacuum() {
+	// 1. Determine Retention Policy
+	// Since graph is global, we need a global policy or we pick the policy from the first index?
+	// Current design puts config inside Index. This is a mismatch for global KV.
+	// STRATEGY: Use the retention config from the first available index as the "System Policy",
+	// or add a global config to Engine Options.
+
+	// Let's use Engine Options for simplicity in v0.5.0
+	// But we didn't add it there. Let's iterate indexes and take the MAX retention found (safest).
+
+	infos, _ := e.DB.GetVectorIndexInfoUnlocked()
+	var retention time.Duration
+
+	for _, info := range infos {
+		idx, _ := e.DB.GetVectorIndex(info.Name)
+		if hnswIdx, ok := idx.(*hnsw.Index); ok {
+			cfg := hnswIdx.GetMaintenanceConfig()
+			if cfg.GraphRetention > 0 {
+				// Pick the logic: if ANY index wants to keep history, we keep it?
+				// Or if ANY index wants to delete, we delete?
+				// Let's assume uniform config for now or take the first non-zero.
+				retention = time.Duration(cfg.GraphRetention)
+				break
+			}
+		}
+	}
+
+	if retention <= 0 {
+		return // Keep forever
+	}
+
+	// 2. Scan & Prune
+	keys := e.DB.GetKVStore().Keys()
+	prunedTotal := 0
+
+	for i, key := range keys {
+		if len(key) > 4 && (key[:4] == "rel:" || key[:4] == "rev:") {
+			changed, _ := e.PruneEdgeList(key, retention)
+			if changed {
+				prunedTotal++
+			}
+		}
+
+		// Yield to avoid blocking writer lock in PruneEdgeList for too long continuously
+		if i%100 == 0 && i > 0 {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	if prunedTotal > 0 {
+		slog.Info("[GraphVacuum] Cleanup complete", "pruned_keys", prunedTotal)
+	}
 }
