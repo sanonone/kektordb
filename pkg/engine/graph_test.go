@@ -22,7 +22,7 @@ func TestBidirectionalGraph(t *testing.T) {
 
 	// 2. Create Link
 	// We link "chunk_A" -> "entity_Go" with relation "mentions"
-	if err := eng.VLink(source, target, rel, ""); err != nil {
+	if err := eng.VLink(source, target, rel, "", 1.0, nil); err != nil {
 		t.Fatalf("VLink failed: %v", err)
 	}
 
@@ -42,7 +42,7 @@ func TestBidirectionalGraph(t *testing.T) {
 	}
 
 	// 5. Test Unlink
-	if err := eng.VUnlink(source, target, rel, ""); err != nil {
+	if err := eng.VUnlink(source, target, rel, "", false); err != nil {
 		t.Fatalf("VUnlink failed: %v", err)
 	}
 

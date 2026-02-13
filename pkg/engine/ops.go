@@ -706,7 +706,7 @@ func (e *Engine) VGetConnections(indexName, sourceID, relationType string) ([]co
 				// Launch background cleanup to avoid slowing down current read.
 				go func(deadID string) {
 					// VUnlink is thread-safe and handles lock and AOF
-					_ = e.VUnlink(sourceID, deadID, relationType, "")
+					_ = e.VUnlink(sourceID, deadID, relationType, "", false)
 				}(targetID)
 			}
 		}
@@ -1014,7 +1014,7 @@ func (e *Engine) processAutoLinks(indexName, sourceID string, metadata map[strin
 		// Create the Link (Bidirectional by default via VLink)
 		// Source -> (Relation) -> Target
 		// Example: Chunk_1 -> (belongs_to_chat) -> Chat_123
-		if err := e.VLink(sourceID, targetID, rule.RelationType, ""); err != nil {
+		if err := e.VLink(sourceID, targetID, rule.RelationType, "", 1.0, nil); err != nil {
 			slog.Warn("Auto-linking failed",
 				"index", indexName,
 				"source", sourceID,

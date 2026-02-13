@@ -3,8 +3,8 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
-	"slices"
 	"sync/atomic"
+	"time"
 
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/persistence"
@@ -31,22 +31,24 @@ func makeGraphKey(prefix, nodeID, relType string) string {
 	return fmt.Sprintf("%s:%s:%s", prefix, nodeID, relType)
 }
 
-// VLink creates a directed edge between two nodes and automatically updates the reverse index.
+// VLink creates a rich directed edge between two nodes and automatically updates the reverse index.
 // It ensures the graph is navigable in both directions.
-func (e *Engine) VLink(sourceID, targetID, relationType, inverseRelationType string) error {
+func (e *Engine) VLink(sourceID, targetID, relationType, inverseRelationType string, weight float32, props map[string]any) error {
 	e.adminMu.Lock()
 	defer e.adminMu.Unlock()
 
+	now := time.Now().UnixNano()
+
 	// 1. Forward Link: Source -> Target
 	// Key: rel:source:type -> [target]
-	if err := e.updateAdjacencyList(prefixRel, sourceID, relationType, targetID, true); err != nil {
+	if err := e.updateAdjacencyList(prefixRel, sourceID, relationType, targetID, true, false, now, weight, props); err != nil {
 		return err
 	}
 
 	// 2. Reverse Link: Target <- Source (Implicit)
 	// Key: rev:target:type -> [source]
 	// This allows asking: "Who points to Target via 'relationType'?"
-	if err := e.updateAdjacencyList(prefixRev, targetID, relationType, sourceID, true); err != nil {
+	if err := e.updateAdjacencyList(prefixRev, targetID, relationType, sourceID, true, false, now, weight, props); err != nil {
 		return err
 	}
 
@@ -54,11 +56,11 @@ func (e *Engine) VLink(sourceID, targetID, relationType, inverseRelationType str
 	// If the user specified an explicit inverse semantic, we link that too.
 	if inverseRelationType != "" {
 		// Forward: Target -> Source
-		if err := e.updateAdjacencyList(prefixRel, targetID, inverseRelationType, sourceID, true); err != nil {
+		if err := e.updateAdjacencyList(prefixRel, targetID, inverseRelationType, sourceID, true, false, now, weight, props); err != nil {
 			return err
 		}
 		// Reverse: Source <- Target
-		if err := e.updateAdjacencyList(prefixRev, sourceID, inverseRelationType, targetID, true); err != nil {
+		if err := e.updateAdjacencyList(prefixRev, sourceID, inverseRelationType, targetID, true, false, now, weight, props); err != nil {
 			return err
 		}
 	}
@@ -68,26 +70,30 @@ func (e *Engine) VLink(sourceID, targetID, relationType, inverseRelationType str
 }
 
 // VUnlink removes a directed edge and its reverse entry.
-func (e *Engine) VUnlink(sourceID, targetID, relationType, inverseRelationType string) error {
+// If hardDelete is true, the record is physically removed (cannot be recovered/time-traveled).
+// If hardDelete is false, it sets DeletedAt (Soft Delete).
+func (e *Engine) VUnlink(sourceID, targetID, relationType, inverseRelationType string, hardDelete bool) error {
 	e.adminMu.Lock()
 	defer e.adminMu.Unlock()
 
-	// 1. Remove Forward
-	if err := e.updateAdjacencyList(prefixRel, sourceID, relationType, targetID, false); err != nil {
+	now := time.Now().UnixNano()
+
+	// 1. Remove Forward (SOFT DELETE)
+	if err := e.updateAdjacencyList(prefixRel, sourceID, relationType, targetID, false, hardDelete, now, 0, nil); err != nil {
 		return err
 	}
 
-	// 2. Remove Reverse
-	if err := e.updateAdjacencyList(prefixRev, targetID, relationType, sourceID, false); err != nil {
+	// 2. Remove Reverse (SOFT DELETE)
+	if err := e.updateAdjacencyList(prefixRev, targetID, relationType, sourceID, false, hardDelete, now, 0, nil); err != nil {
 		return err
 	}
 
 	// 3. Remove Inverse Explicit
 	if inverseRelationType != "" {
-		if err := e.updateAdjacencyList(prefixRel, targetID, inverseRelationType, sourceID, false); err != nil {
+		if err := e.updateAdjacencyList(prefixRel, targetID, inverseRelationType, sourceID, false, hardDelete, now, 0, nil); err != nil {
 			return err
 		}
-		if err := e.updateAdjacencyList(prefixRev, sourceID, inverseRelationType, targetID, false); err != nil {
+		if err := e.updateAdjacencyList(prefixRev, sourceID, inverseRelationType, targetID, false, hardDelete, now, 0, nil); err != nil {
 			return err
 		}
 	}
@@ -102,48 +108,78 @@ func (e *Engine) VUnlink(sourceID, targetID, relationType, inverseRelationType s
 // relType: type of relationship
 // valueID: the ID to add/remove from the list
 // isAdd: true to add, false to remove
-func (e *Engine) updateAdjacencyList(prefix, rootID, relType, valueID string, isAdd bool) error {
+func (e *Engine) updateAdjacencyList(prefix, rootID, relType, targetID string, isAdd bool, hardDelete bool, timestamp int64, weight float32, props map[string]any) error {
 	key := makeGraphKey(prefix, rootID, relType)
 
-	var targets []string
+	var edges EdgeList
 	val, found := e.DB.GetKVStore().Get(key)
+
 	if found {
-		_ = json.Unmarshal(val, &targets)
+		// FAST PATH: Direct Unmarshal. No checks for legacy strings.
+		if err := json.Unmarshal(val, &edges); err != nil {
+			// If this fails, the DB is corrupt or contains legacy data we chose to ignore.
+			return fmt.Errorf("graph format error for %s: %w", key, err)
+		}
+	} else {
+		edges = make(EdgeList, 0)
 	}
 
-	// Check if modification is needed
-	exists := slices.Contains(targets, valueID)
+	idx := -1
+	for i, edge := range edges {
+		if edge.TargetID == targetID {
+			// We look for the entry matching the target, regardless if active or deleted.
+			// (If multiple versions existed, we'd take the last one, but we keep 1 entry per target for now)
+			idx = i
+			break
+		}
+	}
 
 	if isAdd {
-		if exists {
-			return nil // Idempotent: already exists
-		}
-		targets = append(targets, valueID)
-	} else {
-		if !exists {
-			return nil // Idempotent: already removed
-		}
-		// Filter out the valueID
-		newTargets := make([]string, 0, len(targets))
-		for _, t := range targets {
-			if t != valueID {
-				newTargets = append(newTargets, t)
+		// UPSERT LOGIC
+		if idx >= 0 {
+			// Update existing
+			edges[idx].DeletedAt = 0 // Reactivate
+			edges[idx].Weight = weight
+			edges[idx].Props = props
+			// We DO NOT update CreatedAt to preserve history, unless it was 0
+			if edges[idx].CreatedAt == 0 {
+				edges[idx].CreatedAt = timestamp
 			}
+		} else {
+			// Append new
+			edges = append(edges, GraphEdge{
+				TargetID:  targetID,
+				CreatedAt: timestamp,
+				Weight:    weight,
+				Props:     props,
+			})
 		}
-		targets = newTargets
+	} else {
+		// DELETE LOGIC
+		if idx >= 0 {
+			if hardDelete {
+				// Physical removal (Slice delete trick)
+				edges = append(edges[:idx], edges[idx+1:]...)
+			} else {
+				// Soft Delete
+				if edges[idx].DeletedAt == 0 {
+					edges[idx].DeletedAt = timestamp
+				}
+			}
+		} else {
+			return nil // Nothing to delete
+		}
 	}
 
-	// Persist changes
-	if len(targets) == 0 {
-		// If list is empty, delete the key to save space
+	// Persist
+	if len(edges) == 0 {
 		cmd := persistence.FormatCommand("DEL", []byte(key))
 		if err := e.AOF.Write(cmd); err != nil {
 			return err
 		}
 		e.DB.GetKVStore().Delete(key)
 	} else {
-		// Save updated list
-		newVal, err := json.Marshal(targets)
+		newVal, err := json.Marshal(edges)
 		if err != nil {
 			return err
 		}
@@ -157,33 +193,43 @@ func (e *Engine) updateAdjacencyList(prefix, rootID, relType, valueID string, is
 	return nil
 }
 
-// VGetLinks retrieves outgoing links (Forward Index).
-// Example: VGetLinks("doc_1", "mentions") -> ["entity_python", "entity_go"]
+// VGetLinks retrieves ACTIVE links.
 func (e *Engine) VGetLinks(sourceID, relationType string) ([]string, bool) {
-	return e.getAdjacencyList(prefixRel, sourceID, relationType)
+	return e.getFilteredList(prefixRel, sourceID, relationType)
 }
 
-// VGetIncoming retrieves incoming links (Reverse Index).
-// Example: VGetIncoming("entity_python", "mentions") -> ["doc_1", "doc_5"]
-// This answers "Who points to me?" efficiently.
+// VGetIncoming retrieves ACTIVE incoming links.
 func (e *Engine) VGetIncoming(targetID, relationType string) ([]string, bool) {
-	return e.getAdjacencyList(prefixRev, targetID, relationType)
+	return e.getFilteredList(prefixRev, targetID, relationType)
 }
 
-// getAdjacencyList is a read-only helper to fetch list from KV store.
-func (e *Engine) getAdjacencyList(prefix, nodeID, relType string) ([]string, bool) {
+func (e *Engine) getFilteredList(prefix, nodeID, relType string) ([]string, bool) {
 	key := makeGraphKey(prefix, nodeID, relType)
 	val, found := e.DB.GetKVStore().Get(key)
 	if !found {
 		return nil, false
 	}
 
-	var targets []string
-	if err := json.Unmarshal(val, &targets); err != nil {
+	var edges EdgeList
+	if err := json.Unmarshal(val, &edges); err != nil {
 		return nil, false
 	}
+
+	var targets []string
+	for _, edge := range edges {
+		if edge.IsActive() {
+			targets = append(targets, edge.TargetID)
+		}
+	}
+
+	if len(targets) == 0 {
+		return nil, false
+	}
+
 	return targets, true
 }
+
+// TODO: VGetLinksAtTime(t)
 
 // resolveGraphFilter traverses the graph and returns a set of allowed Internal IDs.
 func (e *Engine) resolveGraphFilter(indexName string, q GraphQuery) (map[uint32]struct{}, error) {

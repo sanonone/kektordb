@@ -510,8 +510,14 @@ func (s *Server) handleGraphLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Engine.VLink(req.SourceID, req.TargetID, req.RelationType, req.InverseRelationType); err != nil {
-		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("Error in Vlink"))
+	// Default weight logic
+	weight := req.Weight
+	if weight == 0 {
+		weight = 1.0
+	}
+
+	if err := s.Engine.VLink(req.SourceID, req.TargetID, req.RelationType, req.InverseRelationType, weight, req.Props); err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("Error in Vlink: %v", err))
 		return
 	}
 
@@ -519,7 +525,7 @@ func (s *Server) handleGraphLink(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGraphUnlink(w http.ResponseWriter, r *http.Request) {
-	var req GraphLinkRequest
+	var req GraphUnlinkRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("Invalid JSON"))
 		return
@@ -530,8 +536,8 @@ func (s *Server) handleGraphUnlink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Engine.VUnlink(req.SourceID, req.TargetID, req.RelationType, req.InverseRelationType); err != nil {
-		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("Error in Unlink"))
+	if err := s.Engine.VUnlink(req.SourceID, req.TargetID, req.RelationType, req.InverseRelationType, req.HardDelete); err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("Error in Unlink: %v", err))
 		return
 	}
 

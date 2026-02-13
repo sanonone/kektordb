@@ -40,7 +40,7 @@ func TestGraphFiltering(t *testing.T) {
 
 	// Insert Node A
 	eng.VAdd(indexName, "doc_A", []float32{0.1, 0.1}, nil)
-	eng.VLink("doc_A", rootID, "belongs_to", "") // Link A -> Root
+	eng.VLink("doc_A", rootID, "belongs_to", "", 1.0, nil) // Link A -> Root
 
 	// Insert Node B (The Distracter)
 	eng.VAdd(indexName, "doc_B", []float32{0.1, 0.1}, nil)
@@ -48,7 +48,7 @@ func TestGraphFiltering(t *testing.T) {
 
 	// Insert Node C (The Noise)
 	eng.VAdd(indexName, "doc_C", []float32{0.9, 0.9}, nil)
-	eng.VLink("doc_C", rootID, "belongs_to", "") // Link C -> Root
+	eng.VLink("doc_C", rootID, "belongs_to", "", 1.0, nil) // Link C -> Root
 
 	// 3. Test Standard Search (Control Group)
 	// Should find A and B (closest vectors)

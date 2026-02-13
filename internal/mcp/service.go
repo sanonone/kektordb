@@ -76,7 +76,7 @@ func (s *Service) SaveMemory(ctx context.Context, req *mcp.CallToolRequest, args
 		if len(parts) > 1 {
 			rel = parts[1]
 		}
-		s.engine.VLink(id, targetID, rel, "")
+		s.engine.VLink(id, targetID, rel, "", 1.0, nil)
 	}
 
 	return nil, SaveMemoryResult{MemoryID: id, Status: "saved"}, nil
@@ -144,7 +144,7 @@ func (s *Service) CreateEntity(ctx context.Context, req *mcp.CallToolRequest, ar
 */
 
 func (s *Service) Connect(ctx context.Context, req *mcp.CallToolRequest, args ConnectArgs) (*mcp.CallToolResult, struct{}, error) {
-	if err := s.engine.VLink(args.SourceID, args.TargetID, args.Relation, ""); err != nil {
+	if err := s.engine.VLink(args.SourceID, args.TargetID, args.Relation, "", 1.0, nil); err != nil {
 		return nil, struct{}{}, err
 	}
 	// Return empty struct as result (success)

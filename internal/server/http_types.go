@@ -73,10 +73,20 @@ type RagRetrieveRequest struct {
 }
 
 type GraphLinkRequest struct {
+	SourceID            string                 `json:"source_id"`
+	TargetID            string                 `json:"target_id"`
+	RelationType        string                 `json:"relation_type"` // e.g. "parent", "next", "cited_by"
+	InverseRelationType string                 `json:"inverse_relation_type,omitempty"`
+	Weight              float32                `json:"weight,omitempty"` // Default 1.0 if 0
+	Props               map[string]interface{} `json:"props,omitempty"`
+}
+
+type GraphUnlinkRequest struct {
 	SourceID            string `json:"source_id"`
 	TargetID            string `json:"target_id"`
-	RelationType        string `json:"relation_type"` // e.g. "parent", "next", "cited_by"
+	RelationType        string `json:"relation_type"`
 	InverseRelationType string `json:"inverse_relation_type,omitempty"`
+	HardDelete          bool   `json:"hard_delete,omitempty"` // Default false (Soft)
 }
 
 type GraphGetLinksRequest struct {
