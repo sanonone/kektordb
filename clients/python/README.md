@@ -69,6 +69,10 @@ Acts as a smart proxy to optimize costs and latency for LLM applications.
 
 ## Zero-Code RAG (Open WebUI Integration)
 
+<p align="center">
+  <img src="docs/images/kektordb-rag-demo.gif" alt="KektorDB RAG Demo" width="800">
+</p>
+
 KektorDB can function as a **smart middleware** between your Chat UI and your LLM. It intercepts requests, performs retrieval, and injects context automatically.
 
 **Architecture:**
@@ -93,7 +97,7 @@ KektorDB can function as a **smart middleware** between your Chat UI and your LL
 
 ## ✨ Core Features
 
-### ⚡ Performance & Engineering
+### Performance & Engineering
 *   **HNSW Engine:** Custom implementation optimized for high-concurrency reading.
 *   **Hybrid Search:** Combines Vector Similarity + BM25 (Keyword) + Metadata Filtering.
 *   **Memory Efficiency:** Supports **Int8 Quantization** (75% RAM savings) with zero-shot auto-training and **Float16**.
@@ -105,13 +109,14 @@ KektorDB can function as a **smart middleware** between your Chat UI and your LL
 *   **Observability:** Prometheus metrics (`/metrics`) and structured logging.
 *   **Dual Mode:** Run as a standalone **REST Server** or as a **Go Library**.
 
-### 🧠 Agentic RAG Pipeline
+### Agentic RAG Pipeline
 *   **Query Rewriting (CQR):** Automatically rewrites user questions based on chat history (e.g., "How to install it?" -> "How to install KektorDB?"). Solves short-term memory issues.
 *   **Grounded HyDe:** Generates hypothetical answers to improve recall on vague queries, using real data fragments to ground the hallucination.
 *   **Safety Net:** Automatically falls back to standard vector search if the advanced pipeline fails to find relevant context.
 
-### 🕸️ Semantic Graph Engine
+### Semantic Graph Engine
 *   **Automated Entity Extraction:** Uses a local LLM to identify concepts (People, Projects, Tech) during ingestion and links related documents together ("Connecting the dots").
+*   **Graph Entities:** Support for nodes without vectors (pure metadata nodes) to represent abstract entities like "Users" or "Categories" within the same graph structure.
 *   **Graph Traversal:** Search traverses `prev`, `next`, `parent`, and `mentions` links to provide a holistic context window.
 
 <p align="center">
@@ -120,7 +125,18 @@ KektorDB can function as a **smart middleware** between your Chat UI and your LL
   <em>Visualizing semantic connections between documents via extracted entities.</em>
 </p>
 
-### 🖥️ Embedded Dashboard
+### Model Context Protocol (MCP) Support
+KektorDB now functions as an **MCP Memory Server**. This allows LLMs (like Claude via Claude Desktop) to use KektorDB as a long-term memory store directly.
+*   **Tools included:** `save_memory`, `recall_memory`, `create_entity`, `connect_entities`, `scoped_recall`, and `explore_connections`.
+*   **How to run:**
+    ```bash
+    ./kektordb --mcp
+    ```
+*   **Integration:** Add KektorDB to your MCP client configuration using the `--mcp` flag.
+
+---
+
+### Embedded Dashboard
 Available at `http://localhost:9091/ui/`.
 *   **Graph Explorer:** Visualize your knowledge graph with a force-directed layout.
 *   **Search Debugger:** Test your queries and see exactly why a document was retrieved.
@@ -178,7 +194,7 @@ func main() {
 	db.VAdd("products", "p1", []float32{0.1, 0.2}, map[string]any{"category": "electronics"})
 
 	// 4. Search
-	results, _ := db.VSearch("products", []float32{0.1, 0.2}, 10, "category=electronics", 100, 0.5)
+	results, _ := db.VSearch("products", []float32{0.1, 0.2}, 10, "category=electronics", 100, 0.5, nil)
 	fmt.Println("Found IDs:", results)
 }
 ```
@@ -328,12 +344,12 @@ KektorDB is a young project under active development.
 The next major milestone focuses on breaking the RAM limit and improving data consistency guarantees.
 *   [ ] **Hybrid Disk Storage:** Implement a pluggable storage engine. Keep the HNSW graph in RAM (or Int8) for speed, but offload full vector data to disk using standard I/O or memory mapping.
 *   [ ] **Transactional Graph Integrity:** Introduction of **Atomic Batches** to ensure data consistency when creating bidirectional links or updating vectors (ACID-like behavior for the Graph layer).
-*   [ ] **Reverse Indexing:** Automatic management of incoming edges to enable O(1) retrieval of "who points to node X", essential for efficient graph traversal and cleanup.
+*   [x] **Reverse Indexing:** Automatic management of incoming edges to enable O(1) retrieval of "who points to node X", essential for efficient graph traversal and cleanup.
 *   [ ] **Native Backup/Restore:** Simple API to snapshot data to S3/MinIO/Local without stopping the server.
 
 ### Planned (Short Term)
 Features I intend to build to make KektorDB production-ready and faster.
-*   [ ] **Graph Filtering:** Combine vector search with graph topology filters (e.g. "search only children of Doc X"), powered by Roaring Bitmaps.
+*   [x] **Graph Filtering:** Combine vector search with graph topology filters (e.g. "search only children of Doc X"), powered by Roaring Bitmaps.
 *   [ ] **Configurable RAG Relations:** Allow users to define custom graph traversal paths in `proxy.yaml` instead of relying on hardcoded defaults.
 *   [ ] **SIMD/AVX Optimizations:** Extending pure Go Assembly optimizations (currently used for Cosine) to Euclidean distance and Float16 operations to maximize throughput on modern CPUs.
 *   [ ] **Roaring Bitmaps:** Replace current map-based filtering with Roaring Bitmaps for lightning-fast metadata filtering (e.g. `WHERE user_id = X`).
@@ -392,4 +408,3 @@ Your support helps me dedicate more time to maintenance, new features, and docum
 <a href="https://ko-fi.com/sanon">
   <img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="ko-fi" width="180">
 </a>
-
