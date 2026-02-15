@@ -27,6 +27,7 @@
 
 # Dev files
 /tempMcpDocs
+/tempDocs
 
 # Ignore data directory
 assets/

@@ -287,6 +287,22 @@ func (s *Server) handleVectorAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate vector dimension against index configuration
+	idx, ok := s.Engine.DB.GetVectorIndex(req.IndexName)
+	if !ok {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("index '%s' not found", req.IndexName))
+		return
+	}
+
+	if hnswIdx, ok := idx.(*hnsw.Index); ok {
+		expectedDim := hnswIdx.GetDimension()
+		if expectedDim > 0 && len(req.Vector) != expectedDim {
+			s.writeHTTPError(w, http.StatusBadRequest,
+				fmt.Errorf("vector dimension mismatch: expected %d, got %d", expectedDim, len(req.Vector)))
+			return
+		}
+	}
+
 	err := s.Engine.VAdd(req.IndexName, req.Id, req.Vector, req.Metadata)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {

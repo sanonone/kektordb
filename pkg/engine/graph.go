@@ -22,8 +22,11 @@ import (
 //    Use case: "Who links to Target?" (e.g., Get parents, Get backlinks)
 
 const (
-	prefixRel = "rel" // Forward prefix
-	prefixRev = "rev" // Reverse prefix
+	prefixRel          = "rel" // Forward prefix
+	prefixRev          = "rev" // Reverse prefix
+	maxPropKeyLength   = 256   // Maximum length for property keys
+	maxPropValueLength = 4096  // Maximum length for property values (strings)
+	maxPropsPerEdge    = 100   // Maximum number of properties per edge
 )
 
 // makeGraphKey generates the storage key for a specific direction.
@@ -32,9 +35,49 @@ func makeGraphKey(prefix, nodeID, relType string) string {
 	return fmt.Sprintf("%s:%s:%s", prefix, nodeID, relType)
 }
 
+// validateProps sanitizes and validates user-provided properties to prevent injection and abuse.
+func validateProps(props map[string]any) error {
+	if len(props) > maxPropsPerEdge {
+		return fmt.Errorf("too many properties: %d (max %d)", len(props), maxPropsPerEdge)
+	}
+
+	for key, value := range props {
+		// Validate key
+		if len(key) > maxPropKeyLength {
+			return fmt.Errorf("property key too long: %d chars (max %d)", len(key), maxPropKeyLength)
+		}
+
+		// Check for valid key characters (alphanumeric, underscore, hyphen)
+		for _, r := range key {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-') {
+				return fmt.Errorf("invalid character in property key: %q (allowed: alphanumeric, _, -)", r)
+			}
+		}
+
+		// Validate value (only check length for strings)
+		if str, ok := value.(string); ok {
+			if len(str) > maxPropValueLength {
+				return fmt.Errorf("property value for key %q too long: %d chars (max %d)", key, len(str), maxPropValueLength)
+			}
+		}
+	}
+
+	return nil
+}
+
 // VLink creates a rich directed edge between two nodes and automatically updates the reverse index.
 // It ensures the graph is navigable in both directions.
+//
+// LOCK ORDERING: This function acquires adminMu first, then DB.mu (via updateAdjacencyList).
+// To prevent deadlocks, always acquire locks in this order: adminMu -> DB.mu
 func (e *Engine) VLink(sourceID, targetID, relationType, inverseRelationType string, weight float32, props map[string]any) error {
+	// Validate user-provided properties before acquiring locks
+	if props != nil {
+		if err := validateProps(props); err != nil {
+			return fmt.Errorf("invalid properties: %w", err)
+		}
+	}
+
 	e.adminMu.Lock()
 	defer e.adminMu.Unlock()
 

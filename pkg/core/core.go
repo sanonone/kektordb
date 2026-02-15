@@ -529,6 +529,12 @@ func (s *DB) GetVectors(indexName string, vectorIDs []string) ([]VectorData, err
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// Recover from panics to prevent goroutine leaks
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("Panic in GetVectors worker", "recover", r)
+				}
+			}()
 			// Each worker takes an ID from the jobs channel, processes it, and sends the result
 			for vectorID := range jobs {
 				nodeData, found := hnswIndex.GetNodeData(vectorID)

@@ -135,9 +135,19 @@ func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int
 			if config != nil {
 				hnswIdx.UpdateMaintenanceConfig(*config)
 				// Persist config separately (legacy behavior kept for compatibility)
-				cfgBytes, _ := json.Marshal(*config)
-				cmdConfig := persistence.FormatCommand("VCONFIG", []byte(name), cfgBytes)
-				e.AOF.Write(cmdConfig)
+				cfgBytes, err := json.Marshal(*config)
+				if err != nil {
+					slog.Error("Failed to marshal maintenance config",
+						"error", err,
+						"index", name)
+				} else {
+					cmdConfig := persistence.FormatCommand("VCONFIG", []byte(name), cfgBytes)
+					if err := e.AOF.Write(cmdConfig); err != nil {
+						slog.Error("Failed to persist config to AOF",
+							"error", err,
+							"index", name)
+					}
+				}
 			}
 
 			// Apply AutoLink Rules
@@ -433,7 +443,7 @@ func (e *Engine) VTraverse(indexName, startID string, paths []string) (*GraphNod
 
 		// Use existing internal helper traversePath
 		// Note: traversePath must be accessible (same package)
-		connectedNodes := e.traversePath(indexName, startID, parts, true) // true = always hydrate for traverse
+		connectedNodes := e.traversePath(indexName, startID, parts, true, 0) // true = always hydrate for traverse, 0 = initial depth
 
 		if len(connectedNodes) > 0 {
 			rootNode.Connections[pathStr] = connectedNodes
@@ -443,10 +453,23 @@ func (e *Engine) VTraverse(indexName, startID string, paths []string) (*GraphNod
 	return rootNode, nil
 }
 
-// traversePath walks the graph recursively.
+// traversePath walks the graph recursively with depth limit to prevent stack overflow.
 // currentID: ID of the starting node
 // path: list of relationships to follow (e.g., ["parent", "child"])
-func (e *Engine) traversePath(indexName, currentID string, path []string, hydrate bool) []GraphNode {
+// depth: current recursion depth (used internally)
+func (e *Engine) traversePath(indexName, currentID string, path []string, hydrate bool, depth ...int) []GraphNode {
+	const maxDepth = 10
+
+	currentDepth := 0
+	if len(depth) > 0 {
+		currentDepth = depth[0]
+	}
+
+	if currentDepth > maxDepth {
+		slog.Warn("Max traversal depth exceeded", "index", indexName, "currentID", currentID, "depth", currentDepth)
+		return nil
+	}
+
 	if len(path) == 0 {
 		return nil
 	}
@@ -478,8 +501,8 @@ func (e *Engine) traversePath(indexName, currentID string, path []string, hydrat
 		gNode := GraphNode{VectorData: nodeData}
 
 		if len(remainingPath) > 0 {
-			// Descend to next level
-			children := e.traversePath(indexName, nodeData.ID, remainingPath, hydrate)
+			// Descend to next level with incremented depth
+			children := e.traversePath(indexName, nodeData.ID, remainingPath, hydrate, currentDepth+1)
 			if len(children) > 0 {
 				if gNode.Connections == nil {
 					gNode.Connections = make(map[string][]GraphNode)
@@ -781,10 +804,17 @@ func (e *Engine) VGetConnections(indexName, sourceID, relationType string) ([]co
 			if _, ok := foundSet[targetID]; !ok {
 				// This ID was in links but not in DB. It is dead.
 				// Launch background cleanup to avoid slowing down current read.
-				go func(deadID string) {
+				tid := targetID // Capture loop variable to avoid race condition
+				go func() {
 					// VUnlink is thread-safe and handles lock and AOF
-					_ = e.VUnlink(sourceID, deadID, relationType, "", false)
-				}(targetID)
+					if err := e.VUnlink(sourceID, tid, relationType, "", false); err != nil {
+						slog.Error("Self-repair unlink failed",
+							"error", err,
+							"source", sourceID,
+							"target", tid,
+							"relation", relationType)
+					}
+				}()
 			}
 		}
 	}
