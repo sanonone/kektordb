@@ -58,6 +58,7 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /vector/actions/add-batch", s.handleVectorAddBatch)
 	mux.HandleFunc("POST /vector/actions/import", s.handleVectorImport)
 	mux.HandleFunc("POST /vector/actions/search", s.handleVectorSearch)
+	mux.HandleFunc("POST /vector/actions/search-with-scores", s.handleVectorSearchWithScores)
 	mux.HandleFunc("POST /vector/actions/delete_vector", s.handleVectorDelete)
 	mux.HandleFunc("POST /vector/actions/compress", s.handleVectorCompress)
 	mux.HandleFunc("POST /vector/actions/get-vectors", s.handleGetVectorsBatch)
@@ -416,6 +417,30 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 
 		s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": ids})
 	}
+}
+
+func (s *Server) handleVectorSearchWithScores(w http.ResponseWriter, r *http.Request) {
+	var req VectorSearchWithScoresRequest
+	if err := s.decodeJSON(r, &req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.IndexName == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name required"))
+		return
+	}
+
+	results, err := s.Engine.VSearchWithScores(req.IndexName, req.QueryVector, req.K)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			s.writeHTTPError(w, http.StatusNotFound, err)
+		} else {
+			s.writeHTTPError(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": results})
 }
 
 func (s *Server) handleVectorDelete(w http.ResponseWriter, r *http.Request) {

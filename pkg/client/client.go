@@ -57,6 +57,12 @@ type MaintenanceConfig struct {
 	RefineEfConstruction int     `json:"refine_ef_construction,omitempty"` // e.g. 200
 }
 
+// MemoryConfig defines the time-dependent ranking settings for an index.
+type MemoryConfig struct {
+	Enabled       bool   `json:"enabled"`
+	DecayHalfLife string `json:"decay_half_life,omitempty"` // e.g. "1h", "168h"
+}
+
 type VectorAddObject struct {
 	Id       string                 `json:"id"`
 	Vector   []float32              `json:"vector"`
@@ -354,6 +360,12 @@ func (c *Client) Delete(key string) error {
 // VCreate creates a new vector index.
 // maintenance can be nil to use defaults.
 func (c *Client) VCreate(indexName, metric, precision string, m, efConstruction int, maintenance *MaintenanceConfig) error {
+	return c.VCreateFull(indexName, metric, precision, m, efConstruction, maintenance, nil, nil)
+}
+
+// VCreateFull creates a new vector index with full configuration options.
+// maintenance, autoLinks, and memoryConfig can be nil to use defaults.
+func (c *Client) VCreateFull(indexName, metric, precision string, m, efConstruction int, maintenance *MaintenanceConfig, autoLinks []AutoLinkRule, memoryConfig *MemoryConfig) error {
 	payload := map[string]interface{}{"index_name": indexName}
 	if metric != "" {
 		payload["metric"] = metric
@@ -369,6 +381,12 @@ func (c *Client) VCreate(indexName, metric, precision string, m, efConstruction 
 	}
 	if maintenance != nil {
 		payload["maintenance"] = maintenance
+	}
+	if len(autoLinks) > 0 {
+		payload["auto_links"] = autoLinks
+	}
+	if memoryConfig != nil {
+		payload["memory_config"] = memoryConfig
 	}
 
 	_, err := c.jsonRequest(http.MethodPost, "/vector/actions/create", payload)
@@ -519,6 +537,16 @@ func (c *Client) VImport(indexName string, vectors []VectorAddObject) (map[strin
 	return resp, nil
 }
 
+// SearchResultWithScore represents a search result with its relevance score.
+type SearchResultWithScore struct {
+	ID    string  `json:"id"`
+	Score float64 `json:"score"`
+}
+
+type searchWithScoresResponse struct {
+	Results []SearchResultWithScore `json:"results"`
+}
+
 func (c *Client) VSearch(indexName string, k int, queryVector []float32, filter string, efSearch int, alpha float64, graphFilter *GraphQuery) ([]string, error) {
 	payload := map[string]interface{}{
 		"index_name":   indexName,
@@ -545,6 +573,27 @@ func (c *Client) VSearch(indexName string, k int, queryVector []float32, filter 
 	var resp searchResponse
 	if err := json.Unmarshal(respBody, &resp); err != nil {
 		return nil, fmt.Errorf("invalid JSON response for VSearch: %w", err)
+	}
+	return resp.Results, nil
+}
+
+// VSearchWithScores performs a vector search and returns results with their relevance scores.
+// This is useful for debugging and when you need to see the actual score values.
+// If the index has MemoryConfig enabled, scores will include time decay.
+func (c *Client) VSearchWithScores(indexName string, k int, queryVector []float32) ([]SearchResultWithScore, error) {
+	payload := map[string]interface{}{
+		"index_name":   indexName,
+		"k":            k,
+		"query_vector": queryVector,
+	}
+
+	respBody, err := c.jsonRequest(http.MethodPost, "/vector/actions/search-with-scores", payload)
+	if err != nil {
+		return nil, err
+	}
+	var resp searchWithScoresResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for VSearchWithScores: %w", err)
 	}
 	return resp.Results, nil
 }

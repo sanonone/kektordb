@@ -196,6 +196,7 @@ class KektorDBClient:
         text_language: str = "",
         maintenance_config: Dict[str, Any] = None,
         auto_links: List[Dict[str, Any]] = None,
+        memory_config: Dict[str, Any] = None,
     ) -> None:
         """
         Creates a new vector index.
@@ -209,6 +210,8 @@ class KektorDBClient:
             text_language: Enables hybrid search ('english', 'italian').
             maintenance_config: Optional dict for background tasks (vacuum/refine settings).
             auto_links: Optional list of rules for auto-linking graph nodes based on metadata.
+            memory_config: Optional dict for time-decay ranking settings.
+                Example: {"enabled": True, "decay_half_life": "1h"}
 
         Raises:
             APIError: If the index already exists or parameters are invalid.
@@ -227,6 +230,9 @@ class KektorDBClient:
 
         if auto_links:
             payload["auto_links"] = auto_links
+
+        if memory_config:
+            payload["memory_config"] = memory_config
 
         self._request("POST", "/vector/actions/create", json=payload)
 
@@ -290,7 +296,7 @@ class KektorDBClient:
         if vector is not None:
             payload["vector"] = vector
         else:
-            payload["vector"] = [] # Send empty list to signal "Entity" behavior
+            payload["vector"] = []  # Send empty list to signal "Entity" behavior
 
         if metadata:
             payload["metadata"] = metadata
@@ -441,6 +447,40 @@ class KektorDBClient:
             payload["hydrate_relations"] = True
 
         data = self._request("POST", "/vector/actions/search", json=payload)
+        return data.get("results", [])
+
+    def vsearch_with_scores(
+        self,
+        index_name: str,
+        query_vector: List[float],
+        k: int,
+    ) -> List[Dict[str, Any]]:
+        """
+        Performs a nearest neighbor search and returns results with their relevance scores.
+
+        If the index has MemoryConfig enabled, scores will include time decay.
+        This is useful for debugging and when you need to see the actual score values.
+
+        Args:
+            index_name: The name of the index to search in.
+            query_vector: The query vector.
+            k: The number of nearest neighbors to return.
+
+        Returns:
+            A list of dictionaries containing 'id' and 'score' keys.
+            Example: [{"id": "vec1", "score": 0.95}, {"id": "vec2", "score": 0.87}]
+
+        Raises:
+            APIError: If the index does not exist or the query is invalid.
+            ConnectionError: If a network error occurs.
+        """
+        payload = {
+            "index_name": index_name,
+            "k": k,
+            "query_vector": query_vector,
+        }
+
+        data = self._request("POST", "/vector/actions/search-with-scores", json=payload)
         return data.get("results", [])
 
     # --- Graph / Relationship Methods ---

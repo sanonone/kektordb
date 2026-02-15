@@ -51,6 +51,13 @@ type VectorSearchRequest struct {
 	GraphFilter      *engine.GraphQuery `json:"graph_filter,omitempty"`
 }
 
+// VectorSearchWithScoresRequest defines the body for search with scores operations.
+type VectorSearchWithScoresRequest struct {
+	IndexName   string    `json:"index_name"`
+	K           int       `json:"k"`
+	QueryVector []float32 `json:"query_vector"`
+}
+
 // VectorDeleteRequest defines the body for vector deletion.
 type VectorDeleteRequest struct {
 	IndexName string `json:"index_name"`

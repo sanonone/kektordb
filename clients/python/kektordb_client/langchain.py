@@ -145,7 +145,13 @@ class KektorVectorStore:
         It automatically creates a graph node for the session.
         """
 
-        def __init__(self, client: KektorDBClient, index_name: str, session_id: str, embedding_function: Any = None):
+        def __init__(
+            self,
+            client: KektorDBClient,
+            index_name: str,
+            session_id: str,
+            embedding_function: Any = None,
+        ):
             self.client = client
             self.index_name = index_name
             self.session_id = session_id
@@ -172,6 +178,11 @@ class KektorVectorStore:
                     vector = self.embedding_function.embed_query(message.content)
                 elif callable(self.embedding_function):
                     vector = self.embedding_function(message.content)
+
+            # Generate unique message ID
+            import uuid
+
+            msg_id = f"msg_{self.session_id}_{uuid.uuid4().hex[:8]}"
 
             self.client.vadd(
                 self.index_name,
@@ -214,7 +225,9 @@ class KektorVectorStore:
             # 1. Find all messages linked to this session
             # Assumes Auto-Linking created "belongs_to_session" links
             try:
-                msg_ids = self.client.get_incoming(self.session_id, "belongs_to_session")
+                msg_ids = self.client.get_incoming(
+                    self.session_id, "belongs_to_session"
+                )
                 for mid in msg_ids:
                     # Soft delete vectors
                     self.client.vdelete(self.index_name, mid)
