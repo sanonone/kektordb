@@ -16,6 +16,7 @@ type VectorCreateRequest struct {
 	TextLanguage   string                      `json:"text_language,omitempty"`
 	Maintenance    *hnsw.AutoMaintenanceConfig `json:"maintenance,omitempty"`
 	AutoLinks      []hnsw.AutoLinkRule         `json:"auto_links,omitempty"`
+	MemoryConfig   *hnsw.MemoryConfig          `json:"memory_config,omitempty"`
 }
 
 // VectorAddRequest defines the body for adding a single vector.

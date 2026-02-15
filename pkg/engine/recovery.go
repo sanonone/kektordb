@@ -54,6 +54,7 @@ func (e *Engine) replayAOF() error {
 		entries        map[string]vectorEntry
 		maintenanceCfg *hnsw.AutoMaintenanceConfig
 		autoLinks      []hnsw.AutoLinkRule
+		memoryConfig   *hnsw.MemoryConfig
 	}
 
 	kvData := make(map[string][]byte)
@@ -148,6 +149,11 @@ func (e *Engine) replayAOF() error {
 						if json.Unmarshal([]byte(val), &rules) == nil {
 							idx.autoLinks = rules
 						}
+					case "MEMORY_CONFIG": // NEW
+						var memCfg hnsw.MemoryConfig
+						if json.Unmarshal([]byte(val), &memCfg) == nil {
+							idx.memoryConfig = &memCfg
+						}
 					}
 				}
 				if _, exists := indexes[name]; !exists {
@@ -241,6 +247,11 @@ func (e *Engine) replayAOF() error {
 		// Apply AutoLinks
 		if len(state.autoLinks) > 0 && isHnsw {
 			hnswIdx.SetAutoLinks(state.autoLinks)
+		}
+
+		// Apply memory config
+		if state.memoryConfig != nil && isHnsw {
+			hnswIdx.SetMemoryConfig(*state.memoryConfig)
 		}
 
 		// Bulk Load vectors

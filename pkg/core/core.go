@@ -95,6 +95,7 @@ type IndexConfig struct {
 	EfConstruction int
 	TextLanguage   string // e.g., "english", "italian", or "" to disable
 	AutoLinks      []hnsw.AutoLinkRule
+	MemoryConfig   hnsw.MemoryConfig `json:"memory_config,omitempty"`
 }
 
 // Snapshot serializes the current state of the store in gob format to an io.Writer.
@@ -177,6 +178,7 @@ func (s *DB) Snapshot(writer io.Writer) error {
 					EfConstruction: efc,
 					TextLanguage:   textLang,
 					AutoLinks:      hnswIndex.GetAutoLinks(),
+					MemoryConfig:   hnswIndex.GetMemoryConfig(),
 				},
 				Nodes:              nodeSnapshots,
 				ExternalToInternal: extToInt,
@@ -231,6 +233,8 @@ func (s *DB) LoadFromSnapshot(reader io.Reader) error {
 		if len(indexSnap.Config.AutoLinks) > 0 {
 			idx.SetAutoLinks(indexSnap.Config.AutoLinks)
 		}
+
+		idx.SetMemoryConfig(indexSnap.Config.MemoryConfig)
 
 		// Prepare the map of nodes to load into HNSW
 		nodesToLoad := make(map[uint32]*hnsw.Node)
@@ -594,6 +598,12 @@ func (s *DB) getMetadataForNodeUnlocked(indexName string, nodeID uint32) map[str
 		}
 	}
 	return make(map[string]any)
+}
+
+// GetMetadataForNodeUnlocked exposes the internal metadata lookup.
+// Warning: Caller must hold RLock on DB or ensure safety.
+func (s *DB) GetMetadataForNodeUnlocked(indexName string, nodeID uint32) map[string]any {
+	return s.getMetadataForNodeUnlocked(indexName, nodeID)
 }
 
 // BTreeItem is a struct used by the B-Tree to associate a numerical metadata value with a node ID.

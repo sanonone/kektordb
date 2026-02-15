@@ -267,7 +267,7 @@ func (s *Server) handleVectorCreate(w http.ResponseWriter, r *http.Request) {
 		prec = distance.Float32
 	}
 
-	err := s.Engine.VCreate(req.IndexName, metric, req.M, req.EfConstruction, prec, req.TextLanguage, req.Maintenance, req.AutoLinks)
+	err := s.Engine.VCreate(req.IndexName, metric, req.M, req.EfConstruction, prec, req.TextLanguage, req.Maintenance, req.AutoLinks, req.MemoryConfig)
 	if err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, err)
 		return

@@ -37,7 +37,7 @@ func TestRAGThresholdFiltering(t *testing.T) {
 
 	indexName := "rag_test_index"
 	// Create index (float32, cosine)
-	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil)
+	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
 
 	// 2. Insert Data
 	// Query Vector will be {0.1, 0.1, 0.1}

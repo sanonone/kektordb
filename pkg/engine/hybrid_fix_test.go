@@ -34,7 +34,7 @@ func TestHybridSearchFixes(t *testing.T) {
 	// 3. Create Index
 	// Metric: Cosine, Precision: Float32, Language: English
 	// We use Cosine so distance is 0..2. Normalization should handle it.
-	err = eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil)
+	err = eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create index: %v", err)
 	}

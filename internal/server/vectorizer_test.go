@@ -48,7 +48,7 @@ func TestVectorizerProcessing(t *testing.T) {
 
 	indexName := "test_index"
 	// Create index. Note: dimension is auto-detected or fixed on first insert.
-	if err := eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil); err != nil {
+	if err := eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil); err != nil {
 		t.Fatalf("Failed to create index: %v", err)
 	}
 
@@ -159,7 +159,7 @@ func TestVectorizerConcurrent(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, "doc.txt"), []byte("content"), 0644)
 
 		idxName := fmt.Sprintf("index_%d", i)
-		eng.VCreate(idxName, distance.Cosine, 16, 200, distance.Float32, "", nil, nil)
+		eng.VCreate(idxName, distance.Cosine, 16, 200, distance.Float32, "", nil, nil, nil)
 
 		configBuilder += fmt.Sprintf(`
   - name: vec_%d

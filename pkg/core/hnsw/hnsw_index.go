@@ -92,6 +92,8 @@ type Index struct {
 	// candidateObjectPool sync.Pool
 
 	optimizer *GraphOptimizer
+
+	memoryConfig MemoryConfig
 }
 
 // New creates and initializes a new HNSW index
@@ -233,7 +235,7 @@ func (h *Index) SearchWithScores(query []float32, k int, allowList map[uint32]st
 
 // searchInternal handles query pre-processing (normalization/quantization) once and orchestrates the search.
 func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]struct{}, efSearch int) ([]types.Candidate, error) {
-	h.metaMu.RLock()
+	//h.metaMu.RLock()
 	// defer h.metaMu.RUnlock()
 
 	h.metaMu.RLock()
@@ -241,7 +243,6 @@ func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]stru
 	currentMaxLevel := h.maxLevel
 	currentCounter := uint32(h.nodeCounter.Load()) // Leggiamo anche questo sotto lock per coerenza
 	h.metaMu.RUnlock()
-
 	if currentMaxLevel == -1 {
 		return []types.Candidate{}, nil
 	}
@@ -2476,4 +2477,18 @@ func (h *Index) GetDimension() int {
 		}
 	}
 	return 0
+}
+
+// SetMemoryConfig updates the memory settings.
+func (h *Index) SetMemoryConfig(cfg MemoryConfig) {
+	h.metaMu.Lock()
+	defer h.metaMu.Unlock()
+	h.memoryConfig = cfg
+}
+
+// GetMemoryConfig returns the memory settings.
+func (h *Index) GetMemoryConfig() MemoryConfig {
+	h.metaMu.RLock()
+	defer h.metaMu.RUnlock()
+	return h.memoryConfig
 }

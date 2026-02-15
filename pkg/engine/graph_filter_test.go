@@ -19,7 +19,7 @@ func TestGraphFiltering(t *testing.T) {
 	defer eng.Close()
 
 	indexName := "graph_test"
-	err = eng.VCreate(indexName, distance.Euclidean, 16, 200, distance.Float32, "english", nil, nil)
+	err = eng.VCreate(indexName, distance.Euclidean, 16, 200, distance.Float32, "english", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

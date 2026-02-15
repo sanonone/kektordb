@@ -9,12 +9,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/sanonone/kektordb/pkg/core"
 	"github.com/sanonone/kektordb/pkg/core/distance"
@@ -89,7 +89,7 @@ func (e *Engine) IndexExists(name string) bool {
 // accept AutoLinkRules.
 //
 // Returns an error if an index with the same name already exists.
-func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int, prec distance.PrecisionType, lang string, config *hnsw.AutoMaintenanceConfig, autoLinks []hnsw.AutoLinkRule) error {
+func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int, prec distance.PrecisionType, lang string, config *hnsw.AutoMaintenanceConfig, autoLinks []hnsw.AutoLinkRule, memoryConfig *hnsw.MemoryConfig) error {
 	// 1. Prepare AOF Command Arguments
 	args := [][]byte{
 		[]byte(name),
@@ -105,6 +105,14 @@ func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int
 		rulesBytes, err := json.Marshal(autoLinks)
 		if err == nil {
 			args = append(args, []byte("AUTO_LINKS"), rulesBytes)
+		}
+	}
+
+	// Serialize MemoryConfig
+	if memoryConfig != nil && memoryConfig.Enabled {
+		memBytes, err := json.Marshal(memoryConfig)
+		if err == nil {
+			args = append(args, []byte("MEMORY_CONFIG"), memBytes)
 		}
 	}
 
@@ -135,6 +143,11 @@ func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int
 			// Apply AutoLink Rules
 			if len(autoLinks) > 0 {
 				hnswIdx.SetAutoLinks(autoLinks)
+			}
+
+			// Apply Memory Config
+			if memoryConfig != nil {
+				hnswIdx.SetMemoryConfig(*memoryConfig)
 			}
 		}
 
@@ -181,7 +194,24 @@ func (e *Engine) VAdd(indexName, id string, vector []float32, metadata map[strin
 		return fmt.Errorf("index not found")
 	}
 
-	// --- ZERO VECTOR LOGIC (NEW) ---
+	// --- MEMORY TIMESTAMPING ---
+	// If this index is a Memory, ensure data has a creation timestamp.
+	if hnswIdx, ok := idx.(*hnsw.Index); ok {
+		memCfg := hnswIdx.GetMemoryConfig()
+		if memCfg.Enabled {
+			if metadata == nil {
+				metadata = make(map[string]any)
+			}
+			// Only inject if missing (allows importing historical data)
+			if _, exists := metadata["_created_at"]; !exists {
+				// We use float64 because JSON unmarshaling treats numbers as floats by default.
+				// Storing it as float64 now avoids type assertion headaches later.
+				metadata["_created_at"] = float64(time.Now().Unix())
+			}
+		}
+	}
+
+	// --- ZERO VECTOR LOGIC ---
 	if len(vector) == 0 {
 		// We need to fetch the HNSW index to ask for dimension
 		if hnswIdx, ok := idx.(*hnsw.Index); ok {
@@ -627,32 +657,79 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 		}
 	}
 
-	// Fusion Logic
-	if textQuery == "" {
-		normalizeVectorScores(vectorResults)
-		finalRes := make([]fusedResult, len(vectorResults))
-		for i, r := range vectorResults {
-			extID, _ := hnswIndex.GetExternalID(r.DocID)
-			finalRes[i] = fusedResult{id: extID, score: r.Score}
+	// --- SETUP MEMORY PARAMETERS ---
+	var useDecay bool
+	var halfLife float64
+
+	memCfg := hnswIndex.GetMemoryConfig()
+	if memCfg.Enabled {
+		useDecay = true
+		halfLife = float64(time.Duration(memCfg.DecayHalfLife).Seconds())
+		if halfLife <= 0 {
+			halfLife = 604800
 		}
-		return finalRes, nil
 	}
 
-	if alpha < 0 || alpha > 1 {
-		alpha = 0.5
-	}
-
+	// --- FUSION PREPARATION ---
+	// Normalize scores BEFORE fusion
 	normalizeVectorScores(vectorResults)
-	normalizeTextScores(textResults)
+	if textQuery != "" {
+		normalizeTextScores(textResults)
+	}
 
+	// Initialize Fused Map
 	fusedScores := make(map[uint32]float64)
-	for _, res := range vectorResults {
-		fusedScores[res.DocID] += alpha * res.Score
-	}
-	for _, res := range textResults {
-		fusedScores[res.DocID] += (1 - alpha) * res.Score
+
+	// CASE A: Only Vector (Common case)
+	if textQuery == "" {
+		for _, res := range vectorResults {
+			fusedScores[res.DocID] = res.Score // Alpha is implicitly 1.0 here relative to text
+		}
+	} else {
+		// CASE B: Hybrid
+		if alpha < 0 || alpha > 1 {
+			alpha = 0.5
+		}
+		for _, res := range vectorResults {
+			fusedScores[res.DocID] += alpha * res.Score
+		}
+		for _, res := range textResults {
+			fusedScores[res.DocID] += (1 - alpha) * res.Score
+		}
 	}
 
+	// --- TIME DECAY APPLICATION (Common for both cases) ---
+	if useDecay {
+		e.DB.RLock()
+		for docID, score := range fusedScores {
+			meta := e.DB.GetMetadataForNodeUnlocked(indexName, docID)
+
+			if val, ok := meta["_created_at"]; ok {
+				var created float64
+				switch v := val.(type) {
+				case float64:
+					created = v
+				case int64:
+					created = float64(v)
+				case int:
+					created = float64(v)
+				}
+
+				if created > 0 {
+					factor := calculateTimeDecay(created, halfLife) // Uses global func
+					// Recalculate age here if calculateTimeDecay doesn't accept 'now'
+					// Or update calculateTimeDecay to take (now - created)
+
+					// Let's assume calculateTimeDecay(created, halfLife) does:
+					// age = time.Now().Unix() - created.
+					fusedScores[docID] = score * factor
+				}
+			}
+		}
+		e.DB.RUnlock()
+	}
+
+	// --- FINALIZE ---
 	finalRes := make([]fusedResult, 0, len(fusedScores))
 	for id, score := range fusedScores {
 		extID, found := hnswIndex.GetExternalID(id)
@@ -721,7 +798,8 @@ type SearchResult struct {
 	Score float64
 }
 
-// VSearchWithScores performs a search and returns results with their distances.
+// VSearchWithScores performs a search and returns results with their scores.
+// If the index has MemoryConfig enabled, it applies time decay ranking.
 func (e *Engine) VSearchWithScores(indexName string, query []float32, k int) ([]SearchResult, error) {
 	idx, ok := e.DB.GetVectorIndex(indexName)
 	if !ok {
@@ -734,6 +812,51 @@ func (e *Engine) VSearchWithScores(indexName string, query []float32, k int) ([]
 	}
 
 	internalResults := hnswIdx.SearchWithScores(query, k, nil, 0)
+
+	// Convert distance to score (1 / (1 + distance))
+	for i := range internalResults {
+		internalResults[i].Score = 1.0 / (1.0 + internalResults[i].Score)
+	}
+
+	// Apply time decay if memory config is enabled
+	memCfg := hnswIdx.GetMemoryConfig()
+	if memCfg.Enabled {
+		halfLife := float64(time.Duration(memCfg.DecayHalfLife).Seconds())
+		if halfLife <= 0 {
+			halfLife = 604800 // 7 days default
+		}
+
+		e.DB.RLock()
+		for i := range internalResults {
+			meta := e.DB.GetMetadataForNodeUnlocked(indexName, internalResults[i].DocID)
+			if val, ok := meta["_created_at"]; ok {
+				var created float64
+				switch v := val.(type) {
+				case float64:
+					created = v
+				case int64:
+					created = float64(v)
+				case int:
+					created = float64(v)
+				}
+
+				if created > 0 {
+					factor := calculateTimeDecay(created, halfLife)
+					internalResults[i].Score *= factor
+				}
+			}
+		}
+		e.DB.RUnlock()
+	}
+
+	// Sort by score (highest first)
+	for i := 0; i < len(internalResults)-1; i++ {
+		for j := i + 1; j < len(internalResults); j++ {
+			if internalResults[j].Score > internalResults[i].Score {
+				internalResults[i], internalResults[j] = internalResults[j], internalResults[i]
+			}
+		}
+	}
 
 	results := make([]SearchResult, len(internalResults))
 	for i, r := range internalResults {
@@ -758,6 +881,20 @@ func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 	hnswIdx, ok := idx.(*hnsw.Index)
 	if !ok {
 		return fmt.Errorf("not hnsw")
+	}
+
+	// --- MEMORY TIMESTAMPING ---
+	memCfg := hnswIdx.GetMemoryConfig()
+	if memCfg.Enabled {
+		now := float64(time.Now().Unix())
+		for i := range items {
+			if items[i].Metadata == nil {
+				items[i].Metadata = make(map[string]any)
+			}
+			if _, exists := items[i].Metadata["_created_at"]; !exists {
+				items[i].Metadata["_created_at"] = now
+			}
+		}
 	}
 
 	// --- ZERO VECTOR LOGIC ---

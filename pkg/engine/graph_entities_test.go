@@ -21,7 +21,7 @@ func TestGraphEntities(t *testing.T) {
 
 	indexName := "knowledge_graph"
 	// Create index
-	err = eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil)
+	err = eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

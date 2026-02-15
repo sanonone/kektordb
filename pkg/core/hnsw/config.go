@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/sanonone/kektordb/pkg/core/distance"
 )
 
 // Duration is a wrapper around time.Duration that supports JSON string parsing (e.g. "1m", "10s").
@@ -91,4 +93,29 @@ type AutoLinkRule struct {
 	// CreateNode indicates whether to create a "stub" node for the target
 	// if it doesn't exist. Default should be true for most cases.
 	CreateNode bool `json:"create_node"`
+}
+
+// MemoryConfig controls the time-dependent ranking features.
+type MemoryConfig struct {
+	// Enabled activates time-decay logic via VSearch.
+	Enabled bool `json:"enabled"`
+
+	// DecayHalfLife is the time duration after which a memory's relevance score is halved.
+	// Example: "168h" (7 days). If 0, defaults to a standard value (e.g. 7 days).
+	DecayHalfLife Duration `json:"decay_half_life"`
+}
+
+// IndexConfig holds the configuration parameters for a vector index.
+type IndexConfig struct {
+	Metric         distance.DistanceMetric
+	Precision      distance.PrecisionType
+	M              int
+	EfConstruction int
+	TextLanguage   string
+
+	// Existing Graph Config
+	AutoLinks []AutoLinkRule `json:"auto_links,omitempty"`
+
+	// NEW: Memory Engine Config
+	MemoryConfig MemoryConfig `json:"memory_config,omitempty"`
 }

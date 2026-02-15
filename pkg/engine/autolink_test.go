@@ -33,7 +33,7 @@ func TestAutoLinking(t *testing.T) {
 
 	// 3. Create Index with Rules
 	// We pass 'rules' as the last argument
-	err = eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, rules)
+	err = eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, rules, nil)
 	if err != nil {
 		t.Fatalf("Failed to create index: %v", err)
 	}

@@ -445,7 +445,7 @@ func (p *AIProxy) saveToCache(queryVec []float32, queryText string, responseByte
 		DeleteThreshold: p.cfg.CacheDeleteThreshold,
 		RefineEnabled:   false,
 	}
-	_ = p.engine.VCreate(p.cfg.CacheIndex, distance.Cosine, 16, 200, distance.Float32, "", maintConfig, nil)
+	_ = p.engine.VCreate(p.cfg.CacheIndex, distance.Cosine, 16, 200, distance.Float32, "", maintConfig, nil, nil)
 	p.engine.VAdd(p.cfg.CacheIndex, id, queryVec, meta)
 	slog.Info("[Cache] Saved")
 }

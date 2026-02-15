@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"math"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/sanonone/kektordb/pkg/core/types"
 )
@@ -65,4 +67,22 @@ func normalizeTextScores(results []types.SearchResult) {
 			results[i].Score /= maxScore
 		}
 	}
+}
+
+// calculateTimeDecay computes the decay factor based on age and half-life.
+// Formula: 2^(-age/halfLife)
+func calculateTimeDecay(createdAt float64, halfLifeSeconds float64) float64 {
+	now := float64(time.Now().Unix())
+	age := now - createdAt
+
+	if age <= 0 {
+		return 1.0 // Created just now (or in the future due to clock skew)
+	}
+	if halfLifeSeconds <= 0 {
+		return 1.0 // Decay disabled
+	}
+
+	// Calculate decay
+	// Example: Age = 7 days, HalfLife = 7 days -> 2^-1 = 0.5
+	return math.Pow(2, -age/halfLifeSeconds)
 }

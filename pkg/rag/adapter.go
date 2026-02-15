@@ -60,7 +60,7 @@ func (a *KektorAdapter) CreateVectorIndex(name string, metric string, m int, efC
 	// Call to Engine with dynamic parameters!
 	// Note: passing nil for AutoMaintenanceConfig for now,
 	// but you might want to configure that in YAML in the future.
-	return a.Engine.VCreate(name, dMetric, m, efC, dPrec, lang, nil, nil)
+	return a.Engine.VCreate(name, dMetric, m, efC, dPrec, lang, nil, nil, nil)
 }
 
 func (a *KektorAdapter) Search(indexName string, query []float32, k int) ([]string, error) {

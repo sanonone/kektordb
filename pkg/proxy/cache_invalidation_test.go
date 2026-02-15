@@ -38,7 +38,7 @@ func TestSmartCacheInvalidation(t *testing.T) {
 
 	// 4. Create Cache Index explicitly to ensure text search is enabled
 	// We MUST set a language (e.g. "english") for text indexing to work on the "sources" field.
-	err = eng.VCreate(cfg.CacheIndex, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil)
+	err = eng.VCreate(cfg.CacheIndex, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create cache index: %v", err)
 	}

@@ -31,7 +31,7 @@ func (s *Service) ensureIndex(name string) {
 	}
 	if !s.engine.IndexExists(name) {
 		// Create default index: Cosine, Float32 (best for compatibility), English
-		s.engine.VCreate(name, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil)
+		s.engine.VCreate(name, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
 	}
 }
 
