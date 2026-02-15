@@ -8,6 +8,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/engine"
 )
@@ -30,8 +31,15 @@ func (s *Service) ensureIndex(name string) {
 		name = "mcp_memory"
 	}
 	if !s.engine.IndexExists(name) {
-		// Create default index: Cosine, Float32 (best for compatibility), English
-		s.engine.VCreate(name, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
+		// Default Memory Config: Enabled, 30 Days Half-Life
+		// (Agent memories should last longer than a typical chat cache)
+		memConfig := &hnsw.MemoryConfig{
+			Enabled:       true,
+			DecayHalfLife: hnsw.Duration(30 * 24 * time.Hour),
+		}
+
+		// Create index with Memory Config
+		s.engine.VCreate(name, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, memConfig)
 	}
 }
 
