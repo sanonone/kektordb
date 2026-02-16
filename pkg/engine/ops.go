@@ -517,8 +517,87 @@ func (e *Engine) traversePath(indexName, currentID string, path []string, hydrat
 	return results
 }
 
+// VReinforce updates the usage statistics of a memory node to keep it fresh.
+// It updates '_last_accessed' to Now and increments '_access_count'.
+func (e *Engine) VReinforce(indexName string, ids []string) error {
+	// TODO Future: Introduce a VMETA specific AOF OpCode that saves only ID + Metadata, without rewriting the vector.
+	// TODO Future: Use sharded or optimistic locks on metadata.
+	idx, ok := e.DB.GetVectorIndex(indexName)
+	if !ok {
+		return fmt.Errorf("index not found")
+	}
+	hnswIdx, ok := idx.(*hnsw.Index)
+	if !ok {
+		return fmt.Errorf("not hnsw")
+	}
+
+	// Lock for Metadata Update
+	// We use the global lock for metadata safety.
+	// Optimization: could be sharded, but fine for metadata updates.
+	e.DB.Lock()
+	defer e.DB.Unlock()
+
+	now := float64(time.Now().Unix())
+	var updatedCount int64
+
+	for _, extID := range ids {
+		internalID, found := hnswIdx.GetInternalIDUnlocked(extID)
+		if !found {
+			continue
+		}
+
+		// Get current metadata map (copy)
+		// Note: GetMetadataForNodeUnlocked returns a copy, so we need to save it back
+		meta := e.DB.GetMetadataForNodeUnlocked(indexName, internalID)
+		if meta == nil {
+			meta = make(map[string]any)
+		}
+
+		// Update Last Accessed
+		meta["_last_accessed"] = now
+
+		// Update Access Count
+		var count float64
+		if val, ok := meta["_access_count"]; ok {
+			count = toFloat64(val)
+		}
+		newCount := count + 1
+		meta["_access_count"] = newCount
+
+		// AUTO-PINNING LOGIC
+		// If accessed more than 20 times, auto-pin it
+		//if newCount > 20 {
+		//	meta["_pinned"] = true
+		//}
+
+		// Save updated metadata back to DB
+		// This is crucial because GetMetadataForNodeUnlocked returns a copy
+		if err := e.DB.AddMetadataUnlocked(indexName, internalID, meta); err != nil {
+			slog.Error("Failed to update metadata in VReinforce", "error", err, "id", extID)
+			continue
+		}
+
+		updatedCount++
+
+		// Persist to AOF by writing a VADD command with the updated metadata
+		nodeData, _ := hnswIdx.GetNodeData(extID) // Gets vector
+		vecStr := float32SliceToString(nodeData.Vector)
+		metaBytes, _ := json.Marshal(meta)
+		cmd := persistence.FormatCommand("VADD", []byte(indexName), []byte(extID), []byte(vecStr), metaBytes)
+		e.AOF.Write(cmd)
+	}
+
+	if updatedCount > 0 {
+		e.AOF.Flush()
+		atomic.AddInt64(&e.dirtyCounter, updatedCount)
+	}
+
+	return nil
+}
+
 // Contains all Parsing, Filtering, Hybrid Fusion logic
 func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filter string, explicitTextQuery string, efSearch int, alpha float64, graphQuery *GraphQuery) ([]fusedResult, error) {
+	// TODO Future: If performance becomes critical, move CreatedAt and LastAccessed directly into the hnsw.Node struct (as native int64 fields), avoiding the generic metadata map.
 	idx, ok := e.DB.GetVectorIndex(indexName)
 	if !ok {
 		return nil, fmt.Errorf("index '%s' not found", indexName)
@@ -725,28 +804,54 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 	if useDecay {
 		e.DB.RLock()
 		for docID, score := range fusedScores {
+			// Retrieve metadata using the internal ID
 			meta := e.DB.GetMetadataForNodeUnlocked(indexName, docID)
 
-			if val, ok := meta["_created_at"]; ok {
-				var created float64
+			// DEBUG SAFETY: Ensure meta is not nil
+			if meta == nil {
+				continue
+			}
+
+			// --- CHECK PINNING ---
+			isPinned := false
+			if val, ok := meta["_pinned"]; ok {
+				// Handle both bool (memory) and potentially other types if deserialized weirdly
 				switch v := val.(type) {
-				case float64:
-					created = v
-				case int64:
-					created = float64(v)
-				case int:
-					created = float64(v)
+				case bool:
+					isPinned = v
+				case string:
+					isPinned = (v == "true")
 				}
+			}
 
-				if created > 0 {
-					factor := calculateTimeDecay(created, halfLife) // Uses global func
-					// Recalculate age here if calculateTimeDecay doesn't accept 'now'
-					// Or update calculateTimeDecay to take (now - created)
+			if isPinned {
+				continue // Skip decay, score remains 1.0 (or whatever it was)
+			}
 
-					// Let's assume calculateTimeDecay(created, halfLife) does:
-					// age = time.Now().Unix() - created.
-					fusedScores[docID] = score * factor
+			// 2. Determine Reference Time (Created vs Last Accessed)
+			var referenceTime float64
+
+			// Try Created At
+			if val, ok := meta["_created_at"]; ok {
+				referenceTime = toFloat64(val)
+			}
+
+			// Try Last Accessed (Override if newer)
+			if val, ok := meta["_last_accessed"]; ok {
+				lastAccess := toFloat64(val)
+				if lastAccess > referenceTime {
+					referenceTime = lastAccess
 				}
+			}
+
+			if referenceTime > 0 {
+				factor := calculateTimeDecay(referenceTime, halfLife) // Uses global func
+				// Recalculate age here if calculateTimeDecay doesn't accept 'now'
+				// Or update calculateTimeDecay to take (now - created)
+
+				// Let's assume calculateTimeDecay(created, halfLife) does:
+				// age = time.Now().Unix() - created.
+				fusedScores[docID] = score * factor
 			}
 		}
 		e.DB.RUnlock()

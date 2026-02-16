@@ -37,3 +37,17 @@ func parseVectorFromString(s string) ([]float32, error) {
 	}
 	return vector, nil
 }
+
+// helper
+func toFloat64(v any) float64 {
+	switch val := v.(type) {
+	case float64:
+		return val
+	case int64:
+		return float64(val)
+	case int:
+		return float64(val)
+	default:
+		return 0
+	}
+}
