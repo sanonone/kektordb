@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sync/atomic"
 	"time"
 
@@ -168,51 +169,110 @@ func (e *Engine) updateAdjacencyList(prefix, rootID, relType, targetID string, i
 		edges = make(EdgeList, 0)
 	}
 
-	idx := -1
+	activeIdx := -1
 	for i, edge := range edges {
-		if edge.TargetID == targetID {
+		if edge.TargetID == targetID && edge.DeletedAt == 0 {
 			// We look for the entry matching the target, regardless if active or deleted.
 			// (If multiple versions existed, we'd take the last one, but we keep 1 entry per target for now)
-			idx = i
+			activeIdx = i
 			break
 		}
 	}
 
+	hasChanges := false
+
 	if isAdd {
-		// UPSERT LOGIC
-		if idx >= 0 {
-			// Update existing
-			edges[idx].DeletedAt = 0 // Reactivate
-			edges[idx].Weight = weight
-			edges[idx].Props = props
-			// We DO NOT update CreatedAt to preserve history, unless it was 0
-			if edges[idx].CreatedAt == 0 {
-				edges[idx].CreatedAt = timestamp
+		// --- EVOLUTION LOGIC ---
+		if activeIdx >= 0 {
+			// An active edge exists. Check if it differs.
+			currentEdge := edges[activeIdx]
+
+			// Compare properties and weight
+			// Note: reflect.DeepEqual handles nil maps vs empty maps slightly differently,
+			// but for our purpose it's a good enough check for "Has Changed".
+			propsChanged := !reflect.DeepEqual(currentEdge.Props, props)
+			weightChanged := currentEdge.Weight != weight
+
+			if propsChanged || weightChanged {
+				// CHANGE DETECTED -> EVOLVE
+				// 1. Soft Delete the old version
+				edges[activeIdx].DeletedAt = timestamp
+
+				// 2. Append new version
+				newEdge := GraphEdge{
+					TargetID:  targetID,
+					CreatedAt: timestamp, // Born Now
+					DeletedAt: 0,         // Active
+					Weight:    weight,
+					Props:     props,
+				}
+				edges = append(edges, newEdge)
+				hasChanges = true
+			} else {
+				// IDENTICAL -> NO-OP
+				// We do nothing. This preserves the original CreatedAt.
 			}
 		} else {
-			// Append new
-			edges = append(edges, GraphEdge{
+			// No active edge found (either never existed or was deleted previously).
+			// CREATE NEW.
+			newEdge := GraphEdge{
 				TargetID:  targetID,
 				CreatedAt: timestamp,
+				DeletedAt: 0,
 				Weight:    weight,
 				Props:     props,
-			})
+			}
+			edges = append(edges, newEdge)
+			hasChanges = true
 		}
+
+		/*
+			// UPSERT LOGIC
+			if activeIdx >= 0 {
+				// Update existing
+				edges[activeIdx].DeletedAt = 0 // Reactivate
+				edges[activeIdx].Weight = weight
+				edges[activeIdx].Props = props
+				// We DO NOT update CreatedAt to preserve history, unless it was 0
+				if edges[activeIdx].CreatedAt == 0 {
+					edges[activeIdx].CreatedAt = timestamp
+				}
+			} else {
+				// Append new
+				edges = append(edges, GraphEdge{
+					TargetID:  targetID,
+					CreatedAt: timestamp,
+					Weight:    weight,
+					Props:     props,
+				})
+			}
+		*/
 	} else {
 		// DELETE LOGIC
-		if idx >= 0 {
-			if hardDelete {
-				// Physical removal (Slice delete trick)
-				edges = append(edges[:idx], edges[idx+1:]...)
-			} else {
-				// Soft Delete
-				if edges[idx].DeletedAt == 0 {
-					edges[idx].DeletedAt = timestamp
+		if hardDelete {
+			// Find ALL instances of this target (active or history) and nuke them
+			// Filtering in-place
+			newEdges := edges[:0]
+			for _, edge := range edges {
+				if edge.TargetID != targetID {
+					newEdges = append(newEdges, edge)
+				} else {
+					hasChanges = true
 				}
 			}
+			edges = newEdges
 		} else {
-			return nil // Nothing to delete
+			// Soft Delete ONLY the active one
+			if activeIdx >= 0 {
+				edges[activeIdx].DeletedAt = timestamp
+				hasChanges = true
+			}
 		}
+	}
+
+	// Optimization: If no changes (e.g. redundant VLink), skip disk write
+	if !hasChanges {
+		return nil
 	}
 
 	// Persist
