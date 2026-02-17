@@ -94,7 +94,7 @@ func main() {
 
 	// SETUP LOGGER
 	setupLogger(*logLevel)
-	slog.Info("Starting KektorDB...", "version", "v0.4.0", "log_level", *logLevel)
+	slog.Info("Starting KektorDB...", "version", "v0.4.7", "log_level", *logLevel)
 
 	// Engine Configuration
 	dataDir := filepath.Dir(*aofPath)

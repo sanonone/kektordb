@@ -12,7 +12,7 @@ func NewMCPServer(eng *engine.Engine, embedder embeddings.Embedder) *mcp.Server 
 	// Create Server instance
 	s := mcp.NewServer(&mcp.Implementation{
 		Name:    "KektorDB Memory",
-		Version: "0.4.5",
+		Version: "0.4.7",
 	}, nil) // Options can be nil for default
 
 	// Register Tools using the Generic AddTool which inspects structs!
@@ -46,6 +46,11 @@ func NewMCPServer(eng *engine.Engine, embedder embeddings.Embedder) *mcp.Server 
 		Name:        "explore_connections",
 		Description: "Explore the graph neighborhood of a specific node to understand context.",
 	}, service.Traverse)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "find_connection",
+		Description: "Discover how two concepts or memories are connected in the graph (Pathfinding).",
+	}, service.FindConnection)
 
 	return s
 }

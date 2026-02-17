@@ -70,6 +70,11 @@ type VectorCompressRequest struct {
 	Precision string `json:"precision"`
 }
 
+type VectorReinforceRequest struct {
+	IndexName string   `json:"index_name"`
+	IDs       []string `json:"ids"`
+}
+
 type TriggerMaintenanceRequest struct {
 	Type string `json:"type"` // "vacuum" or "refine"
 }

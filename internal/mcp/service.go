@@ -70,6 +70,11 @@ func (s *Service) SaveMemory(ctx context.Context, req *mcp.CallToolRequest, args
 		meta["tags"] = args.Tags
 	}
 
+	// Handle Pinning
+	if args.Pin {
+		meta["_pinned"] = true
+	}
+
 	// 3. Store
 	if err := s.engine.VAdd(idx, id, vec, meta); err != nil {
 		return nil, SaveMemoryResult{}, err
@@ -184,6 +189,16 @@ func (s *Service) Recall(ctx context.Context, req *mcp.CallToolRequest, args Rec
 		return nil, RecallResult{}, err
 	}
 
+	if args.Reinforce && len(ids) > 0 {
+		// Fire and forget reinforcement (non-blocking for the response)
+		// We call VReinforce on the engine
+		go func() {
+			if err := s.engine.VReinforce(idx, ids); err != nil {
+				// Log error internally if needed
+			}
+		}()
+	}
+
 	return nil, s.formatResults(idx, ids), nil
 }
 
@@ -231,7 +246,7 @@ func (s *Service) Traverse(ctx context.Context, req *mcp.CallToolRequest, args T
 		depth = 1
 	}
 
-	// --- FIX: DEFAULT RELATIONS ---
+	// --- DEFAULT RELATIONS ---
 	// If the client doesn't specify which relations to follow, try the standard ones.
 	// This ensures "explore" actually finds something without needing perfect knowledge of the schema.
 	relations := args.Relations
@@ -242,10 +257,24 @@ func (s *Service) Traverse(ctx context.Context, req *mcp.CallToolRequest, args T
 			"belongs_to", "authored_by", // Metadata Auto-linking
 		}
 	}
-	// ------------------------------
+
+	// Semantic Navigation Setup
+	var guideVec []float32
+	if args.GuideQuery != "" {
+		v, err := s.embedder.Embed(args.GuideQuery)
+		if err != nil {
+			return nil, TraverseResult{}, fmt.Errorf("guide embedding failed: %w", err)
+		}
+		guideVec = v
+	}
+
+	threshold := args.Threshold
+	if threshold == 0 && len(guideVec) > 0 {
+		threshold = 0.4 // Default strictness for Cosine
+	}
 
 	// Pass 'relations' instead of 'args.Relations'
-	subgraph, err := s.engine.VExtractSubgraph(idx, args.RootID, relations, depth, 0, nil, 0)
+	subgraph, err := s.engine.VExtractSubgraph(idx, args.RootID, relations, depth, 0, guideVec, threshold)
 	if err != nil {
 		return nil, TraverseResult{}, err
 	}
@@ -340,6 +369,49 @@ func (s *Service) Traverse(ctx context.Context, req *mcp.CallToolRequest, args T
 	return nil, TraverseResult{GraphDescription: sb.String()}, nil
 }
 */
+
+func (s *Service) FindConnection(ctx context.Context, req *mcp.CallToolRequest, args FindConnectionArgs) (*mcp.CallToolResult, FindConnectionResult, error) {
+	idx := "mcp_memory"
+	if !s.engine.IndexExists(idx) {
+		return nil, FindConnectionResult{PathDescription: "No memory index found."}, nil
+	}
+
+	relations := args.Relations
+	if len(relations) == 0 {
+		// Default relations to traverse if user didn't specify
+		relations = []string{"related_to", "about", "mentions", "parent", "child", "next", "prev", "belongs_to", "authored_by"}
+	}
+
+	// Call Engine.FindPath
+	// MaxDepth 4 is usually enough for causal links
+	res, err := s.engine.FindPath(idx, args.SourceID, args.TargetID, relations, 4, 0)
+	if err != nil {
+		return nil, FindConnectionResult{}, err
+	}
+	if res == nil {
+		return nil, FindConnectionResult{PathDescription: fmt.Sprintf("No path found between '%s' and '%s'", args.SourceID, args.TargetID)}, nil
+	}
+
+	// Format Path for LLM: "A --[rel]--> B --[rel]--> C"
+	// PathResult contains the list of Nodes in order.
+	// Reconstructing the edge description is nice for the LLM.
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Connection found (%d steps):\n", len(res.Path)-1))
+
+	// Simple output: Node list
+	sb.WriteString(strings.Join(res.Path, " -> "))
+
+	// Detailed output using Edges info if available
+	if len(res.Edges) > 0 {
+		sb.WriteString("\n\nDetails:\n")
+		for _, edge := range res.Edges {
+			sb.WriteString(fmt.Sprintf("%s --[%s]--> %s\n", edge.Source, edge.Relation, edge.Target))
+		}
+	}
+
+	return nil, FindConnectionResult{PathDescription: sb.String()}, nil
+}
 
 // formatResults hydrates the IDs into text strings
 func (s *Service) formatResults(idx string, ids []string) RecallResult {

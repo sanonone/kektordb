@@ -62,6 +62,7 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /vector/actions/delete_vector", s.handleVectorDelete)
 	mux.HandleFunc("POST /vector/actions/compress", s.handleVectorCompress)
 	mux.HandleFunc("POST /vector/actions/get-vectors", s.handleGetVectorsBatch)
+	mux.HandleFunc("POST /vector/actions/reinforce", s.handleVectorReinforce)
 
 	// Graph API
 	mux.HandleFunc("POST /graph/actions/link", s.handleGraphLink)
@@ -517,6 +518,20 @@ func (s *Server) handleGetVectorsBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeHTTPResponse(w, http.StatusOK, data)
+}
+
+func (s *Server) handleVectorReinforce(w http.ResponseWriter, r *http.Request) {
+	var req VectorReinforceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if err := s.Engine.VReinforce(req.IndexName, req.IDs); err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "reinforced"})
 }
 
 func (s *Server) handleGetVector(w http.ResponseWriter, r *http.Request) {

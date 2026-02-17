@@ -278,6 +278,7 @@ class KektorDBClient:
         item_id: str,
         vector: List[float] = None,
         metadata: Dict[str, Any] = None,
+        pinned: bool = False,
     ) -> None:
         """
         Adds a vector to an index. If vector is None, it creates a "Graph Entity" (Zero Vector).
@@ -300,6 +301,16 @@ class KektorDBClient:
 
         if metadata:
             payload["metadata"] = metadata
+
+        if metadata:
+            payload["metadata"] = metadata
+
+        # Inject Pinning into metadata transparently
+        if pinned:
+            if "metadata" not in payload:
+                payload["metadata"] = {}
+            payload["metadata"]["_pinned"] = True
+
         self._request("POST", "/vector/actions/add", json=payload)
 
     def vadd_batch(
@@ -529,6 +540,24 @@ class KektorDBClient:
         }
         data = self._request("POST", "/graph/actions/get-connections", json=payload)
         return data.get("results", [])
+
+    def vreinforce(self, index_name: str, item_ids: List[str]) -> None:
+        """Reinforces memories, updating their last_accessed time."""
+        payload = {"index_name": index_name, "ids": item_ids}
+        self._request("POST", "/memory/actions/reinforce", json=payload)
+
+    def find_path(
+        self, index_name: str, source: str, target: str, relations: List[str] = None
+    ) -> Dict[str, Any]:
+        """Finds the shortest path between two nodes."""
+        payload = {"index_name": index_name, "source_id": source, "target_id": target}
+        if relations:
+            payload["relations"] = relations
+        else:
+            # Default fallback
+            payload["relations"] = ["related_to", "mentions", "parent", "child"]
+
+        return self._request("POST", "/graph/actions/find-path", json=payload)
 
     def vupdate_config(self, index_name: str, config: Dict[str, Any]) -> None:
         """
