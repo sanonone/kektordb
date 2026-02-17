@@ -128,7 +128,7 @@ func TestIntelligentNavigation(t *testing.T) {
 		eng.VLink("Rocket", "Mars", "next", "", 1.0, nil)
 		eng.VLink("Mars", "Colony", "next", "", 1.0, nil)
 
-		pathRes, err := eng.FindPath(idx, "Rocket", "Colony", 5, 0)
+		pathRes, err := eng.FindPath(idx, "Rocket", "Colony", []string{"next"}, 5, 0)
 		if err != nil {
 			t.Fatalf("FindPath error: %v", err)
 		}

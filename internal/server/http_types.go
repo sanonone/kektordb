@@ -168,11 +168,12 @@ type GraphSearchNodesRequest struct {
 }
 
 type GraphFindPathRequest struct {
-	IndexName string `json:"index_name"`
-	SourceID  string `json:"source_id"`
-	TargetID  string `json:"target_id"`
-	MaxDepth  int    `json:"max_depth"`
-	AtTime    int64  `json:"at_time"` // Optional: find path as it existed in the past
+	IndexName string   `json:"index_name"`
+	SourceID  string   `json:"source_id"`
+	TargetID  string   `json:"target_id"`
+	Relations []string `json:"relations"`
+	MaxDepth  int      `json:"max_depth"`
+	AtTime    int64    `json:"at_time"` // Optional: find path as it existed in the past
 }
 
 // Response uses engine.SubgraphResult directly

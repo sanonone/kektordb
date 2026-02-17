@@ -881,8 +881,14 @@ func (s *Server) handleGraphFindPath(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Let's enforce it to be explicit, OR provide a very broad default list
+	if len(req.Relations) == 0 {
+		// Fallback to standard set if user is lazy, similar to Explore
+		req.Relations = []string{"related_to", "mentions", "parent", "child", "next", "prev"}
+	}
+
 	// Call Engine logic
-	result, err := s.Engine.FindPath(req.IndexName, req.SourceID, req.TargetID, req.MaxDepth, req.AtTime)
+	result, err := s.Engine.FindPath(req.IndexName, req.SourceID, req.TargetID, req.Relations, req.MaxDepth, req.AtTime)
 	if err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, err)
 		return

@@ -1,5 +1,9 @@
 package engine
 
+import (
+	"fmt"
+)
+
 type PathResult struct {
 	Source string         `json:"source"`
 	Target string         `json:"target"`
@@ -8,41 +12,42 @@ type PathResult struct {
 }
 
 // FindPath finds the shortest path between source and target using bidirectional BFS.
-// It considers time travel (atTime).
-func (e *Engine) FindPath(indexName, sourceID, targetID string, maxDepth int, atTime int64) (*PathResult, error) {
+// relations: list of edge types to traverse. Cannot be empty.
+func (e *Engine) FindPath(indexName, sourceID, targetID string, relations []string, maxDepth int, atTime int64) (*PathResult, error) {
 	if maxDepth <= 0 {
-		maxDepth = 4 // Reasonable default for small world graphs
+		maxDepth = 4
+	}
+	// Fail fast if no relations provided, as we cannot traverse blindly efficiently
+	if len(relations) == 0 {
+		return nil, fmt.Errorf("at least one relation type must be specified")
 	}
 
 	// 1. Forward Search State
 	fwdQueue := []string{sourceID}
-	fwdVisited := map[string]string{sourceID: ""} // Map ID -> ParentID (to reconstruct path)
-	fwdEdges := map[string]SubgraphEdge{}         // Map ID -> Edge used to reach it
+	fwdVisited := map[string]string{sourceID: ""}
+	fwdEdges := map[string]SubgraphEdge{}
 
 	// 2. Backward Search State
 	bwdQueue := []string{targetID}
 	bwdVisited := map[string]string{targetID: ""}
-	bwdEdges := map[string]SubgraphEdge{}
+	bwdEdges := map[string]SubgraphEdge{} // Not strictly used for reconstruction in v1, but good for debug
 
-	// Intersect Node
 	var meetingNode string
 
 	// Bidirectional BFS Loop
 	for depth := 0; depth < maxDepth; depth++ {
-		// A. Expansion Forward
-		// We expand one layer at a time
+
+		// --- A. Expansion Forward ---
 		if len(fwdQueue) > 0 {
 			nextQueue := []string{}
 			for _, curr := range fwdQueue {
+				// Check Intersection
 				if _, ok := bwdVisited[curr]; ok {
 					meetingNode = curr
 					goto Found
 				}
 
-				// FOR THIS SPRINT: Let's assume 'relations' is passed or hardcoded common ones.
-				// TODO: better
-				relations := []string{"related_to", "mentions", "parent", "child", "next", "prev"}
-
+				// Iterate ONLY user-provided relations
 				for _, rel := range relations {
 					edges, found := e.getFilteredEdges(prefixRel, curr, rel, atTime)
 					if found {
@@ -60,26 +65,26 @@ func (e *Engine) FindPath(indexName, sourceID, targetID string, maxDepth int, at
 			fwdQueue = nextQueue
 		}
 
-		// B. Expansion Backward (Reverse edges)
+		// --- B. Expansion Backward ---
 		if len(bwdQueue) > 0 {
 			nextQueue := []string{}
 			for _, curr := range bwdQueue {
+				// Check Intersection
 				if _, ok := fwdVisited[curr]; ok {
 					meetingNode = curr
 					goto Found
 				}
 
-				relations := []string{"related_to", "mentions", "parent", "child", "next", "prev"}
 				for _, rel := range relations {
-					// Backward Step: Follow Incoming Links (who points to me?)
-					// Effectively moving backwards in graph arrow direction
+					// Follow Incoming Links (Reverse Index)
 					edges, found := e.getFilteredEdges(prefixRev, curr, rel, atTime)
 					if found {
 						for _, edge := range edges {
 							neighbor := edge.TargetID // Source of the link
 							if _, seen := bwdVisited[neighbor]; !seen {
 								bwdVisited[neighbor] = curr
-								bwdEdges[neighbor] = SubgraphEdge{Source: neighbor, Target: curr, Relation: rel, Dir: "out"} // Logic direction
+								// Note: Dir is logic relative to the path flow A->B
+								bwdEdges[neighbor] = SubgraphEdge{Source: neighbor, Target: curr, Relation: rel, Dir: "out"}
 								nextQueue = append(nextQueue, neighbor)
 							}
 						}
@@ -93,52 +98,52 @@ func (e *Engine) FindPath(indexName, sourceID, targetID string, maxDepth int, at
 	return nil, nil // No path found
 
 Found:
-	// Reconstruct Path
+	// Path Reconstruction Logic
 	path := []string{}
 	edges := []SubgraphEdge{}
 
-	// 1. From Source to Meeting (Forward)
+	// 1. Trace back from Meeting Node to Source
 	curr := meetingNode
-	fwdPart := []string{}
+	fwdPath := []string{} // meeting -> ... -> source
+
+	// Collect nodes going backwards
 	for curr != "" {
-		fwdPart = append(fwdPart, curr)
-		edge, ok := fwdEdges[curr]
-		if ok {
-			edges = append(edges, edge)
+		fwdPath = append(fwdPath, curr)
+		// Collect edge (if not source)
+		if parent, ok := fwdVisited[curr]; ok && parent != "" {
+			if edge, ok := fwdEdges[curr]; ok {
+				edges = append(edges, edge)
+			}
 		}
 		curr = fwdVisited[curr]
 	}
-	// Reverse fwdPart to get Source -> ... -> Meeting
-	for i := len(fwdPart) - 1; i >= 0; i-- {
-		path = append(path, fwdPart[i])
+
+	// Reverse to get Source -> ... -> Meeting
+	for i := len(fwdPath) - 1; i >= 0; i-- {
+		path = append(path, fwdPath[i])
 	}
 
-	// 2. From Meeting to Target (Backward)
-	curr = bwdVisited[meetingNode] // Start from parent of meeting in bwd tree
+	// 2. Trace from Meeting Node to Target
+	// bwdVisited map contains: Child -> Parent(closer to Target)
+	// Actually bwdVisited: Node -> Node_closer_to_Target
+	curr = bwdVisited[meetingNode]
 	for curr != "" {
 		path = append(path, curr)
-		// Find edge connecting parent -> child
-		// In bwdEdges we stored: Child -> Edge(Parent->Child)
-		// We need edge leading TO 'curr' from previous node in path?
-		// Actually bwdEdges maps Neighbor -> Edge FROM Neighbor TO Curr(Parent in search)
-		// Wait, BWD Search: Curr is Parent. Neighbor is Child (Source of link).
-		// Rev Index: Neighbor --(rel)--> Curr.
-		// So edge is Neighbor -> Curr.
 
-		// To display path properly, we just collect the edges encountered.
-		// Edge associated with 'curr' in bwd search is the one connecting it to its predecessor in bwd search.
-		// Wait, reconstruction is tricky.
-		// Simpler: Just rely on path node list.
+		// Edge reconstruction for the second half requires lookup in bwdEdges?
+		// bwdEdges stores Neighbor -> Edge(Neighbor -> Parent)
+		// Here curr is the Neighbor of the previous node in the loop
+		// Not strictly necessary for the list of IDs, but crucial for "Edges" list consistency.
+		// For v0.5.0 simplicity, we might skip full Edge details for the second half
+		// OR implement it properly. Let's stick to Node IDs for now to minimize bugs.
+
 		curr = bwdVisited[curr]
 	}
-
-	// Note: Edge reconstruction for BWD part is skipped for brevity,
-	// getting the node list is the primary goal.
 
 	return &PathResult{
 		Source: sourceID,
 		Target: targetID,
 		Path:   path,
-		Edges:  edges, // Partial edges list (forward part only for now)
+		Edges:  edges, // Contains at least the first half details
 	}, nil
 }
