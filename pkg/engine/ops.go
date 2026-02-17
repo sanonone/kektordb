@@ -1301,3 +1301,33 @@ func (e *Engine) processAutoLinks(indexName, sourceID string, metadata map[strin
 		// with a zero-vector, which might pollute the index.
 	}
 }
+
+// computeDistance returns the distance between a node in the index and a query vector.
+// It abstracts away precision types (Float32, Int8, etc.).
+func (e *Engine) computeDistance(indexName, nodeID string, queryVec []float32) (float64, error) {
+	idx, ok := e.DB.GetVectorIndex(indexName)
+	if !ok {
+		return 0, fmt.Errorf("index not found")
+	}
+	hnswIdx, ok := idx.(*hnsw.Index)
+	if !ok {
+		return 0, fmt.Errorf("index not HNSW")
+	}
+
+	// 1. Get Node Data (Vector)
+	_, found := hnswIdx.GetNodeData(nodeID)
+	if !found {
+		// If node exists in Graph but not in HNSW (Ghost Node), distance is undefined.
+		// Strategy: Return Max Distance (prune) or Min (keep)?
+		// Usually Ghost Nodes are structural (categories), so maybe we should KEEP them?
+		// For now, let's treat them as infinite distance (prune) unless we handle them specifically.
+		return 999999, nil
+	}
+
+	// 2. Pre-process Query if needed (Quantization)
+	// NOTE: HNSW Index internal distance functions usually expect specific types.
+
+	// A cleaner way is to expose a method in HNSW: hnswIdx.DistanceToVector(nodeID, queryFloat32)
+	// Let's implement this helper in HNSW package.
+	return hnswIdx.ComputeDistanceToVector(nodeID, queryVec)
+}

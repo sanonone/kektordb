@@ -75,6 +75,7 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /graph/actions/get-node-properties", s.handleGraphGetProperties)
 	mux.HandleFunc("POST /graph/actions/search-nodes", s.handleGraphSearchNodes)
 	mux.HandleFunc("POST /graph/actions/get-edges", s.handleGraphGetEdges)
+	mux.HandleFunc("POST /graph/actions/find-path", s.handleGraphFindPath)
 
 	mux.HandleFunc("POST /rag/retrieve", s.handleRagRetrieve)
 
@@ -694,7 +695,7 @@ func (s *Server) handleGraphExtractSubgraph(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	result, err := s.Engine.VExtractSubgraph(req.IndexName, req.RootID, req.Relations, req.MaxDepth, req.AtTime)
+	result, err := s.Engine.VExtractSubgraph(req.IndexName, req.RootID, req.Relations, req.MaxDepth, req.AtTime, req.GuideVector, req.SemanticThreshold)
 	if err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, err)
 		return
@@ -866,6 +867,34 @@ func (s *Server) handleGraphGetEdges(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeHTTPResponse(w, http.StatusOK, GraphGetEdgesResponse{Edges: edges})
+}
+
+func (s *Server) handleGraphFindPath(w http.ResponseWriter, r *http.Request) {
+	var req GraphFindPathRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON"))
+		return
+	}
+
+	if req.IndexName == "" || req.SourceID == "" || req.TargetID == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name, source_id and target_id are required"))
+		return
+	}
+
+	// Call Engine logic
+	result, err := s.Engine.FindPath(req.IndexName, req.SourceID, req.TargetID, req.MaxDepth, req.AtTime)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	if result == nil {
+		// Path not found is not a 500 error, just empty result or 404
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("path not found"))
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, result)
 }
 
 // handleRagRetrieve performs a semantic search using a configured pipeline.

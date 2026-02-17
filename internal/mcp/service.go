@@ -245,7 +245,7 @@ func (s *Service) Traverse(ctx context.Context, req *mcp.CallToolRequest, args T
 	// ------------------------------
 
 	// Pass 'relations' instead of 'args.Relations'
-	subgraph, err := s.engine.VExtractSubgraph(idx, args.RootID, relations, depth, 0)
+	subgraph, err := s.engine.VExtractSubgraph(idx, args.RootID, relations, depth, 0, nil, 0)
 	if err != nil {
 		return nil, TraverseResult{}, err
 	}

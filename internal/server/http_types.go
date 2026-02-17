@@ -145,6 +145,9 @@ type GraphExtractSubgraphRequest struct {
 	Relations []string `json:"relations"` // List of relation types to follow
 	MaxDepth  int      `json:"max_depth"`
 	AtTime    int64    `json:"at_time"`
+	// If GuideVector is provided, the traversal only follows nodes semantically similar to this vector.
+	GuideVector       []float32 `json:"guide_vector,omitempty"`
+	SemanticThreshold float64   `json:"semantic_threshold,omitempty"` // E.g., 0.5 for Cosine distance
 }
 
 type GraphSetPropertiesRequest struct {
@@ -162,6 +165,14 @@ type GraphSearchNodesRequest struct {
 	IndexName      string `json:"index_name"`
 	PropertyFilter string `json:"property_filter"` // e.g. "type='person'"
 	Limit          int    `json:"limit"`
+}
+
+type GraphFindPathRequest struct {
+	IndexName string `json:"index_name"`
+	SourceID  string `json:"source_id"`
+	TargetID  string `json:"target_id"`
+	MaxDepth  int    `json:"max_depth"`
+	AtTime    int64  `json:"at_time"` // Optional: find path as it existed in the past
 }
 
 // Response uses engine.SubgraphResult directly

@@ -2434,6 +2434,97 @@ func computeInt8Norm(vec []int8) float32 {
 	return float32(math.Sqrt(float64(sum)))
 }
 
+// ComputeDistanceToVector calculates the distance between an existing node (by ID) and a raw float32 query.
+// It handles necessary conversions (normalization, quantization) internally.
+func (h *Index) ComputeDistanceToVector(nodeID string, query []float32) (float64, error) {
+	h.metaMu.RLock()
+	// NOTE: We don't defer Unlock here because distanceBetweenNodes/distFunc might be fast,
+	// but we need to unlock before returning if we do complex stuff.
+	// Actually distFunc is safe.
+	defer h.metaMu.RUnlock()
+
+	internalID, ok := h.externalToInternalID[nodeID]
+	if !ok {
+		return 0, fmt.Errorf("node not found")
+	}
+	node := h.nodes[internalID]
+	if node == nil || node.Deleted {
+		return 0, fmt.Errorf("node deleted")
+	}
+
+	// Prepare Query
+	var qObj any
+
+	// Copy query to avoid mutation side effects if normalize is used
+	// (Optimization: skip copy if not cosine, but safety first)
+	qCopy := make([]float32, len(query))
+	copy(qCopy, query)
+
+	if h.metric == distance.Cosine && h.precision == distance.Float32 {
+		normalize(qCopy)
+	}
+
+	switch h.precision {
+	case distance.Float32:
+		qObj = qCopy
+	case distance.Float16:
+		qF16 := make([]uint16, len(qCopy))
+		for i, v := range qCopy {
+			qF16[i] = float16.Fromfloat32(v).Bits()
+		}
+		qObj = qF16
+	case distance.Int8:
+		if h.quantizer == nil {
+			return 0, fmt.Errorf("quantizer not ready")
+		}
+		qObj = h.quantizer.Quantize(qCopy)
+	}
+
+	// Calculate Distance
+	// We need to access the distance function directly.
+	// Since h.distanceFunc is 'any', we switch again or use the typed fields.
+
+	switch h.precision {
+	case distance.Float32:
+		return h.distFuncF32(qObj.([]float32), node.VectorF32)
+	case distance.Float16:
+		return h.distFuncF16(qObj.([]uint16), node.VectorF16)
+	case distance.Int8:
+		// Manual Norm logic for Int8 reuse
+		dot, err := h.distFuncI8(qObj.([]int8), node.VectorI8)
+		if err != nil {
+			return 0, err
+		}
+
+		// Calc query norm for int8 scaling (could be optimized)
+		var qNormSq int64
+		qInt8 := qObj.([]int8)
+		for _, v := range qInt8 {
+			qNormSq += int64(v) * int64(v)
+		}
+		qNorm := float32(math.Sqrt(float64(qNormSq)))
+		if qNorm == 0 {
+			qNorm = 1
+		}
+
+		storedNorm := h.quantizedNorms[internalID]
+		if storedNorm == 0 {
+			return 1.0, nil
+		}
+
+		sim := float64(dot) / (float64(qNorm) * float64(storedNorm))
+		if sim > 1.0 {
+			sim = 1.0
+		}
+		if sim < -1.0 {
+			sim = -1.0
+		}
+		return 1.0 - sim, nil
+	}
+
+	return 0, fmt.Errorf("unsupported precision")
+}
+
 // SetAutoLinks updates the auto-linking rules for the index.
 func (h *Index) SetAutoLinks(rules []AutoLinkRule) {
 	h.metaMu.Lock()

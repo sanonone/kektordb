@@ -163,13 +163,13 @@ func TestRichGraphFeatures(t *testing.T) {
 		eng.VUnlink("Root", "Leaf", "test_sub", "", false)
 
 		// 4. Extract Subgraph NOW (Should verify link is gone)
-		subNow, _ := eng.VExtractSubgraph("", "Root", []string{"test_sub"}, 1, 0)
+		subNow, _ := eng.VExtractSubgraph("", "Root", []string{"test_sub"}, 1, 0, nil, 0)
 		if len(subNow.Edges) != 0 {
 			t.Errorf("Subgraph NOW should be empty, got %d edges", len(subNow.Edges))
 		}
 
 		// 5. Extract Subgraph PAST (Should see the link)
-		subPast, _ := eng.VExtractSubgraph("", "Root", []string{"test_sub"}, 1, past)
+		subPast, _ := eng.VExtractSubgraph("", "Root", []string{"test_sub"}, 1, past, nil, 0)
 		if len(subPast.Edges) != 1 {
 			t.Errorf("Subgraph PAST should have 1 edge, got %d", len(subPast.Edges))
 		} else {

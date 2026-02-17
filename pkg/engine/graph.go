@@ -457,7 +457,7 @@ type SubgraphResult struct {
 // VExtractSubgraph performs a Breadth-First Search (BFS) to retrieve the local neighborhood
 // of a root node up to a specified depth.
 // It traverses both outgoing ("rel") and incoming ("rev") edges for the specified relation types.
-func (e *Engine) VExtractSubgraph(indexName, rootID string, relations []string, maxDepth int, atTime int64) (*SubgraphResult, error) {
+func (e *Engine) VExtractSubgraph(indexName, rootID string, relations []string, maxDepth int, atTime int64, guideQuery []float32, threshold float64) (*SubgraphResult, error) {
 	if maxDepth <= 0 {
 		maxDepth = 1
 	}
@@ -482,6 +482,27 @@ func (e *Engine) VExtractSubgraph(indexName, rootID string, relations []string, 
 	// If VGet fails/empty, we still return the node with ID
 	nodesMap[rootID] = SubgraphNode{ID: rootID, Metadata: rootData.Metadata}
 
+	// Helper for semantic check
+	shouldTraverse := func(targetID string) bool {
+		// If no guide query, always traverse
+		if len(guideQuery) == 0 {
+			return true
+		}
+		// Calculate distance
+		dist, err := e.computeDistance(indexName, targetID, guideQuery)
+		if err != nil {
+			// If node has no vector (Ghost Node), we INCLUDE it structurally?
+			// Or EXCLUDE it?
+			// Decision: INCLUDE. Structure nodes (Categories) are bridges.
+			return true
+		}
+
+		// Check threshold.
+		// Distance is 0..2 (Cosine) or 0..Inf (Euclidean).
+		// User must provide appropriate threshold (e.g. 0.4 for Cosine).
+		return dist <= threshold
+	}
+
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
@@ -499,6 +520,11 @@ func (e *Engine) VExtractSubgraph(indexName, rootID string, relations []string, 
 			if found {
 				for _, edge := range outEdges {
 					target := edge.TargetID
+
+					// --- SEMANTIC GATING ---
+					if !shouldTraverse(target) {
+						continue // Prune this branch
+					}
 
 					edges = append(edges, SubgraphEdge{
 						Source:   current.id,
@@ -522,6 +548,11 @@ func (e *Engine) VExtractSubgraph(indexName, rootID string, relations []string, 
 			if found {
 				for _, edge := range inEdges {
 					source := edge.TargetID // In reverse index, TargetID is the Source
+
+					// --- SEMANTIC GATING ---
+					if !shouldTraverse(source) {
+						continue
+					}
 
 					edges = append(edges, SubgraphEdge{
 						Source:   source,
