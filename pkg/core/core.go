@@ -27,6 +27,20 @@ import (
 	"github.com/tidwall/btree"
 )
 
+// Pre-compiled regular expressions for metadata filtering operations.
+// These are compiled once at package initialization to avoid the overhead
+// of recompiling the same patterns on every FindIDsByFilter call.
+// The (?i) flag makes the patterns case-insensitive for better user experience.
+var (
+	// filterOrRegex matches the OR operator in filter expressions (case-insensitive).
+	// Example: "tag=cat OR tag=dog" splits on " OR ".
+	filterOrRegex = regexp.MustCompile(`(?i)\s+OR\s+`)
+
+	// filterAndRegex matches the AND operator in filter expressions (case-insensitive).
+	// Example: "price>10 AND status=active" splits on " AND ".
+	filterAndRegex = regexp.MustCompile(`(?i)\s+AND\s+`)
+)
+
 // --- AOF Compaction Management ---
 
 // KVPair is a struct for returning key-value pairs.
@@ -1148,14 +1162,12 @@ func (s *DB) FindIDsByFilter(indexName string, filter string) (map[uint32]struct
 		return nil, fmt.Errorf("empty filter")
 	}
 
-	// Case-insensitive split for "OR" without altering the rest of the string.
-	reOr := regexp.MustCompile(`(?i)\s+OR\s+`)
-	orBlocks := reOr.Split(filter, -1)
+	// Use pre-compiled regex patterns for better performance.
+	// These patterns are compiled once at package initialization,
+	// avoiding the overhead of regex compilation on every filter operation.
+	orBlocks := filterOrRegex.Split(filter, -1)
 
 	finalIDSet := make(map[uint32]struct{})
-
-	// Case-insensitive regex for "AND".
-	reAnd := regexp.MustCompile(`(?i)\s+AND\s+`)
 
 	for _, orBlock := range orBlocks {
 		orBlock = strings.TrimSpace(orBlock)
@@ -1164,7 +1176,8 @@ func (s *DB) FindIDsByFilter(indexName string, filter string) (map[uint32]struct
 		}
 
 		// Each orBlock can contain multiple sub-filters separated by AND.
-		andFilters := reAnd.Split(orBlock, -1)
+		// Use the pre-compiled regex for better performance.
+		andFilters := filterAndRegex.Split(orBlock, -1)
 
 		var blockIDSet map[uint32]struct{}
 		isFirst := true

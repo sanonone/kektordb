@@ -226,31 +226,6 @@ func (c *Client) jsonRequest(method, endpoint string, payload any) ([]byte, erro
 		reqBody = bytes.NewBuffer(jsonData)
 	}
 
-	// Graph Entity types
-	type graphSetPropertiesRequest struct {
-		IndexName  string                 `json:"index_name"`
-		NodeID     string                 `json:"node_id"`
-		Properties map[string]interface{} `json:"properties"`
-	}
-
-	type graphGetPropertiesRequest struct {
-		IndexName string `json:"index_name"`
-		NodeID    string `json:"node_id"`
-	}
-
-	type graphSearchNodesRequest struct {
-		IndexName      string `json:"index_name"`
-		PropertyFilter string `json:"property_filter"`
-		Limit          int    `json:"limit"`
-	}
-
-	type graphSearchNodesResponse struct {
-		Nodes []struct {
-			ID         string                 `json:"id"`
-			Properties map[string]interface{} `json:"properties"`
-		} `json:"nodes"`
-	}
-
 	req, err := http.NewRequest(method, c.baseURL+endpoint, reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)

@@ -302,9 +302,6 @@ class KektorDBClient:
         if metadata:
             payload["metadata"] = metadata
 
-        if metadata:
-            payload["metadata"] = metadata
-
         # Inject Pinning into metadata transparently
         if pinned:
             if "metadata" not in payload:
@@ -597,8 +594,6 @@ class KektorDBClient:
             "relations": relations,
             "max_depth": max_depth,
         }
-        return self._request("POST", "/graph/actions/extract-subgraph", json=payload)
-
         return self._request("POST", "/graph/actions/extract-subgraph", json=payload)
 
     def set_node_properties(
