@@ -258,9 +258,7 @@ func (e *Engine) replayAOF() error {
 		for id, entry := range state.entries {
 			internalID, err := idx.Add(id, entry.vector)
 			if err == nil && len(entry.metadata) > 0 {
-				if _, ok := entry.metadata["__deleted"]; ok {
-					delete(entry.metadata, "__deleted")
-				}
+				delete(entry.metadata, "__deleted")
 				e.DB.AddMetadataUnlocked(name, internalID, entry.metadata)
 			}
 		}
@@ -333,7 +331,7 @@ func (e *Engine) RewriteAOF() error {
 	for _, info := range infoList {
 		// Retrieve the actual index object to get the rules
 		// We need to lock the DB briefly or access unlocked if we are sure (RewriteAOF holds Lock)
-		idx, _ := e.DB.GetVectorIndex(info.Name)
+		idx, _ := e.DB.GetVectorIndexUnlocked(info.Name)
 		var rulesBytes []byte
 
 		if hnswIdx, ok := idx.(*hnsw.Index); ok {

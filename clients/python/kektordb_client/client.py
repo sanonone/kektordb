@@ -113,10 +113,11 @@ class KektorDBClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
         kwargs["headers"] = headers
+        req_timeout = kwargs.pop("timeout", self.timeout)
 
         try:
             response = self._session.request(
-                method, f"{self.base_url}{endpoint}", timeout=self.timeout, **kwargs
+                method, f"{self.base_url}{endpoint}", timeout=req_timeout, **kwargs
             )
             response.raise_for_status()
 
@@ -311,7 +312,7 @@ class KektorDBClient:
         self._request("POST", "/vector/actions/add", json=payload)
 
     def vadd_batch(
-        self, index_name: str, vectors: List[Dict[str, Any]]
+        self, index_name: str, vectors: List[Dict[str, Any]], timeout: Union[int, float, None] = None
     ) -> Dict[str, Any]:
         """
         Adds a batch of vectors to an index in a single request.
@@ -326,6 +327,7 @@ class KektorDBClient:
                          {"id": "vec1", "vector": [0.1, 0.2], "metadata": {"tag": "A"}},
                          {"id": "vec2", "vector": [0.3, 0.4]}
                      ]
+            timeout: Optional specific request timeout.
 
         Returns:
             A dictionary containing the status and number of vectors added.
@@ -335,10 +337,11 @@ class KektorDBClient:
             ConnectionError: If a network error occurs.
         """
         payload = {"index_name": index_name, "vectors": vectors}
-        return self._request("POST", "/vector/actions/add-batch", json=payload)
+        kwargs = {"timeout": timeout} if timeout is not None else {}
+        return self._request("POST", "/vector/actions/add-batch", json=payload, **kwargs)
 
     def vimport(
-        self, index_name: str, vectors: List[Dict[str, Any]], wait: bool = True
+        self, index_name: str, vectors: List[Dict[str, Any]], wait: bool = True, timeout: Union[int, float, None] = None
     ) -> Task:
         """
         Importa massivamente vettori (Async).
@@ -347,10 +350,12 @@ class KektorDBClient:
             index_name: Nome indice.
             vectors: Lista vettori.
             wait: Se True, blocca finché l'import non è finito.
+            timeout: Optional timeout per la richiesta HTTP iniziale.
         """
         payload = {"index_name": index_name, "vectors": vectors}
-        # Non serve più il timeout gigante qui, la risposta è immediata
-        response = self._request("POST", "/vector/actions/import", json=payload)
+        kwargs = {"timeout": timeout} if timeout is not None else {}
+        # Non serve più il timeout gigante qui, ma in batch massivi l'invio può impiegare >30s
+        response = self._request("POST", "/vector/actions/import", json=payload, **kwargs)
 
         task = Task(self, response)
         if wait:
@@ -405,6 +410,7 @@ class KektorDBClient:
         alpha: float = 0.5,
         include_relations: List[str] = None,
         hydrate_relations: bool = False,
+        timeout: Union[int, float, None] = None,
     ) -> Union[List[str], List[Dict[str, Any]]]:
         """
         Performs a nearest neighbor search in an index.
@@ -454,7 +460,8 @@ class KektorDBClient:
         if hydrate_relations:
             payload["hydrate_relations"] = True
 
-        data = self._request("POST", "/vector/actions/search", json=payload)
+        kwargs = {"timeout": timeout} if timeout is not None else {}
+        data = self._request("POST", "/vector/actions/search", json=payload, **kwargs)
         return data.get("results", [])
 
     def vsearch_with_scores(
@@ -462,6 +469,7 @@ class KektorDBClient:
         index_name: str,
         query_vector: List[float],
         k: int,
+        timeout: Union[int, float, None] = None,
     ) -> List[Dict[str, Any]]:
         """
         Performs a nearest neighbor search and returns results with their relevance scores.
@@ -488,7 +496,8 @@ class KektorDBClient:
             "query_vector": query_vector,
         }
 
-        data = self._request("POST", "/vector/actions/search-with-scores", json=payload)
+        kwargs = {"timeout": timeout} if timeout is not None else {}
+        data = self._request("POST", "/vector/actions/search-with-scores", json=payload, **kwargs)
         return data.get("results", [])
 
     # --- Graph / Relationship Methods ---

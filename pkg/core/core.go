@@ -733,6 +733,13 @@ func (s *DB) GetVectorIndex(name string) (VectorIndex, bool) {
 	return idx, found
 }
 
+// GetVectorIndexUnlocked retrieves a vector index without acquiring a lock.
+// The caller is responsible for ensuring thread safety.
+func (s *DB) GetVectorIndexUnlocked(name string) (VectorIndex, bool) {
+	idx, found := s.vectorIndexes[name]
+	return idx, found
+}
+
 // DeleteVectorIndex removes an entire vector index and all of its associated data.
 func (s *DB) DeleteVectorIndex(name string) error {
 	s.mu.Lock()
