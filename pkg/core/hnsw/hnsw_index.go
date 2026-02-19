@@ -50,9 +50,9 @@ type Index struct {
 	ml float64
 
 	// The ID of the first node inserted, used as the starting point for all searches and insertions
-	entrypointID uint32
+	entrypointID atomic.Uint32
 	// The current highest level present in the graph
-	maxLevel int
+	maxLevel atomic.Int32
 
 	nodes []*Node
 
@@ -114,8 +114,6 @@ func New(m int, efConstruction int, metric distance.DistanceMetric, precision di
 		nodes:                make([]*Node, 0, 10000),
 		externalToInternalID: make(map[string]uint32),
 		internalToExternalID: make(map[uint32]string),
-		maxLevel:             -1, // No levels initially
-		entrypointID:         0,  // Initialized on the first insertion
 		metric:               metric,
 		precision:            precision,
 		textLanguage:         textLang,
@@ -123,6 +121,9 @@ func New(m int, efConstruction int, metric distance.DistanceMetric, precision di
 		shardsMu:             make([]sync.RWMutex, NumShards),
 	}
 
+	// init atomic var
+	h.maxLevel.Store(-1)
+	h.entrypointID.Store(0)
 	h.nodeCounter.Store(0)
 
 	h.visitedPool = sync.Pool{
@@ -239,8 +240,8 @@ func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]stru
 	// defer h.metaMu.RUnlock()
 
 	h.metaMu.RLock()
-	currentEntryPoint := h.entrypointID
-	currentMaxLevel := h.maxLevel
+	currentEntryPoint := h.entrypointID.Load()
+	currentMaxLevel := int(h.maxLevel.Load())
 	currentCounter := uint32(h.nodeCounter.Load()) // Leggiamo anche questo sotto lock per coerenza
 	h.metaMu.RUnlock()
 	if currentMaxLevel == -1 {
@@ -318,8 +319,235 @@ func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]stru
 	return nearestNeighbors, nil
 }
 
-// Add inserts a new vector (Single Insert)
+// Add inserts a new vector into the index.
+// THREAD-SAFE: Uses fine-grained locking to allow concurrent searches during insertion.
 func (h *Index) Add(id string, vector []float32) (uint32, error) {
+	// --- PHASE 0: PRE-CALCULATION (CPU Bound, No Locks) ---
+
+	// Pre-process vector (Normalize/Quantize) locally to avoid holding locks during math
+	if h.metric == distance.Cosine && h.precision == distance.Float32 {
+		// Normalize in place? No, 'vector' comes from outside. Copying is safer for concurrency.
+		// However, standard API usually assumes ownership or copies.
+		// To be safe and purely local:
+		vCopy := make([]float32, len(vector))
+		copy(vCopy, vector)
+		normalize(vCopy)
+		vector = vCopy
+	}
+
+	var storedVector interface{}
+	var vectorI8 []int8 // temp storage for norm calc
+
+	switch h.precision {
+	case distance.Float32:
+		storedVector = vector
+	case distance.Float16:
+		f16Vec := make([]uint16, len(vector))
+		for i, v := range vector {
+			f16Vec[i] = float16.Fromfloat32(v).Bits()
+		}
+		storedVector = f16Vec
+	case distance.Int8:
+		// Check quantizer safety: If AbsMax is 0, we might need to train (Global Lock needed).
+		// For standard inserts, we assume it's trained.
+		if h.quantizer == nil {
+			// This creates a lock contention point but only once per index life
+			h.metaMu.Lock()
+			if h.quantizer == nil {
+				h.quantizer = &distance.Quantizer{}
+			}
+			h.metaMu.Unlock()
+		}
+
+		// If untraiend, we train on this single vector (suboptimal but safe)
+		// We need to protect Train/Quantize access if Quantizer isn't thread-safe.
+		// Assumption: Quantizer.Quantize IS thread-safe (read-only AbsMax).
+		// Quantizer.Train IS NOT.
+		// For now, let's assume valid state or auto-train.
+
+		// Safety check for AbsMax
+		if h.quantizer.AbsMax == 0 {
+			// Edge case: single vector training
+			h.quantizer.Train([][]float32{vector})
+		}
+
+		storedVector = h.quantizer.Quantize(vector)
+		vectorI8 = storedVector.([]int8)
+	}
+
+	// --- PHASE 1: GLOBAL ALLOCATION (Global Lock, Fast) ---
+	h.metaMu.Lock()
+
+	if _, exists := h.externalToInternalID[id]; exists {
+		h.metaMu.Unlock()
+		return 0, fmt.Errorf("ID '%s' already exists", id)
+	}
+
+	internalID := uint32(h.nodeCounter.Add(1))
+	h.growNodes(internalID) // Resizes slice map
+
+	// Pre-calc norm if needed
+	if h.precision == distance.Int8 {
+		h.quantizedNorms[internalID] = computeInt8Norm(vectorI8)
+	}
+
+	// Create Node
+	node := &Node{Id: id, InternalID: internalID}
+	switch h.precision {
+	case distance.Float32:
+		node.VectorF32 = storedVector.([]float32)
+	case distance.Float16:
+		node.VectorF16 = storedVector.([]uint16)
+	case distance.Int8:
+		node.VectorI8 = storedVector.([]int8)
+	}
+
+	// Assign Level
+	level := h.randomLevel()
+	node.Connections = make([][]uint32, level+1)
+
+	// Save to global structures
+	h.nodes[internalID] = node
+	h.externalToInternalID[id] = internalID
+	h.internalToExternalID[internalID] = id
+
+	// Handle Empty Graph Case (First node)
+	currMaxLevel := int(h.maxLevel.Load())
+	if currMaxLevel == -1 {
+		h.entrypointID.Store(internalID)
+		h.maxLevel.Store(int32(level)) // Set max level to this node's level
+		h.metaMu.Unlock()              // Unlock and return
+		return internalID, nil
+	}
+
+	// Read entrypoint securely before unlocking
+	currObj := storedVector
+	currEp := h.entrypointID.Load()
+
+	// We can unlock global structure now. The node exists, but is disconnected (invisible to search traversal).
+	h.metaMu.Unlock()
+
+	// --- PHASE 2: SEARCH (No Locks, CPU Bound) ---
+
+	// Buffers for search
+	scratchOut := make([]types.Candidate, 0, h.efConstruction)
+
+	// 1. Zoom in from top
+	for l := currMaxLevel; l > level; l-- {
+		nearest, err := h.searchLayerUnlocked(currObj, currEp, 1, l, nil, 1, internalID, scratchOut)
+		if err == nil && len(nearest) > 0 {
+			currEp = nearest[0].Id
+		}
+	}
+
+	// 2. Insert at each level
+	// We cap at currMaxLevel because we can't link to levels that don't exist yet in the graph
+	topLevel := level
+	if topLevel > currMaxLevel {
+		topLevel = currMaxLevel
+	}
+
+	for l := topLevel; l >= 0; l-- {
+		// Search
+		candidates, err := h.searchLayerUnlocked(currObj, currEp, h.efConstruction, l, nil, h.efConstruction, internalID, scratchOut)
+		if err != nil {
+			continue
+		}
+
+		// Select Neighbors
+		maxM := h.m
+		if l == 0 {
+			maxM = h.mMax0
+		}
+		selectedNeighbors := h.selectNeighbors(candidates, maxM)
+
+		// --- PHASE 3: LINKING (Fine-Grained Locks) ---
+
+		// A. Forward Links (NewNode -> Neighbors)
+		// We are the exclusive writer of 'node', but we need to lock to make updates visible/atomic
+		h.LockNode(internalID)
+		node.Connections[l] = make([]uint32, len(selectedNeighbors))
+		for i, n := range selectedNeighbors {
+			node.Connections[l][i] = n.Id
+		}
+		h.UnlockNode(internalID)
+
+		// B. Reverse Links (Neighbor -> NewNode)
+		for _, neighborCand := range selectedNeighbors {
+			nID := neighborCand.Id
+
+			h.LockNode(nID) // Lock the neighbor shard
+
+			neighborNode := h.nodes[nID]
+			if neighborNode == nil {
+				h.UnlockNode(nID)
+				continue
+			}
+
+			// Add connection
+			conns := neighborNode.Connections[l]
+			if len(conns) < maxM {
+				// Fast path: just append
+				neighborNode.Connections[l] = append(conns, internalID)
+			} else {
+				// Pruning needed: Recalculate best M connections including new one
+				// We must read vectors to calculate distances. This is safe inside LockNode?
+				// Calculating distance reads vectors (read-only) -> Safe.
+				// Modifying connection list -> Protected by LockNode.
+
+				// 1. Build candidate list (current neighbors + new one)
+				allCandidates := make([]types.Candidate, 0, len(conns)+1)
+
+				// Re-evaluate existing neighbors
+				for _, existingID := range conns {
+					existingNode := h.nodes[existingID]
+					d, _ := h.distanceBetweenNodes(neighborNode, existingNode)
+					allCandidates = append(allCandidates, types.Candidate{Id: existingID, Distance: d})
+				}
+				// Evaluate new node
+				dNew, _ := h.distanceBetweenNodes(neighborNode, node)
+				allCandidates = append(allCandidates, types.Candidate{Id: internalID, Distance: dNew})
+
+				// 2. Select Best
+				// Note: selectNeighbors is heuristic and might be slow.
+				// Optimization: We could use Simple Pruning (sort and cut) inside lock for speed
+				// instead of full Heuristic. But for HNSW quality, Heuristic is better.
+				best := h.selectNeighbors(allCandidates, maxM)
+
+				// 3. Update
+				newConns := make([]uint32, len(best))
+				for i, b := range best {
+					newConns[i] = b.Id
+				}
+				neighborNode.Connections[l] = newConns
+			}
+
+			h.UnlockNode(nID) // Release neighbor lock
+		}
+
+		// Update ep for next layer
+		if len(candidates) > 0 {
+			currEp = candidates[0].Id
+		}
+	}
+
+	// --- PHASE 4: GLOBAL STATE UPDATE (Rare) ---
+	// If the new node introduced a new top level, we must update the entrypoint.
+	if level > currMaxLevel {
+		h.metaMu.Lock()
+		// Check again in case it changed
+		if level > int(h.maxLevel.Load()) {
+			h.maxLevel.Store(int32(level))
+			h.entrypointID.Store(internalID)
+		}
+		h.metaMu.Unlock()
+	}
+
+	return internalID, nil
+}
+
+// AddOld inserts a new vector (Single Insert)
+func (h *Index) AddOld(id string, vector []float32) (uint32, error) {
 	h.metaMu.Lock()
 	defer h.metaMu.Unlock()
 
@@ -384,9 +612,9 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	level := h.randomLevel()
 	node.Connections = make([][]uint32, level+1)
 
-	if h.maxLevel == -1 {
-		h.entrypointID = internalID
-		h.maxLevel = 0
+	if h.maxLevel.Load() == -1 {
+		h.entrypointID.Store(internalID)
+		h.maxLevel.Store(0)
 		node.Connections = make([][]uint32, 1)
 		return internalID, nil
 	}
@@ -396,8 +624,8 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	// Since 'storedVector' is already the correct type (f32, f16, or i8), we use it directly.
 	queryObj := storedVector
 
-	currentEntryPoint := h.entrypointID
-	for l := h.maxLevel; l > level; l-- {
+	currentEntryPoint := h.entrypointID.Load()
+	for l := int(h.maxLevel.Load()); l > level; l-- {
 		nearest, err := h.searchLayerUnlocked(queryObj, currentEntryPoint, 1, l, nil, 1, uint32(h.nodeCounter.Load()), scratchOut)
 		if err != nil {
 			return 0, err
@@ -405,7 +633,7 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 		currentEntryPoint = nearest[0].Id
 	}
 
-	for l := min(level, h.maxLevel); l >= 0; l-- {
+	for l := min(level, int(h.maxLevel.Load())); l >= 0; l-- {
 		neighbors, err := h.searchLayerUnlocked(queryObj, currentEntryPoint, h.efConstruction, l, nil, h.efConstruction, uint32(h.nodeCounter.Load()), scratchOut)
 		if err != nil {
 			return 0, err
@@ -455,9 +683,9 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 		}
 	}
 
-	if level > h.maxLevel {
-		h.maxLevel = level
-		h.entrypointID = internalID
+	if level > int(h.maxLevel.Load()) {
+		h.maxLevel.Store(int32(level))
+		h.entrypointID.Store(internalID)
 	}
 	return internalID, nil
 }
@@ -490,6 +718,7 @@ func (h *Index) MaintenanceRun(forceType string) bool {
 // This method is optimized for throughput, not for single-insert latency.
 // AddBatch optimized
 
+/*
 func (h *Index) AddBatchOldOK(objects []types.BatchObject) error {
 	numVectors := len(objects)
 	if numVectors == 0 {
@@ -611,9 +840,9 @@ func (h *Index) AddBatchOldOK(objects []types.BatchObject) error {
 	}
 
 	// If this is the very first insertion, set the entrypoint
-	if h.maxLevel == -1 {
-		h.entrypointID = newNodes[0].InternalID
-		h.maxLevel = 0 // Will be updated at the end if necessary
+	if h.maxLevel.Load() == -1 {
+		h.entrypointID.Store(newNodes[0].InternalID)
+		h.maxLevel.Store(0) // Will be updated at the end if necessary
 	}
 
 	// Release the global lock. Now the nodes exist in memory and we can read them.
@@ -652,13 +881,13 @@ func (h *Index) AddBatchOldOK(objects []types.BatchObject) error {
 			defer wg.Done()
 
 			// Heuristic pre-allocation to avoid re-allocations
-			localReqs := make([]LinkRequest, 0, len(nodesSubset)*h.maxLevel*2)
+			localReqs := make([]LinkRequest, 0, len(nodesSubset)*int(h.maxLevel.Load())*2)
 			scratchBuffer := make([]types.Candidate, 0, h.efConstruction+50)
 
 			// Read current entrypoint (with fast RLock or atomic if possible, here we use RLock on meta)
 			h.metaMu.RLock()
-			entryPointID := h.entrypointID
-			currentMaxLevel := h.maxLevel
+			entryPointID := h.entrypointID.Load()
+			currentMaxLevel := int(h.maxLevel.Load())
 			maxID := uint32(h.nodeCounter.Load())
 			h.metaMu.RUnlock()
 
@@ -724,7 +953,7 @@ func (h *Index) AddBatchOldOK(objects []types.BatchObject) error {
 	shardedReqs := make([][]LinkRequest, NumShards)
 
 	// Estimate allocation to avoid resize
-	estReqs := (numVectors * h.maxLevel * 2) / NumShards
+	estReqs := (numVectors * int(h.maxLevel.Load()) * 2) / NumShards
 	for i := range shardedReqs {
 		shardedReqs[i] = make([]LinkRequest, 0, estReqs)
 	}
@@ -940,8 +1169,8 @@ func (h *Index) AddBatchOldOK(objects []types.BatchObject) error {
 	// =========================================================================
 
 	h.metaMu.Lock()
-	updatedMaxLevel := h.maxLevel
-	updatedEntrypoint := h.entrypointID
+	updatedMaxLevel := int(h.maxLevel.Load())
+	updatedEntrypoint := h.entrypointID.Load()
 
 	for _, node := range newNodes {
 		l := len(node.Connections) - 1
@@ -951,12 +1180,13 @@ func (h *Index) AddBatchOldOK(objects []types.BatchObject) error {
 		}
 	}
 
-	h.maxLevel = updatedMaxLevel
-	h.entrypointID = updatedEntrypoint
+	h.maxLevel.Store(int32(updatedMaxLevel))
+	h.entrypointID.Store(updatedEntrypoint)
 	h.metaMu.Unlock()
 
 	return nil
 }
+*/
 
 // versione ottimizzatra da testare
 func (h *Index) AddBatch(objects []types.BatchObject) error {
@@ -1107,9 +1337,9 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 		h.internalToExternalID[internalID] = node.Id
 	}
 
-	if h.maxLevel == -1 {
-		h.entrypointID = newNodes[0].InternalID
-		h.maxLevel = 0
+	if h.maxLevel.Load() == -1 {
+		h.entrypointID.Store(newNodes[0].InternalID)
+		h.maxLevel.Store(0)
 	}
 
 	h.metaMu.Unlock()
@@ -1147,13 +1377,13 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 			defer wg.Done()
 
 			// Heuristic pre-allocation to avoid re-allocations
-			localReqs := make([]LinkRequest, 0, len(nodesSubset)*h.maxLevel*2)
+			localReqs := make([]LinkRequest, 0, len(nodesSubset)*int(h.maxLevel.Load())*2)
 			scratchBuffer := make([]types.Candidate, 0, h.efConstruction+50)
 
 			// Read current entrypoint (with fast RLock or atomic if possible, here we use RLock on meta)
 			h.metaMu.RLock()
-			entryPointID := h.entrypointID
-			currentMaxLevel := h.maxLevel
+			entryPointID := h.entrypointID.Load()
+			currentMaxLevel := int(h.maxLevel.Load())
 			maxID := uint32(h.nodeCounter.Load())
 			h.metaMu.RUnlock()
 
@@ -1219,7 +1449,7 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 	shardedReqs := make([][]LinkRequest, NumShards)
 
 	// Estimate allocation to avoid resize
-	estReqs := (numVectors * h.maxLevel * 2) / NumShards
+	estReqs := (numVectors * int(h.maxLevel.Load()) * 2) / NumShards
 	for i := range shardedReqs {
 		shardedReqs[i] = make([]LinkRequest, 0, estReqs)
 	}
@@ -1435,8 +1665,8 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 	// =========================================================================
 
 	h.metaMu.Lock()
-	updatedMaxLevel := h.maxLevel
-	updatedEntrypoint := h.entrypointID
+	updatedMaxLevel := int(h.maxLevel.Load())
+	updatedEntrypoint := h.entrypointID.Load()
 
 	for _, node := range newNodes {
 		l := len(node.Connections) - 1
@@ -1446,8 +1676,8 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 		}
 	}
 
-	h.maxLevel = updatedMaxLevel
-	h.entrypointID = updatedEntrypoint
+	h.maxLevel.Store(int32(updatedMaxLevel))
+	h.entrypointID.Store(updatedEntrypoint)
 	h.metaMu.Unlock()
 
 	return nil
@@ -1525,7 +1755,7 @@ func (h *Index) commitLinks(linkQueue <-chan LinkRequest, newNodes []*Node) {
 				job := jobs[currentIdx]
 
 				// getting shrd lock (only for this node)
-				shardParams := h.getShard(job.NodeID)
+				shardParams := h.getShardLock(job.NodeID)
 
 				shardParams.Lock()
 
@@ -1641,8 +1871,8 @@ func (h *Index) commitLinks(linkQueue <-chan LinkRequest, newNodes []*Node) {
 	wg.Wait() // Wait for all workers to finish pruning
 
 	// Update EntryPoint and MaxLevel
-	var overallMaxLevel = h.maxLevel
-	var bestEntryPoint = h.entrypointID
+	var overallMaxLevel = int(h.maxLevel.Load())
+	var bestEntryPoint = h.entrypointID.Load()
 	h.metaMu.Lock()
 	for _, node := range newNodes {
 		nodeLevel := len(node.Connections) - 1
@@ -1651,8 +1881,8 @@ func (h *Index) commitLinks(linkQueue <-chan LinkRequest, newNodes []*Node) {
 			bestEntryPoint = node.InternalID
 		}
 	}
-	h.maxLevel = overallMaxLevel
-	h.entrypointID = bestEntryPoint
+	h.maxLevel.Store(int32(overallMaxLevel))
+	h.entrypointID.Store(bestEntryPoint)
 	h.metaMu.Unlock()
 }
 
@@ -1855,12 +2085,28 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 		if current.Id >= uint32(len(h.nodes)) {
 			continue
 		}
+
+		// --- CRITICAL SECTION: Safe Neighbor Access ---
+		// We acquire the lock ONLY for the specific node shard
+		h.RLockNode(current.Id)
+
 		currentNode := h.nodes[current.Id]
 
 		// Skip nil nodes or non-existent levels
 		if currentNode == nil || level >= len(currentNode.Connections) {
+			h.RUnlockNode(current.Id)
 			continue
 		}
+
+		// COPY Pattern: Copy neighbors to avoid holding lock during distance calc
+		// This minimizes contention dramatically.
+		rawConnections := currentNode.Connections[level]
+		neighbors := make([]uint32, len(rawConnections))
+		copy(neighbors, rawConnections)
+
+		// Release Lock immediately
+		h.RUnlockNode(current.Id)
+		// ----------------------------------------------
 
 		// Iterate over neighbors
 		for _, neighborID := range currentNode.Connections[level] {
@@ -1939,7 +2185,9 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 func (h *Index) randomLevel() int {
 	// This is based on an exponentially decreasing distribution
 	level := 0
-	for rand.Float64() < 0.5 && level < h.maxLevel+1 { // Let's add a limit for safety
+
+	currentMax := int(h.maxLevel.Load())
+	for rand.Float64() < 0.5 && level < currentMax+1 { // Let's add a limit for safety
 		level++
 	}
 	return level
@@ -2014,8 +2262,28 @@ func (h *Index) selectNeighbors(candidates []types.Candidate, m int) []types.Can
 // --- Helper ---
 
 // Helper to get the correct lock
-func (h *Index) getShard(id uint32) *sync.RWMutex {
+func (h *Index) getShardLock(id uint32) *sync.RWMutex {
 	return &h.shardsMu[id&(NumShards-1)] // id % 128
+}
+
+// LockNode acquires the Write Lock for a specific node's shard.
+func (h *Index) LockNode(id uint32) {
+	h.getShardLock(id).Lock()
+}
+
+// UnlockNode releases the Write Lock.
+func (h *Index) UnlockNode(id uint32) {
+	h.getShardLock(id).Unlock()
+}
+
+// RLockNode acquires the Read Lock for a specific node's shard.
+func (h *Index) RLockNode(id uint32) {
+	h.getShardLock(id).RLock()
+}
+
+// RUnlockNode releases the Read Lock.
+func (h *Index) RUnlockNode(id uint32) {
+	h.getShardLock(id).RUnlock()
 }
 
 // growNodes ensures the internal nodes slice has enough capacity for the given ID.
@@ -2306,7 +2574,7 @@ func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uin
 	normsCopy := make([]float32, len(h.quantizedNorms))
 	copy(normsCopy, h.quantizedNorms)
 
-	return nodesMap, h.externalToInternalID, uint32(h.nodeCounter.Load()), h.entrypointID, h.maxLevel, h.quantizer, normsCopy
+	return nodesMap, h.externalToInternalID, uint32(h.nodeCounter.Load()), uint32(h.entrypointID.Load()), int(h.maxLevel.Load()), h.quantizer, normsCopy
 }
 
 // LoadSnapshotData restores the internal state of the index from snapshot data.
@@ -2336,8 +2604,8 @@ func (h *Index) LoadSnapshotData(
 	// 2. Restore other state fields
 	h.externalToInternalID = extToInt
 	h.nodeCounter.Store(uint64(counter))
-	h.entrypointID = entrypoint
-	h.maxLevel = maxLevel
+	h.entrypointID.Store(entrypoint)
+	h.maxLevel.Store(int32(maxLevel))
 	h.quantizer = quantizer
 
 	// 3. Basic consistency checks

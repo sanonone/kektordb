@@ -221,22 +221,22 @@ func (o *GraphOptimizer) Vacuum() bool {
 	nodes = o.index.nodes // Refresh reference
 
 	// Entry Point Fix
-	if _, entryIsDead := deletedSet[o.index.entrypointID]; entryIsDead {
+	if _, entryIsDead := deletedSet[o.index.entrypointID.Load()]; entryIsDead {
 		slog.Info("[Optimizer] Entry point was deleted. Electing new entry point...")
 		newEntryFound := false
 
 		for i, node := range nodes {
 			if node != nil && !node.Deleted {
-				o.index.entrypointID = uint32(i)
-				o.index.maxLevel = len(node.Connections) - 1
+				o.index.entrypointID.Store(uint32(i))
+				o.index.maxLevel.Store(int32(len(node.Connections) - 1))
 				newEntryFound = true
 				break
 			}
 		}
 
 		if !newEntryFound {
-			o.index.entrypointID = 0
-			o.index.maxLevel = -1
+			o.index.entrypointID.Store(0)
+			o.index.maxLevel.Store(-1)
 			slog.Info("[Optimizer] Graph is now empty")
 		}
 	}
@@ -270,7 +270,7 @@ func (o *GraphOptimizer) Refine() bool {
 	o.index.metaMu.RLock()
 	nodes := o.index.nodes
 	totalNodes := len(nodes)
-	entryPoint := o.index.entrypointID
+	entryPoint := o.index.entrypointID.Load()
 	maxID := uint32(o.index.nodeCounter.Load())
 	o.index.metaMu.RUnlock()
 
@@ -551,7 +551,7 @@ func (o *GraphOptimizer) reconnectNode(node *Node, ignoreSet map[uint32]struct{}
 	for l := 0; l < len(node.Connections); l++ {
 		// 1. Search for candidates using the node itself as query
 		// Pass 'nil' as allowList because we want global candidates.
-		candidates, err := o.index.searchLayerUnlocked(queryObj, o.index.entrypointID, ef, l, nil, ef, uint32(o.index.nodeCounter.Load()), nil)
+		candidates, err := o.index.searchLayerUnlocked(queryObj, o.index.entrypointID.Load(), ef, l, nil, ef, uint32(o.index.nodeCounter.Load()), nil)
 		if err != nil {
 			continue
 		}
