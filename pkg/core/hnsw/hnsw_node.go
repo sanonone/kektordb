@@ -6,7 +6,11 @@
 // across multiple layers.
 package hnsw
 
-import "sync/atomic"
+import (
+	"bytes"
+	"encoding/gob"
+	"sync/atomic"
+)
 
 // Node represents a single node within the HNSW graph. It contains the vector data,
 // its connections at various layers, and metadata for identification and state.
@@ -35,4 +39,56 @@ type Node struct {
 	// without physically deleting it from the graph.
 	// Uses atomic.Bool for thread-safe access.
 	Deleted atomic.Bool
+}
+
+// nodeGob is a serializable representation of Node for gob encoding.
+type nodeGob struct {
+	Id          string
+	InternalID  uint32
+	VectorF32   []float32
+	VectorF16   []uint16
+	VectorI8    []int8
+	Connections [][]uint32
+	Deleted     bool
+}
+
+// GobEncode implements gob.GobEncoder for Node.
+func (n *Node) GobEncode() ([]byte, error) {
+	gn := nodeGob{
+		Id:          n.Id,
+		InternalID:  n.InternalID,
+		VectorF32:   n.VectorF32,
+		VectorF16:   n.VectorF16,
+		VectorI8:    n.VectorI8,
+		Connections: n.Connections,
+		Deleted:     n.Deleted.Load(),
+	}
+
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+	if err := enc.Encode(gn); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// GobDecode implements gob.GobDecoder for Node.
+func (n *Node) GobDecode(data []byte) error {
+	var gn nodeGob
+
+	buf := bytes.NewBuffer(data)
+	dec := gob.NewDecoder(buf)
+	if err := dec.Decode(&gn); err != nil {
+		return err
+	}
+
+	n.Id = gn.Id
+	n.InternalID = gn.InternalID
+	n.VectorF32 = gn.VectorF32
+	n.VectorF16 = gn.VectorF16
+	n.VectorI8 = gn.VectorI8
+	n.Connections = gn.Connections
+	n.Deleted.Store(gn.Deleted)
+
+	return nil
 }

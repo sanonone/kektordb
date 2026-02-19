@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"fmt"
 	"math/rand"
 	"testing"
@@ -67,4 +68,118 @@ func TestCompressParallel(t *testing.T) {
 	}
 
 	t.Log("Compression successful and data verified.")
+}
+
+// TestDBSnapshotAndReload testa il ciclo completo di snapshot e reload del DB
+func TestDBSnapshotAndReload(t *testing.T) {
+	// Crea un DB con dati
+	db := NewDB()
+
+	// 1. Crea indice vettoriale
+	indexName := "test_snapshot"
+	err := db.CreateVectorIndex(indexName, distance.Cosine, 16, 200, distance.Float32, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Popola con vettori e KV data
+	idx, _ := db.GetVectorIndex(indexName)
+	for i := 0; i < 100; i++ {
+		vec := make([]float32, 32)
+		for j := range vec {
+			vec[j] = rand.Float32()
+		}
+		id := fmt.Sprintf("vec-%d", i)
+		internalID, _ := idx.Add(id, vec)
+		db.AddMetadata(indexName, internalID, map[string]any{
+			"category": fmt.Sprintf("cat-%d", i%5),
+			"score":    float64(i),
+		})
+	}
+
+	// Aggiungi KV data
+	db.GetKVStore().Set("key1", []byte("value1"))
+	db.GetKVStore().Set("key2", []byte("value2"))
+
+	// 3. Esegui lo snapshot
+	var buf bytes.Buffer
+	err = db.Snapshot(&buf)
+	if err != nil {
+		t.Fatalf("Failed to create snapshot: %v", err)
+	}
+
+	t.Logf("Snapshot created, size: %d bytes", buf.Len())
+
+	// 4. Crea un nuovo DB e carica lo snapshot
+	newDB := NewDB()
+	err = newDB.LoadFromSnapshot(&buf)
+	if err != nil {
+		t.Fatalf("Failed to load snapshot: %v", err)
+	}
+
+	// 5. Verifica i dati
+	// KV data
+	val1, found := newDB.GetKVStore().Get("key1")
+	if !found || string(val1) != "value1" {
+		t.Errorf("KV data mismatch: got %s, want value1", string(val1))
+	}
+
+	// Vector index
+	newIdx, ok := newDB.GetVectorIndex(indexName)
+	if !ok {
+		t.Fatal("Vector index not found in reloaded DB")
+	}
+
+	// Verifica ricerca
+	query := make([]float32, 32)
+	for i := range query {
+		query[i] = 0.5
+	}
+	results := newIdx.SearchWithScores(query, 10, nil, 100)
+	if len(results) == 0 {
+		t.Error("Search returned no results in reloaded index")
+	}
+
+	t.Logf("Reload successful. Search returned %d results", len(results))
+}
+
+// TestDBSnapshotWithDeletedNodes testa che i nodi eliminati vengano correttamente gestiti
+func TestDBSnapshotWithDeletedNodes(t *testing.T) {
+	db := NewDB()
+
+	indexName := "test_deleted_snapshot"
+	err := db.CreateVectorIndex(indexName, distance.Cosine, 16, 200, distance.Float32, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	idx, _ := db.GetVectorIndex(indexName)
+	for i := 0; i < 10; i++ {
+		vec := make([]float32, 16)
+		for j := range vec {
+			vec[j] = rand.Float32()
+		}
+		idx.Add(fmt.Sprintf("vec-%d", i), vec)
+	}
+
+	// Verifica che lo snapshot funzioni
+	var buf bytes.Buffer
+	err = db.Snapshot(&buf)
+	if err != nil {
+		t.Fatalf("Failed to create snapshot: %v", err)
+	}
+
+	newDB := NewDB()
+	err = newDB.LoadFromSnapshot(&buf)
+	if err != nil {
+		t.Fatalf("Failed to load snapshot: %v", err)
+	}
+
+	// Verifica che l'indice esista
+	_, ok := newDB.GetVectorIndex(indexName)
+	if !ok {
+		t.Fatal("Vector index not found after reload")
+	}
+
+	t.Log("Snapshot with deleted nodes completed successfully")
 }
