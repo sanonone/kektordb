@@ -75,7 +75,7 @@ func (o *GraphOptimizer) RunCycle(forceType string) bool {
 			deleted := 0
 			// Fast scan for statistics (very fast in RAM)
 			for _, n := range nodes {
-				if n != nil && n.Deleted {
+				if n != nil && n.Deleted.Load() {
 					deleted++
 				}
 			}
@@ -142,7 +142,7 @@ func (o *GraphOptimizer) Vacuum() bool {
 
 	deletedSet := make(map[uint32]struct{})
 	for i, node := range nodes {
-		if node != nil && node.Deleted {
+		if node != nil && node.Deleted.Load() {
 			deletedSet[uint32(i)] = struct{}{}
 		}
 	}
@@ -163,7 +163,7 @@ func (o *GraphOptimizer) Vacuum() bool {
 	// Collect nodes that need repair
 	nodesToRepair := make([]*Node, 0, totalNodes/10) // Heuristic pre-allocation
 	for _, node := range nodes {
-		if node == nil || node.Deleted {
+		if node == nil || node.Deleted.Load() {
 			continue
 		}
 		// Check if any neighbor is dead
@@ -201,7 +201,7 @@ func (o *GraphOptimizer) Vacuum() bool {
 
 		for _, node := range batch {
 			// Verify the node is still valid (it may have changed)
-			if node == nil || node.Deleted {
+			if node == nil || node.Deleted.Load() {
 				continue
 			}
 			o.reconnectNode(node, deletedSet)
@@ -226,7 +226,7 @@ func (o *GraphOptimizer) Vacuum() bool {
 		newEntryFound := false
 
 		for i, node := range nodes {
-			if node != nil && !node.Deleted {
+			if node != nil && !node.Deleted.Load() {
 				o.index.entrypointID.Store(uint32(i))
 				o.index.maxLevel.Store(int32(len(node.Connections) - 1))
 				newEntryFound = true
@@ -312,7 +312,7 @@ func (o *GraphOptimizer) Refine() bool {
 	o.index.metaMu.RLock()
 	for i := start; i < end; i++ {
 		node := nodes[i]
-		if node != nil && !node.Deleted {
+		if node != nil && !node.Deleted.Load() {
 			nodesToProcess = append(nodesToProcess, node)
 		}
 	}
@@ -407,7 +407,7 @@ func (o *GraphOptimizer) Refine() bool {
 
 			for _, res := range shardResults {
 				node := o.index.nodes[res.nodeID]
-				if node == nil || node.Deleted {
+				if node == nil || node.Deleted.Load() {
 					continue // Node deleted during computation
 				}
 
@@ -476,7 +476,7 @@ func (o *GraphOptimizer) computeNewConnections(node *Node, entryPoint uint32, ef
 
 			if !alreadyIn {
 				target := o.index.nodes[nID]
-				if target != nil && !target.Deleted {
+				if target != nil && !target.Deleted.Load() {
 					dist, _ := o.index.distanceBetweenNodes(node, target)
 					candidates = append(candidates, types.Candidate{Id: nID, Distance: dist})
 				}
@@ -578,7 +578,7 @@ func (o *GraphOptimizer) reconnectNode(node *Node, ignoreSet map[uint32]struct{}
 
 			if !alreadyIn {
 				target := o.index.nodes[nID]
-				if target != nil && !target.Deleted {
+				if target != nil && !target.Deleted.Load() {
 					dist, _ := o.index.distanceBetweenNodes(node, target)
 					candidates = append(candidates, types.Candidate{Id: nID, Distance: dist})
 				}

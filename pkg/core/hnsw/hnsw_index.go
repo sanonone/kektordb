@@ -218,9 +218,8 @@ func (h *Index) distanceBetweenNodes(n1, n2 *Node) (float64, error) {
 
 // SearchWithScores finds the K nearest neighbors to a query vector, returning their scores (distances)
 func (h *Index) SearchWithScores(query []float32, k int, allowList map[uint32]struct{}, efSearch int) []types.SearchResult {
-	h.metaMu.RLock()
-	defer h.metaMu.RUnlock()
-
+	// NOTA: Non acquisiamo metaMu qui perché searchInternal gestisce il locking in modo fine-grained
+	// Questo permette ai writer (Add) di acquisire il lock globale senza starvation da parte dei reader
 	candidates, err := h.searchInternal(query, k, allowList, efSearch)
 	if err != nil {
 		slog.Error("Error during HNSW search", "error", err)
@@ -482,6 +481,14 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 			if neighborNode == nil {
 				h.UnlockNode(nID)
 				continue
+			}
+
+			// Ensure the neighbor has enough levels (can happen with concurrent inserts)
+			if l >= len(neighborNode.Connections) {
+				// Grow the connections slice to accommodate this level
+				newConns := make([][]uint32, l+1)
+				copy(newConns, neighborNode.Connections)
+				neighborNode.Connections = newConns
 			}
 
 			// Add connection
@@ -1911,7 +1918,7 @@ func (h *Index) Delete(id string) {
 		node := h.nodes[internalID]
 		// Verify node is actually initialized
 		if node != nil {
-			node.Deleted = true
+			node.Deleted.Store(true)
 		}
 	}
 	// ------------------------------------
@@ -2063,7 +2070,7 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 		}
 	}
 
-	if isEpValid && !entryNode.Deleted {
+	if isEpValid && !entryNode.Deleted.Load() {
 		results.Push(ep)
 	}
 
@@ -2108,8 +2115,8 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 		h.RUnlockNode(current.Id)
 		// ----------------------------------------------
 
-		// Iterate over neighbors
-		for _, neighborID := range currentNode.Connections[level] {
+		// Iterate over neighbors (using the copied slice to avoid race conditions)
+		for _, neighborID := range neighbors {
 			// BitSet filter (very fast)
 			if visited.Has(neighborID) {
 				continue
@@ -2152,7 +2159,7 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 				candidates.Push(neighborCandidate)
 
 				// Add to results ONLY if not deleted
-				if !neighborNode.Deleted {
+				if !neighborNode.Deleted.Load() {
 					results.Push(neighborCandidate)
 
 					if results.Len() > ef {
@@ -2334,7 +2341,7 @@ func (h *Index) Iterate(callback func(id string, vector []float32)) {
 		if node == nil {
 			continue
 		}
-		if !node.Deleted {
+		if !node.Deleted.Load() {
 			// --- CONVERSION LOGIC ---
 			var vectorF32 []float32
 
@@ -2376,7 +2383,7 @@ func (h *Index) IterateRaw(callback func(id string, vector interface{})) {
 		if node == nil {
 			continue
 		}
-		if !node.Deleted {
+		if !node.Deleted.Load() {
 			switch h.precision {
 			case distance.Float32:
 				callback(node.Id, node.VectorF32)
@@ -2429,7 +2436,7 @@ func (h *Index) GetNodeData(externalID string) (types.NodeData, bool) {
 	node := h.nodes[internalID]
 
 	// Nil and Deleted check
-	if node == nil || node.Deleted {
+	if node == nil || node.Deleted.Load() {
 		return types.NodeData{}, false
 	}
 	// ------------------------------------
@@ -2478,7 +2485,7 @@ func (h *Index) GetInfo() (distance.DistanceMetric, int, int, distance.Precision
 		if node == nil {
 			continue
 		}
-		if !node.Deleted {
+		if !node.Deleted.Load() {
 			count++
 		}
 	}
@@ -2494,7 +2501,7 @@ func (h *Index) GetInfoUnlocked() (distance.DistanceMetric, int, int, distance.P
 		if node == nil {
 			continue
 		}
-		if !node.Deleted {
+		if !node.Deleted.Load() {
 			count++
 		}
 	}
@@ -2716,7 +2723,7 @@ func (h *Index) ComputeDistanceToVector(nodeID string, query []float32) (float64
 		return 0, fmt.Errorf("node not found")
 	}
 	node := h.nodes[internalID]
-	if node == nil || node.Deleted {
+	if node == nil || node.Deleted.Load() {
 		return 0, fmt.Errorf("node deleted")
 	}
 
@@ -2818,7 +2825,7 @@ func (h *Index) GetDimension() int {
 
 	// Try to find ANY valid node to check dimension
 	for _, node := range h.nodes {
-		if node != nil && !node.Deleted {
+		if node != nil && !node.Deleted.Load() {
 			switch h.precision {
 			case distance.Float32:
 				if len(node.VectorF32) > 0 {
