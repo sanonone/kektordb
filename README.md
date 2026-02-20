@@ -118,6 +118,7 @@ KektorDB can function as a **smart middleware** between your Chat UI and your LL
 *   **Automated Entity Extraction:** Uses a local LLM to identify concepts (People, Projects, Tech) during ingestion and links related documents together ("Connecting the dots").
 *   **Weighted & Property Graphs:** Supports "Rich Edges" with attributes (weights, arbitrary properties) to enable complex recommendation and ranking algorithms.
 *   **Temporal Graph (Time Travel):** Every relationship is versioned with `CreatedAt` and `DeletedAt` timestamps. Soft delete support allows querying the graph status at any point in the past.
+*   **Memory Decay & Reinforcement:** Short and long-term memory is unified. Nodes decay in relevance over time if not accessed, but are reinforced via retrieving/reinforcing APIs, optimizing Context/RAG to auto-clean noise.
 *   **Bi-directional Navigation:** Automatic management of incoming edges to enable O(1) retrieval of "who points to node X", powering efficient graph traversal.
 *   **Graph Entities:** Support for nodes without vectors (pure metadata nodes) to represent abstract entities like "Users" or "Categories" within the same graph structure.
 *   **Graph Traversal:** Search traverses any relationship type (like `prev`, `next`, `parent`, `mentions`) to provide a holistic context window.
@@ -345,7 +346,7 @@ KektorDB is a young project under active development.
 
 ### Coming Next (v0.5.0) - The Scalability Update
 The next major milestone focuses on breaking the RAM limit and improving data consistency guarantees.
-*   [ ] **Hybrid Disk Storage:** Implement a pluggable storage engine. Keep the HNSW graph in RAM (or Int8) for speed, but offload full vector data to disk using standard I/O or memory mapping.
+*   [ ] **Hybrid Disk Storage (< 2 weeks):** Implement a pluggable storage engine. Keep the *Hot* nodes in RAM for speed, but offload full vector data and *Cold* nodes to disk using standard I/O or memory mapping. This completely shatters the RAM Cap bottleneck.
 *   [ ] **Transactional Graph Integrity:** Introduction of **Atomic Batches** to ensure data consistency when creating bidirectional links or updating vectors (ACID-like behavior for the Graph layer).
 *   [ ] **Native Backup/Restore:** Simple API to snapshot data to S3/MinIO/Local without stopping the server.
 
@@ -370,7 +371,7 @@ Features under research. Their implementation depends on real-world adoption, fe
 
 ## 🛑 Current Limitations (v0.4.0)
 *   **Single Node:** KektorDB does not currently support clustering. It scales vertically within the limits of the machine's resources.
-*   **RAM Bound:** Until v0.5.0 (Disk Storage), your dataset must fit in RAM.
+*   **RAM Bound:** Currently data must fit in RAM. However, this limit will be removed with the upcoming **Hybrid Storage engine (ETA < 2 weeks)**.
 *   **Beta Software:** While stable for personal use, APIs might evolve.
 
 ---

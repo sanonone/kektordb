@@ -13,9 +13,12 @@
 4.  [Core Features & Usage](#4-core-features--usage)
     *   [Quantization (Int8 & Float16)](#41-quantization--compression)
     *   [Hybrid Search (BM25 + Vector)](#42-hybrid-search)
-    *   [Hybrid Search (BM25 + Vector)](#42-hybrid-search)
     *   [GraphRAG (Automatic Context)](#43-graphrag--context-window)
     *   [Metadata Auto-Linking](#44-metadata-auto-linking)
+    *   [Graph Entities](#45-graph-entities-nodes-without-vectors)
+    *   [Advanced RAG Pipeline](#46-advanced-rag-pipeline)
+    *   [Memory Decay & Reinforcement](#47-memory-decay--reinforcement)
+    *   [Embedded Web UI](#48-embedded-web-ui)
 5.  [HTTP API Reference](#5-http-api-reference)
     *   [Vector Operations](#51-vector-operations)
     *   [Index Management](#52-index-management)
@@ -336,8 +339,6 @@ KektorDB can automatically create graph connections between nodes based on metad
 2.  When you add a vector with `{"parent_id": "123"}`, KektorDB automatically creates a directional link: `ThisNode -> [child_of] -> Node("123")`.
 3.  Best-effort: If the target node doesn't exist yet, the link is created in the forward direction anyway. Incoming links (Reverse Index) will work as soon as the target node is created.
 
-3.  Best-effort: If the target node doesn't exist yet, the link is created in the forward direction anyway. Incoming links (Reverse Index) will work as soon as the target node is created.
-
 ### 4.5 "Graph Entities" (Nodes without Vectors)
 Starting from v0.4.1, KektorDB supports **First-Class Graph Entities**. You can insert a node with a `null` vector. 
 *   **Use Case:** Represents people, categories, or concepts that you want to link strictly via relationships (e.g. `Author:John`) but don't need to search via vector similarity alongside documents. 
@@ -350,7 +351,12 @@ KektorDB implements a sophisticated "Agentic" retrieval pipeline to solve common
 2.  **Grounded HyDe:** Generates a hypothetical answer to the question using context snippets, then embeds that answer for retrieval. drastically improves recall for vague queries.
 3.  **Safety Net:** If HyDe fails to find relevant context, the system automatically falls back to standard vector search in real-time.
 
-### 4.6 Embedded Web UI
+### 4.7 Memory Decay & Reinforcement
+KektorDB implements a unified memory model where nodes naturally decay in importance if they aren't accessed.
+1.  **Memory Decay:** Background workers progressively lower the "rank" or score of nodes based on time elapsed since their last access. This ensures that outdated or stale information naturally sinks to the bottom of semantic searches over time.
+2.  **Reinforcement:** Retrieving a memory explicitly "boosts" a node's relevance when it proves useful. For agents, retrieving a memory via RAG acts as reinforcement, fighting off decay and maintaining important context.
+
+### 4.8 Embedded Web UI
 A built-in dashboard is available at `http://localhost:9091/ui/`.
 *   **Graph Explorer:** Visualize the connections between your documents and entities using a force-directed graph.
 *   **Search Debugger:** Test queries and see exactly which chunks and relations are retrieved.

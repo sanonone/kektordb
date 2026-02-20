@@ -118,6 +118,7 @@ KektorDB può funzionare come **middleware intelligente** tra la tua Chat UI e i
 *   **Estrazione Entità Automatizzata:** Usa un LLM locale per identificare concetti (Persone, Progetti, Tecnologie) durante l'ingestione e collega documenti correlati ("Unire i puntini").
 *   **Grafo Pesato e con Proprietà:** Supporta "Archi Ricchi" con attributi (pesi, proprietà arbitrarie) per abilitare algoritmi complessi di raccomandazione e ranking.
 *   **Grafo Temporale (Time Travel):** Ogni relazione è versionata con timestamp `CreatedAt` e `DeletedAt`. Il supporto al soft delete permette di interrogare lo stato del grafo in qualsiasi momento nel passato.
+*   **Memory Decay & Reinforcement:** Unifica la memoria a breve e lungo termine. I nodi non interrogati de-cadono di rank, mentre quelli utili vengono rinforzati (Reinforce API), ottimizzando il RAG tramite autopolizia del rumore storico.
 *   **Navigazione Bidirezionale:** Gestione automatica degli archi in entrata per consentire il recupero O(1) di "chi punta al nodo X", potenziando l'attraversamento efficiente del grafo.
 *   **Entità di Grafo:** Supporto per nodi senza vettore (solo metadati) per rappresentare entità astratte come "Utenti" o "Categorie" nella stessa struttura a grafo.
 *   **Attraversamento del Grafo:** La ricerca attraversa qualsiasi tipo di relazione (come `prev`, `next`, `parent`, `mentions`) per fornire una finestra di contesto olistica.
@@ -345,7 +346,7 @@ KektorDB è un progetto giovane in sviluppo attivo.
 
 ### Prossimamente (v0.5.0) - L'Aggiornamento Scalabilità
 Il prossimo importante traguardo si concentra sul superamento del limite della RAM e sul miglioramento delle garanzie di coerenza dei dati.
-*   [ ] **Storage Ibrido su Disco:** Implementazione di un motore di storage "pluggable". Mantiene il grafo HNSW in RAM (or Int8) per la velocità, ma sposta i dati vettoriali completi su disco utilizzando I/O standard o memory mapping.
+*   [ ] **Storage Ibrido su Disco (< 2 settimane):** Implementazione di un motore di storage "pluggable". Mantiene i nodi *Hot* in RAM per la velocità, ma sposta i dati vettoriali completi e i nodi *Cold* su NVMe/Disco utilizzando I/O standard o memory mapping. Questo eliminerà definitivamente il RAM Cap limit.
 *   [ ] **Integrità Transazionale del Grafo:** Introduzione di **Batch Atomici** per garantire la consistenza dei dati durante la creazione di link bidirezionali o l'aggiornamento dei vettori (comportamento simil-ACID per il livello Grafo).
 *   [ ] **Backup/Restore Nativo:** API semplice per salvare snapshot su S3/MinIO/Locale senza dover fermare il server.
 
@@ -370,7 +371,7 @@ Funzionalità in fase di ricerca. La loro implementazione dipende dall'adozione 
 
 ## 🛑 Limitazioni attuali (v0.4.0)
 * **Singolo nodo:** KektorDB attualmente non supporta il clustering. Scala verticalmente entro i limiti delle risorse della macchina.
-* **Limite RAM:** Fino alla v0.5.0 (archiviazione su disco), il set di dati deve essere contenuto nella RAM.
+* **Limite RAM:** Attualmente i dataset sono limitati alla RAM disponibile. Questo vincolo tuttavia cadrà **a breve (< 2 settimane)** mediante l'introduzione dello **Hybrid Storage**.
 * **Software beta:** Sebbene stabili per uso personale, le API potrebbero evolversi.
 
 ---
