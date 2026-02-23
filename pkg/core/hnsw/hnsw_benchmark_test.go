@@ -34,7 +34,7 @@ func BenchmarkConcurrentWrite(b *testing.B) {
 		vectors[i] = randomVector(BenchDim)
 	}
 
-	index, _ := New(BenchM, BenchEf, distance.Cosine, distance.Float32, "")
+	index, _ := New(BenchM, BenchEf, distance.Cosine, distance.Float32, "", "")
 	var counter int64
 
 	b.ResetTimer()
@@ -56,7 +56,7 @@ func BenchmarkConcurrentWrite(b *testing.B) {
 // Con i Shard Lock, dovrebbe volare.
 func BenchmarkMixedReadWrite(b *testing.B) {
 	// Setup iniziale
-	index, _ := New(BenchM, BenchEf, distance.Cosine, distance.Float32, "")
+	index, _ := New(BenchM, BenchEf, distance.Cosine, distance.Float32, "", "")
 
 	// Popoliamo un po' l'indice inizialmente
 	initialObjs := make([]types.BatchObject, 1000)

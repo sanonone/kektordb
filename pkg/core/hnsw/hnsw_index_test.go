@@ -62,7 +62,7 @@ func BenchmarkConcurrentInserts(b *testing.B) {
 	b.Run("ConcurrentAdd", func(b *testing.B) {
 		// We create a new index for each benchmark run to start
 		// from a clean state.
-		idx, _ := New(16, 200, distance.Cosine, distance.Float32, "")
+		idx, _ := New(16, 200, distance.Cosine, distance.Float32, "", "")
 
 		// We start measuring time only from here, after all the setup.
 		b.ResetTimer()
@@ -118,7 +118,7 @@ func TestLargeBatchInsertionForProfiling(t *testing.T) {
 	defer pprof.StopCPUProfile()
 
 	// The only thing we measure is creation and insertion.
-	idx, _ := New(16, 200, distance.Cosine, distance.Float32, "")
+	idx, _ := New(16, 200, distance.Cosine, distance.Float32, "", "")
 	err = idx.AddBatch(objects)
 	if err != nil {
 		t.Fatal(err)
@@ -152,7 +152,7 @@ func BenchmarkConcurrentAddBatch(b *testing.B) {
 	for n := 0; n < b.N; n++ {
 		// Stop timer only for creating the clean index.
 		b.StopTimer()
-		idx, _ := New(16, 200, distance.Cosine, distance.Float32, "")
+		idx, _ := New(16, 200, distance.Cosine, distance.Float32, "", "")
 		b.StartTimer()
 
 		// --- Operation to Measure ---

@@ -15,6 +15,7 @@
 # File snapshot e aof
 *.aof
 *.kdb
+arenas/
 
 # File MCP Log
 *.log

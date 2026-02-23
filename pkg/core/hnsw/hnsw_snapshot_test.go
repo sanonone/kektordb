@@ -135,7 +135,7 @@ func TestNodeGobSerializationI8(t *testing.T) {
 
 // TestSnapshotAndReload testa il ciclo completo di snapshot e ricaricamento
 func TestSnapshotAndReload(t *testing.T) {
-	idx, err := New(16, 200, distance.Cosine, distance.Float32, "")
+	idx, err := New(16, 200, distance.Cosine, distance.Float32, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestSnapshotAndReload(t *testing.T) {
 	t.Logf("Before snapshot: %d nodes, counter=%d, entrypoint=%d, maxLevel=%d",
 		len(nodes), counter, entrypoint, maxLevel)
 
-	newIdx, err := New(16, 200, distance.Cosine, distance.Float32, "")
+	newIdx, err := New(16, 200, distance.Cosine, distance.Float32, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func TestSnapshotAndReload(t *testing.T) {
 
 // TestDeletedNodeSnapshot verifica che i nodi marcati come eliminati vengano correttamente serializzati
 func TestDeletedNodeSnapshot(t *testing.T) {
-	idx, err := New(16, 200, distance.Cosine, distance.Float32, "")
+	idx, err := New(16, 200, distance.Cosine, distance.Float32, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +208,7 @@ func TestDeletedNodeSnapshot(t *testing.T) {
 		t.Fatal("Node 'a' not found in snapshot")
 	}
 
-	newIdx, err := New(16, 200, distance.Cosine, distance.Float32, "")
+	newIdx, err := New(16, 200, distance.Cosine, distance.Float32, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

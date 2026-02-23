@@ -14,7 +14,7 @@ import (
 // TestConcurrencyChaos simula un ambiente ostile con multipli attori.
 // Deve essere eseguito con: go test -race
 func TestConcurrencyChaos(t *testing.T) {
-	idx, err := New(16, 200, distance.Cosine, distance.Float32, "")
+	idx, err := New(16, 200, distance.Cosine, distance.Float32, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

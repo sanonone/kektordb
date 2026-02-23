@@ -228,7 +228,8 @@ func (e *Engine) replayAOF() error {
 	for name, state := range indexes {
 		// Create Index if it doesn't exist
 		if _, ok := e.DB.GetVectorIndex(name); !ok {
-			e.DB.CreateVectorIndex(name, state.metric, state.m, state.efConstruction, state.precision, state.textLanguage)
+			arenaPath := filepath.Join(e.opts.DataDir, "arenas", name)
+			e.DB.CreateVectorIndex(name, state.metric, state.m, state.efConstruction, state.precision, state.textLanguage, arenaPath)
 		}
 
 		idx, ok := e.DB.GetVectorIndex(name)

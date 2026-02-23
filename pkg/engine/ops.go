@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -123,7 +124,9 @@ func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int
 	}
 
 	// 4. Create Index in Memory
-	err := e.DB.CreateVectorIndex(name, metric, m, efC, prec, lang)
+	arenaPath := filepath.Join(e.opts.DataDir, "arenas", name)
+
+	err := e.DB.CreateVectorIndex(name, metric, m, efC, prec, lang, arenaPath)
 	if err == nil {
 		atomic.AddInt64(&e.dirtyCounter, 1)
 

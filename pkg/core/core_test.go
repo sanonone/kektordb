@@ -14,7 +14,7 @@ func TestCompressParallel(t *testing.T) {
 	indexName := "test_compress"
 
 	// 1. Create initial Float32 Index
-	err := db.CreateVectorIndex(indexName, distance.Cosine, 16, 100, distance.Float32, "")
+	err := db.CreateVectorIndex(indexName, distance.Cosine, 16, 100, distance.Float32, "", "")
 	if err != nil {
 		t.Fatalf("Failed to create index: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestDBSnapshotAndReload(t *testing.T) {
 
 	// 1. Crea indice vettoriale
 	indexName := "test_snapshot"
-	err := db.CreateVectorIndex(indexName, distance.Cosine, 16, 200, distance.Float32, "")
+	err := db.CreateVectorIndex(indexName, distance.Cosine, 16, 200, distance.Float32, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestDBSnapshotWithDeletedNodes(t *testing.T) {
 	db := NewDB()
 
 	indexName := "test_deleted_snapshot"
-	err := db.CreateVectorIndex(indexName, distance.Cosine, 16, 200, distance.Float32, "")
+	err := db.CreateVectorIndex(indexName, distance.Cosine, 16, 200, distance.Float32, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

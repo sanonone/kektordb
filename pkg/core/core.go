@@ -238,7 +238,7 @@ func (s *DB) LoadFromSnapshot(reader io.Reader) error {
 	// Iterate over the indexes in the snapshot
 	for name, indexSnap := range snapshot.VectorData {
 		// Create a new empty index with the saved configuration
-		idx, err := hnsw.New(indexSnap.Config.M, indexSnap.Config.EfConstruction, indexSnap.Config.Metric, indexSnap.Config.Precision, indexSnap.Config.TextLanguage)
+		idx, err := hnsw.New(indexSnap.Config.M, indexSnap.Config.EfConstruction, indexSnap.Config.Metric, indexSnap.Config.Precision, indexSnap.Config.TextLanguage, "")
 		if err != nil {
 			return fmt.Errorf("failed to recreate index '%s' from snapshot: %w", name, err)
 		}
@@ -700,7 +700,7 @@ func (s *DB) GetKVStore() *KVStore {
 }
 
 // CreateVectorIndex creates a new vector index with the specified configuration.
-func (s *DB) CreateVectorIndex(name string, metric distance.DistanceMetric, m, efConstruction int, precision distance.PrecisionType, textLang string) error {
+func (s *DB) CreateVectorIndex(name string, metric distance.DistanceMetric, m, efConstruction int, precision distance.PrecisionType, textLang string, arenaDir string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -708,7 +708,7 @@ func (s *DB) CreateVectorIndex(name string, metric distance.DistanceMetric, m, e
 		return fmt.Errorf("index '%s' already exists", name)
 	}
 
-	idx, err := hnsw.New(m, efConstruction, metric, precision, textLang)
+	idx, err := hnsw.New(m, efConstruction, metric, precision, textLang, arenaDir)
 	if err != nil {
 		return err
 	}
@@ -812,7 +812,7 @@ func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) err
 
 	textLang := oldHNSWIndex.TextLanguage()
 
-	newIndex, err := hnsw.New(m, efConst, metric, newPrecision, textLang)
+	newIndex, err := hnsw.New(m, efConst, metric, newPrecision, textLang, "")
 	if err != nil {
 		return fmt.Errorf("failed to create new compressed index: %w", err)
 	}

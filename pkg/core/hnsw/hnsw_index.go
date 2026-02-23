@@ -21,6 +21,7 @@ import (
 
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/types"
+	"github.com/sanonone/kektordb/pkg/storage/mmap"
 	"github.com/x448/float16"
 )
 
@@ -94,10 +95,15 @@ type Index struct {
 	optimizer *GraphOptimizer
 
 	memoryConfig MemoryConfig
+
+	// Zero-Copy Storage
+	arenaDir  string
+	arena     *mmap.VectorArena
+	vectorDim int
 }
 
 // New creates and initializes a new HNSW index
-func New(m int, efConstruction int, metric distance.DistanceMetric, precision distance.PrecisionType, textLang string) (*Index, error) {
+func New(m int, efConstruction int, metric distance.DistanceMetric, precision distance.PrecisionType, textLang string, arenaDir string) (*Index, error) {
 	// Set default values if not provided by the user
 	if m <= 0 {
 		m = 16 // default
@@ -119,6 +125,7 @@ func New(m int, efConstruction int, metric distance.DistanceMetric, precision di
 		textLanguage:         textLang,
 		quantizedNorms:       make([]float32, 0),
 		shardsMu:             make([]sync.RWMutex, NumShards),
+		arenaDir:             arenaDir,
 	}
 
 	// init atomic var
@@ -185,6 +192,33 @@ func New(m int, efConstruction int, metric distance.DistanceMetric, precision di
 	h.optimizer = NewOptimizer(h, DefaultMaintenanceConfig())
 
 	return h, nil
+}
+
+// initArenaIfNeeded initializes the vector dimension and mmap arena on the first insertion.
+// Caller MUST hold h.metaMu.Lock().
+func (h *Index) initArenaIfNeeded(dim int) error {
+	if h.vectorDim == 0 {
+		h.vectorDim = dim
+
+		if h.arenaDir != "" {
+			var vecSize int
+			switch h.precision {
+			case distance.Float32:
+				vecSize = dim * 4
+			case distance.Float16:
+				vecSize = dim * 2
+			case distance.Int8:
+				vecSize = dim * 1
+			}
+
+			arena, err := mmap.NewVectorArena(h.arenaDir, vecSize)
+			if err != nil {
+				return fmt.Errorf("failed to init arena: %w", err)
+			}
+			h.arena = arena
+		}
+	}
+	return nil
 }
 
 // distanceBetweenNodes calculates the distance between two nodes avoiding boxing
@@ -375,6 +409,36 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	}
 
 	// --- PHASE 1: GLOBAL ALLOCATION (Global Lock, Fast) ---
+
+	// pre mmap
+	/*
+		h.metaMu.Lock()
+
+		if _, exists := h.externalToInternalID[id]; exists {
+			h.metaMu.Unlock()
+			return 0, fmt.Errorf("ID '%s' already exists", id)
+		}
+
+		internalID := uint32(h.nodeCounter.Add(1))
+		h.growNodes(internalID) // Resizes slice map
+
+		// Pre-calc norm if needed
+		if h.precision == distance.Int8 {
+			h.quantizedNorms[internalID] = computeInt8Norm(vectorI8)
+		}
+
+		// Create Node
+		node := &Node{Id: id, InternalID: internalID}
+		switch h.precision {
+		case distance.Float32:
+			node.VectorF32 = storedVector.([]float32)
+		case distance.Float16:
+			node.VectorF16 = storedVector.([]uint16)
+		case distance.Int8:
+			node.VectorI8 = storedVector.([]int8)
+		}
+	*/
+
 	h.metaMu.Lock()
 
 	if _, exists := h.externalToInternalID[id]; exists {
@@ -382,23 +446,70 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 		return 0, fmt.Errorf("ID '%s' already exists", id)
 	}
 
-	internalID := uint32(h.nodeCounter.Add(1))
-	h.growNodes(internalID) // Resizes slice map
+	// 1. Determine dimension from the incoming vector
+	var dim int
+	switch h.precision {
+	case distance.Float32:
+		dim = len(storedVector.([]float32))
+	case distance.Float16:
+		dim = len(storedVector.([]uint16))
+	case distance.Int8:
+		dim = len(storedVector.([]int8))
+	}
 
-	// Pre-calc norm if needed
+	// 2. Initialize Arena if this is the very first vector
+	if err := h.initArenaIfNeeded(dim); err != nil {
+		h.metaMu.Unlock()
+		return 0, err
+	}
+
+	// 3. ID Generation and Slice Growth
+	internalID := uint32(h.nodeCounter.Add(1)) // Oppure usa la tua logica esistente
+	h.growNodes(internalID)
+
 	if h.precision == distance.Int8 {
 		h.quantizedNorms[internalID] = computeInt8Norm(vectorI8)
 	}
 
-	// Create Node
+	// 4. Create Node & ZERO-COPY ALLOCATION
 	node := &Node{Id: id, InternalID: internalID}
-	switch h.precision {
-	case distance.Float32:
-		node.VectorF32 = storedVector.([]float32)
-	case distance.Float16:
-		node.VectorF16 = storedVector.([]uint16)
-	case distance.Int8:
-		node.VectorI8 = storedVector.([]int8)
+
+	if h.arena != nil {
+		// Request memory from OS Mmap
+		vecBytes, err := h.arena.GetBytes(internalID)
+		if err != nil {
+			h.metaMu.Unlock()
+			return 0, fmt.Errorf("arena alloc failed: %w", err)
+		}
+
+		// Unsafe Cast & Copy
+		switch h.precision {
+		case distance.Float32:
+			src := storedVector.([]float32)
+			dst := mmap.BytesToFloat32Slice(vecBytes, h.vectorDim)
+			copy(dst, src)
+			node.VectorF32 = dst // Node points to Mmap!
+		case distance.Float16:
+			src := storedVector.([]uint16)
+			dst := mmap.BytesToUint16Slice(vecBytes, h.vectorDim)
+			copy(dst, src)
+			node.VectorF16 = dst
+		case distance.Int8:
+			src := storedVector.([]int8)
+			dst := mmap.BytesToInt8Slice(vecBytes, h.vectorDim)
+			copy(dst, src)
+			node.VectorI8 = dst
+		}
+	} else {
+		// Fallback (RAM-only, used during some tests where arenaDir == "")
+		switch h.precision {
+		case distance.Float32:
+			node.VectorF32 = storedVector.([]float32)
+		case distance.Float16:
+			node.VectorF16 = storedVector.([]uint16)
+		case distance.Int8:
+			node.VectorI8 = storedVector.([]int8)
+		}
 	}
 
 	// Assign Level
@@ -1293,12 +1404,30 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 	wgConv.Wait() // Aspettiamo che tutti i vettori siano pronti
 
 	// =========================================================================
-	// PHASE 1: GLOBAL ALLOCATION (Metadata - Short Lock)
+	// PHASE 1: GLOBAL ALLOCATION (Metadata - Short Lock) mmap
 	// =========================================================================
 
 	h.metaMu.Lock()
 
-	// Riserva gli ID
+	// 1. Determine dimension for Arena from the batch
+	var batchDim int
+	for _, obj := range objects {
+		if len(obj.Vector) > 0 {
+			batchDim = len(obj.Vector)
+			break
+		}
+	}
+	if batchDim == 0 {
+		batchDim = h.vectorDim // fallback if already set
+	}
+	if batchDim > 0 {
+		if err := h.initArenaIfNeeded(batchDim); err != nil {
+			h.metaMu.Unlock()
+			return err
+		}
+	}
+
+	// Reserve IDs
 	startID := h.nodeCounter.Add(uint64(numVectors)) - uint64(numVectors)
 	lastID := uint32(startID + uint64(numVectors) - 1)
 
@@ -1313,27 +1442,60 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 			return fmt.Errorf("ID '%s' already exists", obj.Id)
 		}
 
-		// Recuperiamo il vettore già processato (senza rifare calcoli sotto lock)
 		storedVector := precomputedVectors[i]
 
-		// Calcolo Norme Int8 (Veloce, O(d))
+		// Norm calculation for Int8
 		if h.precision == distance.Int8 {
 			if vecI8, ok := storedVector.([]int8); ok {
 				h.quantizedNorms[internalID] = computeInt8Norm(vecI8)
 			}
 		}
 
+		// --- ZERO-COPY NODE CREATION ---
 		node := &Node{Id: obj.Id, InternalID: internalID}
 
-		// Assegnamento diretto
-		switch h.precision {
-		case distance.Float32:
-			node.VectorF32 = storedVector.([]float32)
-		case distance.Float16:
-			node.VectorF16 = storedVector.([]uint16)
-		case distance.Int8:
-			node.VectorI8 = storedVector.([]int8)
+		if h.arena != nil {
+			vecBytes, err := h.arena.GetBytes(internalID)
+			if err != nil {
+				h.metaMu.Unlock()
+				return fmt.Errorf("arena alloc failed for batch: %w", err)
+			}
+
+			switch h.precision {
+			case distance.Float32:
+				src := storedVector.([]float32)
+				dst := mmap.BytesToFloat32Slice(vecBytes, h.vectorDim)
+				if len(src) > 0 {
+					copy(dst, src)
+				}
+				node.VectorF32 = dst
+			case distance.Float16:
+				src := storedVector.([]uint16)
+				dst := mmap.BytesToUint16Slice(vecBytes, h.vectorDim)
+				if len(src) > 0 {
+					copy(dst, src)
+				}
+				node.VectorF16 = dst
+			case distance.Int8:
+				src := storedVector.([]int8)
+				dst := mmap.BytesToInt8Slice(vecBytes, h.vectorDim)
+				if len(src) > 0 {
+					copy(dst, src)
+				}
+				node.VectorI8 = dst
+			}
+		} else {
+			// Fallback (RAM-only)
+			switch h.precision {
+			case distance.Float32:
+				node.VectorF32 = storedVector.([]float32)
+			case distance.Float16:
+				node.VectorF16 = storedVector.([]uint16)
+			case distance.Int8:
+				node.VectorI8 = storedVector.([]int8)
+			}
 		}
+		// -------------------------------
 
 		level := h.randomLevel()
 		node.Connections = make([][]uint32, level+1)
@@ -1344,12 +1506,73 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 		h.internalToExternalID[internalID] = node.Id
 	}
 
-	if h.maxLevel.Load() == -1 {
+	if int(h.maxLevel.Load()) == -1 {
 		h.entrypointID.Store(newNodes[0].InternalID)
 		h.maxLevel.Store(0)
 	}
 
 	h.metaMu.Unlock()
+
+	// =========================================================================
+	// PHASE 1: GLOBAL ALLOCATION (Metadata - Short Lock)
+	// =========================================================================
+
+	/*
+		h.metaMu.Lock()
+
+		// Riserva gli ID
+		startID := h.nodeCounter.Add(uint64(numVectors)) - uint64(numVectors)
+		lastID := uint32(startID + uint64(numVectors) - 1)
+
+		h.growNodes(lastID)
+		newNodes := make([]*Node, numVectors)
+
+		for i, obj := range objects {
+			internalID := uint32(startID + uint64(i))
+
+			if _, exists := h.externalToInternalID[obj.Id]; exists {
+				h.metaMu.Unlock()
+				return fmt.Errorf("ID '%s' already exists", obj.Id)
+			}
+
+			// Recuperiamo il vettore già processato (senza rifare calcoli sotto lock)
+			storedVector := precomputedVectors[i]
+
+			// Calcolo Norme Int8 (Veloce, O(d))
+			if h.precision == distance.Int8 {
+				if vecI8, ok := storedVector.([]int8); ok {
+					h.quantizedNorms[internalID] = computeInt8Norm(vecI8)
+				}
+			}
+
+			node := &Node{Id: obj.Id, InternalID: internalID}
+
+			// Assegnamento diretto
+			switch h.precision {
+			case distance.Float32:
+				node.VectorF32 = storedVector.([]float32)
+			case distance.Float16:
+				node.VectorF16 = storedVector.([]uint16)
+			case distance.Int8:
+				node.VectorI8 = storedVector.([]int8)
+			}
+
+			level := h.randomLevel()
+			node.Connections = make([][]uint32, level+1)
+
+			newNodes[i] = node
+			h.nodes[internalID] = node
+			h.externalToInternalID[node.Id] = internalID
+			h.internalToExternalID[internalID] = node.Id
+		}
+
+		if h.maxLevel.Load() == -1 {
+			h.entrypointID.Store(newNodes[0].InternalID)
+			h.maxLevel.Store(0)
+		}
+
+		h.metaMu.Unlock()
+	*/
 
 	// =========================================================================
 	// PHASE 1: PARALLEL NEIGHBOR CALCULATION (CPU Bound)
@@ -2587,6 +2810,118 @@ func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uin
 // LoadSnapshotData restores the internal state of the index from snapshot data.
 // It expects the index to be empty and the caller to handle locking.
 func (h *Index) LoadSnapshotData(
+	nodesMap map[uint32]*Node,
+	extToInt map[string]uint32,
+	counter uint32,
+	entrypoint uint32,
+	maxLevel int,
+	quantizer *distance.Quantizer,
+	norms []float32,
+) error {
+
+	// 1. Find dimension from the snapshot data to initialize Arena
+	var dim int
+	for _, node := range nodesMap {
+		if node != nil {
+			switch h.precision {
+			case distance.Float32:
+				if len(node.VectorF32) > 0 {
+					dim = len(node.VectorF32)
+				}
+			case distance.Float16:
+				if len(node.VectorF16) > 0 {
+					dim = len(node.VectorF16)
+				}
+			case distance.Int8:
+				if len(node.VectorI8) > 0 {
+					dim = len(node.VectorI8)
+				}
+			}
+			if dim > 0 {
+				break
+			}
+		}
+	}
+
+	// 2. Init Arena
+	if err := h.initArenaIfNeeded(dim); err != nil {
+		return err
+	}
+
+	// 3. Reconstruct nodes slice (FIXED: Using standard slice assignment)
+	capacity := counter + 1
+	h.nodes = make([]*Node, capacity)
+
+	for id, node := range nodesMap {
+		if id >= uint32(len(h.nodes)) {
+			return fmt.Errorf("node ID %d out of bounds", id)
+		}
+
+		// --- ZERO-COPY RELINKING ---
+		// Move vector from Go Heap (Gob) to OS Mmap file
+		if h.arena != nil && node != nil {
+			vecBytes, err := h.arena.GetBytes(id)
+			if err == nil {
+				switch h.precision {
+				case distance.Float32:
+					dst := mmap.BytesToFloat32Slice(vecBytes, h.vectorDim)
+					if len(node.VectorF32) > 0 {
+						copy(dst, node.VectorF32)
+					}
+					node.VectorF32 = dst
+				case distance.Float16:
+					dst := mmap.BytesToUint16Slice(vecBytes, h.vectorDim)
+					if len(node.VectorF16) > 0 {
+						copy(dst, node.VectorF16)
+					}
+					node.VectorF16 = dst
+				case distance.Int8:
+					dst := mmap.BytesToInt8Slice(vecBytes, h.vectorDim)
+					if len(node.VectorI8) > 0 {
+						copy(dst, node.VectorI8)
+					}
+					node.VectorI8 = dst
+				}
+			}
+		}
+		// -----------------------------
+
+		h.nodes[id] = node
+	}
+
+	// 4. Restore other fields
+	h.externalToInternalID = extToInt
+	// Gestione compatibile sia se usi atomic che tipi base
+	// Se nodeCounter è atomic.Uint64:
+	h.nodeCounter.Store(uint64(counter))
+	// Se entrypointID/maxLevel non sono atomici nel tuo branch, togli .Store e usa =
+	h.entrypointID.Store(entrypoint)
+	h.maxLevel.Store(int32(maxLevel))
+
+	h.quantizer = quantizer
+
+	// 5. Reconstruct inverse map
+	h.internalToExternalID = make(map[uint32]string)
+	for i, node := range h.nodes {
+		if node == nil {
+			continue
+		}
+		internalID := uint32(i)
+		h.internalToExternalID[internalID] = node.Id
+		h.externalToInternalID[node.Id] = internalID
+		node.InternalID = internalID
+	}
+
+	if h.precision == distance.Int8 {
+		h.quantizedNorms = norms
+	}
+
+	return nil
+}
+
+// pre mmap
+/*
+func (h *Index) LoadSnapshotData(
 	nodesMap map[uint32]*Node, // Renamed 'nodes' to 'nodesMap' for clarity
 	extToInt map[string]uint32,
 	counter uint32,
@@ -2660,6 +2995,7 @@ func (h *Index) LoadSnapshotData(
 
 	return nil
 }
+*/
 
 // Metric returns the distance metric used by the index.
 func (h *Index) Metric() distance.DistanceMetric {
