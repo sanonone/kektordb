@@ -127,34 +127,35 @@ func (va *VectorArena) addChunk(chunkID int) error {
 }
 
 // GetBytes returns a slice of bytes pointing to the memory-mapped region for the given ID.
-// If the ID requires a chunk that doesn't exist yet, it creates it.
 func (va *VectorArena) GetBytes(internalID uint32) ([]byte, error) {
 	chunkID := int(internalID) / va.vecsPerChk
 	offset := (int(internalID) % va.vecsPerChk) * va.vectorSize
 
-	// Check if we need to map new chunks
+	// --- FAST PATH (Read Only) ---
+	// If the chunk already exists, we read it and exit immediately.
+	// This allows thousands of goroutines to read at once.
 	va.mu.RLock()
-	needsNewChunk := chunkID >= len(va.chunks)
+	if chunkID < len(va.chunks) {
+		chunk := va.chunks[chunkID]
+		va.mu.RUnlock()
+		return chunk.Data[offset : offset+va.vectorSize], nil
+	}
 	va.mu.RUnlock()
 
-	if needsNewChunk {
-		va.mu.Lock()
-		// Double check under write lock
-		for chunkID >= len(va.chunks) {
-			if err := va.addChunk(len(va.chunks)); err != nil {
-				va.mu.Unlock()
-				return nil, err
-			}
+	// --- SLOW PATH (Write) ---
+	// The chunk doesn't exist, we need to create it.
+	// We acquire the exclusive lock to prevent two goroutines from creating it together.
+	va.mu.Lock()
+	defer va.mu.Unlock()
+
+	// Double-check: another goroutine might have created this while we were waiting for the Lock
+	for chunkID >= len(va.chunks) {
+		if err := va.addChunk(len(va.chunks)); err != nil {
+			return nil, err
 		}
-		va.mu.Unlock()
 	}
 
-	va.mu.RLock()
-	defer va.mu.RUnlock()
-
 	chunk := va.chunks[chunkID]
-
-	// Return a slice pointing directly to the OS-managed memory
 	return chunk.Data[offset : offset+va.vectorSize], nil
 }
 
