@@ -1,6 +1,7 @@
 package mmap
 
 import (
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,9 @@ import (
 const (
 	// DefaultChunkSize is 64MB.
 	DefaultChunkSize = 64 * 1024 * 1024
+	ArenaMagic       = 0x4B414F4E // "KARN"
+	ArenaVersion     = 1
+	ArenaHeaderSize  = 64
 )
 
 // Chunk represents a single memory-mapped file.
@@ -28,11 +32,20 @@ type VectorArena struct {
 	vectorSize int // Size of a single vector in bytes
 	vecsPerChk int // Number of vectors that fit in one chunk
 	chunks     []*Chunk
+	dim        uint32
+	precision  uint8
 }
+
+// Precision constants (mapped from distance types for storage)
+const (
+	PrecFloat32 uint8 = 0
+	PrecFloat16 uint8 = 1
+	PrecInt8    uint8 = 2
+)
 
 // NewVectorArena initializes the arena.
 // vectorSize is the size in bytes (e.g., dim * 4 for Float32).
-func NewVectorArena(dir string, vectorSize int) (*VectorArena, error) {
+func NewVectorArena(dir string, vectorSize int, dim int, precision uint8) (*VectorArena, error) {
 	if vectorSize <= 0 {
 		return nil, fmt.Errorf("vectorSize must be > 0")
 	}
@@ -41,9 +54,11 @@ func NewVectorArena(dir string, vectorSize int) (*VectorArena, error) {
 		return nil, fmt.Errorf("failed to create arena dir: %w", err)
 	}
 
-	vecsPerChk := DefaultChunkSize / vectorSize
+	// Calcoliamo quanti vettori ci stanno DOPO aver sottratto l'header di 64 byte
+	availableSpace := DefaultChunkSize - ArenaHeaderSize
+	vecsPerChk := availableSpace / vectorSize
 	if vecsPerChk == 0 {
-		return nil, fmt.Errorf("vector size %d exceeds chunk size", vectorSize)
+		return nil, fmt.Errorf("vector size %d exceeds chunk payload capacity", vectorSize)
 	}
 
 	va := &VectorArena{
@@ -52,6 +67,8 @@ func NewVectorArena(dir string, vectorSize int) (*VectorArena, error) {
 		vectorSize: vectorSize,
 		vecsPerChk: vecsPerChk,
 		chunks:     make([]*Chunk, 0),
+		dim:        uint32(dim),
+		precision:  precision,
 	}
 
 	// Load existing chunks if they exist (for restart recovery)
@@ -98,11 +115,13 @@ func (va *VectorArena) addChunk(chunkID int) error {
 		return err
 	}
 
-	// Ensure file is exactly chunkSize
 	info, err := file.Stat()
 	if err != nil {
 		return err
 	}
+
+	isNewFile := info.Size() == 0
+
 	if info.Size() < int64(va.chunkSize) {
 		if err := file.Truncate(int64(va.chunkSize)); err != nil {
 			file.Close()
@@ -115,6 +134,36 @@ func (va *VectorArena) addChunk(chunkID int) error {
 		file.Close()
 		return err
 	}
+
+	// --- HEADER MANAGEMENT ---
+	if isNewFile {
+		// Scrivi header nel nuovo file direttamente in memoria
+		binary.LittleEndian.PutUint32(data[0:4], ArenaMagic)
+		binary.LittleEndian.PutUint32(data[4:8], ArenaVersion)
+		binary.LittleEndian.PutUint32(data[8:12], va.dim)
+		data[12] = va.precision
+		// I restanti byte fino a 64 rimangono 0 (Reserved)
+	} else {
+		// Valida header file esistente
+		magic := binary.LittleEndian.Uint32(data[0:4])
+		version := binary.LittleEndian.Uint32(data[4:8])
+		fileDim := binary.LittleEndian.Uint32(data[8:12])
+		filePrec := data[12]
+
+		if magic != ArenaMagic {
+			return fmt.Errorf("file %s is not a valid arena (magic mismatch)", fileName)
+		}
+		if version != ArenaVersion {
+			return fmt.Errorf("file %s unsupported version %d", fileName, version)
+		}
+		if fileDim != va.dim {
+			return fmt.Errorf("file %s dimension mismatch: expected %d, got %d", fileName, va.dim, fileDim)
+		}
+		if filePrec != va.precision {
+			return fmt.Errorf("file %s precision mismatch: expected %d, got %d", fileName, va.precision, filePrec)
+		}
+	}
+	// -------------------------
 
 	chunk := &Chunk{
 		ID:   chunkID,
@@ -129,7 +178,7 @@ func (va *VectorArena) addChunk(chunkID int) error {
 // GetBytes returns a slice of bytes pointing to the memory-mapped region for the given ID.
 func (va *VectorArena) GetBytes(internalID uint32) ([]byte, error) {
 	chunkID := int(internalID) / va.vecsPerChk
-	offset := (int(internalID) % va.vecsPerChk) * va.vectorSize
+	offset := ArenaHeaderSize + (int(internalID)%va.vecsPerChk)*va.vectorSize
 
 	// --- FAST PATH (Read Only) ---
 	// If the chunk already exists, we read it and exit immediately.

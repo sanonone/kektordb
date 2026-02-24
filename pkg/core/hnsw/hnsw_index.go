@@ -202,16 +202,23 @@ func (h *Index) initArenaIfNeeded(dim int) error {
 
 		if h.arenaDir != "" {
 			var vecSize int
+			var precType uint8
+
 			switch h.precision {
 			case distance.Float32:
 				vecSize = dim * 4
+				precType = mmap.PrecFloat32 // 0
 			case distance.Float16:
 				vecSize = dim * 2
+				precType = mmap.PrecFloat16 // 1
 			case distance.Int8:
 				vecSize = dim * 1
+				precType = mmap.PrecInt8 // 2
+			default:
+				return fmt.Errorf("unknown precision type")
 			}
 
-			arena, err := mmap.NewVectorArena(h.arenaDir, vecSize)
+			arena, err := mmap.NewVectorArena(h.arenaDir, vecSize, dim, precType)
 			if err != nil {
 				return fmt.Errorf("failed to init arena: %w", err)
 			}
