@@ -17,11 +17,21 @@ const (
 	ArenaHeaderSize  = 64
 )
 
+// Sentinel value to indicate an unallocated slot
+const UnallocatedSlot = ^uint32(0) // MaxUint32
+
 // Chunk represents a single memory-mapped file.
 type Chunk struct {
 	ID   int
 	File *os.File
 	Data []byte
+}
+
+// ArenaState represents the serializable state of the allocator
+type ArenaState struct {
+	SlotTable    []uint32
+	FreeSlots    []uint32
+	NextPhysSlot uint32
 }
 
 // VectorArena manages memory-mapped chunks to store vectors by sequential internal IDs.
@@ -32,8 +42,16 @@ type VectorArena struct {
 	vectorSize int // Size of a single vector in bytes
 	vecsPerChk int // Number of vectors that fit in one chunk
 	chunks     []*Chunk
-	dim        uint32
-	precision  uint8
+
+	// validation
+	dim       uint32
+	precision uint8
+
+	// Slot management (Logical ID -> Physical Slot)
+	slotMu       sync.RWMutex
+	slotTable    []uint32 // Index: logical InternalID, Value: physical slot
+	freeSlots    []uint32 // Stack of freed physical slots
+	nextPhysSlot uint32   // Next available physical slot if freeSlots is empty
 }
 
 // Precision constants (mapped from distance types for storage)
@@ -69,6 +87,8 @@ func NewVectorArena(dir string, vectorSize int, dim int, precision uint8) (*Vect
 		chunks:     make([]*Chunk, 0),
 		dim:        uint32(dim),
 		precision:  precision,
+		slotTable:  make([]uint32, 0),
+		freeSlots:  make([]uint32, 0),
 	}
 
 	// Load existing chunks if they exist (for restart recovery)
@@ -77,6 +97,81 @@ func NewVectorArena(dir string, vectorSize int, dim int, precision uint8) (*Vect
 	}
 
 	return va, nil
+}
+
+// --- SLOT MANAGEMENT ---
+
+// AllocSlot reserves a physical slot for a logical InternalID.
+// It reuses freed slots if available, otherwise increments the physical boundary.
+func (va *VectorArena) AllocSlot(internalID uint32) (uint32, error) {
+	va.slotMu.Lock()
+	defer va.slotMu.Unlock()
+
+	// Grow slotTable if necessary to accommodate the logical ID
+	for uint32(len(va.slotTable)) <= internalID {
+		va.slotTable = append(va.slotTable, UnallocatedSlot)
+	}
+
+	// If already allocated (e.g. during AOF replay update), return existing physical slot
+	if va.slotTable[internalID] != UnallocatedSlot {
+		return va.slotTable[internalID], nil
+	}
+
+	var physSlot uint32
+	if len(va.freeSlots) > 0 {
+		// Pop from free list (LIFO)
+		physSlot = va.freeSlots[len(va.freeSlots)-1]
+		va.freeSlots = va.freeSlots[:len(va.freeSlots)-1]
+	} else {
+		// Allocate new
+		physSlot = va.nextPhysSlot
+		va.nextPhysSlot++
+	}
+
+	va.slotTable[internalID] = physSlot
+	return physSlot, nil
+}
+
+// FreeSlot releases the physical slot associated with a logical ID.
+func (va *VectorArena) FreeSlot(internalID uint32) {
+	va.slotMu.Lock()
+	defer va.slotMu.Unlock()
+
+	if internalID < uint32(len(va.slotTable)) {
+		physSlot := va.slotTable[internalID]
+		if physSlot != UnallocatedSlot {
+			va.freeSlots = append(va.freeSlots, physSlot)
+			va.slotTable[internalID] = UnallocatedSlot
+		}
+	}
+}
+
+// GetState extracts the allocator state for snapshotting.
+func (va *VectorArena) GetState() ArenaState {
+	va.slotMu.RLock()
+	defer va.slotMu.RUnlock()
+
+	// Create copies to prevent external mutation
+	st := make([]uint32, len(va.slotTable))
+	copy(st, va.slotTable)
+	fs := make([]uint32, len(va.freeSlots))
+	copy(fs, va.freeSlots)
+
+	return ArenaState{
+		SlotTable:    st,
+		FreeSlots:    fs,
+		NextPhysSlot: va.nextPhysSlot,
+	}
+}
+
+// LoadState restores the allocator state from a snapshot.
+func (va *VectorArena) LoadState(state ArenaState) {
+	va.slotMu.Lock()
+	defer va.slotMu.Unlock()
+
+	va.slotTable = state.SlotTable
+	va.freeSlots = state.FreeSlots
+	va.nextPhysSlot = state.NextPhysSlot
 }
 
 func (va *VectorArena) loadExistingChunks() error {
@@ -175,14 +270,28 @@ func (va *VectorArena) addChunk(chunkID int) error {
 	return nil
 }
 
-// GetBytes returns a slice of bytes pointing to the memory-mapped region for the given ID.
+// --- I/O AND MEMORY ---
+
+// GetBytes returns a slice pointing to the mapped region.
 func (va *VectorArena) GetBytes(internalID uint32) ([]byte, error) {
-	chunkID := int(internalID) / va.vecsPerChk
-	offset := ArenaHeaderSize + (int(internalID)%va.vecsPerChk)*va.vectorSize
+	// 1. Logical to Physical Translation
+	va.slotMu.RLock()
+	if internalID >= uint32(len(va.slotTable)) {
+		va.slotMu.RUnlock()
+		return nil, fmt.Errorf("internalID %d out of bounds in slot table", internalID)
+	}
+	physSlot := va.slotTable[internalID]
+	va.slotMu.RUnlock()
+
+	if physSlot == UnallocatedSlot {
+		return nil, fmt.Errorf("internalID %d is not allocated", internalID)
+	}
+
+	// 2. Physical Location Calculation
+	chunkID := int(physSlot) / va.vecsPerChk
+	offset := ArenaHeaderSize + (int(physSlot)%va.vecsPerChk)*va.vectorSize
 
 	// --- FAST PATH (Read Only) ---
-	// If the chunk already exists, we read it and exit immediately.
-	// This allows thousands of goroutines to read at once.
 	va.mu.RLock()
 	if chunkID < len(va.chunks) {
 		chunk := va.chunks[chunkID]
@@ -191,13 +300,10 @@ func (va *VectorArena) GetBytes(internalID uint32) ([]byte, error) {
 	}
 	va.mu.RUnlock()
 
-	// --- SLOW PATH (Write) ---
-	// The chunk doesn't exist, we need to create it.
-	// We acquire the exclusive lock to prevent two goroutines from creating it together.
+	// --- SLOW PATH (Write/Allocate Chunk) ---
 	va.mu.Lock()
 	defer va.mu.Unlock()
 
-	// Double-check: another goroutine might have created this while we were waiting for the Lock
 	for chunkID >= len(va.chunks) {
 		if err := va.addChunk(len(va.chunks)); err != nil {
 			return nil, err

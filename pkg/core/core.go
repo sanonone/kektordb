@@ -13,6 +13,7 @@ import (
 	"log"
 	"log/slog"
 	"math"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
@@ -23,6 +24,7 @@ import (
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/core/types"
+	"github.com/sanonone/kektordb/pkg/storage/mmap"
 	"github.com/sanonone/kektordb/pkg/textanalyzer"
 	"github.com/tidwall/btree"
 )
@@ -88,6 +90,7 @@ type IndexSnapshot struct {
 	QuantizerState     *distance.Quantizer // Saves the quantizer's state.
 	QuantizedNorms     []float32
 	MaintenanceConfig  hnsw.AutoMaintenanceConfig
+	ArenaState         mmap.ArenaState `json:"arena_state,omitempty"`
 }
 
 // NodeSnapshot contains all the necessary data to restore a single node.
@@ -202,6 +205,7 @@ func (s *DB) Snapshot(writer io.Writer) error {
 				QuantizerState:     quantizer,
 				QuantizedNorms:     norms,
 				MaintenanceConfig:  hnswIndex.GetMaintenanceConfig(),
+				ArenaState:         hnswIndex.GetArenaState(),
 			}
 		}
 	}
@@ -216,7 +220,7 @@ func (s *DB) Snapshot(writer io.Writer) error {
 
 // LoadFromSnapshot deserializes a gob snapshot from an io.Reader and restores
 // the store's state. It clears the current store state before loading.
-func (s *DB) LoadFromSnapshot(reader io.Reader) error {
+func (s *DB) LoadFromSnapshot(reader io.Reader, basePath string) error {
 	decoder := gob.NewDecoder(reader)
 	var snapshot Snapshot
 	if err := decoder.Decode(&snapshot); err != nil {
@@ -237,8 +241,13 @@ func (s *DB) LoadFromSnapshot(reader io.Reader) error {
 
 	// Iterate over the indexes in the snapshot
 	for name, indexSnap := range snapshot.VectorData {
+		arenaDir := ""
+		if basePath != "" {
+			arenaDir = filepath.Join(basePath, "arenas", name)
+		}
+
 		// Create a new empty index with the saved configuration
-		idx, err := hnsw.New(indexSnap.Config.M, indexSnap.Config.EfConstruction, indexSnap.Config.Metric, indexSnap.Config.Precision, indexSnap.Config.TextLanguage, "")
+		idx, err := hnsw.New(indexSnap.Config.M, indexSnap.Config.EfConstruction, indexSnap.Config.Metric, indexSnap.Config.Precision, indexSnap.Config.TextLanguage, arenaDir)
 		if err != nil {
 			return fmt.Errorf("failed to recreate index '%s' from snapshot: %w", name, err)
 		}
@@ -271,7 +280,7 @@ func (s *DB) LoadFromSnapshot(reader io.Reader) error {
 		idx.UpdateMaintenanceConfig(indexSnap.MaintenanceConfig)
 
 		// Load the HNSW graph data
-		if err := idx.LoadSnapshotData(nodesToLoad, indexSnap.ExternalToInternal, indexSnap.InternalCounter, indexSnap.EntrypointID, indexSnap.MaxLevel, indexSnap.QuantizerState, indexSnap.QuantizedNorms); err != nil {
+		if err := idx.LoadSnapshotData(nodesToLoad, indexSnap.ExternalToInternal, indexSnap.InternalCounter, indexSnap.EntrypointID, indexSnap.MaxLevel, indexSnap.QuantizerState, indexSnap.QuantizedNorms, indexSnap.ArenaState); err != nil {
 			return fmt.Errorf("failed to load HNSW data for index '%s': %w", name, err)
 		}
 

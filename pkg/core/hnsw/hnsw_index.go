@@ -228,6 +228,13 @@ func (h *Index) initArenaIfNeeded(dim int) error {
 	return nil
 }
 
+func (h *Index) GetArenaState() mmap.ArenaState {
+	if h.arena != nil {
+		return h.arena.GetState()
+	}
+	return mmap.ArenaState{}
+}
+
 // distanceBetweenNodes calculates the distance between two nodes avoiding boxing
 func (h *Index) distanceBetweenNodes(n1, n2 *Node) (float64, error) {
 	switch h.precision {
@@ -482,6 +489,12 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	node := &Node{Id: id, InternalID: internalID}
 
 	if h.arena != nil {
+		// alloc slot
+		if _, err := h.arena.AllocSlot(internalID); err != nil {
+			h.metaMu.Unlock()
+			return 0, fmt.Errorf("arena slot alloc failed: %w", err)
+		}
+
 		// Request memory from OS Mmap
 		vecBytes, err := h.arena.GetBytes(internalID)
 		if err != nil {
@@ -1462,6 +1475,12 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 		node := &Node{Id: obj.Id, InternalID: internalID}
 
 		if h.arena != nil {
+			// alloc slot
+			if _, err := h.arena.AllocSlot(internalID); err != nil {
+				h.metaMu.Unlock()
+				return fmt.Errorf("arena slot alloc failed for batch: %w", err)
+			}
+
 			vecBytes, err := h.arena.GetBytes(internalID)
 			if err != nil {
 				h.metaMu.Unlock()
@@ -2824,6 +2843,7 @@ func (h *Index) LoadSnapshotData(
 	maxLevel int,
 	quantizer *distance.Quantizer,
 	norms []float32,
+	arenaState mmap.ArenaState,
 ) error {
 
 	// 1. Find dimension from the snapshot data to initialize Arena
@@ -2853,6 +2873,11 @@ func (h *Index) LoadSnapshotData(
 	// 2. Init Arena
 	if err := h.initArenaIfNeeded(dim); err != nil {
 		return err
+	}
+
+	// 2.1. Restore Arena state
+	if h.arena != nil && len(arenaState.SlotTable) > 0 {
+		h.arena.LoadState(arenaState)
 	}
 
 	// 3. Reconstruct nodes slice (FIXED: Using standard slice assignment)

@@ -145,7 +145,7 @@ func Open(opts Options) (*Engine, error) {
 			return nil, fmt.Errorf("failed to open snapshot: %w", err)
 		}
 		defer f.Close()
-		if err := e.DB.LoadFromSnapshot(f); err != nil {
+		if err := e.DB.LoadFromSnapshot(f, opts.DataDir); err != nil {
 			return nil, fmt.Errorf("failed to load snapshot: %w", err)
 		}
 	}

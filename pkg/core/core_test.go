@@ -112,7 +112,7 @@ func TestDBSnapshotAndReload(t *testing.T) {
 
 	// 4. Crea un nuovo DB e carica lo snapshot
 	newDB := NewDB()
-	err = newDB.LoadFromSnapshot(&buf)
+	err = newDB.LoadFromSnapshot(&buf, "")
 	if err != nil {
 		t.Fatalf("Failed to load snapshot: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestDBSnapshotWithDeletedNodes(t *testing.T) {
 	}
 
 	newDB := NewDB()
-	err = newDB.LoadFromSnapshot(&buf)
+	err = newDB.LoadFromSnapshot(&buf, "")
 	if err != nil {
 		t.Fatalf("Failed to load snapshot: %v", err)
 	}

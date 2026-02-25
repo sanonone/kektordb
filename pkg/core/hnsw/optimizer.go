@@ -243,6 +243,11 @@ func (o *GraphOptimizer) Vacuum() bool {
 
 	// Physical Cleanup
 	for deadID := range deletedSet {
+		// overwrite slot virtual memory
+		if o.index.arena != nil {
+			o.index.arena.FreeSlot(deadID)
+		}
+
 		if extID, ok := o.index.internalToExternalID[deadID]; ok {
 			delete(o.index.externalToInternalID, extID)
 			delete(o.index.internalToExternalID, deadID)
