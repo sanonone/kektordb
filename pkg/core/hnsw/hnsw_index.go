@@ -3201,3 +3201,14 @@ func (h *Index) GetMemoryConfig() MemoryConfig {
 	defer h.metaMu.RUnlock()
 	return h.memoryConfig
 }
+
+// Close safely unmaps the virtual memory and closes file handles.
+func (h *Index) Close() error {
+	h.metaMu.Lock()
+	defer h.metaMu.Unlock()
+
+	if h.arena != nil {
+		return h.arena.Close()
+	}
+	return nil
+}

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -183,6 +184,10 @@ func (e *Engine) VDeleteIndex(name string) error {
 	err := e.DB.DeleteVectorIndex(name)
 	if err == nil {
 		atomic.AddInt64(&e.dirtyCounter, 1)
+
+		// remove file from arena direct
+		arenaPath := filepath.Join(e.opts.DataDir, "arenas", name)
+		_ = os.RemoveAll(arenaPath) // Ignore errors, best effort
 
 		// Instant flush for single operations (durability)
 		if errF := e.AOF.Flush(); errF != nil {

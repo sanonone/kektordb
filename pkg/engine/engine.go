@@ -196,6 +196,14 @@ func (e *Engine) Close() error {
 		if e.AOF != nil {
 			err = e.AOF.Close()
 		}
+
+		// 2. NEW: Close the DB core (Unmap all arenas)
+		if dbErr := e.DB.Close(); dbErr != nil {
+			slog.Error("Error closing DB core resources", "error", dbErr)
+			if err == nil {
+				err = dbErr
+			}
+		}
 	})
 
 	return err

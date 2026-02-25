@@ -10,10 +10,11 @@ package core
 import (
 	"errors"
 	"fmt"
-	"github.com/sanonone/kektordb/pkg/core/distance"
-	"github.com/sanonone/kektordb/pkg/core/types"
 	"sort"
 	"sync"
+
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/types"
 )
 
 // --- VectorIndex Interface ---
@@ -36,6 +37,12 @@ type VectorIndex interface {
 	Metric() distance.DistanceMetric
 	// Precision returns the data type precision used for storing vectors (e.g., float32, int8).
 	Precision() distance.PrecisionType
+	Close() error
+}
+
+// Close for BruteForceIndex is a no-op since it only uses GC RAM.
+func (idx *BruteForceIndex) Close() error {
+	return nil
 }
 
 // --- BruteForceIndex Implementation ---

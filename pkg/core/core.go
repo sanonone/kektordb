@@ -745,9 +745,14 @@ func (s *DB) DeleteVectorIndex(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	_, ok := s.vectorIndexes[name]
+	idx, ok := s.vectorIndexes[name]
 	if !ok {
 		return fmt.Errorf("index '%s' not found", name)
+	}
+
+	// close the index (unmap file)
+	if err := idx.Close(); err != nil {
+		slog.Warn("Error closing index during deletion", "index", name, "error", err)
 	}
 
 	delete(s.vectorIndexes, name)
@@ -764,6 +769,20 @@ func (s *DB) DeleteVectorIndex(name string) error {
 
 	slog.Info("Index and all associated data have been deleted", "index", name)
 	return nil
+}
+
+// Close gracefully shuts down all vector indexes, releasing OS resources like mmap.
+func (s *DB) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var firstErr error
+	for name, idx := range s.vectorIndexes {
+		if err := idx.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("failed to close index %s: %w", name, err)
+		}
+	}
+	return firstErr
 }
 
 // Compress converts an existing index to a new precision
