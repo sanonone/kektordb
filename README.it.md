@@ -104,13 +104,15 @@ KektorDB può funzionare come **middleware intelligente** tra la tua Chat UI e i
 *   **Manutenzione & Ottimizzazione:**
     *   **Vacuum:** Un processo in background che pulisce i nodi eliminati per recuperare memoria e riparare le connessioni del grafo.
     *   **Refine:** Un'ottimizzazione continua che rivaluta le connessioni del grafo per migliorare la qualità della ricerca (recall) nel tempo.
-*   **AI Gateway & Middleware:** Agisce come proxy intelligente per client compatibili con OpenAI/Ollama. Dispone di **Caching Semantico** per servire risposte istantanee a query ricorrenti e un **Firewall Semantico** per bloccare prompt dannosi basandosi sulla similarità vettoriale, indipendentemente dalla pipeline RAG.
+*   **AI Gateway & Middleware:** Agisce come proxy intelligente per client compatibili con OpenAI/Ollama. Dispone di **Caching Semantico** per servire risposte istantanee a query ricorrenti e un **Firewall Semantico** per bloccare prompt dannosi basandosi su similarità vettoriale o liste di negazione esplicite.
+*   **Lazy AOF Writer:** Ottimizzazione delle performance di scrittura con batch flushing (miglioramento throughput 10-100x) mantenendo la durabilità.
+*   **Supporto Visione:** Processa immagini e PDF con capacità OCR tramite integrazione Vision LLM.
 *   **Persistenza:** Ibrida **AOF + Snapshot** assicura durabilità.
-*   **Osservabilità:** Metriche Prometheus (`/metrics`) e logging strutturato.
+*   **Osservabilità:** Metriche Prometheus (`/metrics`), logging strutturato e endpoint di profiling Go pprof.
 *   **Doppia Modalità:** Esegui come **Server REST** autonomo o come **Libreria Go**.
 
 ### Pipeline RAG Agentica
-*   **Riscritura Query (CQR):** Riscrive automaticamente le domande dell'utente basandosi sulla cronologia della chat (es. "Come installarlo?" -> "Come installare KektorDB?"). Risolve problemi di memoria a breve termine.
+*   **Riscritta Query (CQR):** Riscrive automaticamente le domande dell'utente basandosi sulla cronologia della chat (es. "Come installarlo?" -> "Come installare KektorDB?"). Risolve problemi di memoria a breve termine.
 *   **Grounded HyDe:** Genera risposte ipotetiche per migliorare il recall su query vaghe, usando frammenti di dati reali per ancorare l'allucinazione.
 *   **Safety Net:** Ritorna automaticamente alla ricerca vettoriale standard se la pipeline avanzata non riesce a trovare contesto rilevante.
 
@@ -118,10 +120,13 @@ KektorDB può funzionare come **middleware intelligente** tra la tua Chat UI e i
 *   **Estrazione Entità Automatizzata:** Usa un LLM locale per identificare concetti (Persone, Progetti, Tecnologie) durante l'ingestione e collega documenti correlati ("Unire i puntini").
 *   **Grafo Pesato e con Proprietà:** Supporta "Archi Ricchi" con attributi (pesi, proprietà arbitrarie) per abilitare algoritmi complessi di raccomandazione e ranking.
 *   **Grafo Temporale (Time Travel):** Ogni relazione è versionata con timestamp `CreatedAt` e `DeletedAt`. Il supporto al soft delete permette di interrogare lo stato del grafo in qualsiasi momento nel passato.
-*   **Memory Decay & Reinforcement:** Unifica la memoria a breve e lungo termine. I nodi non interrogati de-cadono di rank, mentre quelli utili vengono rinforzati (Reinforce API), ottimizzando il RAG tramite autopolizia del rumore storico.
+*   **Memory Decay & Reinforcement:** Unifica la memoria a breve e lungo termine. I nodi non interrogati de-cadono di rank, mentre quelli utili vengono rinforzati (Reinforce API), ottimizzando il RAG tramite autopolizia del rumore storico. Include supporto per nodi pinned che bypassano il decay.
 *   **Navigazione Bidirezionale:** Gestione automatica degli archi in entrata per consentire il recupero O(1) di "chi punta al nodo X", potenziando l'attraversamento efficiente del grafo.
 *   **Entità di Grafo:** Supporto per nodi senza vettore (solo metadati) per rappresentare entità astratte come "Utenti" o "Categorie" nella stessa struttura a grafo.
 *   **Attraversamento del Grafo:** La ricerca attraversa qualsiasi tipo di relazione (come `prev`, `next`, `parent`, `mentions`) per fornire una finestra di contesto olistica.
+*   **Filtri sul Grafo:** Combina la ricerca vettoriale con filtri sulla topologia del grafo (es. "cerca solo nei figli del Documento X"), potenziato dai Roaring Bitmaps.
+*   **Path Finding (FindPath):** Scopri il percorso più breve tra due nodi usando BFS bidirezionale. Supporta query time-travel per trovare percorsi esistenti in un momento specifico nel passato.
+*   **Node Search:** Esegue filtri solo su metadati senza similarità vettoriale (utile per trovare nodi per proprietà).
 
 <p align="center">
   <img src="docs/images/kektordb-graph-entities.png" alt="Visualizzazione Grafo di Conoscenza" width="700">
@@ -161,7 +166,21 @@ Scarica il binario pre-compilato dalla [Pagina delle Release](https://github.com
 ```bash
 # Linux/macOS
 ./kektordb
+
+# Con opzioni personalizzate
+./kektordb -http-addr :9091 -save "30 500" -log-level debug
 ```
+
+**Flag della linea di comando:**
+*   `-http-addr`: Indirizzo del server HTTP (default: `:9091`)
+*   `-aof-path`: Percorso del file di persistenza (default: `kektordb.aof`)
+*   `-save`: Policy di auto-snapshot `"secondi cambiamenti"` (default: `"60 1000"`, vuoto per disabilitare)
+*   `-auth-token`: Token di autenticazione API
+*   `-log-level`: Livello di logging (`debug`, `info`, `warn`, `error`)
+*   `-enable-proxy`: Abilita AI Gateway/Proxy
+*   `-proxy-config`: Percorso del file di configurazione del proxy
+*   `-vectorizers-config`: Percorso del file di configurazione dei vectorizers
+*   `-mcp`: Esegui come Server MCP (Stdio)
 
 > **Nota sulla Compatibilità:** Tutto lo sviluppo e i test sono stati eseguiti su **Linux (x86_64)**. Le build pure Go dovrebbero funzionare su Windows/Mac/ARM.
 
@@ -330,13 +349,23 @@ KektorDB offre risparmi di memoria significativi attraverso quantizzazione e com
 Per una guida completa a tutte le funzionalità e agli endpoint API, consulta la **[Documentazione Completa](DOCUMENTATION.md)**.
 
 *   `POST /vector/actions/search`: Ricerca vettoriale ibrida.
+*   `POST /vector/actions/search-with-scores`: Ricerca che ritorna risultati con punteggi di similarità.
 *   `POST /vector/actions/import`: Caricamento massivo ad alta velocità.
+*   `POST /vector/actions/add-batch`: Inserimento vettoriale in batch.
+*   `POST /vector/actions/reinforce`: Aumenta la rilevanza del nodo in indici basati su memoria.
 *   `POST /vector/indexes`: Crea e gestisci indici.
-*   `POST /graph/actions/link`: Crea relazioni semantiche.
+*   `POST /graph/actions/link`: Crea relazioni semantiche con pesi e proprietà.
+*   `POST /graph/actions/unlink`: Rimuovi relazioni del grafo.
 *   `POST /graph/actions/traverse`: Attraversamento profondo del grafo (N-Hop) partendo da un ID nodo specifico.
+*   `POST /graph/actions/extract-subgraph`: Estrai il sotto-grafo locale (BFS) attorno a un nodo radice.
+*   `POST /graph/actions/find-path`: Trova il percorso più breve tra due nodi.
+*   `POST /graph/actions/search-nodes`: Ricerca solo con filtri (basata su metadati, senza similarità vettoriale).
+*   `POST /graph/actions/set-node-properties`: Aggiungi/aggiorna metadati su nodi senza vettori.
 *   `POST /rag/retrieve`: Ottieni chunk di testo per RAG.
 *   `GET /system/tasks/{id}`: Monitora task a lunga esecuzione.
 *   `POST /system/save`: Snapshot manuale.
+*   `POST /system/aof-rewrite`: Compatta il file AOF.
+*   `GET /debug/pprof/`: Endpoint di profiling Go (pprof).
 
 ---
 
@@ -344,34 +373,31 @@ Per una guida completa a tutte le funzionalità e agli endpoint API, consulta la
 
 KektorDB è un progetto giovane in sviluppo attivo.
 
-### Prossimamente (v0.5.0) - L'Aggiornamento Scalabilità
-Il prossimo importante traguardo si concentra sul superamento del limite della RAM e sul miglioramento delle garanzie di coerenza dei dati.
-*   [ ] **Storage Ibrido su Disco (< 2 settimane):** Implementazione di un motore di storage "pluggable". Mantiene i nodi *Hot* in RAM per la velocità, ma sposta i dati vettoriali completi e i nodi *Cold* su NVMe/Disco utilizzando I/O standard o memory mapping. Questo eliminerà definitivamente il RAM Cap limit.
-*   [ ] **Integrità Transazionale del Grafo:** Introduzione di **Batch Atomici** per garantire la consistenza dei dati durante la creazione di link bidirezionali o l'aggiornamento dei vettori (comportamento simil-ACID per il livello Grafo).
-*   [ ] **Backup/Restore Nativo:** API semplice per salvare snapshot su S3/MinIO/Locale senza dover fermare il server.
+### Rilasciato in v0.5.0 ✅
+*   [x] **mmap Arena Zero-Copy:** I dati vettoriali sono ora memorizzati usando file memory-mapped, rompendo il tradizionale limite RAM. I vettori "hot" rimangono in RAM per velocità mentre i dati "cold" sono gestiti dal page cache del sistema operativo. Questo abilita dataset più grandi della RAM disponibile.
 
 ### Pianificati (Breve Termine)
 Funzionalità che intendo sviluppare per rendere KektorDB pronto per la produzione e ancora più veloce.
 *   [x] **Filtri sul Grafo:** Combinare la ricerca vettoriale con filtri sulla topologia del grafo (es. "cerca solo nei figli del Documento X"), potenziato dai Roaring Bitmaps.
+*   [x] **Roaring Bitmaps:** Sostituire l'attuale filtro basato su mappe con Roaring Bitmaps per filtri sui metadati ultra-veloci (es. `WHERE user_id = X`).
+*   [x] **Property Graphs:** Supporto per "Rich Edges" con attributi (pesi, timestamp) per abilitare algoritmi di raccomandazione complessi.
+*   [ ] **Backup/Restore Nativo:** API semplice per salvare snapshot su S3/MinIO/Locale senza dover fermare il server.
 *   [ ] **Relazioni RAG Configurabili:** Permettere agli utenti di definire percorsi di attraversamento del grafo personalizzati nel `proxy.yaml` invece di affidarsi ai default hardcodati.
 *   [ ] **Ottimizzazioni SIMD/AVX:** Estendere le ottimizzazioni Assembly Go puro (attualmente usate per il Coseno) alla distanza Euclidea e alle operazioni Float16 per massimizzare il throughput sulle CPU moderne.
-*   [ ] **Roaring Bitmaps:** Sostituire l'attuale filtro basato su mappe con Roaring Bitmaps per filtri sui metadati ultra-veloci (es. `WHERE user_id = X`).
 *   [ ] **RBAC & Sicurezza:** Implementare il controllo accessi basato sui ruoli (Admin vs Read-Only) e una granularità più fine per applicazioni multi-tenant.
 *   [ ] **Client TypeScript Ufficiale:** Per supportare meglio l'ecosistema AI JS/Node.js.
 
 ### Visione Futura (Lungo Termine)
 Funzionalità in fase di ricerca. La loro implementazione dipende dall'adozione nel mondo reale, dal feedback e dal tempo di sviluppo disponibile.
-*   **Property Graphs:** Supporto per "Rich Edges" con attributi (pesi, timestamp) per abilitare algoritmi di raccomandazione complessi.
 *   **Replicazione Distribuita:** Consenso basato su Raft per l'Alta Disponibilità (Leader-Follower).
-*   **Semantic "Gardener:** Un processo in background che usa gli LLM per unire chunk duplicati e risolvere conflitti nel Knowledge Graph automaticamente.
+*   **Semantic "Gardener":** Un processo in background che usa gli LLM per unire chunk duplicati e risolvere conflitti nel Knowledge Graph automaticamente.
 
 > **Vuoi influenzare la roadmap?** [Apri una Issue](https://github.com/sanonone/kektordb/issues) o vota quelle esistenti!
 
 ---
 
-## 🛑 Limitazioni attuali (v0.4.0)
+## 🛑 Limitazioni attuali (v0.5.0)
 * **Singolo nodo:** KektorDB attualmente non supporta il clustering. Scala verticalmente entro i limiti delle risorse della macchina.
-* **Limite RAM:** Attualmente i dataset sono limitati alla RAM disponibile. Questo vincolo tuttavia cadrà **a breve (< 2 settimane)** mediante l'introduzione dello **Hybrid Storage**.
 * **Software beta:** Sebbene stabili per uso personale, le API potrebbero evolversi.
 
 ---

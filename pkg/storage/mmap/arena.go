@@ -304,7 +304,7 @@ func (va *VectorArena) GetBytes(internalID uint32) ([]byte, error) {
 	va.mu.Lock()
 	defer va.mu.Unlock()
 
-	// TOCTOU FIX (Defensive Programming):
+	// TOCTOU FIX:
 	// While we were waiting to acquire va.mu.Lock(), another goroutine (e.g., Vacuum)
 	// might have freed this physical slot and given it to a different InternalID.
 	// We re-acquire the slot lock to verify we still own this physical slot.

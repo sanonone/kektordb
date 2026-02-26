@@ -1,5 +1,5 @@
 
-# KektorDB Technical Documentation (v0.4.0)
+# KektorDB Technical Documentation (v0.5.0)
 
 ## Table of Contents
 
@@ -82,6 +82,7 @@ graph TD
     *   **Transaction Coordinator:** Ensures updates are atomic compliant with the AOF persistence.
     *   **Background Tasks:** Manages `Vacuum` (garbage collection) and `Refine` (graph optimization).
     *   **Locking Strategy:** Implements a global lock with parallelized batch commits to maximize throughput while ensuring safety.
+    *   **Lazy AOF Writer:** Batches operations and flushes them periodically (every 100ms or 1000 entries) rather than on every write, providing 10-100x throughput improvement while maintaining durability through periodic fsync (every 1 second).
 
 3.  **Server (`internal/server`):**
     *   **HTTP Router:** Standard Go `ServeMux`.
@@ -131,6 +132,7 @@ These control the database engine itself.
 | `-auth-token` | `KEKTOR_TOKEN` | `""` | If set, enables `Authorization: Bearer <token>` check. |
 | `-save` | - | `"60 1000"` | Auto-snapshot policy `"seconds changes"`. Set to `""` to disable. |
 | `-aof-rewrite-percentage` | - | `100` | Trigger AOF compaction when file grows by X%. |
+| `-log-level` | - | `info` | Log level: `debug`, `info`, `warn`, `error`. |
 | `-mcp` | `KEKTOR_ENABLE_MCP` | `false` | Enables the MCP Memory Server on Standard I/O. |
 | `-enable-proxy` | `-KEKTOR_ENABLE_PROXY` | `false` | Enables the AI Gateway/Proxy service on the port specified by -proxy-port. |
 | `-proxy-config` | - | `""` | Path to `proxy.yaml`. Enables Proxy if set. |
@@ -154,7 +156,7 @@ vectorizers:
       path: "./docs"
     
     # Optional: Filter files
-    include_patterns: ["*.md", "*.pdf"]
+    include_patterns: ["*.md", "*.pdf", "*.png", "*.jpg"]
     exclude_patterns: ["draft_*", "secret.txt"]
 
     # Text Splitting Strategy
@@ -162,6 +164,12 @@ vectorizers:
       chunking_strategy: "recursive" # Options: recursive, markdown, code, fixed
       chunk_size: 500
       chunk_overlap: 50
+      custom_separators: ["|||", "---"] # Optional custom separators
+    
+    # Custom metadata injection
+    metadata_template:
+      source: "documentation"
+      owner: "engineering"
     
     # GraphRAG: Automatically link sequential chunks (prev/next)
     graph_enabled: true 
@@ -175,6 +183,11 @@ vectorizers:
       base_url: "http://localhost:11434/v1"
       model: "qwen2.5:0.5b" # Small model recommended for speed
       temperature: 0.0
+
+    # Vision LLM for OCR and image processing (optional)
+    vision_llm:
+      base_url: "http://localhost:11434/v1"
+      model: "llava:latest"
 
     # Embedding Provider (Ollama or OpenAI-compatible)
     embedder:
@@ -275,12 +288,35 @@ rag_grounded_hyde_prompt: "Write a hypothetical answer based on these snippets..
 | :--- | :--- | :--- | :--- |
 | `port` | string | `:9092` | Listening port for Proxy. |
 | `target_url` | string | - | Downstream LLM URL to forward requests to. |
+| `fast_llm` | object | - | Fast LLM config for Query Rewriting (CQR). |
+| `llm` | object | - | Smart LLM config for HyDe reasoning. |
+| `embedder_type` | string | `ollama_api` | Embedder type: `ollama_api`, `openai`. |
+| `embedder_url` | string | - | Embedder API URL. |
+| `embedder_model` | string | - | Embedder model name. |
+| `firewall_enabled` | bool | `false` | Enable semantic firewall. |
+| `firewall_deny_list` | array | `[]` | List of strings to block (literal matching). |
+| `firewall_index` | string | - | Index for semantic prompt blocking. |
+| `firewall_threshold` | float | `0.25` | Block if similarity < threshold. |
+| `block_message` | string | - | Custom error message for blocked requests. |
+| `cache_enabled` | bool | `false` | Enable semantic caching. |
+| `cache_index` | string | - | Index for caching responses. |
+| `cache_threshold` | float | `0.1` | Cache threshold for semantic match. |
 | `cache_ttl` | string | `24h` | Duration to keep cached responses. |
 | `cache_delete_threshold` | float | `0.0` | Internal threshold for cache cleanup (advanced). |
 | `max_cache_items` | int | `0` (unlimited) | Max items in cache before stopping additions. |
+| `cache_vacuum_interval` | Duration | `1h` | Interval for cache cleanup background task. |
+| `rag_enabled` | bool | `false` | Enable RAG injection. |
+| `rag_index` | string | - | Index to search for RAG context. |
+| `rag_top_k` | int | - | Number of chunks to retrieve. |
+| `rag_ef_search` | int | `100` | Search breadth (higher = better recall). |
+| `rag_threshold` | float | `0.7` | Minimum Similarity Score (0.0-1.0). |
+| `rag_use_graph` | bool | `false` | Fetch prev/next chunks automatically. |
+| `rag_use_hybrid` | bool | `false` | Use BM25 + Vector for better precision. |
+| `rag_use_hyde` | bool | `false` | Use Grounded HyDe for better recall. |
 | `rag_hybrid_alpha` | float | `0.5` | Weight for hybrid search (0.0=Text, 1.0=Vector). |
-| `rag_threshold` | float | `0.7` | Minimum Similarity Score (0.0-1.0) to include a chunk. Higher is stricter. |
-| `rag_ef_search` | int | `100` | Precision of the RAG vector search (HNSW parameter). |
+| `rag_system_prompt` | string | - | Custom system prompt for RAG. |
+| `rag_rewriter_prompt` | string | - | Custom prompt for Query Rewriting. |
+| `rag_grounded_hyde_prompt` | string | - | Custom prompt for HyDe. |
 ---
 
 ### 3.4 Index Maintenance Tuning
@@ -302,7 +338,18 @@ KektorDB runs background tasks to keep indexes healthy. You can tune these per-i
 
 ## 4. Core Features & Usage
 
-### 4.1 Quantization & Compression
+### 4.1 Zero-Copy mmap Storage
+
+Starting from v0.5.0, KektorDB uses **memory-mapped files (mmap)** for vector data storage. This breaks the traditional RAM limit while maintaining high performance:
+
+*   **Zero-Copy:** Vectors are stored in memory-mapped files, allowing the OS to manage memory pages directly.
+*   **Automatic Tiering:** "Hot" vectors stay in RAM for fast access, while "cold" data is transparently managed by the OS page cache.
+*   **Persistence:** mmap data is automatically persisted to disk - no additional sync required.
+*   **No RAM Cap:** Datasets larger than available RAM can now be handled (limited by disk speed rather than RAM size).
+
+The mmap storage is enabled automatically when creating an index. Vector data is stored in `<data_dir>/arenas/<index_name>/`.
+
+### 4.2 Quantization & Compression
 
 KektorDB creates indexes in `float32` by default. You can specify compressed formats to save RAM.
 
@@ -453,6 +500,33 @@ Adds or updates a single vector.
 Retrieves raw vectors and metadata by ID.
 
 **Body:** `{"index_name": "docs", "ids": ["1", "2"]}`
+
+#### Search with Scores
+**`POST /vector/actions/search-with-scores`**
+
+Performs a search and returns results with their similarity scores. Applies time decay if Memory mode is enabled.
+
+**Body:**
+```json
+{
+  "index_name": "docs",
+  "query_vector": [0.12, -0.5, ...],
+  "k": 10
+}
+```
+
+#### Reinforce
+**`POST /vector/actions/reinforce`**
+
+Boosts the relevance of specified nodes by updating their access timestamp and count. Used with Memory Decay to prevent important nodes from decaying.
+
+**Body:**
+```json
+{
+  "index_name": "docs",
+  "ids": ["chunk_1", "chunk_2", "chunk_3"]
+}
+```
 
 #### Delete Vector
 **`POST /vector/actions/delete_vector`**
@@ -675,6 +749,74 @@ Returns a `SubgraphResult` containing a list of unique Nodes (hydrated) and all 
 }
 ```
 
+#### Find Path
+**`POST /graph/actions/find-path`**
+
+Finds the shortest path between two nodes using bidirectional BFS. Supports time travel to find paths that existed at a specific point in history.
+
+**Body:**
+```json
+{
+  "index_name": "docs",
+  "source_id": "chunk_1",
+  "target_id": "chunk_100",
+  "relations": ["next", "parent"],
+  "max_depth": 4,
+  "at_time": 0 // 0 = Now, or Unix Nano for time travel
+}
+```
+
+**Response:**
+```json
+{
+  "source": "chunk_1",
+  "target": "chunk_100",
+  "path": ["chunk_1", "chunk_2", "parent_doc", "chunk_99", "chunk_100"],
+  "edges": [...]
+}
+```
+
+#### Search Nodes
+**`POST /graph/actions/search-nodes`**
+
+Performs a filter-only search without vector similarity. Useful for finding nodes by metadata properties.
+
+**Body:**
+```json
+{
+  "index_name": "docs",
+  "filter": "category='important' AND year>=2024",
+  "limit": 10
+}
+```
+
+#### Set Node Properties
+**`POST /graph/actions/set-node-properties`**
+
+Adds or updates metadata on nodes without modifying their vectors. Useful for adding tags or attributes to existing nodes.
+
+**Body:**
+```json
+{
+  "index_name": "docs",
+  "node_id": "chunk_1",
+  "properties": {"tag": "reviewed", "score": 0.95}
+}
+```
+
+#### Get Node Properties
+**`POST /graph/actions/get-node-properties`**
+
+Retrieves metadata for a specific node.
+
+**Body:**
+```json
+{
+  "index_name": "docs",
+  "node_id": "chunk_1"
+}
+```
+
 ---
 
 ### 5.4 Key-Value Store
@@ -756,6 +898,27 @@ Returns detailed status of all running indexing pipelines (files processed, erro
 **`POST /system/vectorizers/{name}/trigger`**
 
 Forces a specific vectorizer to run immediately.
+
+#### Profiling (pprof)
+**`GET /debug/pprof/`**
+
+Go's built-in profiling endpoints. Available at:
+*   `/debug/pprof/` - Index of available profiles
+*   `/debug/pprof/heap` - Heap memory profile
+*   `/debug/pprof/cpu` - CPU profile
+*   `/debug/pprof/goroutine` - Goroutine profile
+*   `/debug/pprof/block` - Block (mutex) profile
+*   `/debug/pprof/trace` - Execution trace
+
+These endpoints are useful for performance debugging but should be disabled in production with authentication.
+
+#### Metrics
+**`GET /metrics`**
+
+Prometheus-formatted metrics including:
+*   `kektordb_vectors_total` - Total vectors per index
+*   `kektordb_requests_total` - Request counts by endpoint
+*   `kektordb_request_duration_seconds` - Request latency histograms
 
 #### UI & Visualization
 **`POST /ui/search`**
