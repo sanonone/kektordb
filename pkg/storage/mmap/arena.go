@@ -304,6 +304,22 @@ func (va *VectorArena) GetBytes(internalID uint32) ([]byte, error) {
 	va.mu.Lock()
 	defer va.mu.Unlock()
 
+	// TOCTOU FIX (Defensive Programming):
+	// While we were waiting to acquire va.mu.Lock(), another goroutine (e.g., Vacuum)
+	// might have freed this physical slot and given it to a different InternalID.
+	// We re-acquire the slot lock to verify we still own this physical slot.
+	va.slotMu.RLock()
+	currentPhys := UnallocatedSlot
+	if internalID < uint32(len(va.slotTable)) {
+		currentPhys = va.slotTable[internalID]
+	}
+	va.slotMu.RUnlock()
+
+	if currentPhys == UnallocatedSlot || currentPhys != physSlot {
+		return nil, fmt.Errorf("slot %d was reassigned or freed during chunk allocation", internalID)
+	}
+
+	// Double-check if the chunk was created by another goroutine while we waited
 	for chunkID >= len(va.chunks) {
 		if err := va.addChunk(len(va.chunks)); err != nil {
 			return nil, err

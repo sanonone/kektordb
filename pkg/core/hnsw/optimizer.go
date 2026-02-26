@@ -245,7 +245,9 @@ func (o *GraphOptimizer) Vacuum() bool {
 	for deadID := range deletedSet {
 		// overwrite slot virtual memory
 		if o.index.arena != nil {
-			o.index.arena.FreeSlot(deadID)
+			if vecBytes, err := o.index.arena.GetBytes(deadID); err == nil {
+				clear(vecBytes)
+			}
 		}
 
 		if extID, ok := o.index.internalToExternalID[deadID]; ok {
