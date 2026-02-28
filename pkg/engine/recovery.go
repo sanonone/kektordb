@@ -180,6 +180,33 @@ func (e *Engine) replayAOF() error {
 					}
 				}
 			}
+		case "VMETA":
+			// VMETA <IndexName> <ID> <MetadataJSON>
+			if len(cmd.Args) == 3 {
+				idxName := string(cmd.Args[0])
+				id := string(cmd.Args[1])
+
+				if idx, ok := indexes[idxName]; ok {
+					var meta map[string]any
+					if json.Unmarshal(cmd.Args[2], &meta) == nil {
+						// Check if an entry already exists (created by a previous VADD)
+						if entry, exists := idx.entries[id]; exists {
+							if entry.metadata == nil {
+								entry.metadata = make(map[string]any)
+							}
+							// Merge new metadata
+							for k, v := range meta {
+								entry.metadata[k] = v
+							}
+							idx.entries[id] = entry // Save the modified struct to the map
+						} else {
+							// Edge case: VMETA arrives without a VADD (e.g. corrupt AOF).
+							// We create an entry without a vector to preserve the metadata.
+							idx.entries[id] = vectorEntry{metadata: meta}
+						}
+					}
+				}
+			}
 		case "VDEL":
 			if len(cmd.Args) == 2 {
 				idxName := string(cmd.Args[0])

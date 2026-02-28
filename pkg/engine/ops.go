@@ -527,9 +527,8 @@ func (e *Engine) traversePath(indexName, currentID string, path []string, hydrat
 
 // VReinforce updates the usage statistics of a memory node to keep it fresh.
 // It updates '_last_accessed' to Now and increments '_access_count'.
+// THREAD-SAFE: Uses fine-grained locking and lightweight VMETA AOF commands.
 func (e *Engine) VReinforce(indexName string, ids []string) error {
-	// TODO Future: Introduce a VMETA specific AOF OpCode that saves only ID + Metadata, without rewriting the vector.
-	// TODO Future: Use sharded or optimistic locks on metadata.
 	idx, ok := e.DB.GetVectorIndex(indexName)
 	if !ok {
 		return fmt.Errorf("index not found")
@@ -539,24 +538,21 @@ func (e *Engine) VReinforce(indexName string, ids []string) error {
 		return fmt.Errorf("not hnsw")
 	}
 
-	// Lock for Metadata Update
-	// We use the global lock for metadata safety.
-	// Optimization: could be sharded, but fine for metadata updates.
-	e.DB.Lock()
-	defer e.DB.Unlock()
-
 	now := float64(time.Now().Unix())
 	var updatedCount int64
 
 	for _, extID := range ids {
+		// 1. Get internal ID safely
 		internalID, found := hnswIdx.GetInternalIDUnlocked(extID)
 		if !found {
 			continue
 		}
 
-		// Get current metadata map (copy)
-		// Note: GetMetadataForNodeUnlocked returns a copy, so we need to save it back
+		// 2. Fetch current metadata
+		// We use RLock just for the map read. GetMetadataForNodeUnlocked returns a copy.
+		e.DB.RLock()
 		meta := e.DB.GetMetadataForNodeUnlocked(indexName, internalID)
+		e.DB.RUnlock()
 		if meta == nil {
 			meta = make(map[string]any)
 		}
@@ -578,21 +574,23 @@ func (e *Engine) VReinforce(indexName string, ids []string) error {
 		//	meta["_pinned"] = true
 		//}
 
-		// Save updated metadata back to DB
-		// This is crucial because GetMetadataForNodeUnlocked returns a copy
-		if err := e.DB.AddMetadataUnlocked(indexName, internalID, meta); err != nil {
+		// 4. Save metadata to DB
+		// AddMetadata uses its own internal locks, so it's thread-safe and doesn't block the whole DB for long.
+		if err := e.DB.AddMetadata(indexName, internalID, meta); err != nil {
 			slog.Error("Failed to update metadata in VReinforce", "error", err, "id", extID)
 			continue
 		}
 
 		updatedCount++
 
-		// Persist to AOF by writing a VADD command with the updated metadata
-		nodeData, _ := hnswIdx.GetNodeData(extID) // Gets vector
-		vecStr := float32SliceToString(nodeData.Vector)
-		metaBytes, _ := json.Marshal(meta)
-		cmd := persistence.FormatCommand("VADD", []byte(indexName), []byte(extID), []byte(vecStr), metaBytes)
-		e.AOF.Write(cmd)
+		// 5. Persist to AOF (The Game Changer)
+		// serialize only the metadata and write a lightweight VMETA command
+		metaBytes, err := json.Marshal(meta)
+		if err == nil {
+			// New Command: VMETA <IndexName> <ExternalID> <JSON_Metadata>
+			cmd := persistence.FormatCommand("VMETA", []byte(indexName), []byte(extID), metaBytes)
+			e.AOF.Write(cmd) // AOF.Write is thread-safe internally
+		}
 	}
 
 	if updatedCount > 0 {
