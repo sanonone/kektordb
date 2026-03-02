@@ -110,7 +110,12 @@ func (e *Engine) replayAOF() error {
 			}
 		case "VDROP":
 			if len(cmd.Args) == 1 {
-				delete(indexes, string(cmd.Args[0]))
+				idxName := string(cmd.Args[0])
+				delete(indexes, idxName)
+
+				// --- CLEANUP DEI GHOST FILES ---
+				arenaPath := filepath.Join(e.opts.DataDir, "arenas", idxName)
+				_ = os.RemoveAll(arenaPath)
 			}
 		case "VCREATE":
 			if len(cmd.Args) >= 1 {

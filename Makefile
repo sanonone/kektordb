@@ -76,7 +76,7 @@ release: clean
 	CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/x86_64-pc-windows-gnu/release -lkektordb_compute -lws2_32 -luserenv -ladvapi32 -lbcrypt -lntdll -lgcc_s"
 
 	# --- macOS (Go Puro) ---
-	# target release-build-pure. 
+	# target release-build-pure.
 	@make release-build-pure GOOS=darwin GOARCH=amd64
 	@make release-build-pure GOOS=darwin GOARCH=arm64
 
@@ -119,4 +119,4 @@ clean:
 	@rm -f pkg/core/distance/distance_avo_amd64.s pkg/core/distance/stubs_avo_amd64.go
 	@rm -rf native/compute/target
 	@rm -rf $(RELEASE_DIR)
-	@go clean -cache -modcache -testcache
+	@go clean -cache -testcache

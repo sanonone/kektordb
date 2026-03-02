@@ -187,7 +187,21 @@ func (e *Engine) VDeleteIndex(name string) error {
 
 		// remove file from arena direct
 		arenaPath := filepath.Join(e.opts.DataDir, "arenas", name)
-		_ = os.RemoveAll(arenaPath) // Ignore errors, best effort
+		go func(path string) {
+			var rmErr error
+			for i := 0; i < 3; i++ {
+				rmErr = os.RemoveAll(path)
+				if rmErr == nil || os.IsNotExist(rmErr) {
+					break // deleted
+				}
+				time.Sleep(15 * time.Millisecond) // wait and retry
+			}
+			if rmErr != nil && !os.IsNotExist(rmErr) {
+				slog.Error("Failed to physically delete arena directory", "path", path, "error", rmErr)
+			} else {
+				slog.Debug("Arena directory physically deleted", "path", path)
+			}
+		}(arenaPath)
 
 		// Instant flush for single operations (durability)
 		if errF := e.AOF.Flush(); errF != nil {
