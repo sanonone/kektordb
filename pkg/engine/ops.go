@@ -312,6 +312,7 @@ func (e *Engine) VAdd(indexName, id string, vector []float32, metadata map[strin
 
 // VDelete marks a vector as deleted in the specified index.
 // The node remains in the graph but is excluded from search results.
+// It also performs a CASCADE DELETE on the graph: any edge pointing to this node
 func (e *Engine) VDelete(indexName, id string) error {
 	idx, ok := e.DB.GetVectorIndex(indexName)
 	if !ok {
@@ -333,6 +334,41 @@ func (e *Engine) VDelete(indexName, id string) error {
 	}
 
 	atomic.AddInt64(&e.dirtyCounter, 1)
+
+	// --- 3. CASCADE DELETE (GRAPH INTEGRITY) ---
+	// We run this asynchronously because it might involve multiple KV store reads/writes,
+	// and we don't want to block the client API response for graph cleanup.
+	// The DB becomes "Eventually Consistent" on graph edges (usually within microseconds).
+	go func(deadNodeID string) {
+		// To do a full cascade, we ideally need to know ALL relations that might point here.
+		// Since we don't have a "Get All Reverse Keys" method that is fast, we will scan the KV store
+		// for keys starting with "rev:" and ending with our ID.
+
+		keys := e.DB.GetKVStore().Keys() // Note: This allocates. Acceptable in async for now.
+
+		// The reverse key format is: rev:<target_id>:<rel_type>
+		// We are the target being deleted. We look for keys starting with "rev:" + deadNodeID + ":"
+		searchPrefix := fmt.Sprintf("%s:%s:", prefixRev, deadNodeID)
+
+		for _, key := range keys {
+			if len(key) > len(searchPrefix) && key[:len(searchPrefix)] == searchPrefix {
+				// We found an incoming edge list!
+				// We need to figure out the relationType
+				relType := key[len(searchPrefix):]
+
+				// Get the sources that point to us
+				sources, found := e.VGetIncoming(deadNodeID, relType)
+				if found {
+					for _, sourceID := range sources {
+						// Unlink them! (Soft Delete, hardDelete = false)
+						// This will update both 'rel:source:relType' and 'rev:target:relType'
+						_ = e.VUnlink(sourceID, deadNodeID, relType, "", false)
+					}
+				}
+			}
+		}
+	}(id)
+
 	return nil
 }
 
