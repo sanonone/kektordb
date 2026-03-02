@@ -52,6 +52,7 @@ type nodeGob struct {
 	Deleted     bool
 }
 
+/*
 // GobEncode implements gob.GobEncoder for Node.
 func (n *Node) GobEncode() ([]byte, error) {
 	gn := nodeGob{
@@ -90,5 +91,56 @@ func (n *Node) GobDecode(data []byte) error {
 	n.Connections = gn.Connections
 	n.Deleted.Store(gn.Deleted)
 
+	return nil
+}
+*/
+
+// GobEncode implements the gob.GobEncoder interface.
+// It explicitly IGNORES vector slices to prevent Snapshot bloat (Zero-Copy Mmap)
+// and correctly extracts the value from the atomic.Bool.
+func (n *Node) GobEncode() ([]byte, error) {
+	// Creiamo un alias con solo i campi strutturali (niente vettori)
+	type NodeAlias struct {
+		Id          string
+		InternalID  uint32
+		Connections [][]uint32
+		Deleted     bool // Estraiamo l'atomico in un bool normale
+	}
+
+	alias := NodeAlias{
+		Id:          n.Id,
+		InternalID:  n.InternalID,
+		Connections: n.Connections,
+		Deleted:     n.Deleted.Load(), // Estrazione sicura
+	}
+
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(alias); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// GobDecode implements the gob.GobDecoder interface.
+func (n *Node) GobDecode(data []byte) error {
+	type NodeAlias struct {
+		Id          string
+		InternalID  uint32
+		Connections [][]uint32
+		Deleted     bool
+	}
+
+	var alias NodeAlias
+	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&alias); err != nil {
+		return err
+	}
+
+	n.Id = alias.Id
+	n.InternalID = alias.InternalID
+	n.Connections = alias.Connections
+	n.Deleted.Store(alias.Deleted) // Ripristino sicuro nell'atomico
+
+	// VectorF32, VectorF16, VectorI8 rimangono nil!
+	// Saranno "riallacciati" fisicamente ai file .bin dalla funzione LoadSnapshotData
 	return nil
 }

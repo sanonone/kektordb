@@ -82,6 +82,7 @@ type Snapshot struct {
 // It includes the index configuration and all its node data.
 type IndexSnapshot struct {
 	Config             IndexConfig
+	VectorDim          int
 	Nodes              map[uint32]*NodeSnapshot // Using a map for simpler serialization/deserialization.
 	ExternalToInternal map[string]uint32
 	InternalCounter    uint32
@@ -99,9 +100,9 @@ type NodeSnapshot struct {
 	Metadata map[string]interface{} // The associated metadata
 
 	// Explicitly typed vector data to prevent gob from converting to float64 on decode.
-	VectorF32 []float32 `json:"vector_f32,omitempty"`
-	VectorF16 []uint16  `json:"vector_f16,omitempty"`
-	VectorI8  []int8    `json:"vector_i8,omitempty"`
+	// VectorF32 []float32 `json:"vector_f32,omitempty"`
+	// VectorF16 []uint16  `json:"vector_f16,omitempty"`
+	// VectorI8  []int8    `json:"vector_i8,omitempty"`
 }
 
 // IndexConfig holds the configuration parameters for a vector index.
@@ -175,15 +176,17 @@ func (s *DB) Snapshot(writer io.Writer) error {
 
 				// Use a type switch to populate the correct vector field
 				// Populate the correct vector field in the snapshot
-				if node.VectorF32 != nil {
-					snap.VectorF32 = node.VectorF32
-				} else if node.VectorF16 != nil {
-					snap.VectorF16 = node.VectorF16
-				} else if node.VectorI8 != nil {
-					snap.VectorI8 = node.VectorI8
-				} else {
-					slog.Warn("No vector data found for node during snapshot", "node_id", internalID)
-				}
+				/*
+					if node.VectorF32 != nil {
+						snap.VectorF32 = node.VectorF32
+					} else if node.VectorF16 != nil {
+						snap.VectorF16 = node.VectorF16
+					} else if node.VectorI8 != nil {
+						snap.VectorI8 = node.VectorI8
+					} else {
+						slog.Warn("No vector data found for node during snapshot", "node_id", internalID)
+					}
+				*/
 				nodeSnapshots[internalID] = snap
 			}
 
@@ -197,6 +200,7 @@ func (s *DB) Snapshot(writer io.Writer) error {
 					AutoLinks:      hnswIndex.GetAutoLinks(),
 					MemoryConfig:   hnswIndex.GetMemoryConfig(),
 				},
+				VectorDim:          hnswIndex.GetDimension(),
 				Nodes:              nodeSnapshots,
 				ExternalToInternal: extToInt,
 				InternalCounter:    counter,
@@ -265,22 +269,24 @@ func (s *DB) LoadFromSnapshot(reader io.Reader, basePath string) error {
 		// --- Reconstruct the 'Vector' field ---
 		for id, nodeSnap := range indexSnap.Nodes {
 			// Reconstruct the typed fields
-			if nodeSnap.VectorF32 != nil {
-				nodeSnap.NodeData.VectorF32 = nodeSnap.VectorF32
-			} else if nodeSnap.VectorF16 != nil {
-				nodeSnap.NodeData.VectorF16 = nodeSnap.VectorF16
-			} else if nodeSnap.VectorI8 != nil {
-				nodeSnap.NodeData.VectorI8 = nodeSnap.VectorI8
-			} else {
-				slog.Warn("No vector data found for node in snapshot", "node_id", id)
-			}
+			/*
+				if nodeSnap.VectorF32 != nil {
+					nodeSnap.NodeData.VectorF32 = nodeSnap.VectorF32
+				} else if nodeSnap.VectorF16 != nil {
+					nodeSnap.NodeData.VectorF16 = nodeSnap.VectorF16
+				} else if nodeSnap.VectorI8 != nil {
+					nodeSnap.NodeData.VectorI8 = nodeSnap.VectorI8
+				} else {
+					slog.Warn("No vector data found for node in snapshot", "node_id", id)
+				}
+			*/
 			nodesToLoad[id] = nodeSnap.NodeData
 		}
 
 		idx.UpdateMaintenanceConfig(indexSnap.MaintenanceConfig)
 
 		// Load the HNSW graph data
-		if err := idx.LoadSnapshotData(nodesToLoad, indexSnap.ExternalToInternal, indexSnap.InternalCounter, indexSnap.EntrypointID, indexSnap.MaxLevel, indexSnap.QuantizerState, indexSnap.QuantizedNorms, indexSnap.ArenaState); err != nil {
+		if err := idx.LoadSnapshotData(nodesToLoad, indexSnap.ExternalToInternal, indexSnap.InternalCounter, indexSnap.EntrypointID, indexSnap.MaxLevel, indexSnap.QuantizerState, indexSnap.QuantizedNorms, indexSnap.ArenaState, indexSnap.VectorDim); err != nil {
 			return fmt.Errorf("failed to load HNSW data for index '%s': %w", name, err)
 		}
 

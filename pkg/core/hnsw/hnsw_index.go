@@ -2844,35 +2844,14 @@ func (h *Index) LoadSnapshotData(
 	quantizer *distance.Quantizer,
 	norms []float32,
 	arenaState mmap.ArenaState,
+	savedDim int,
 ) error {
 
 	// 1. Find dimension from the snapshot data to initialize Arena
-	var dim int
-	for _, node := range nodesMap {
-		if node != nil {
-			switch h.precision {
-			case distance.Float32:
-				if len(node.VectorF32) > 0 {
-					dim = len(node.VectorF32)
-				}
-			case distance.Float16:
-				if len(node.VectorF16) > 0 {
-					dim = len(node.VectorF16)
-				}
-			case distance.Int8:
-				if len(node.VectorI8) > 0 {
-					dim = len(node.VectorI8)
-				}
-			}
-			if dim > 0 {
-				break
-			}
+	if savedDim > 0 {
+		if err := h.initArenaIfNeeded(savedDim); err != nil {
+			return err
 		}
-	}
-
-	// 2. Init Arena
-	if err := h.initArenaIfNeeded(dim); err != nil {
-		return err
 	}
 
 	// 2.1. Restore Arena state
