@@ -80,3 +80,23 @@ func (s *KVStore) RLock() {
 func (s *KVStore) RUnlock() {
 	s.mu.RUnlock()
 }
+
+// GetKeysWithPrefix returns a slice of keys that start with the given prefix.
+// It limits the number of returned keys to 'limit' to prevent memory spikes.
+// If limit <= 0, returns all matching keys.
+func (s *KVStore) GetKeysWithPrefix(prefix string, limit int) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var keys []string
+	for k := range s.data {
+		// Fast prefix check
+		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
+			keys = append(keys, k)
+			if limit > 0 && len(keys) >= limit {
+				break
+			}
+		}
+	}
+	return keys
+}

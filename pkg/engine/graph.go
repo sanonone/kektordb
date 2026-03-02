@@ -742,15 +742,17 @@ func (e *Engine) RunGraphVacuum() {
 	}
 
 	// 2. Scan & Prune
-	keys := e.DB.GetKVStore().Keys()
 	prunedTotal := 0
 
-	for i, key := range keys {
-		if len(key) > 4 && (key[:4] == "rel:" || key[:4] == "rev:") {
-			changed, _ := e.PruneEdgeList(key, retention)
-			if changed {
-				prunedTotal++
-			}
+	relKeys := e.DB.GetKVStore().GetKeysWithPrefix("rel:", 0)
+	revKeys := e.DB.GetKVStore().GetKeysWithPrefix("rev:", 0)
+
+	allKeys := append(relKeys, revKeys...)
+
+	for i, key := range allKeys {
+		changed, _ := e.PruneEdgeList(key, retention)
+		if changed {
+			prunedTotal++
 		}
 
 		// Yield to avoid blocking writer lock in PruneEdgeList for too long continuously

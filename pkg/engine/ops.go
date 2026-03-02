@@ -40,11 +40,6 @@ func (e *Engine) KVSet(key string, value []byte) error {
 	// 2. Memory
 	e.DB.GetKVStore().Set(key, value)
 
-	// Instant flush for single operations (durability)
-	if err := e.AOF.Flush(); err != nil {
-		return fmt.Errorf("CRITICAL: persistence flush failed: %w", err)
-	}
-
 	atomic.AddInt64(&e.dirtyCounter, 1)
 	return nil
 }
@@ -165,10 +160,6 @@ func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int
 			}
 		}
 
-		// Instant flush
-		if errF := e.AOF.Flush(); errF != nil {
-			return fmt.Errorf("CRITICAL: persistence flush failed: %w", errF)
-		}
 	}
 	return err
 }
@@ -202,11 +193,6 @@ func (e *Engine) VDeleteIndex(name string) error {
 				slog.Debug("Arena directory physically deleted", "path", path)
 			}
 		}(arenaPath)
-
-		// Instant flush for single operations (durability)
-		if errF := e.AOF.Flush(); errF != nil {
-			return fmt.Errorf("CRITICAL: persistence flush failed: %w", errF)
-		}
 
 	}
 	return err
@@ -286,11 +272,6 @@ func (e *Engine) VAdd(indexName, id string, vector []float32, metadata map[strin
 		return fmt.Errorf("CRITICAL: persistence failed (data in RAM only): %w", err)
 	}
 
-	// Instant flush for single operations (durability)
-	if err := e.AOF.Flush(); err != nil {
-		return fmt.Errorf("CRITICAL: persistence flush failed: %w", err)
-	}
-
 	metrics.TotalVectors.WithLabelValues(indexName).Inc()
 
 	atomic.AddInt64(&e.dirtyCounter, 1)
@@ -328,11 +309,6 @@ func (e *Engine) VDelete(indexName, id string) error {
 		return fmt.Errorf("persistence error: %w", err)
 	}
 
-	// Instant flush for single operations (durability)
-	if err := e.AOF.Flush(); err != nil {
-		return fmt.Errorf("CRITICAL: persistence flush failed: %w", err)
-	}
-
 	atomic.AddInt64(&e.dirtyCounter, 1)
 
 	// --- 3. CASCADE DELETE (GRAPH INTEGRITY) ---
@@ -340,30 +316,23 @@ func (e *Engine) VDelete(indexName, id string) error {
 	// and we don't want to block the client API response for graph cleanup.
 	// The DB becomes "Eventually Consistent" on graph edges (usually within microseconds).
 	go func(deadNodeID string) {
-		// To do a full cascade, we ideally need to know ALL relations that might point here.
-		// Since we don't have a "Get All Reverse Keys" method that is fast, we will scan the KV store
-		// for keys starting with "rev:" and ending with our ID.
-
-		keys := e.DB.GetKVStore().Keys() // Note: This allocates. Acceptable in async for now.
-
 		// The reverse key format is: rev:<target_id>:<rel_type>
 		// We are the target being deleted. We look for keys starting with "rev:" + deadNodeID + ":"
 		searchPrefix := fmt.Sprintf("%s:%s:", prefixRev, deadNodeID)
 
-		for _, key := range keys {
-			if len(key) > len(searchPrefix) && key[:len(searchPrefix)] == searchPrefix {
-				// We found an incoming edge list!
-				// We need to figure out the relationType
-				relType := key[len(searchPrefix):]
+		keys := e.DB.GetKVStore().GetKeysWithPrefix(searchPrefix, 0)
 
-				// Get the sources that point to us
-				sources, found := e.VGetIncoming(deadNodeID, relType)
-				if found {
-					for _, sourceID := range sources {
-						// Unlink them! (Soft Delete, hardDelete = false)
-						// This will update both 'rel:source:relType' and 'rev:target:relType'
-						_ = e.VUnlink(sourceID, deadNodeID, relType, "", false)
-					}
+		for _, key := range keys {
+			// We need to figure out the relationType
+			relType := key[len(searchPrefix):]
+
+			// Get the sources that point to us
+			sources, found := e.VGetIncoming(deadNodeID, relType)
+			if found {
+				for _, sourceID := range sources {
+					// Unlink them! (Soft Delete, hardDelete = false)
+					// This will update both 'rel:source:relType' and 'rev:target:relType'
+					_ = e.VUnlink(sourceID, deadNodeID, relType, "", false)
 				}
 			}
 		}

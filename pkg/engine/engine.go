@@ -213,9 +213,10 @@ func (e *Engine) Close() error {
 // (Unexported: internal use only)
 func (e *Engine) backgroundTasks() {
 	defer e.wg.Done()
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(1 * time.Second) // ticker for snapshot and aof rewrite
 	defer ticker.Stop()
 
+	// ticker for hnsw refine
 	// Use the configured value or a safe default if 0
 	interval := e.opts.MaintenanceInterval
 	if interval <= 0 {
@@ -225,12 +226,18 @@ func (e *Engine) backgroundTasks() {
 	maintTicker := time.NewTicker(interval)
 	defer maintTicker.Stop()
 
+	// ticker for graph vacuum
 	graphTicker := time.NewTicker(1 * time.Hour) // Check hourly
 	defer graphTicker.Stop()
+
+	// ticker for aof flusher
+	flushTicker := time.NewTicker(100 * time.Millisecond)
+	defer flushTicker.Stop()
 
 	for {
 		select {
 		case <-e.closed:
+			e.AOF.Flush() // last flush before close
 			return
 		case <-ticker.C:
 			e.checkMaintenance()
@@ -238,6 +245,11 @@ func (e *Engine) backgroundTasks() {
 			e.DB.RunMaintenance() // Graph Healing/Refine logic
 		case <-graphTicker.C:
 			e.RunGraphVacuum() // Global Graph Vacuum
+		case <-flushTicker.C:
+			if err := e.AOF.Flush(); err != nil {
+				// We don't panic here to keep DB alive, but log the issue
+				slog.Warn("Background AOF flush failed", "error", err)
+			}
 		}
 	}
 }
