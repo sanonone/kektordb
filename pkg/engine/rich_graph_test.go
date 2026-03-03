@@ -51,8 +51,8 @@ func TestRichGraphFeatures(t *testing.T) {
 		if edge.Weight != inputWeight {
 			t.Errorf("Wrong weight. Expected %f, got %f", inputWeight, edge.Weight)
 		}
-		if !reflect.DeepEqual(edge.Props, inputProps) {
-			t.Errorf("Wrong properties. Expected %v, got %v", inputProps, edge.Props)
+		if !reflect.DeepEqual(edge.GetProps(), inputProps) {
+			t.Errorf("Wrong properties. Expected %v, got %v", inputProps, edge.GetProps())
 		}
 		if edge.CreatedAt == 0 {
 			t.Error("CreatedAt timestamp was not set")
@@ -78,8 +78,8 @@ func TestRichGraphFeatures(t *testing.T) {
 			t.Errorf("Reverse target mismatch. Expected %s, got %s", source, revEdge.TargetID)
 		}
 		// Properties should have been duplicated to reverse link
-		if !reflect.DeepEqual(revEdge.Props, inputProps) {
-			t.Errorf("Reverse properties missing. Got %v", revEdge.Props)
+		if !reflect.DeepEqual(revEdge.GetProps(), inputProps) {
+			t.Errorf("Reverse properties missing. Got %v", revEdge.GetProps())
 		}
 	})
 

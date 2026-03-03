@@ -42,8 +42,8 @@ func TestGraphEvolution(t *testing.T) {
 	if len(edgesNow) != 1 {
 		t.Fatalf("Expected 1 active edge now, got %d", len(edgesNow))
 	}
-	if edgesNow[0].Props["role"] != "senior" {
-		t.Errorf("Evolution failed. Expected 'senior', got %v", edgesNow[0].Props["role"])
+	if edgesNow[0].GetProps()["role"] != "senior" {
+		t.Errorf("Evolution failed. Expected 'senior', got %v", edgesNow[0].GetProps()["role"])
 	}
 
 	// B. Check Past (Time Travel to T1, before the update)
@@ -54,8 +54,8 @@ func TestGraphEvolution(t *testing.T) {
 	if len(edgesPast) != 1 {
 		t.Fatalf("Time travel failed. Expected 1 edge in past, got %d", len(edgesPast))
 	}
-	if edgesPast[0].Props["role"] != "junior" {
-		t.Errorf("Time travel history lost. Expected 'junior', got %v", edgesPast[0].Props["role"])
+	if edgesPast[0].GetProps()["role"] != "junior" {
+		t.Errorf("Time travel history lost. Expected 'junior', got %v", edgesPast[0].GetProps()["role"])
 	}
 
 	// C. Check Idempotency (Update with SAME props)

@@ -1,10 +1,10 @@
 package engine
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"reflect"
 	"sync/atomic"
 	"time"
 
@@ -84,16 +84,26 @@ func (e *Engine) VLink(sourceID, targetID, relationType, inverseRelationType str
 
 	now := time.Now().UnixNano()
 
+	// Serialize Props to raw bytes for GC efficiency
+	var rawProps json.RawMessage
+	if len(props) > 0 {
+		b, err := json.Marshal(props)
+		if err != nil {
+			return fmt.Errorf("failed to marshal edge properties: %w", err)
+		}
+		rawProps = b
+	}
+
 	// 1. Forward Link: Source -> Target
 	// Key: rel:source:type -> [target]
-	if err := e.updateAdjacencyList(prefixRel, sourceID, relationType, targetID, true, false, now, weight, props); err != nil {
+	if err := e.updateAdjacencyList(prefixRel, sourceID, relationType, targetID, true, false, now, weight, rawProps); err != nil {
 		return err
 	}
 
 	// 2. Reverse Link: Target <- Source (Implicit)
 	// Key: rev:target:type -> [source]
 	// This allows asking: "Who points to Target via 'relationType'?"
-	if err := e.updateAdjacencyList(prefixRev, targetID, relationType, sourceID, true, false, now, weight, props); err != nil {
+	if err := e.updateAdjacencyList(prefixRev, targetID, relationType, sourceID, true, false, now, weight, rawProps); err != nil {
 		return err
 	}
 
@@ -101,11 +111,11 @@ func (e *Engine) VLink(sourceID, targetID, relationType, inverseRelationType str
 	// If the user specified an explicit inverse semantic, we link that too.
 	if inverseRelationType != "" {
 		// Forward: Target -> Source
-		if err := e.updateAdjacencyList(prefixRel, targetID, inverseRelationType, sourceID, true, false, now, weight, props); err != nil {
+		if err := e.updateAdjacencyList(prefixRel, targetID, inverseRelationType, sourceID, true, false, now, weight, rawProps); err != nil {
 			return err
 		}
 		// Reverse: Source <- Target
-		if err := e.updateAdjacencyList(prefixRev, sourceID, inverseRelationType, targetID, true, false, now, weight, props); err != nil {
+		if err := e.updateAdjacencyList(prefixRev, sourceID, inverseRelationType, targetID, true, false, now, weight, rawProps); err != nil {
 			return err
 		}
 	}
@@ -153,7 +163,7 @@ func (e *Engine) VUnlink(sourceID, targetID, relationType, inverseRelationType s
 // relType: type of relationship
 // valueID: the ID to add/remove from the list
 // isAdd: true to add, false to remove
-func (e *Engine) updateAdjacencyList(prefix, rootID, relType, targetID string, isAdd bool, hardDelete bool, timestamp int64, weight float32, props map[string]any) error {
+func (e *Engine) updateAdjacencyList(prefix, rootID, relType, targetID string, isAdd bool, hardDelete bool, timestamp int64, weight float32, rawProps json.RawMessage) error {
 	key := makeGraphKey(prefix, rootID, relType)
 
 	var edges EdgeList
@@ -190,7 +200,8 @@ func (e *Engine) updateAdjacencyList(prefix, rootID, relType, targetID string, i
 			// Compare properties and weight
 			// Note: reflect.DeepEqual handles nil maps vs empty maps slightly differently,
 			// but for our purpose it's a good enough check for "Has Changed".
-			propsChanged := !reflect.DeepEqual(currentEdge.Props, props)
+			// bytes.Equal is orders of magnitude faster than reflect.DeepEqual on maps.
+			propsChanged := !bytes.Equal(currentEdge.Props, rawProps)
 			weightChanged := currentEdge.Weight != weight
 
 			if propsChanged || weightChanged {
@@ -204,7 +215,7 @@ func (e *Engine) updateAdjacencyList(prefix, rootID, relType, targetID string, i
 					CreatedAt: timestamp, // Born Now
 					DeletedAt: 0,         // Active
 					Weight:    weight,
-					Props:     props,
+					Props:     rawProps, // store raw bytes
 				}
 				edges = append(edges, newEdge)
 				hasChanges = true
@@ -220,7 +231,7 @@ func (e *Engine) updateAdjacencyList(prefix, rootID, relType, targetID string, i
 				CreatedAt: timestamp,
 				DeletedAt: 0,
 				Weight:    weight,
-				Props:     props,
+				Props:     rawProps,
 			}
 			edges = append(edges, newEdge)
 			hasChanges = true
