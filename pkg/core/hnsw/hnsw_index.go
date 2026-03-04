@@ -88,8 +88,9 @@ type Index struct {
 
 	visitedPool sync.Pool
 
-	minHeapPool sync.Pool
-	maxHeapPool sync.Pool
+	minHeapPool   sync.Pool
+	maxHeapPool   sync.Pool
+	neighborsPool sync.Pool
 	// candidateObjectPool sync.Pool
 
 	optimizer *GraphOptimizer
@@ -146,6 +147,13 @@ func New(m int, efConstruction int, metric distance.DistanceMetric, precision di
 	}
 	h.maxHeapPool = sync.Pool{
 		New: func() any { return newMaxHeap(efConstruction) },
+	}
+
+	h.neighborsPool = sync.Pool{
+		New: func() any {
+			s := make([]uint32, 0, m*2)
+			return &s
+		},
 	}
 
 	// Init atomic slices
@@ -1341,7 +1349,8 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 		return nil
 	}
 
-	// 1. Check dimensione grafo (Logica esistente per sequenziale su grafi piccoli)
+	// Check dimensione grafo: sotto soglia, usiamo Add() singolo per non
+	// sprecare l'overhead del batch su grafi ancora piccoli.
 	h.metaMu.RLock()
 	currentSize := h.nodeCounter.Load()
 	h.metaMu.RUnlock()
@@ -1357,25 +1366,22 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 	}
 
 	// =========================================================================
-	// PHASE 0.A: AUTO-TRAINING QUANTIZER (Safe Pre-check)
+	// PHASE 0.A: AUTO-TRAINING QUANTIZER (invariata)
 	// =========================================================================
 	if h.precision == distance.Int8 {
 		if h.quantizer != nil && h.quantizer.AbsMax == 0 {
-			// Raccogliamo i vettori per il training
 			log.Printf("[HNSW] Auto-training quantizer on batch of %d vectors", numVectors)
 			trainingData := make([][]float32, len(objects))
 			for i := range objects {
 				trainingData[i] = objects[i].Vector
 			}
-			h.quantizer.Train(trainingData) // Ora Train è veloce grazie al sampling che abbiamo messo!
+			h.quantizer.Train(trainingData)
 		}
 	}
 
 	// =========================================================================
-	// PHASE 0.B: PARALLEL PRE-PROCESSING (CPU Bound - No Global Lock)
+	// PHASE 0.B: PARALLEL PRE-PROCESSING (invariata)
 	// =========================================================================
-	// Convertiamo i vettori in parallelo.
-
 	precomputedVectors := make([]interface{}, numVectors)
 	var wgConv sync.WaitGroup
 	workers := runtime.NumCPU()
@@ -1390,54 +1396,42 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 		if start >= end {
 			continue
 		}
-
 		wgConv.Add(1)
 		go func(start, end int) {
 			defer wgConv.Done()
-
-			// Per Int8 usiamo il quantizzatore (che ora è sicuro essere trainato)
 			var localQuantizer *distance.Quantizer
 			if h.precision == distance.Int8 {
 				localQuantizer = h.quantizer
 			}
-
 			for i := start; i < end; i++ {
 				vec := objects[i].Vector
-
 				if h.metric == distance.Cosine && h.precision == distance.Float32 {
-					// Normalizzazione in-place (safe se la slice è di proprietà del batch)
 					normalize(vec)
 					precomputedVectors[i] = vec
 				} else if h.precision == distance.Float32 {
 					precomputedVectors[i] = vec
 				} else if h.precision == distance.Float16 {
-					// Conversione costosa F32->F16 parallelizzata
 					f16Vec := make([]uint16, len(vec))
 					for j, v := range vec {
 						f16Vec[j] = float16.Fromfloat32(v).Bits()
 					}
 					precomputedVectors[i] = f16Vec
 				} else if h.precision == distance.Int8 {
-					// Quantizzazione costosa parallelizzata
 					if localQuantizer != nil {
 						precomputedVectors[i] = localQuantizer.Quantize(vec)
 					} else {
-						// Fallback (non dovrebbe accadere grazie a Phase 0.A)
 						precomputedVectors[i] = make([]int8, len(vec))
 					}
 				}
 			}
 		}(start, end)
 	}
-	wgConv.Wait() // Aspettiamo che tutti i vettori siano pronti
+	wgConv.Wait()
 
 	// =========================================================================
-	// PHASE 1: GLOBAL ALLOCATION (Metadata - Short Lock) mmap
+	// PHASE 1A: SOLO METADATA — il lock dura microsecondi, non millisecondi
 	// =========================================================================
-
-	h.metaMu.Lock()
-
-	// 1. Determine dimension for Arena from the batch
+	// Calcoliamo batchDim fuori dal lock: è una lettura su objects, non su stato condiviso.
 	var batchDim int
 	for _, obj := range objects {
 		if len(obj.Vector) > 0 {
@@ -1446,8 +1440,11 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 		}
 	}
 	if batchDim == 0 {
-		batchDim = h.vectorDim // fallback if already set
+		batchDim = h.vectorDim
 	}
+
+	h.metaMu.Lock()
+
 	if batchDim > 0 {
 		if err := h.initArenaIfNeeded(batchDim); err != nil {
 			h.metaMu.Unlock()
@@ -1455,103 +1452,148 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 		}
 	}
 
-	// Reserve IDs
-	startID := h.nodeCounter.Add(uint64(numVectors)) - uint64(numVectors)
-	lastID := uint32(startID + uint64(numVectors) - 1)
-
-	h.growNodes(lastID)
-	newNodes := make([]*Node, numVectors)
-
-	nodes := h.getNodes()
-
-	for i, obj := range objects {
-		internalID := uint32(startID + uint64(i))
-
+	// Duplicate check: fatto tutto dentro il lock per essere atomico rispetto
+	// ad altri writer concorrenti che potrebbero inserire gli stessi ID.
+	for _, obj := range objects {
 		if _, exists := h.externalToInternalID[obj.Id]; exists {
 			h.metaMu.Unlock()
 			return fmt.Errorf("ID '%s' already exists", obj.Id)
 		}
-
-		storedVector := precomputedVectors[i]
-
-		// Norm calculation for Int8
-		if h.precision == distance.Int8 {
-			if vecI8, ok := storedVector.([]int8); ok {
-				h.LockNode(internalID)
-				h.getNorms()[internalID] = computeInt8Norm(vecI8)
-				h.UnlockNode(internalID)
-			}
-		}
-
-		// --- ZERO-COPY NODE CREATION ---
-		node := &Node{Id: obj.Id, InternalID: internalID}
-
-		if h.arena != nil {
-			// alloc slot
-			if _, err := h.arena.AllocSlot(internalID); err != nil {
-				h.metaMu.Unlock()
-				return fmt.Errorf("arena slot alloc failed for batch: %w", err)
-			}
-
-			vecBytes, err := h.arena.GetBytes(internalID)
-			if err != nil {
-				h.metaMu.Unlock()
-				return fmt.Errorf("arena alloc failed for batch: %w", err)
-			}
-
-			switch h.precision {
-			case distance.Float32:
-				src := storedVector.([]float32)
-				dst := mmap.BytesToFloat32Slice(vecBytes, h.vectorDim)
-				if len(src) > 0 {
-					copy(dst, src)
-				}
-				node.VectorF32 = dst
-			case distance.Float16:
-				src := storedVector.([]uint16)
-				dst := mmap.BytesToUint16Slice(vecBytes, h.vectorDim)
-				if len(src) > 0 {
-					copy(dst, src)
-				}
-				node.VectorF16 = dst
-			case distance.Int8:
-				src := storedVector.([]int8)
-				dst := mmap.BytesToInt8Slice(vecBytes, h.vectorDim)
-				if len(src) > 0 {
-					copy(dst, src)
-				}
-				node.VectorI8 = dst
-			}
-		} else {
-			// Fallback (RAM-only)
-			switch h.precision {
-			case distance.Float32:
-				node.VectorF32 = storedVector.([]float32)
-			case distance.Float16:
-				node.VectorF16 = storedVector.([]uint16)
-			case distance.Int8:
-				node.VectorI8 = storedVector.([]int8)
-			}
-		}
-		// -------------------------------
-
-		level := h.randomLevel()
-		node.Connections = make([][]uint32, level+1)
-
-		newNodes[i] = node
-		h.LockNode(internalID)
-		nodes[internalID] = node
-		h.UnlockNode(internalID)
-		h.externalToInternalID[node.Id] = internalID
-		h.internalToExternalID[internalID] = node.Id
 	}
 
-	if int(h.maxLevel.Load()) == -1 {
-		h.entrypointID.Store(newNodes[0].InternalID)
+	// Riserva un blocco contiguo di ID in un'unica operazione atomica.
+	startID := h.nodeCounter.Add(uint64(numVectors)) - uint64(numVectors)
+	lastID := uint32(startID + uint64(numVectors) - 1)
+	h.growNodes(lastID)
+
+	// Registriamo subito i mapping nei dizionari: da questo momento, altri
+	// writer che cercano di inserire gli stessi ID esterni falliranno al
+	// duplicate check sopra. I nodi nell'array saranno nil finché la Phase 1B
+	// non li scrive, ma i reader già gestiscono i nil con un semplice skip.
+	for i, obj := range objects {
+		internalID := uint32(startID + uint64(i))
+		h.externalToInternalID[obj.Id] = internalID
+		h.internalToExternalID[internalID] = obj.Id
+	}
+
+	isFirstBatch := int(h.maxLevel.Load()) == -1
+	if isFirstBatch {
+		h.entrypointID.Store(uint32(startID))
 		h.maxLevel.Store(0)
 	}
 
 	h.metaMu.Unlock()
+	// ← Da qui in poi: nessun global lock per tutto il lavoro pesante.
+	//   Il tempo sotto metaMu è ora O(N) map writes, non O(N * dim) memcpy.
+
+	// =========================================================================
+	// PHASE 1B: CREAZIONE NODI IN PARALLELO (CPU/IO Bound, zero global lock)
+	// =========================================================================
+	// Ogni goroutine lavora su un sottoinsieme di internalID disgiunti.
+	// Non c'è conflitto perché growNodes ha già dimensionato l'array per lastID,
+	// e ogni slot nodes[internalID] è "posseduto" da una sola goroutine.
+	//
+	// Precondizione: arena.AllocSlot e arena.GetBytes devono essere thread-safe
+	// per ID distinti. Se usano offset = id * slotSize sono già lock-free per
+	// costruzione (ogni goroutine scrive in regioni di memoria disgiunte).
+	newNodes := make([]*Node, numVectors)
+
+	// Canale per propagare errori arena dalle goroutine al chiamante.
+	// Usiamo buffer numVectors per non bloccare mai le goroutine.
+	errCh := make(chan error, numVectors)
+
+	var wgNodes sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		start := w * chunkSize
+		end := start + chunkSize
+		if end > numVectors {
+			end = numVectors
+		}
+		if start >= end {
+			continue
+		}
+		wgNodes.Add(1)
+		go func(start, end int) {
+			defer wgNodes.Done()
+			for i := start; i < end; i++ {
+				internalID := uint32(startID + uint64(i))
+				storedVector := precomputedVectors[i]
+
+				// Scrittura nella norm array: slot distinti, nessun lock necessario.
+				if h.precision == distance.Int8 {
+					if vecI8, ok := storedVector.([]int8); ok {
+						h.getNorms()[internalID] = computeInt8Norm(vecI8)
+					}
+				}
+
+				node := &Node{Id: objects[i].Id, InternalID: internalID}
+
+				if h.arena != nil {
+					if _, err := h.arena.AllocSlot(internalID); err != nil {
+						errCh <- fmt.Errorf("arena slot alloc failed for batch: %w", err)
+						return
+					}
+					vecBytes, err := h.arena.GetBytes(internalID)
+					if err != nil {
+						errCh <- fmt.Errorf("arena alloc failed for batch: %w", err)
+						return
+					}
+					switch h.precision {
+					case distance.Float32:
+						src := storedVector.([]float32)
+						dst := mmap.BytesToFloat32Slice(vecBytes, h.vectorDim)
+						if len(src) > 0 {
+							copy(dst, src)
+						}
+						node.VectorF32 = dst
+					case distance.Float16:
+						src := storedVector.([]uint16)
+						dst := mmap.BytesToUint16Slice(vecBytes, h.vectorDim)
+						if len(src) > 0 {
+							copy(dst, src)
+						}
+						node.VectorF16 = dst
+					case distance.Int8:
+						src := storedVector.([]int8)
+						dst := mmap.BytesToInt8Slice(vecBytes, h.vectorDim)
+						if len(src) > 0 {
+							copy(dst, src)
+						}
+						node.VectorI8 = dst
+					}
+				} else {
+					// Fallback RAM-only
+					switch h.precision {
+					case distance.Float32:
+						node.VectorF32 = storedVector.([]float32)
+					case distance.Float16:
+						node.VectorF16 = storedVector.([]uint16)
+					case distance.Int8:
+						node.VectorI8 = storedVector.([]int8)
+					}
+				}
+
+				level := h.randomLevel()
+				node.Connections = make([][]uint32, level+1)
+				newNodes[i] = node
+
+				// Scrivi il puntatore nell'array globale usando il shard lock.
+				// Usiamo h.getNodes() fresco (atomic load) e non una var catturata
+				// prima del lock, perché un Add() concorrente potrebbe aver fatto
+				// crescere il backing array con copy-on-write nel frattempo.
+				h.LockNode(internalID)
+				h.getNodes()[internalID] = node
+				h.UnlockNode(internalID)
+			}
+		}(start, end)
+	}
+	wgNodes.Wait()
+	close(errCh)
+
+	// Raccogliamo il primo errore arena, se c'è stato.
+	if err := <-errCh; err != nil {
+		return err
+	}
 
 	// =========================================================================
 	// PHASE 1: PARALLEL NEIGHBOR CALCULATION (CPU Bound)
@@ -1752,10 +1794,12 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 				}
 
 				// Raggruppiamo le richieste per livello
-				newNeighborsPerLevel := make(map[int][]uint32)
+				newNeighborsPerLevel := make([][]uint32, maxLvl+1)
 				for k := idx; k < endIdx; k++ {
 					lvl := requests[k].Level
-					newNeighborsPerLevel[lvl] = append(newNeighborsPerLevel[lvl], requests[k].NewNeighbors...)
+					if lvl <= maxLvl {
+						newNeighborsPerLevel[lvl] = append(newNeighborsPerLevel[lvl], requests[k].NewNeighbors...)
+					}
 				}
 
 				// Processiamo ogni livello
@@ -2264,6 +2308,9 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 		results.Push(ep)
 	}
 
+	neighborsBuf := h.neighborsPool.Get().(*[]uint32)
+	defer h.neighborsPool.Put(neighborsBuf)
+
 	// 4. HOT LOOP (The bottleneck)
 	for candidates.Len() > 0 {
 		current := candidates.Pop() // Returns value, not pointer
@@ -2299,15 +2346,15 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 		// COPY Pattern: Copy neighbors to avoid holding lock during distance calc
 		// This minimizes contention dramatically.
 		rawConnections := currentNode.Connections[level]
-		neighbors := make([]uint32, len(rawConnections))
-		copy(neighbors, rawConnections)
+		*neighborsBuf = (*neighborsBuf)[:0]
+		*neighborsBuf = append(*neighborsBuf, rawConnections...)
 
 		// Release Lock immediately
 		h.RUnlockNode(current.Id)
 		// ----------------------------------------------
 
 		// Iterate over neighbors (using the copied slice to avoid race conditions)
-		for _, neighborID := range neighbors {
+		for _, neighborID := range *neighborsBuf {
 			// BitSet filter (very fast)
 			if visited.Has(neighborID) {
 				continue
