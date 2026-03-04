@@ -292,7 +292,7 @@ func (e *Engine) replayAOF() error {
 			internalID, err := idx.Add(id, entry.vector)
 			if err == nil && len(entry.metadata) > 0 {
 				delete(entry.metadata, "__deleted")
-				e.DB.AddMetadataUnlocked(name, internalID, entry.metadata)
+				e.DB.AddMetadata(name, internalID, entry.metadata)
 			}
 		}
 	}

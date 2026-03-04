@@ -79,9 +79,6 @@ func (e *Engine) VLink(sourceID, targetID, relationType, inverseRelationType str
 		}
 	}
 
-	e.adminMu.Lock()
-	defer e.adminMu.Unlock()
-
 	now := time.Now().UnixNano()
 
 	// Serialize Props to raw bytes for GC efficiency
@@ -128,8 +125,6 @@ func (e *Engine) VLink(sourceID, targetID, relationType, inverseRelationType str
 // If hardDelete is true, the record is physically removed (cannot be recovered/time-traveled).
 // If hardDelete is false, it sets DeletedAt (Soft Delete).
 func (e *Engine) VUnlink(sourceID, targetID, relationType, inverseRelationType string, hardDelete bool) error {
-	e.adminMu.Lock()
-	defer e.adminMu.Unlock()
 
 	now := time.Now().UnixNano()
 
@@ -165,6 +160,10 @@ func (e *Engine) VUnlink(sourceID, targetID, relationType, inverseRelationType s
 // isAdd: true to add, false to remove
 func (e *Engine) updateAdjacencyList(prefix, rootID, relType, targetID string, isAdd bool, hardDelete bool, timestamp int64, weight float32, rawProps json.RawMessage) error {
 	key := makeGraphKey(prefix, rootID, relType)
+
+	mu := e.getGraphLock(key)
+	mu.Lock()
+	defer mu.Unlock()
 
 	var edges EdgeList
 	val, found := e.DB.GetKVStore().Get(key)
@@ -660,8 +659,9 @@ func (e *Engine) PruneEdgeList(key string, retention time.Duration) (bool, error
 		return false, nil
 	}
 
-	e.adminMu.Lock()
-	defer e.adminMu.Unlock()
+	mu := e.getGraphLock(key)
+	mu.Lock()
+	defer mu.Unlock()
 
 	val, found := e.DB.GetKVStore().Get(key)
 	if !found {

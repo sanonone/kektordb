@@ -70,7 +70,7 @@ func (o *GraphOptimizer) RunCycle(forceType string) bool {
 		if timePassed {
 			// To avoid heavy locks, we do a quick estimate using RLock on the index
 			o.index.metaMu.RLock()
-			nodes := o.index.nodes
+			nodes := o.index.getNodes()
 			total := len(nodes)
 			deleted := 0
 			// Fast scan for statistics (very fast in RAM)
@@ -137,7 +137,7 @@ func (o *GraphOptimizer) Vacuum() bool {
 	// PHASE 1: IDENTIFY DELETED NODES (RLock - allows concurrent queries)
 	// =========================================================================
 	o.index.metaMu.RLock()
-	nodes := o.index.nodes
+	nodes := o.index.getNodes()
 	totalNodes := len(nodes)
 
 	deletedSet := make(map[uint32]struct{})
@@ -158,7 +158,7 @@ func (o *GraphOptimizer) Vacuum() bool {
 	// PHASE 2: IDENTIFY NODES NEEDING REPAIR (RLock)
 	// =========================================================================
 	o.index.metaMu.RLock()
-	nodes = o.index.nodes // Refresh reference
+	nodes = o.index.getNodes() // Refresh reference
 
 	// Collect nodes that need repair
 	nodesToRepair := make([]*Node, 0, totalNodes/10) // Heuristic pre-allocation
@@ -218,7 +218,7 @@ func (o *GraphOptimizer) Vacuum() bool {
 	o.index.metaMu.Lock()
 	defer o.index.metaMu.Unlock()
 
-	nodes = o.index.nodes // Refresh reference
+	nodes = o.index.getNodes() // Refresh reference
 
 	// Entry Point Fix
 	if _, entryIsDead := deletedSet[o.index.entrypointID.Load()]; entryIsDead {
@@ -275,7 +275,7 @@ func (o *GraphOptimizer) Refine() bool {
 	// PHASE 0: PREPARATION (Brief lock to read state)
 	// =========================================================================
 	o.index.metaMu.RLock()
-	nodes := o.index.nodes
+	nodes := o.index.getNodes()
 	totalNodes := len(nodes)
 	entryPoint := o.index.entrypointID.Load()
 	maxID := uint32(o.index.nodeCounter.Load())
@@ -413,7 +413,7 @@ func (o *GraphOptimizer) Refine() bool {
 			defer o.index.shardsMu[sID].Unlock()
 
 			for _, res := range shardResults {
-				node := o.index.nodes[res.nodeID]
+				node := o.index.getNodes()[res.nodeID]
 				if node == nil || node.Deleted.Load() {
 					continue // Node deleted during computation
 				}
@@ -482,7 +482,7 @@ func (o *GraphOptimizer) computeNewConnections(node *Node, entryPoint uint32, ef
 			}
 
 			if !alreadyIn {
-				target := o.index.nodes[nID]
+				target := o.index.getNodes()[nID]
 				if target != nil && !target.Deleted.Load() {
 					dist, _ := o.index.distanceBetweenNodes(node, target)
 					candidates = append(candidates, types.Candidate{Id: nID, Distance: dist})
@@ -584,7 +584,7 @@ func (o *GraphOptimizer) reconnectNode(node *Node, ignoreSet map[uint32]struct{}
 			}
 
 			if !alreadyIn {
-				target := o.index.nodes[nID]
+				target := o.index.getNodes()[nID]
 				if target != nil && !target.Deleted.Load() {
 					dist, _ := o.index.distanceBetweenNodes(node, target)
 					candidates = append(candidates, types.Candidate{Id: nID, Distance: dist})

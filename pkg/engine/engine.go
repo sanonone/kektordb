@@ -16,6 +16,7 @@ package engine
 
 import (
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -106,6 +107,10 @@ type Engine struct {
 	// Mutex for Engine-level administrative tasks (like Rewrite/Save)
 	// Note: core.DB has its own internal granular locks for data access.
 	adminMu sync.Mutex
+
+	// graphLocks protects Read-Modify-Write cycles on graph keys.
+	// We use 128 shards to allow high concurrency on different nodes.
+	graphLocks [128]sync.Mutex
 
 	closed    chan struct{}
 	closeOnce sync.Once
@@ -293,4 +298,13 @@ func (e *Engine) checkMaintenance() {
 			}
 		}
 	}
+}
+
+// getGraphLock returns a specific mutex for a given graph key.
+// It uses FNV-1a hash to distribute keys uniformly across the 128 mutexes.
+func (e *Engine) getGraphLock(key string) *sync.Mutex {
+	h := fnv.New32a()
+	h.Write([]byte(key))
+	shardIdx := h.Sum32() & 127 // Fast modulo 128
+	return &e.graphLocks[shardIdx]
 }

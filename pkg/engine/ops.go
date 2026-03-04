@@ -827,10 +827,9 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 
 	// --- TIME DECAY APPLICATION (Common for both cases) ---
 	if useDecay {
-		e.DB.RLock()
 		for docID, score := range fusedScores {
 			// Retrieve metadata using the internal ID
-			meta := e.DB.GetMetadataForNodeUnlocked(indexName, docID)
+			meta := e.DB.GetMetadataForNode(indexName, docID)
 
 			// DEBUG SAFETY: Ensure meta is not nil
 			if meta == nil {
@@ -879,7 +878,6 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 				fusedScores[docID] = score * factor
 			}
 		}
-		e.DB.RUnlock()
 	}
 
 	// --- FINALIZE ---
@@ -1097,14 +1095,12 @@ func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 	}
 
 	// 2. Persistence Loop & Metadata
-	e.DB.Lock()
 	for _, item := range items {
 		if len(item.Metadata) > 0 {
 			id, _ := hnswIdx.GetInternalID(item.Id)
-			e.DB.AddMetadataUnlocked(indexName, id, item.Metadata) // Covered by e.DB.Lock()
+			e.DB.AddMetadata(indexName, id, item.Metadata)
 		}
 	}
-	e.DB.Unlock()
 
 	for _, item := range items {
 
@@ -1174,14 +1170,12 @@ func (e *Engine) VImport(indexName string, items []types.BatchObject) error {
 	}
 
 	// 2. Add Metadata
-	e.DB.Lock()
 	for _, item := range items {
 		if len(item.Metadata) > 0 {
 			id, _ := hnswIdx.GetInternalID(item.Id)
-			e.DB.AddMetadataUnlocked(indexName, id, item.Metadata)
+			e.DB.AddMetadata(indexName, id, item.Metadata)
 		}
 	}
-	e.DB.Unlock()
 
 	// 3. Immediate Snapshot (Bulk Persistence)
 	// Uses the private version that assumes adminMu is already held.

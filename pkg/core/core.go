@@ -291,6 +291,7 @@ func (s *DB) LoadFromSnapshot(reader io.Reader, basePath string) error {
 		}
 
 		s.vectorIndexes[name] = idx
+		s.indexLocks[name] = &sync.RWMutex{} // Initialize lock on restart
 
 		// Initialize spaces for secondary indexes
 		s.invertedIndex[name] = make(map[string]map[string]map[uint32]struct{})
@@ -604,6 +605,14 @@ func (s *DB) GetVectors(indexName string, vectorIDs []string) ([]VectorData, err
 // Note: This implementation is inefficient as it scans the entire inverted index.
 func (s *DB) getMetadataForNode(indexName string, nodeID uint32) map[string]any {
 	s.mu.RLock()
+	idxMu, exists := s.indexLocks[indexName]
+	if !exists {
+		s.mu.RUnlock()
+		return make(map[string]any)
+	}
+
+	idxMu.RLock()
+	defer idxMu.RUnlock()
 	defer s.mu.RUnlock()
 
 	if idxMap, ok := s.metadataMap[indexName]; ok {
@@ -617,6 +626,11 @@ func (s *DB) getMetadataForNode(indexName string, nodeID uint32) map[string]any 
 		}
 	}
 	return make(map[string]any)
+}
+
+// GetMetadataForNode exposes the internal metadata lookup.
+func (s *DB) GetMetadataForNode(indexName string, nodeID uint32) map[string]any {
+	return s.getMetadataForNode(indexName, nodeID)
 }
 
 // getMetadataForNodeUnlocked is the lock-free version of getMetadataForNode.
@@ -678,6 +692,9 @@ type DB struct {
 	kvStore       *KVStore
 	vectorIndexes map[string]VectorIndex
 
+	// Granular locks per index for metadata operations
+	indexLocks map[string]*sync.RWMutex
+
 	// invertedIndex for metadata filtering.
 	// structure: map[vector index name] -> map[metadata key] -> map[metadata value] -> set[internal node IDs]
 	// e.g., invertedIndex["my_images"]["tags"]["cat"]={1: {}, 5: {}, 34:{}}
@@ -701,6 +718,7 @@ func NewDB() *DB {
 	return &DB{
 		kvStore:        NewKVStore(),
 		vectorIndexes:  make(map[string]VectorIndex),
+		indexLocks:     make(map[string]*sync.RWMutex),
 		invertedIndex:  make(map[string]map[string]map[string]map[uint32]struct{}),
 		bTreeIndex:     make(map[string]map[string]*btree.BTreeG[BTreeItem]),
 		textIndex:      make(InvertedIndex),
@@ -729,6 +747,7 @@ func (s *DB) CreateVectorIndex(name string, metric distance.DistanceMetric, m, e
 	}
 
 	s.vectorIndexes[name] = idx
+	s.indexLocks[name] = &sync.RWMutex{} // Initialize the lock for this index
 
 	// Initialize the metadata space for this new index.
 	s.invertedIndex[name] = make(map[string]map[string]map[uint32]struct{})
@@ -771,6 +790,8 @@ func (s *DB) DeleteVectorIndex(name string) error {
 	}
 
 	delete(s.vectorIndexes, name)
+
+	delete(s.indexLocks, name) // Remove the lock
 
 	delete(s.invertedIndex, name)
 
@@ -920,8 +941,20 @@ func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) err
 
 // AddMetadata associates metadata with a node ID and updates the secondary indexes.
 func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]any) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// 1. Take Global RLock to prevent index deletion
+	s.mu.RLock()
+	idxMu, exists := s.indexLocks[indexName]
+	if !exists {
+		s.mu.RUnlock()
+		return nil
+	}
+
+	// 2. Take specific Index Write Lock
+	idxMu.Lock()
+
+	// Unlocks happen in reverse order!
+	defer idxMu.Unlock()
+	defer s.mu.RUnlock()
 
 	// Get the index configuration to determine which text analyzer to use.
 	idx, ok := s.vectorIndexes[indexName]
@@ -1196,6 +1229,13 @@ func (s *DB) recalculateAvgFieldLengths(indexName string) {
 // by OR, and each resulting block is evaluated as an AND of its sub-filters).
 func (s *DB) FindIDsByFilter(indexName string, filter string) (map[uint32]struct{}, error) {
 	s.mu.RLock()
+	idxMu, exists := s.indexLocks[indexName]
+	if !exists {
+		s.mu.RUnlock()
+		return nil, fmt.Errorf("index not found")
+	}
+	idxMu.RLock()
+	defer idxMu.RUnlock()
 	defer s.mu.RUnlock()
 
 	filter = strings.TrimSpace(filter)
@@ -1472,6 +1512,16 @@ const (
 // FindIDsByTextSearch performs a search on the text index for a given query.
 // It uses the BM25 ranking algorithm to score and sort documents based on relevance.
 func (db *DB) FindIDsByTextSearch(indexName, fieldName, queryText string) ([]types.SearchResult, error) {
+	db.mu.RLock()
+	idxMu, exists := db.indexLocks[indexName]
+	if !exists {
+		db.mu.RUnlock()
+		return nil, fmt.Errorf("index not found")
+	}
+	idxMu.RLock()
+	defer idxMu.RUnlock()
+	defer db.mu.RUnlock()
+
 	idx, ok := db.vectorIndexes[indexName]
 	if !ok {
 		return nil, fmt.Errorf("index '%s' not found", indexName)
