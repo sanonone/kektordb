@@ -181,6 +181,17 @@ type GraphFindPathRequest struct {
 	AtTime    int64    `json:"at_time"` // Optional: find path as it existed in the past
 }
 
+// --- Graph Discovery (All Relations) ---
+
+type GraphGetAllRelationsRequest struct {
+	NodeID string `json:"node_id"`
+}
+
+type GraphGetAllRelationsResponse struct {
+	NodeID    string              `json:"node_id"`
+	Relations map[string][]string `json:"relations"`
+}
+
 // Response uses engine.SubgraphResult directly
 
 type UIExploreRequest struct {

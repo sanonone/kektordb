@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -436,12 +437,63 @@ func (e *Engine) resolveGraphFilter(indexName string, q GraphQuery) (map[uint32]
 	return allowedSet, nil
 }
 
-// VGetRelations retrieves ALL relationships for a node is technically possible by scanning keys,
-// but efficiently supported only via known types for now.
+// VGetRelations retrieves ALL active outgoing relationships for a node.
+// It returns a map where the key is the relationType and the value is a list of target IDs.
+// Useful for graph discovery and Agentic Context Gathering.
 func (e *Engine) VGetRelations(sourceID string) map[string][]string {
-	// Not implemented efficiently in v0.4.1 (Requires prefix scan support in KVStore).
-	// Placeholder for future implementation.
-	return nil
+	prefix := fmt.Sprintf("%s:%s:", prefixRel, sourceID)
+
+	keys := e.DB.GetKVStore().GetKeysWithPrefix(prefix, 0)
+
+	if len(keys) == 0 {
+		return nil
+	}
+
+	result := make(map[string][]string)
+
+	for _, key := range keys {
+		// Extracts the relationship type from the key.
+		// Example: "rel:DocA:mentions" -> removing the prefix leaves "mentions"
+		relType := strings.TrimPrefix(key, prefix)
+
+		// 1. Decode the JSON (EdgeList)
+		// 2. Filter out "Soft Deleted" links over time (return only live ones)
+		targets, found := e.VGetLinks(sourceID, relType)
+		if found && len(targets) > 0 {
+			result[relType] = targets
+		}
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
+
+	return result
+}
+
+// VGetIncomingRelations retrieves ALL active incoming relationships for a node.
+// Answers the question: "Who points to me, and why?"
+func (e *Engine) VGetIncomingRelations(targetID string) map[string][]string {
+	prefix := fmt.Sprintf("%s:%s:", prefixRev, targetID)
+	keys := e.DB.GetKVStore().GetKeysWithPrefix(prefix, 0)
+
+	if len(keys) == 0 {
+		return nil
+	}
+
+	result := make(map[string][]string)
+	for _, key := range keys {
+		relType := strings.TrimPrefix(key, prefix)
+		sources, found := e.VGetIncoming(targetID, relType)
+		if found && len(sources) > 0 {
+			result[relType] = sources
+		}
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 // --- Advanced Graph Operations ---

@@ -77,6 +77,8 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /graph/actions/search-nodes", s.handleGraphSearchNodes)
 	mux.HandleFunc("POST /graph/actions/get-edges", s.handleGraphGetEdges)
 	mux.HandleFunc("POST /graph/actions/find-path", s.handleGraphFindPath)
+	mux.HandleFunc("POST /graph/actions/get-all-relations", s.handleGraphGetAllRelations)
+	mux.HandleFunc("POST /graph/actions/get-all-incoming", s.handleGraphGetAllIncoming)
 
 	mux.HandleFunc("POST /rag/retrieve", s.handleRagRetrieve)
 
@@ -916,6 +918,55 @@ func (s *Server) handleGraphFindPath(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeHTTPResponse(w, http.StatusOK, result)
+}
+
+// handleGraphGetAllRelations returns all outgoing links from a node, grouped by relation type.
+func (s *Server) handleGraphGetAllRelations(w http.ResponseWriter, r *http.Request) {
+	var req GraphGetAllRelationsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON"))
+		return
+	}
+
+	if req.NodeID == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("node_id is required"))
+		return
+	}
+
+	relations := s.Engine.VGetRelations(req.NodeID)
+	if relations == nil {
+		// Ritorniamo una mappa vuota invece di null per comodità dei client
+		relations = make(map[string][]string)
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, GraphGetAllRelationsResponse{
+		NodeID:    req.NodeID,
+		Relations: relations,
+	})
+}
+
+// handleGraphGetAllIncoming returns all incoming links to a node, grouped by relation type.
+func (s *Server) handleGraphGetAllIncoming(w http.ResponseWriter, r *http.Request) {
+	var req GraphGetAllRelationsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON"))
+		return
+	}
+
+	if req.NodeID == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("node_id is required"))
+		return
+	}
+
+	relations := s.Engine.VGetIncomingRelations(req.NodeID)
+	if relations == nil {
+		relations = make(map[string][]string)
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, GraphGetAllRelationsResponse{
+		NodeID:    req.NodeID,
+		Relations: relations,
+	})
 }
 
 // handleRagRetrieve performs a semantic search using a configured pipeline.
