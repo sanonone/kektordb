@@ -98,7 +98,7 @@ type Engine struct {
 	opts        Options
 	aofPath     string
 	snapPath    string
-	aofBaseSize int64
+	aofBaseSize atomic.Int64
 
 	// DirtyCounter tracks the number of write operations since the last save.
 	dirtyCounter int64
@@ -175,7 +175,7 @@ func Open(opts Options) (*Engine, error) {
 
 	// Record AOF size for Rewrite logic
 	info, _ := e.AOF.File().Stat()
-	e.aofBaseSize = info.Size()
+	e.aofBaseSize.Store(info.Size())
 
 	// 4. Start Background Tasks
 	e.wg.Add(1)
@@ -285,13 +285,14 @@ func (e *Engine) checkMaintenance() {
 		info, err := e.AOF.File().Stat()
 		if err == nil {
 			currentSize := info.Size()
-			threshold := e.aofBaseSize + (e.aofBaseSize * int64(e.opts.AofRewritePercentage) / 100)
+			baseSize := e.aofBaseSize.Load()
+			threshold := baseSize + (baseSize * int64(e.opts.AofRewritePercentage) / 100)
 			// Min threshold 1MB to avoid rewriting tiny files constantly
 			if threshold < 1024*1024 {
 				threshold = 1024 * 1024
 			}
 
-			if e.aofBaseSize > 0 && currentSize > threshold {
+			if baseSize > 0 && currentSize > threshold {
 				if err := e.RewriteAOF(); err != nil {
 					slog.Error("Background AOF rewrite failed", "error", err)
 				}

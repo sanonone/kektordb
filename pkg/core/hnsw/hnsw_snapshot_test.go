@@ -72,6 +72,17 @@ func TestSnapshotAndReload(t *testing.T) {
 	arenaState := idx.GetArenaState()
 	vectorDim := idx.GetDimension() // Prendi la dimensione
 
+	// Simula l'effetto della serializzazione gob: i vettori mmap non vengono salvati (vedi TestNodeGobSerialization).
+	// Se non lo facciamo, quando idx.Close() unmap la memoria, LoadSnapshotData andrà in segmentation fault
+	// cercando di copiare da questi vecchi puntatori.
+	for _, n := range nodes {
+		if n != nil {
+			n.VectorF32 = nil
+			n.VectorF16 = nil
+			n.VectorI8 = nil
+		}
+	}
+
 	// Chiudi per permettere riapertura su Windows
 	idx.Close()
 
@@ -115,6 +126,14 @@ func TestDeletedNodeSnapshot(t *testing.T) {
 
 	if nodeToDelete, exists := nodes[internalIDA]; exists {
 		nodeToDelete.Deleted.Store(true)
+	}
+
+	for _, n := range nodes {
+		if n != nil {
+			n.VectorF32 = nil
+			n.VectorF16 = nil
+			n.VectorI8 = nil
+		}
 	}
 
 	idx.Close()

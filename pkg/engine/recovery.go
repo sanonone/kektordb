@@ -335,46 +335,138 @@ func (e *Engine) saveSnapshotLocked() error {
 }
 
 // RewriteAOF compacts the AOF file in the background.
-// Updated to use the new binary framing format.
+//
+// FIX DEADLOCK (v2): Usa il pattern "Snapshot + Release" per evitare di tenere
+// sia s.mu che h.metaMu contemporaneamente, eliminando un deadlock classico con AddBatch.
+//
+// Il meccanismo precedente teneva DB.RLock() per tutta la durata dell'operazione.
+// Durante quella finestra, IterateVectorIndexesUnlocked → hnsw.Iterate() acquisiva
+// h.metaMu.RLock(). Se AddBatch era in coda per h.metaMu.Lock(), il runtime Go
+// bloccava qualsiasi nuovo reader su h.metaMu — incluso RewriteAOF stesso —
+// causando un blocco permanente.
+//
+// Soluzione: acquisire s.mu.RLock brevemente solo per copiare i dati necessari,
+// poi rilasciare il lock PRIMA di iterare su HNSW e scrivere su disco.
 func (e *Engine) RewriteAOF() error {
-	e.DB.Lock() // Global lock to ensure consistent state
-	defer e.DB.Unlock()
-
 	tempAof := filepath.Join(e.opts.DataDir, "rewrite.tmp")
 
-	// Open using standard file, but wrap in AOFWriter to get framing logic
 	writer, err := persistence.NewAOFWriter(tempAof)
 	if err != nil {
 		return err
 	}
 	defer func() {
 		writer.Close()
-		os.Remove(tempAof) // Cleanup if not replaced
+		os.Remove(tempAof)
 	}()
 
-	// 1. Write KV
+	// =========================================================================
+	// STEP 1: Snapshot KV — lock breve su s.mu per copiare le coppie chiave/valore.
+	// =========================================================================
+	var kvPairs []core.KVPair
+	e.DB.RLock()
 	e.DB.IterateKVUnlocked(func(pair core.KVPair) {
-		cmd := persistence.FormatCommand("SET", []byte(pair.Key), pair.Value)
-		// AOFWriter.Write handles framing automatically
-		writer.Write(cmd)
+		// Copiamo il valore per evitare race su slice condivise.
+		valCopy := make([]byte, len(pair.Value))
+		copy(valCopy, pair.Value)
+		kvPairs = append(kvPairs, core.KVPair{Key: pair.Key, Value: valCopy})
 	})
+	e.DB.RUnlock()
 
-	// 2. Write Indexes & Vectors
+	// =========================================================================
+	// STEP 2: Snapshot riferimenti agli indici — lock breve su s.mu.
+	// Raccogliamo solo i *puntatori* (non i dati) e le info di configurazione.
+	// =========================================================================
+	type indexRef struct {
+		info    core.IndexInfo
+		hnswIdx *hnsw.Index
+	}
+
+	var indexRefs []indexRef
+	e.DB.RLock()
 	infoList, _ := e.DB.GetVectorIndexInfoUnlocked()
 	for _, info := range infoList {
-		// Retrieve the actual index object to get the rules
-		// We need to lock the DB briefly or access unlocked if we are sure (RewriteAOF holds Lock)
 		idx, _ := e.DB.GetVectorIndexUnlocked(info.Name)
-		var rulesBytes []byte
+		if h, ok := idx.(*hnsw.Index); ok {
+			indexRefs = append(indexRefs, indexRef{info: info, hnswIdx: h})
+		}
+	}
+	e.DB.RUnlock()
+	// s.mu è ora libero. Da qui in poi: nessun lock globale su DB.
 
-		if hnswIdx, ok := idx.(*hnsw.Index); ok {
-			rules := hnswIdx.GetAutoLinks()
-			if len(rules) > 0 {
-				rulesBytes, _ = json.Marshal(rules)
-			}
+	// =========================================================================
+	// STEP 3: Per ogni indice, snapshot locale dei vettori.
+	// Ogni chiamata a Iterate() acquisisce h.metaMu.RLock() in modo indipendente
+	// (lock breve per ogni indice) senza tenere s.mu.
+	// =========================================================================
+	type vectorEntry struct {
+		idxName  string
+		id       string
+		vector   []float32
+		metadata map[string]any
+	}
+	type indexSnapshot struct {
+		ref     indexRef
+		rules   []hnsw.AutoLinkRule
+		vectors []vectorEntry
+	}
+
+	snapshots := make([]indexSnapshot, 0, len(indexRefs))
+	for _, ref := range indexRefs {
+		snap := indexSnapshot{ref: ref}
+
+		// GetAutoLinks() acquisisce h.metaMu.RLock internamente — OK perché non
+		// teniamo s.mu in questo momento.
+		snap.rules = ref.hnswIdx.GetAutoLinks()
+
+		// Iterate() acquisisce h.metaMu.RLock internamente.
+		// La callback viene eseguita mentre h.metaMu.RLock è tenuto, quindi
+		// copiamo i dati prima di uscire dal lock.
+		ref.hnswIdx.Iterate(func(id string, vector []float32) {
+			vecCopy := make([]float32, len(vector))
+			copy(vecCopy, vector)
+
+			// GetInternalIDUnlocked: sicuro perché siamo dentro Iterate() che
+			// tiene già h.metaMu.RLock.
+			internalID, _ := ref.hnswIdx.GetInternalIDUnlocked(id)
+
+			// GetMetadataForNodeUnlocked accede direttamente a metadataMap
+			// senza acquisire s.mu (è la versione "Unlocked"). Non aggiungiamo
+			// s.mu.RLock() qui per evitare il lock ordering:
+			//   h.metaMu:R → s.mu:R
+			// che potrebbe causare starvation se altri writer attendono s.mu:W.
+			// Per una compaction AOF, la consistenza eventual è accettabile.
+			meta := e.DB.GetMetadataForNodeUnlocked(ref.info.Name, internalID)
+
+			snap.vectors = append(snap.vectors, vectorEntry{
+				idxName:  ref.info.Name,
+				id:       id,
+				vector:   vecCopy,
+				metadata: meta,
+			})
+		})
+
+		snapshots = append(snapshots, snap)
+	}
+
+	// =========================================================================
+	// STEP 4: Scrittura su disco — nessun lock globale tenuto.
+	// =========================================================================
+
+	// 4a. Scrittura KV
+	for _, pair := range kvPairs {
+		cmd := persistence.FormatCommand("SET", []byte(pair.Key), pair.Value)
+		writer.Write(cmd)
+	}
+
+	// 4b. Scrittura VCREATE + VADD per ogni indice
+	for _, snap := range snapshots {
+		info := snap.ref.info
+
+		var rulesBytes []byte
+		if len(snap.rules) > 0 {
+			rulesBytes, _ = json.Marshal(snap.rules)
 		}
 
-		// Build arguments dynamically
 		args := [][]byte{
 			[]byte(info.Name),
 			[]byte("METRIC"), []byte(info.Metric),
@@ -383,43 +475,39 @@ func (e *Engine) RewriteAOF() error {
 			[]byte("EF_CONSTRUCTION"), []byte(strconv.Itoa(info.EfConstruction)),
 			[]byte("TEXT_LANGUAGE"), []byte(info.TextLanguage),
 		}
-
 		if len(rulesBytes) > 0 {
 			args = append(args, []byte("AUTO_LINKS"), rulesBytes)
 		}
+		writer.Write(persistence.FormatCommand("VCREATE", args...))
 
-		cmd := persistence.FormatCommand("VCREATE", args...)
-		writer.Write(cmd) // Note: using 'writer' from the previous refactoring
+		for _, ve := range snap.vectors {
+			vecStr := float32SliceToString(ve.vector)
+			var metaBytes []byte
+			if len(ve.metadata) > 0 {
+				var err error
+				metaBytes, err = json.Marshal(ve.metadata)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to marshal metadata for %s during AOF rewrite: %v\n", ve.id, err)
+					metaBytes = []byte("{}")
+				}
+			} else {
+				metaBytes = []byte("{}")
+			}
+			cmd := persistence.FormatCommand("VADD", []byte(ve.idxName), []byte(ve.id), []byte(vecStr), metaBytes)
+			writer.Write(cmd)
+		}
 	}
 
-	e.DB.IterateVectorIndexesUnlocked(func(idxName string, _ *hnsw.Index, data core.VectorData) {
-		vecStr := float32SliceToString(data.Vector)
-		var meta []byte
-		if len(data.Metadata) > 0 {
-			var err error
-			meta, err = json.Marshal(data.Metadata)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to marshal metadata for %s during AOF rewrite: %v\n", data.ID, err)
-				meta = nil
-			}
-		}
-		cmd := persistence.FormatCommand("VADD", []byte(idxName), []byte(data.ID), []byte(vecStr), meta)
-		writer.Write(cmd)
-	})
-
-	// Force flush before swapping
 	if err := writer.Flush(); err != nil {
 		return err
 	}
-	// Close explicitly to release handle
 	writer.Close()
 
-	// Atomic swap managed by the MAIN AOFWriter
 	if err := e.AOF.ReplaceWith(tempAof); err != nil {
 		return err
 	}
 
-	info, _ := e.AOF.File().Stat()
-	e.aofBaseSize = info.Size()
+	fileInfo, _ := e.AOF.File().Stat()
+	e.aofBaseSize.Store(fileInfo.Size())
 	return nil
 }

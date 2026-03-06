@@ -651,7 +651,7 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 				// Pruning: ricalcoliamo il vicinato migliore
 				allCandidates := make([]types.Candidate, 0, len(currentConns)+1)
 				for _, existingID := range currentConns {
-					existingNode := h.getNodes()[existingID]
+					existingNode := h.loadNode(existingID)
 					if existingNode != nil && !existingNode.Deleted.Load() {
 						d, _ := h.distanceBetweenNodes(neighborNode, existingNode)
 						allCandidates = append(allCandidates, types.Candidate{Id: existingID, Distance: d})
@@ -807,8 +807,8 @@ func (h *Index) AddOld(id string, vector []float32) (uint32, error) {
 
 		// Bidirectional connections (simplified here for brevity, logic follows original)
 		for _, neighborCandidate := range selectedNeighbors {
-			neighborNode := h.getNodes()[neighborCandidate.Id]
-			if l > len(neighborNode.Connections)-1 {
+			neighborNode := h.loadNode(neighborCandidate.Id)
+			if neighborNode == nil || neighborNode.Deleted.Load() || l > len(neighborNode.Connections)-1 {
 				continue
 			}
 
@@ -820,7 +820,7 @@ func (h *Index) AddOld(id string, vector []float32) (uint32, error) {
 				maxDist := -1.0
 				worstNeighborIndex := -1
 				for i, nID := range neighborConnections {
-					d, _ := h.distanceBetweenNodes(neighborNode, h.getNodes()[nID])
+					d, _ := h.distanceBetweenNodes(neighborNode, h.loadNode(nID))
 					if d > maxDist {
 						maxDist = d
 						worstNeighborIndex = i
@@ -1856,7 +1856,7 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 						candidatesScratch = candidatesScratch[:0]
 						for i := 0; i < uniqCount; i++ {
 							id := uniqueIDs[i]
-							targetNode := h.getNodes()[id]
+							targetNode := h.loadNode(id)
 							if targetNode != nil && !targetNode.Deleted.Load() {
 								dist, _ := h.distanceBetweenNodes(node, targetNode)
 								candidatesScratch = append(candidatesScratch, types.Candidate{Id: id, Distance: dist})
@@ -2056,8 +2056,8 @@ func (h *Index) commitLinks(linkQueue <-chan LinkRequest, newNodes []*Node) {
 					// Calculate distances
 					allCandidates := make([]types.Candidate, 0, len(uniqueCandidates))
 					for _, id := range uniqueCandidates {
-						targetNode := h.getNodes()[id]
-						if targetNode == nil {
+						targetNode := h.loadNode(id)
+						if targetNode == nil || targetNode.Deleted.Load() {
 							continue
 						}
 						dist, _ := h.distanceBetweenNodes(node, targetNode)
@@ -2588,7 +2588,8 @@ func (h *Index) Iterate(callback func(id string, vector []float32)) {
 	defer h.metaMu.RUnlock()
 
 	nodes := h.getNodes()
-	for _, node := range nodes {
+	for i := range nodes {
+		node := h.loadNode(uint32(i))
 		if node == nil {
 			continue
 		}
@@ -2631,7 +2632,8 @@ func (h *Index) IterateRaw(callback func(id string, vector interface{})) {
 	defer h.metaMu.RUnlock()
 
 	nodes := h.getNodes()
-	for _, node := range nodes {
+	for i := range nodes {
+		node := h.loadNode(uint32(i))
 		if node == nil {
 			continue
 		}
@@ -2735,7 +2737,8 @@ func (h *Index) GetInfo() (distance.DistanceMetric, int, int, distance.Precision
 	// We only count the non-deleted nodes
 	count := 0
 	nodes := h.getNodes()
-	for _, node := range nodes {
+	for i := range nodes {
+		node := h.loadNode(uint32(i))
 		if node == nil {
 			continue
 		}
@@ -2752,7 +2755,8 @@ func (h *Index) GetInfoUnlocked() (distance.DistanceMetric, int, int, distance.P
 	// Count non-deleted nodes (without lock, assumes caller has RLock)
 	count := 0
 	nodes := h.getNodes()
-	for _, node := range nodes {
+	for i := range nodes {
+		node := h.loadNode(uint32(i))
 		if node == nil {
 			continue
 		}
@@ -3185,7 +3189,8 @@ func (h *Index) GetDimension() int {
 
 	// Try to find ANY valid node to check dimension
 	nodes := h.getNodes()
-	for _, node := range nodes {
+	for i := range nodes {
+		node := h.loadNode(uint32(i))
 		if node != nil && !node.Deleted.Load() {
 			switch h.precision {
 			case distance.Float32:
