@@ -200,6 +200,15 @@ type graphSearchNodesResponse struct {
 	} `json:"nodes"`
 }
 
+type graphGetAllRelationsRequest struct {
+	NodeID string `json:"node_id"`
+}
+
+type graphGetAllRelationsResponse struct {
+	NodeID    string              `json:"node_id"`
+	Relations map[string][]string `json:"relations"`
+}
+
 // --- Client ---
 
 type Client struct {
@@ -676,6 +685,44 @@ func (c *Client) VGetIncoming(targetID, relationType string) ([]string, error) {
 		return nil, fmt.Errorf("invalid JSON response: %w", err)
 	}
 	return resp.Sources, nil
+}
+
+// VGetAllRelations returns all outgoing links from a node, grouped by relation type.
+func (c *Client) VGetAllRelations(nodeID string) (map[string][]string, error) {
+	req := graphGetAllRelationsRequest{
+		NodeID: nodeID,
+	}
+
+	respBody, err := c.jsonRequest(http.MethodPost, "/graph/actions/get-all-relations", req)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp graphGetAllRelationsResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response: %w", err)
+	}
+
+	return resp.Relations, nil
+}
+
+// VGetAllIncoming returns all incoming links to a node, grouped by relation type.
+func (c *Client) VGetAllIncoming(nodeID string) (map[string][]string, error) {
+	req := graphGetAllRelationsRequest{
+		NodeID: nodeID,
+	}
+
+	respBody, err := c.jsonRequest(http.MethodPost, "/graph/actions/get-all-incoming", req)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp graphGetAllRelationsResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response: %w", err)
+	}
+
+	return resp.Relations, nil
 }
 
 // VGetConnections retrieves fully hydrated nodes linked to the source.

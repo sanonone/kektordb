@@ -590,6 +590,22 @@ class KektorDBClient:
         resp = self._request("POST", "/graph/actions/get-incoming", json=payload)
         return resp.get("sources", [])
 
+    def get_all_relations(self, node_id: str) -> Dict[str, List[str]]:
+        """
+        Retrieves all outgoing links from a node, grouped by relation type.
+        """
+        payload = {"node_id": node_id}
+        resp = self._request("POST", "/graph/actions/get-all-relations", json=payload)
+        return resp.get("relations", {})
+
+    def get_all_incoming(self, node_id: str) -> Dict[str, List[str]]:
+        """
+        Retrieves all incoming links to a node, grouped by relation type.
+        """
+        payload = {"node_id": node_id}
+        resp = self._request("POST", "/graph/actions/get-all-incoming", json=payload)
+        return resp.get("relations", {})
+
     def extract_subgraph(
         self, index_name: str, root_id: str, relations: List[str], max_depth: int = 2
     ) -> Dict[str, Any]:
