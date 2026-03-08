@@ -72,10 +72,16 @@ type IndexInfo struct {
 
 // --- SNAPSHOTTING ---
 
+// GraphSnapshot represents the state of a single graph shard for serialization.
+type GraphSnapshot struct {
+	Nodes map[string]*GraphNode
+}
+
 // Snapshot represents the complete serializable state of the database.
 type Snapshot struct {
 	KVData     map[string][]byte
 	VectorData map[string]*IndexSnapshot
+	GraphData  [NumGraphShards]GraphSnapshot
 }
 
 // IndexSnapshot represents the serializable state of a single vector index.
@@ -138,6 +144,11 @@ func (s *DB) Snapshot(writer io.Writer) error {
 		}
 	}
 
+	// lock all graph shards
+	for i := 0; i < NumGraphShards; i++ {
+		s.graphShards[i].mu.RLock()
+	}
+
 	// --- PHASE 2: Release the highest-level lock ---
 	// Now that we have locked all child data structures, we can release the lock
 	// on the parent list, allowing some operations (like GetVectorIndex) to proceed.
@@ -149,6 +160,9 @@ func (s *DB) Snapshot(writer io.Writer) error {
 		for _, idx := range indexesToUnlock {
 			idx.RUnlock()
 		}
+		for i := 0; i < NumGraphShards; i++ {
+			s.graphShards[i].mu.RUnlock()
+		}
 	}()
 
 	// --- PHASE 4: Execute the Snapshot (now 100% safe) ---
@@ -158,6 +172,16 @@ func (s *DB) Snapshot(writer io.Writer) error {
 	snapshot := Snapshot{
 		KVData:     s.kvStore.data, // Safe because we hold the RLock
 		VectorData: make(map[string]*IndexSnapshot),
+	}
+
+	// Populate Graph Snapshot
+	for i := 0; i < NumGraphShards; i++ {
+		// Deep copy the map to avoid concurrent mutation issues during encoding
+		nodesCopy := make(map[string]*GraphNode, len(s.graphShards[i].nodes))
+		for id, node := range s.graphShards[i].nodes {
+			nodesCopy[id] = node
+		}
+		snapshot.GraphData[i] = GraphSnapshot{Nodes: nodesCopy}
 	}
 
 	for name, idx := range s.vectorIndexes {
@@ -235,6 +259,13 @@ func (s *DB) LoadFromSnapshot(reader io.Reader, basePath string) error {
 	s.kvStore.data = snapshot.KVData
 	if s.kvStore.data == nil {
 		s.kvStore.data = make(map[string][]byte)
+	}
+	// Restore Graph Shards
+	for i := 0; i < NumGraphShards; i++ {
+		s.graphShards[i].nodes = snapshot.GraphData[i].Nodes
+		if s.graphShards[i].nodes == nil {
+			s.graphShards[i].nodes = make(map[string]*GraphNode)
+		}
 	}
 	s.vectorIndexes = make(map[string]VectorIndex)
 	s.invertedIndex = make(map[string]map[string]map[string]map[uint32]struct{})
@@ -711,11 +742,13 @@ type DB struct {
 	// metadataMap for direct O(1) lookup of metadata by NodeID.
 	// structure: map[indexName] -> map[NodeID] -> map[Key]Value
 	metadataMap map[string]map[uint32]map[string]any
+	// The graph is split into 128 independent partitions to eliminate global lock contention.
+	graphShards [NumGraphShards]GraphShard
 }
 
 // NewDB creates and returns a new, initialized DB instance.
 func NewDB() *DB {
-	return &DB{
+	db := &DB{
 		kvStore:        NewKVStore(),
 		vectorIndexes:  make(map[string]VectorIndex),
 		indexLocks:     make(map[string]*sync.RWMutex),
@@ -725,6 +758,12 @@ func NewDB() *DB {
 		textIndexStats: make(map[string]map[string]*TextIndexStats),
 		metadataMap:    make(map[string]map[uint32]map[string]any),
 	}
+	// Initialize graph shards
+	for i := 0; i < NumGraphShards; i++ {
+		db.graphShards[i].nodes = make(map[string]*GraphNode)
+	}
+
+	return db
 }
 
 // GetKVStore returns the underlying key-value store
@@ -1633,4 +1672,19 @@ func (s *DB) GetTextIndexMap(indexName string) (map[string]map[string]PostingLis
 	}
 	fields, ok := s.textIndex[indexName]
 	return fields, ok
+}
+
+// IterateGraphEdges iterates over all active and soft-deleted edges safely.
+func (s *DB) IterateGraphEdges(cb func(source, target, rel string, weight float32, props []byte, cTime, dTime int64)) {
+	for i := 0; i < NumGraphShards; i++ {
+		s.graphShards[i].mu.RLock()
+		for nodeID, node := range s.graphShards[i].nodes {
+			for relType, edges := range node.OutEdges {
+				for _, edge := range edges {
+					cb(nodeID, edge.TargetID, relType, edge.Weight, edge.Props, edge.CreatedAt, edge.DeletedAt)
+				}
+			}
+		}
+		s.graphShards[i].mu.RUnlock()
+	}
 }

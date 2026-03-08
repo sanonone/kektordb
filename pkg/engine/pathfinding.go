@@ -49,7 +49,7 @@ func (e *Engine) FindPath(indexName, sourceID, targetID string, relations []stri
 
 				// Iterate ONLY user-provided relations
 				for _, rel := range relations {
-					edges, found := e.getFilteredEdges(prefixRel, curr, rel, atTime)
+					edges, found := e.VGetEdges(curr, rel, atTime)
 					if found {
 						for _, edge := range edges {
 							neighbor := edge.TargetID
@@ -77,13 +77,12 @@ func (e *Engine) FindPath(indexName, sourceID, targetID string, relations []stri
 
 				for _, rel := range relations {
 					// Follow Incoming Links (Reverse Index)
-					edges, found := e.getFilteredEdges(prefixRev, curr, rel, atTime)
+					edges, found := e.VGetIncomingEdges(curr, rel, atTime)
 					if found {
 						for _, edge := range edges {
-							neighbor := edge.TargetID // Source of the link
+							neighbor := edge.TargetID
 							if _, seen := bwdVisited[neighbor]; !seen {
 								bwdVisited[neighbor] = curr
-								// Note: Dir is logic relative to the path flow A->B
 								bwdEdges[neighbor] = SubgraphEdge{Source: neighbor, Target: curr, Relation: rel, Dir: "out"}
 								nextQueue = append(nextQueue, neighbor)
 							}

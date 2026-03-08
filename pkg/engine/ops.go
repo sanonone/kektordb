@@ -312,28 +312,16 @@ func (e *Engine) VDelete(indexName, id string) error {
 	atomic.AddInt64(&e.dirtyCounter, 1)
 
 	// --- 3. CASCADE DELETE (GRAPH INTEGRITY) ---
-	// We run this asynchronously because it might involve multiple KV store reads/writes,
-	// and we don't want to block the client API response for graph cleanup.
-	// The DB becomes "Eventually Consistent" on graph edges (usually within microseconds).
+	// Run in the background so as not to block the API response.
+	// Now use the new RAM graph API (O(1)).
 	go func(deadNodeID string) {
-		// The reverse key format is: rev:<target_id>:<rel_type>
-		// We are the target being deleted. We look for keys starting with "rev:" + deadNodeID + ":"
-		searchPrefix := fmt.Sprintf("%s:%s:", prefixRev, deadNodeID)
+		incomingRels := e.DB.GetAllRelations(deadNodeID, "in")
 
-		keys := e.DB.GetKVStore().GetKeysWithPrefix(searchPrefix, 0)
-
-		for _, key := range keys {
-			// We need to figure out the relationType
-			relType := key[len(searchPrefix):]
-
-			// Get the sources that point to us
-			sources, found := e.VGetIncoming(deadNodeID, relType)
-			if found {
-				for _, sourceID := range sources {
-					// Unlink them! (Soft Delete, hardDelete = false)
-					// This will update both 'rel:source:relType' and 'rev:target:relType'
-					_ = e.VUnlink(sourceID, deadNodeID, relType, "", false)
-				}
+		for relType, sources := range incomingRels {
+			for _, sourceID := range sources {
+				// Detach the source node from us (Soft Delete)
+				// VUnlink is thread-safe and will update both RAM and the AOF
+				_ = e.VUnlink(sourceID, deadNodeID, relType, "", false)
 			}
 		}
 	}(id)

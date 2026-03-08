@@ -104,6 +104,8 @@ type Engine struct {
 	dirtyCounter int64
 	lastSaveTime time.Time
 
+	isRewriting atomic.Bool
+
 	// Mutex for Engine-level administrative tasks (like Rewrite/Save)
 	// Note: core.DB has its own internal granular locks for data access.
 	adminMu sync.Mutex

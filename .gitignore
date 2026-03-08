@@ -25,6 +25,7 @@ arenas/
 *.txt
 *.zip
 *.gz
+*.pyc
 
 # Dev files
 /tempMcpDocs
