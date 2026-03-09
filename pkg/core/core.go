@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/RoaringBitmap/roaring"
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/core/types"
@@ -268,7 +269,7 @@ func (s *DB) LoadFromSnapshot(reader io.Reader, basePath string) error {
 		}
 	}
 	s.vectorIndexes = make(map[string]VectorIndex)
-	s.invertedIndex = make(map[string]map[string]map[string]map[uint32]struct{})
+	s.invertedIndex = make(map[string]map[string]map[string]*roaring.Bitmap)
 	s.bTreeIndex = make(map[string]map[string]*btree.BTreeG[BTreeItem])
 	s.textIndex = make(InvertedIndex)
 	s.textIndexStats = make(map[string]map[string]*TextIndexStats)
@@ -325,7 +326,7 @@ func (s *DB) LoadFromSnapshot(reader io.Reader, basePath string) error {
 		s.indexLocks[name] = &sync.RWMutex{} // Initialize lock on restart
 
 		// Initialize spaces for secondary indexes
-		s.invertedIndex[name] = make(map[string]map[string]map[uint32]struct{})
+		s.invertedIndex[name] = make(map[string]map[string]*roaring.Bitmap)
 		s.bTreeIndex[name] = make(map[string]*btree.BTreeG[BTreeItem])
 		s.textIndex[name] = make(map[string]map[string]PostingList)
 		s.textIndexStats[name] = make(map[string]*TextIndexStats)
@@ -727,10 +728,8 @@ type DB struct {
 	indexLocks map[string]*sync.RWMutex
 
 	// invertedIndex for metadata filtering.
-	// structure: map[vector index name] -> map[metadata key] -> map[metadata value] -> set[internal node IDs]
-	// e.g., invertedIndex["my_images"]["tags"]["cat"]={1: {}, 5: {}, 34:{}}
-	// meaning that in the "my_images" index, nodes with internal IDs 1, 5, and 34 have the metadata "tags" with the value "cat".
-	invertedIndex map[string]map[string]map[string]map[uint32]struct{}
+	// structure: map[vector index name] -> map[metadata key] -> map[metadata value] -> RoaringBitmap
+	invertedIndex map[string]map[string]map[string]*roaring.Bitmap
 
 	// bTreeIndex for numerical metadata.
 	// structure: map[vector index name] -> map[metadata key] -> BTree
@@ -752,7 +751,7 @@ func NewDB() *DB {
 		kvStore:        NewKVStore(),
 		vectorIndexes:  make(map[string]VectorIndex),
 		indexLocks:     make(map[string]*sync.RWMutex),
-		invertedIndex:  make(map[string]map[string]map[string]map[uint32]struct{}),
+		invertedIndex:  make(map[string]map[string]map[string]*roaring.Bitmap),
 		bTreeIndex:     make(map[string]map[string]*btree.BTreeG[BTreeItem]),
 		textIndex:      make(InvertedIndex),
 		textIndexStats: make(map[string]map[string]*TextIndexStats),
@@ -789,7 +788,7 @@ func (s *DB) CreateVectorIndex(name string, metric distance.DistanceMetric, m, e
 	s.indexLocks[name] = &sync.RWMutex{} // Initialize the lock for this index
 
 	// Initialize the metadata space for this new index.
-	s.invertedIndex[name] = make(map[string]map[string]map[uint32]struct{})
+	s.invertedIndex[name] = make(map[string]map[string]*roaring.Bitmap)
 	s.bTreeIndex[name] = make(map[string]*btree.BTreeG[BTreeItem])
 	s.textIndex[name] = make(map[string]map[string]PostingList)
 	s.textIndexStats[name] = make(map[string]*TextIndexStats)
@@ -922,7 +921,7 @@ func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) err
 	}
 
 	// log.Printf("[DEBUG COMPRESS] Clearing secondary indexes for '%s'", indexName)
-	s.invertedIndex[indexName] = make(map[string]map[string]map[uint32]struct{})
+	s.invertedIndex[indexName] = make(map[string]map[string]*roaring.Bitmap)
 	s.bTreeIndex[indexName] = make(map[string]*btree.BTreeG[BTreeItem])
 	//    s.metadataStore[indexName] = make(map[uint32]map[string]interface{})
 
@@ -1034,12 +1033,12 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 				return fmt.Errorf("metadata index for '%s' not found", indexName)
 			}
 			if _, ok := indexMetadata[key]; !ok {
-				indexMetadata[key] = make(map[string]map[uint32]struct{})
+				indexMetadata[key] = make(map[string]*roaring.Bitmap)
 			}
 			if _, ok := indexMetadata[key][v]; !ok {
-				indexMetadata[key][v] = make(map[uint32]struct{})
+				indexMetadata[key][v] = roaring.New()
 			}
-			indexMetadata[key][v][nodeID] = struct{}{}
+			indexMetadata[key][v].Add(nodeID)
 
 			// --- FULL-TEXT INDEXING (with analyzer) ---
 			if analyzer != nil {
@@ -1162,12 +1161,12 @@ func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[s
 				return fmt.Errorf("metadata index for '%s' not found", indexName)
 			}
 			if _, ok := indexMetadata[key]; !ok {
-				indexMetadata[key] = make(map[string]map[uint32]struct{})
+				indexMetadata[key] = make(map[string]*roaring.Bitmap)
 			}
 			if _, ok := indexMetadata[key][v]; !ok {
-				indexMetadata[key][v] = make(map[uint32]struct{})
+				indexMetadata[key][v] = roaring.New()
 			}
-			indexMetadata[key][v][nodeID] = struct{}{}
+			indexMetadata[key][v].Add(nodeID)
 
 			// --- FULL-TEXT INDEXING (with analyzer) ---
 			if analyzer != nil {
@@ -1266,7 +1265,7 @@ func (s *DB) recalculateAvgFieldLengths(indexName string) {
 // FindIDsByFilter acts as a query planner for metadata filters.
 // It supports AND and OR logic. OR has lower precedence (the filter is first split
 // by OR, and each resulting block is evaluated as an AND of its sub-filters).
-func (s *DB) FindIDsByFilter(indexName string, filter string) (map[uint32]struct{}, error) {
+func (s *DB) FindIDsByFilter(indexName string, filter string) (*roaring.Bitmap, error) {
 	s.mu.RLock()
 	idxMu, exists := s.indexLocks[indexName]
 	if !exists {
@@ -1287,7 +1286,7 @@ func (s *DB) FindIDsByFilter(indexName string, filter string) (map[uint32]struct
 	// avoiding the overhead of regex compilation on every filter operation.
 	orBlocks := filterOrRegex.Split(filter, -1)
 
-	finalIDSet := make(map[uint32]struct{})
+	finalIDSet := roaring.New()
 
 	for _, orBlock := range orBlocks {
 		orBlock = strings.TrimSpace(orBlock)
@@ -1299,7 +1298,7 @@ func (s *DB) FindIDsByFilter(indexName string, filter string) (map[uint32]struct
 		// Use the pre-compiled regex for better performance.
 		andFilters := filterAndRegex.Split(orBlock, -1)
 
-		var blockIDSet map[uint32]struct{}
+		var blockIDSet *roaring.Bitmap
 		isFirst := true
 
 		for _, subFilter := range andFilters {
@@ -1315,28 +1314,21 @@ func (s *DB) FindIDsByFilter(indexName string, filter string) (map[uint32]struct
 
 			if isFirst {
 				// Defensive copy to prevent aliasing.
-				blockIDSet = make(map[uint32]struct{}, len(currentIDSet))
-				for id := range currentIDSet {
-					blockIDSet[id] = struct{}{}
-				}
+				blockIDSet = currentIDSet.Clone()
 				isFirst = false
 			} else {
 				// Intersect the current block's results with the new results.
-				blockIDSet = intersectSets(blockIDSet, currentIDSet)
+				blockIDSet.And(currentIDSet)
 			}
 
-			// Optimization: if the intersection is empty, no need to continue this AND block.
-			if len(blockIDSet) == 0 {
+			if blockIDSet.IsEmpty() {
 				break
 			}
 		}
 
 		// Union (OR) with the final result set.
-		finalIDSet = unionSets(finalIDSet, blockIDSet)
-	}
+		finalIDSet.Or(blockIDSet)
 
-	if len(finalIDSet) == 0 {
-		return make(map[uint32]struct{}), nil
 	}
 
 	return finalIDSet, nil
@@ -1346,11 +1338,9 @@ func (s *DB) FindIDsByFilter(indexName string, filter string) (map[uint32]struct
 var containsRegex = regexp.MustCompile(`(?i)CONTAINS\s*\(\s*(\w+)\s*,\s*['"](.+?)['"]\s*\)`)
 
 // evaluateBooleanFilter evaluates a single expression like "price >= 10" or "name = 'Alice'".
-// It returns a set of matching node IDs (map[uint32]struct{}) and an error.
-func (s *DB) evaluateBooleanFilter(indexName string, filter string) (map[uint32]struct{}, error) {
+func (s *DB) evaluateBooleanFilter(indexName string, filter string) (*roaring.Bitmap, error) {
 	filter = strings.TrimSpace(filter)
 
-	// Find the operator (ordered by length to handle <= and >= correctly).
 	var op string
 	opIndex := -1
 	for _, operator := range []string{"<=", ">=", "=", "<", ">"} {
@@ -1361,88 +1351,64 @@ func (s *DB) evaluateBooleanFilter(indexName string, filter string) (map[uint32]
 		}
 	}
 	if opIndex == -1 {
-		return nil, fmt.Errorf("invalid filter format, operator not found (use =, <, >, <=, >=)")
+		return nil, fmt.Errorf("invalid filter format")
 	}
 
 	key := strings.TrimSpace(filter[:opIndex])
 	valueStr := strings.TrimSpace(filter[opIndex+len(op):])
-
 	valueStr = strings.Trim(valueStr, "'\"")
 
-	// Result set
-	idSet := make(map[uint32]struct{})
-
-	// Fetch the B-Tree and inverted index mappings if they exist
 	indexBTree, hasBTree := s.bTreeIndex[indexName]
 	indexInv, hasInv := s.invertedIndex[indexName]
 
-	// Dispatch based on the operator
 	switch op {
 	case "=":
-		// Try to treat the value as a number first
 		numValue, err := strconv.ParseFloat(valueStr, 64)
 		if err == nil && hasBTree {
-			// It's a number -> use the B-Tree for this key
-			tree, ok := indexBTree[key]
-			if !ok {
-				// The key is not indexed: return an empty result
-				return make(map[uint32]struct{}), nil
+			idSet := roaring.New()
+			if tree, ok := indexBTree[key]; ok {
+				tree.Ascend(BTreeItem{Value: numValue}, func(item BTreeItem) bool {
+					if item.Value != numValue {
+						return false
+					}
+					idSet.Add(item.NodeID)
+					return true
+				})
 			}
-
-			// Search for elements exactly equal to numValue
-			pivot := BTreeItem{Value: numValue}
-			tree.Ascend(pivot, func(item BTreeItem) bool {
-				if item.Value != numValue {
-					return false
-				}
-				idSet[item.NodeID] = struct{}{}
-				return true
-			})
 			return idSet, nil
 		}
 
-		// Otherwise, treat it as a string -> use the inverted index
 		if !hasInv {
-			return nil, fmt.Errorf("inverted index for '%s' not found", indexName)
+			return roaring.New(), nil
 		}
-		keyMetadata, ok := indexInv[key]
-		if !ok {
-			return make(map[uint32]struct{}), nil
+		if keyMetadata, ok := indexInv[key]; ok {
+			if valSet, ok := keyMetadata[valueStr]; ok {
+				return valSet, nil // Ritorna il puntatore (lettura veloce, FindIDsByFilter farà il Clone)
+			}
 		}
-		valSet, ok := keyMetadata[valueStr]
-		if !ok {
-			return make(map[uint32]struct{}), nil
-		}
-		// Defensive copy.
-		for id := range valSet {
-			idSet[id] = struct{}{}
-		}
-		return idSet, nil
+		return roaring.New(), nil
 
 	case "<", "<=", ">", ">=":
-		// These operators are numeric-only
+		idSet := roaring.New()
 		numValue, err := strconv.ParseFloat(valueStr, 64)
 		if err != nil {
-			return nil, fmt.Errorf("value for operator '%s' must be numeric: '%s'", op, valueStr)
+			return nil, fmt.Errorf("value must be numeric for operator '%s'", op)
 		}
 		if !hasBTree {
-			return nil, fmt.Errorf("numeric index for '%s' not found", indexName)
+			return roaring.New(), nil
 		}
-
 		tree, ok := indexBTree[key]
 		if !ok {
-			// The key is not indexed: return an empty result
-			return make(map[uint32]struct{}), nil
+			return idSet, nil
 		}
 
 		switch op {
 		case "<":
-			// Ascend from -inf and take all values < numValue
 			tree.Ascend(BTreeItem{Value: math.Inf(-1)}, func(item BTreeItem) bool {
 				if item.Value >= numValue {
 					return false
 				}
-				idSet[item.NodeID] = struct{}{}
+				idSet.Add(item.NodeID)
 				return true
 			})
 		case "<=":
@@ -1450,16 +1416,15 @@ func (s *DB) evaluateBooleanFilter(indexName string, filter string) (map[uint32]
 				if item.Value > numValue {
 					return false
 				}
-				idSet[item.NodeID] = struct{}{}
+				idSet.Add(item.NodeID)
 				return true
 			})
 		case ">":
-			// Descend from +inf and take all values > numValue
 			tree.Descend(BTreeItem{Value: math.Inf(+1)}, func(item BTreeItem) bool {
 				if item.Value <= numValue {
 					return false
 				}
-				idSet[item.NodeID] = struct{}{}
+				idSet.Add(item.NodeID)
 				return true
 			})
 		case ">=":
@@ -1467,46 +1432,14 @@ func (s *DB) evaluateBooleanFilter(indexName string, filter string) (map[uint32]
 				if item.Value < numValue {
 					return false
 				}
-				idSet[item.NodeID] = struct{}{}
+				idSet.Add(item.NodeID)
 				return true
 			})
 		}
-
 		return idSet, nil
-
 	default:
 		return nil, fmt.Errorf("operator '%s' not supported", op)
 	}
-}
-
-// intersectSets calculates the intersection of two sets (a ∩ b)
-func intersectSets(a, b map[uint32]struct{}) map[uint32]struct{} {
-	if a == nil || b == nil {
-		return make(map[uint32]struct{})
-	}
-	// Iterate over the smaller set for efficiency
-	if len(a) > len(b) {
-		a, b = b, a
-	}
-	res := make(map[uint32]struct{})
-	for id := range a {
-		if _, ok := b[id]; ok {
-			res[id] = struct{}{}
-		}
-	}
-	return res
-}
-
-// unionSets calculates the union of two sets (a ∪ b)
-func unionSets(a, b map[uint32]struct{}) map[uint32]struct{} {
-	res := make(map[uint32]struct{}, len(a)+len(b))
-	for id := range a {
-		res[id] = struct{}{}
-	}
-	for id := range b {
-		res[id] = struct{}{}
-	}
-	return res
 }
 
 // btreeItemLess is the less function for BTree items. It sorts items by their float64 value,

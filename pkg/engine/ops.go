@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/RoaringBitmap/roaring"
 	"github.com/sanonone/kektordb/pkg/core"
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
@@ -641,12 +642,16 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 
 	// Pre-Filtering
 	// metadata allowlist
-	var allowList map[uint32]struct{}
+	var allowList *roaring.Bitmap
 	var err error
 	if booleanFilters != "" {
 		allowList, err = e.DB.FindIDsByFilter(indexName, booleanFilters)
 		if err != nil {
 			return nil, fmt.Errorf("invalid filter: %w", err)
+		}
+
+		if allowList != nil && allowList.IsEmpty() {
+			return []fusedResult{}, nil
 		}
 	}
 
@@ -664,17 +669,11 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 		} else {
 			// Both filters exist: calculate Intersection (AND)
 			// Keep only IDs present in BOTH lists
-			intersected := make(map[uint32]struct{})
-			for id := range allowList {
-				if _, ok := graphAllowList[id]; ok {
-					intersected[id] = struct{}{}
-				}
-			}
-			allowList = intersected
+			allowList.And(graphAllowList)
 		}
 
 		// If intersection resulted in empty set, return immediately
-		if len(allowList) == 0 {
+		if allowList != nil && allowList.IsEmpty() {
 			return []fusedResult{}, nil
 		}
 	}
@@ -699,8 +698,9 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 			if count >= k {
 				break
 			}
-			if allowList != nil {
-				if _, ok := allowList[res.DocID]; !ok {
+			// Check Bitmap
+			if allowList != nil && !allowList.IsEmpty() {
+				if !allowList.Contains(res.DocID) {
 					continue
 				}
 			}
@@ -727,10 +727,10 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 		go func() {
 			defer wg.Done()
 			results, _ := e.DB.FindIDsByTextSearch(indexName, textQueryField, textQuery)
-			if allowList != nil {
+			if allowList != nil && !allowList.IsEmpty() {
 				var filtered []types.SearchResult
 				for _, res := range results {
-					if _, ok := allowList[res.DocID]; ok {
+					if allowList.Contains(res.DocID) {
 						filtered = append(filtered, res)
 					}
 				}

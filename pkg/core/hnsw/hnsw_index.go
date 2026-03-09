@@ -19,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/RoaringBitmap/roaring"
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/types"
 	"github.com/sanonone/kektordb/pkg/storage/mmap"
@@ -277,7 +278,7 @@ func (h *Index) distanceBetweenNodes(n1, n2 *Node) (float64, error) {
 }
 
 // SearchWithScores finds the K nearest neighbors to a query vector, returning their scores (distances)
-func (h *Index) SearchWithScores(query []float32, k int, allowList map[uint32]struct{}, efSearch int) []types.SearchResult {
+func (h *Index) SearchWithScores(query []float32, k int, allowList *roaring.Bitmap, efSearch int) []types.SearchResult {
 	// NOTA: Non acquisiamo metaMu qui perché searchInternal gestisce il locking in modo fine-grained
 	// Questo permette ai writer (Add) di acquisire il lock globale senza starvation da parte dei reader
 	candidates, err := h.searchInternal(query, k, allowList, efSearch)
@@ -294,7 +295,7 @@ func (h *Index) SearchWithScores(query []float32, k int, allowList map[uint32]st
 }
 
 // searchInternal handles query pre-processing (normalization/quantization) once and orchestrates the search.
-func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]struct{}, efSearch int) ([]types.Candidate, error) {
+func (h *Index) searchInternal(query []float32, k int, allowList *roaring.Bitmap, efSearch int) ([]types.Candidate, error) {
 	//h.metaMu.RLock()
 	// defer h.metaMu.RUnlock()
 
@@ -344,14 +345,12 @@ func (h *Index) searchInternal(query []float32, k int, allowList map[uint32]stru
 
 	// Smart Entry Point Selection
 	if allowList != nil {
-		if _, ok := allowList[currentEntryPoint]; !ok {
-			foundNewEntryPoint := false
-			for id := range allowList {
-				currentEntryPoint = id
-				foundNewEntryPoint = true
-				break
-			}
-			if !foundNewEntryPoint {
+		if !allowList.Contains(currentEntryPoint) {
+			// Prendi il primo ID valido dalla Bitmap
+			it := allowList.Iterator()
+			if it.HasNext() {
+				currentEntryPoint = it.Next()
+			} else {
 				return []types.Candidate{}, nil
 			}
 		}
@@ -2159,7 +2158,7 @@ func (h *Index) Delete(id string) {
 	delete(h.externalToInternalID, id)
 }
 
-func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level int, allowList map[uint32]struct{}, efSearch int) ([]types.Candidate, error) {
+func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level int, allowList *roaring.Bitmap, efSearch int) ([]types.Candidate, error) {
 	h.metaMu.RLock()
 	defer h.metaMu.RUnlock()
 
@@ -2172,7 +2171,7 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 
 // searchLayerUnlocked performs a greedy search on a specific layer.
 // OPTIMIZED: Uses value semantics and loop devirtualization.
-func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level int, allowList map[uint32]struct{}, efSearch int, maxID uint32, out []types.Candidate) ([]types.Candidate, error) {
+func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level int, allowList *roaring.Bitmap, efSearch int, maxID uint32, out []types.Candidate) ([]types.Candidate, error) {
 
 	// 1. Setup Data Structures (Zero Alloc)
 	visited := h.visitedPool.Get().(*BitSet)
@@ -2298,8 +2297,8 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 	visited.Add(entrypointID)
 
 	isEpValid := true
-	if allowList != nil {
-		if _, ok := allowList[entrypointID]; !ok {
+	if allowList != nil && !allowList.IsEmpty() {
+		if !allowList.Contains(entrypointID) {
 			isEpValid = false
 		}
 	}
@@ -2362,8 +2361,8 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 			visited.Add(neighborID)
 
 			// AllowList filter (for boolean filters)
-			if allowList != nil {
-				if _, ok := allowList[neighborID]; !ok {
+			if allowList != nil && !allowList.IsEmpty() {
+				if !allowList.Contains(neighborID) {
 					continue
 				}
 			}

@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/RoaringBitmap/roaring"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/persistence"
 )
@@ -132,7 +133,7 @@ func (e *Engine) VGetIncoming(targetID, relationType string) ([]string, bool) {
 }
 
 // resolveGraphFilter traverses the graph and returns a set of allowed Internal IDs.
-func (e *Engine) resolveGraphFilter(indexName string, q GraphQuery) (map[uint32]struct{}, error) {
+func (e *Engine) resolveGraphFilter(indexName string, q GraphQuery) (*roaring.Bitmap, error) {
 	if q.RootID == "" {
 		return nil, nil
 	}
@@ -146,7 +147,7 @@ func (e *Engine) resolveGraphFilter(indexName string, q GraphQuery) (map[uint32]
 		return nil, fmt.Errorf("index does not support graph operations")
 	}
 
-	allowedSet := make(map[uint32]struct{})
+	allowedSet := roaring.New()
 	visited := make(map[string]struct{})
 
 	type queueItem struct {
@@ -155,10 +156,6 @@ func (e *Engine) resolveGraphFilter(indexName string, q GraphQuery) (map[uint32]
 	}
 	queue := []queueItem{{id: q.RootID, depth: 0}}
 	visited[q.RootID] = struct{}{}
-
-	if rootIntID, found := hnswIdx.GetInternalID(q.RootID); found {
-		allowedSet[rootIntID] = struct{}{}
-	}
 
 	maxDepth := q.MaxDepth
 	if maxDepth <= 0 {
@@ -181,7 +178,7 @@ func (e *Engine) resolveGraphFilter(indexName string, q GraphQuery) (map[uint32]
 				if _, seen := visited[target]; !seen {
 					visited[target] = struct{}{}
 					if internalID, found := hnswIdx.GetInternalID(target); found {
-						allowedSet[internalID] = struct{}{}
+						allowedSet.Add(internalID)
 					}
 					queue = append(queue, queueItem{id: target, depth: curr.depth + 1})
 				}

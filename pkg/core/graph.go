@@ -5,6 +5,7 @@ package core
 
 import (
 	"bytes"
+	"encoding/json"
 	"hash/fnv"
 	"sync"
 )
@@ -17,11 +18,11 @@ const NumGraphShards = 128
 // It acts as the Single Source of Truth (SSOT) for relationship data (weight, properties).
 // Size: ~64 bytes.
 type GraphEdge struct {
-	TargetID  string  `json:"t"`
-	CreatedAt int64   `json:"c"`
-	DeletedAt int64   `json:"d,omitempty"`
-	Weight    float32 `json:"w,omitempty"`
-	Props     []byte  `json:"p,omitempty"` // json.RawMessage, shares underlying array
+	TargetID  string          `json:"t"`
+	CreatedAt int64           `json:"c"`
+	DeletedAt int64           `json:"d,omitempty"`
+	Weight    float32         `json:"w,omitempty"`
+	Props     json.RawMessage `json:"p,omitempty"` // json.RawMessage, shares underlying array
 }
 
 // ReverseEdge represents a lightweight incoming edge.

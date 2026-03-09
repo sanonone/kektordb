@@ -13,6 +13,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/RoaringBitmap/roaring"
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/types"
 )
@@ -31,7 +32,7 @@ type VectorIndex interface {
 	// SearchWithScores finds the K nearest neighbors to a query vector,
 	// returning their internal IDs and scores (distances).
 	// It supports pre-filtering with an allowList and index-specific search parameters like efSearch.
-	SearchWithScores(query []float32, k int, allowList map[uint32]struct{}, efSearch int) []types.SearchResult
+	SearchWithScores(query []float32, k int, allowList *roaring.Bitmap, efSearch int) []types.SearchResult
 
 	// Metric returns the distance metric used by the index (e.g., Euclidean, Cosine).
 	Metric() distance.DistanceMetric
@@ -92,7 +93,7 @@ type searchResult struct {
 }
 
 // SearchWithScores finds the K nearest vectors to the query vector.
-func (idx *BruteForceIndex) SearchWithScores(query []float32, k int, allowList map[uint32]struct{}, efSearch int) []types.SearchResult {
+func (idx *BruteForceIndex) SearchWithScores(query []float32, k int, allowList *roaring.Bitmap, efSearch int) []types.SearchResult {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 
@@ -121,8 +122,7 @@ func (idx *BruteForceIndex) SearchWithScores(query []float32, k int, allowList m
 		}
 
 		internalID := idx.internalIDs[res.id]
-		_, ok := allowList[internalID]
-		if allowList == nil || ok {
+		if allowList == nil || allowList.IsEmpty() || allowList.Contains(internalID) {
 			finalResults = append(finalResults, types.SearchResult{DocID: internalID, Score: res.distance})
 			count++
 		}
