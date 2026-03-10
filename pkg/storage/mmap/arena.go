@@ -3,6 +3,7 @@ package mmap
 import (
 	"encoding/binary"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -52,6 +53,10 @@ type VectorArena struct {
 	slotTable    []uint32 // Index: logical InternalID, Value: physical slot
 	freeSlots    []uint32 // Stack of freed physical slots
 	nextPhysSlot uint32   // Next available physical slot if freeSlots is empty
+
+	// Compactor
+	compactor     *AsyncCompactor
+	compactConfig ArenaCompactionConfig
 }
 
 // Precision constants (mapped from distance types for storage)
@@ -144,6 +149,72 @@ func (va *VectorArena) FreeSlot(internalID uint32) {
 			va.slotTable[internalID] = UnallocatedSlot
 		}
 	}
+}
+
+// FindFreeSlots returns up to 'count' free physical slots.
+// This method acquires slotMu lock.
+func (va *VectorArena) FindFreeSlots(count int) []uint32 {
+	va.slotMu.Lock()
+	defer va.slotMu.Unlock()
+
+	if len(va.freeSlots) == 0 {
+		// Allocate new slots
+		needed := count
+		newSlots := make([]uint32, needed)
+		for i := 0; i < needed; i++ {
+			newSlots[i] = va.nextPhysSlot
+			va.nextPhysSlot++
+		}
+		return newSlots
+	}
+
+	// Take from free list
+	if len(va.freeSlots) >= count {
+		result := va.freeSlots[len(va.freeSlots)-count:]
+		va.freeSlots = va.freeSlots[:len(va.freeSlots)-count]
+		return result
+	}
+
+	// Take all free and create new ones
+	result := va.freeSlots
+	va.freeSlots = make([]uint32, 0)
+
+	needed := count - len(result)
+	for i := 0; i < needed; i++ {
+		result = append(result, va.nextPhysSlot)
+		va.nextPhysSlot++
+	}
+
+	return result
+}
+
+// StartCompactor initializes and starts the background compaction process.
+// If config.Enabled is false, no compactor is started.
+func (va *VectorArena) StartCompactor(config ArenaCompactionConfig) {
+	if !config.Enabled {
+		slog.Info("[Arena] Compaction disabled by config")
+		return
+	}
+
+	va.compactConfig = config
+	va.compactor = NewAsyncCompactor(va, config)
+	va.compactor.Start()
+}
+
+// StopCompactor halts the background compaction process.
+func (va *VectorArena) StopCompactor() {
+	if va.compactor != nil {
+		va.compactor.Stop()
+		va.compactor = nil
+	}
+}
+
+// GetFragmentationStats returns current fragmentation statistics.
+func (va *VectorArena) GetFragmentationStats() FragmentationStats {
+	if va.compactor != nil {
+		return va.compactor.analyzeFragmentation()
+	}
+	return FragmentationStats{}
 }
 
 // GetState extracts the allocator state for snapshotting.

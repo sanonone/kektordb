@@ -64,20 +64,44 @@ type AutoMaintenanceConfig struct {
 	// Search breadth during refinement. Higher = better quality but slower.
 	// If 0, uses the index's efConstruction default.
 	RefineEfConstruction int `json:"refine_ef_construction"`
+
+	// Arena Compaction Settings
+	// Background compaction for MMAP arena to reclaim freed slots.
+	ArenaCompaction ArenaCompactionConfig `json:"arena_compaction"`
+}
+
+// ArenaCompactionConfig defines the behavior of arena background compaction.
+type ArenaCompactionConfig struct {
+	// Enabled activates background compaction. Default: true.
+	Enabled bool `json:"enabled"`
+	// Interval between compaction checks. Default: 5m.
+	Interval Duration `json:"interval"`
+	// Threshold (0.0-1.0) that triggers compaction. Default: 0.3 (30%).
+	Threshold float64 `json:"threshold"`
+	// Max vectors to process per cycle. Default: 100.
+	BatchSize int `json:"batch_size"`
+	// Delay between batches to avoid saturation. Default: 1ms.
+	BatchDelay Duration `json:"batch_delay"`
 }
 
 // DefaultMaintenanceConfig returns safe defaults: Vacuum ON, Refine OFF.
 func DefaultMaintenanceConfig() AutoMaintenanceConfig {
 	return AutoMaintenanceConfig{
-		VacuumInterval:  Duration(5 * time.Minute),
-		DeleteThreshold: 0.1, // 10% dirty
-		// Default: Run check every day, but keep history forever (Safety first)
+		VacuumInterval:       Duration(5 * time.Minute),
+		DeleteThreshold:      0.1, // 10% dirty
 		GraphVacuumInterval:  Duration(24 * time.Hour),
 		GraphRetention:       Duration(0),
 		RefineEnabled:        false,
 		RefineInterval:       Duration(30 * time.Minute),
 		RefineBatchSize:      500,
 		RefineEfConstruction: 0,
+		ArenaCompaction: ArenaCompactionConfig{
+			Enabled:    true,
+			Interval:   Duration(5 * time.Minute),
+			Threshold:  0.3,
+			BatchSize:  100,
+			BatchDelay: Duration(1 * time.Millisecond),
+		},
 	}
 }
 

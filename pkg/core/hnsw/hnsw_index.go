@@ -236,6 +236,14 @@ func (h *Index) initArenaIfNeeded(dim int) error {
 				return fmt.Errorf("failed to init arena: %w", err)
 			}
 			h.arena = arena
+
+			// Start arena compactor with default config
+			// The compactor can be reconfigured later via UpdateMaintenanceConfig
+			if h.arena != nil {
+				compactor := mmap.NewAsyncCompactor(h.arena, mmap.DefaultArenaCompactionConfig())
+				compactor.SetNodeUpdater(h)
+				compactor.Start()
+			}
 		}
 	}
 	return nil
@@ -3230,6 +3238,8 @@ func (h *Index) Close() error {
 	defer h.metaMu.Unlock()
 
 	if h.arena != nil {
+		// Stop compactor before closing arena
+		h.arena.StopCompactor()
 		return h.arena.Close()
 	}
 	return nil
@@ -3271,4 +3281,35 @@ func (h *Index) loadNode(id uint32) *Node {
 		return nil
 	}
 	return nodes[id]
+}
+
+// UpdateNodePointer implements mmap.NodePointerUpdater.
+// This is called by the ArenaCompactor when a vector's physical location changes.
+// We need to update the node's vector pointer to point to the new memory location.
+func (h *Index) UpdateNodePointer(internalID uint32, newVectorBytes []byte) {
+	// Get the node - we need to hold the lock while updating
+	h.RLockNode(internalID)
+	defer h.RUnlockNode(internalID)
+
+	nodes := h.getNodes()
+	if internalID >= uint32(len(nodes)) {
+		return
+	}
+
+	node := nodes[internalID]
+	if node == nil {
+		return
+	}
+
+	// Now update the pointer to the new memory location
+	// The node's VectorF32/VectorF16/VectorI8 is a slice pointing to mmap memory
+	switch h.precision {
+	case distance.Float32:
+		// Create a new slice pointing to the new bytes
+		node.VectorF32 = mmap.BytesToFloat32Slice(newVectorBytes, h.vectorDim)
+	case distance.Float16:
+		node.VectorF16 = mmap.BytesToUint16Slice(newVectorBytes, h.vectorDim)
+	case distance.Int8:
+		node.VectorI8 = mmap.BytesToInt8Slice(newVectorBytes, h.vectorDim)
+	}
 }
