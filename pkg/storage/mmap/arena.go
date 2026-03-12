@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -57,6 +58,9 @@ type VectorArena struct {
 	// Compactor
 	compactor     *AsyncCompactor
 	compactConfig ArenaCompactionConfig
+
+	// closed flag to prevent operations after Close()
+	closed atomic.Bool
 }
 
 // Precision constants (mapped from distance types for storage)
@@ -109,6 +113,10 @@ func NewVectorArena(dir string, vectorSize int, dim int, precision uint8) (*Vect
 // AllocSlot reserves a physical slot for a logical InternalID.
 // It reuses freed slots if available, otherwise increments the physical boundary.
 func (va *VectorArena) AllocSlot(internalID uint32) (uint32, error) {
+	if va.closed.Load() {
+		return 0, fmt.Errorf("arena is closed")
+	}
+
 	va.slotMu.Lock()
 	defer va.slotMu.Unlock()
 
@@ -139,6 +147,10 @@ func (va *VectorArena) AllocSlot(internalID uint32) (uint32, error) {
 
 // FreeSlot releases the physical slot associated with a logical ID.
 func (va *VectorArena) FreeSlot(internalID uint32) {
+	if va.closed.Load() {
+		return
+	}
+
 	va.slotMu.Lock()
 	defer va.slotMu.Unlock()
 
@@ -157,6 +169,12 @@ func (va *VectorArena) FindFreeSlots(count int) []uint32 {
 	va.slotMu.Lock()
 	defer va.slotMu.Unlock()
 
+	return va.findFreeSlotsLocked(count)
+}
+
+// findFreeSlotsLocked returns up to 'count' free physical slots.
+// Caller must hold slotMu lock.
+func (va *VectorArena) findFreeSlotsLocked(count int) []uint32 {
 	if len(va.freeSlots) == 0 {
 		// Allocate new slots
 		needed := count
@@ -206,6 +224,13 @@ func (va *VectorArena) StopCompactor() {
 	if va.compactor != nil {
 		va.compactor.Stop()
 		va.compactor = nil
+	}
+}
+
+// WaitForStopped waits for the compactor to be fully stopped.
+func (va *VectorArena) WaitForStopped() {
+	if va.compactor != nil {
+		va.compactor.WaitForStopped()
 	}
 }
 
@@ -345,6 +370,10 @@ func (va *VectorArena) addChunk(chunkID int) error {
 
 // GetBytes returns a slice pointing to the mapped region.
 func (va *VectorArena) GetBytes(internalID uint32) ([]byte, error) {
+	if va.closed.Load() {
+		return nil, fmt.Errorf("arena is closed")
+	}
+
 	// 1. Logical to Physical Translation
 	va.slotMu.RLock()
 	if internalID >= uint32(len(va.slotTable)) {
@@ -352,33 +381,33 @@ func (va *VectorArena) GetBytes(internalID uint32) ([]byte, error) {
 		return nil, fmt.Errorf("internalID %d out of bounds in slot table", internalID)
 	}
 	physSlot := va.slotTable[internalID]
-	va.slotMu.RUnlock()
 
 	if physSlot == UnallocatedSlot {
+		va.slotMu.RUnlock()
 		return nil, fmt.Errorf("internalID %d is not allocated", internalID)
 	}
 
 	// 2. Physical Location Calculation
 	chunkID := int(physSlot) / va.vecsPerChk
 	offset := ArenaHeaderSize + (int(physSlot)%va.vecsPerChk)*va.vectorSize
+	va.slotMu.RUnlock()
 
-	// --- FAST PATH (Read Only) ---
+	// 3. Check if chunk exists and access data
+	// Try read lock first
 	va.mu.RLock()
-	if chunkID < len(va.chunks) {
-		chunk := va.chunks[chunkID]
+
+	if chunkID < len(va.chunks) && va.chunks[chunkID] != nil {
+		// Fast path: chunk exists
+		data := va.chunks[chunkID].Data[offset : offset+va.vectorSize]
 		va.mu.RUnlock()
-		return chunk.Data[offset : offset+va.vectorSize], nil
+		return data, nil
 	}
+
+	// Chunk doesn't exist - need to create it
+	// Release read lock
 	va.mu.RUnlock()
 
-	// --- SLOW PATH (Write/Allocate Chunk) ---
-	va.mu.Lock()
-	defer va.mu.Unlock()
-
-	// TOCTOU FIX:
-	// While we were waiting to acquire va.mu.Lock(), another goroutine (e.g., Vacuum)
-	// might have freed this physical slot and given it to a different InternalID.
-	// We re-acquire the slot lock to verify we still own this physical slot.
+	// Re-acquire slot lock to verify slot is still valid (TOCTOU)
 	va.slotMu.RLock()
 	currentPhys := UnallocatedSlot
 	if internalID < uint32(len(va.slotTable)) {
@@ -390,18 +419,30 @@ func (va *VectorArena) GetBytes(internalID uint32) ([]byte, error) {
 		return nil, fmt.Errorf("slot %d was reassigned or freed during chunk allocation", internalID)
 	}
 
-	// Double-check if the chunk was created by another goroutine while we waited
-	for chunkID >= len(va.chunks) {
-		if err := va.addChunk(len(va.chunks)); err != nil {
-			return nil, err
+	// Acquire write lock to create chunk
+	va.mu.Lock()
+
+	// Double-check after acquiring write lock (another goroutine may have created it)
+	if chunkID >= len(va.chunks) {
+		// Create missing chunks up to the required one
+		for i := len(va.chunks); i <= chunkID; i++ {
+			if err := va.addChunk(i); err != nil {
+				va.mu.Unlock()
+				return nil, fmt.Errorf("failed to create chunk %d: %w", i, err)
+			}
 		}
 	}
 
-	chunk := va.chunks[chunkID]
-	return chunk.Data[offset : offset+va.vectorSize], nil
+	data := va.chunks[chunkID].Data[offset : offset+va.vectorSize]
+	va.mu.Unlock()
+
+	return data, nil
 }
 
 func (va *VectorArena) Close() error {
+	// Set closed flag first to prevent new operations
+	va.closed.Store(true)
+
 	va.mu.Lock()
 	defer va.mu.Unlock()
 
@@ -414,6 +455,31 @@ func (va *VectorArena) Close() error {
 			firstErr = err
 		}
 	}
+	return firstErr
+}
+
+// ForceClose forcefully closes the arena without waiting for compactor.
+// This should only be used in emergency shutdown scenarios.
+func (va *VectorArena) ForceClose() error {
+	va.closed.Store(true)
+
+	va.mu.Lock()
+	defer va.mu.Unlock()
+
+	var firstErr error
+	for _, chunk := range va.chunks {
+		if chunk == nil || chunk.Data == nil {
+			continue
+		}
+		if err := munmapFile(chunk.Data); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		if err := chunk.File.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	// Clear chunks to prevent further access
+	va.chunks = nil
 	return firstErr
 }
 

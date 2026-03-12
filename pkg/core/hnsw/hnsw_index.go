@@ -18,6 +18,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/RoaringBitmap/roaring"
 	"github.com/sanonone/kektordb/pkg/core/distance"
@@ -42,6 +43,9 @@ type Index struct {
 	// Global mutex for concurrency control. Finer-grained locking may be considered in the future.
 	metaMu   sync.RWMutex
 	shardsMu []sync.RWMutex
+
+	// closed flag to prevent operations after Close() is called
+	closed atomic.Bool
 
 	// HNSW algorithm parameters
 	m              int // Max number of connections per node per layer > 0 [default = 16]
@@ -102,6 +106,9 @@ type Index struct {
 	arenaDir  string
 	arena     *mmap.VectorArena
 	vectorDim int
+
+	// Maintenance coordination for compaction and snapshot
+	maintenanceCoord mmap.MaintenanceCoordinator
 }
 
 // New creates and initializes a new HNSW index
@@ -242,6 +249,8 @@ func (h *Index) initArenaIfNeeded(dim int) error {
 			if h.arena != nil {
 				compactor := mmap.NewAsyncCompactor(h.arena, mmap.DefaultArenaCompactionConfig())
 				compactor.SetNodeUpdater(h)
+				h.maintenanceCoord = &hnswMaintenanceCoord{h: h}
+				compactor.SetMaintenanceCoordinator(h.maintenanceCoord)
 				compactor.Start()
 			}
 		}
@@ -256,14 +265,35 @@ func (h *Index) GetArenaState() mmap.ArenaState {
 	return mmap.ArenaState{}
 }
 
+func (h *Index) GetArenaDir() string {
+	return h.arenaDir
+}
+
 // distanceBetweenNodes calculates the distance between two nodes avoiding boxing
 func (h *Index) distanceBetweenNodes(n1, n2 *Node) (float64, error) {
+	// Check if index is closed to prevent accessing freed arena memory
+	if h.isClosed() {
+		return 0, fmt.Errorf("index is closed")
+	}
+	// Check if vectors are nil (arena might have been force-closed)
+	if n1 == nil || n2 == nil {
+		return 0, fmt.Errorf("node is nil")
+	}
 	switch h.precision {
 	case distance.Float32:
+		if n1.VectorF32 == nil || n2.VectorF32 == nil {
+			return 0, fmt.Errorf("vector is nil (arena closed)")
+		}
 		return h.distFuncF32(n1.VectorF32, n2.VectorF32)
 	case distance.Float16:
+		if n1.VectorF16 == nil || n2.VectorF16 == nil {
+			return 0, fmt.Errorf("vector is nil (arena closed)")
+		}
 		return h.distFuncF16(n1.VectorF16, n2.VectorF16)
 	case distance.Int8:
+		if n1.VectorI8 == nil || n2.VectorI8 == nil {
+			return 0, fmt.Errorf("vector is nil (arena closed)")
+		}
 		dot, err := h.distFuncI8(n1.VectorI8, n2.VectorI8)
 		// Scaling logic
 		norm1 := h.getNorms()[n1.InternalID]
@@ -287,6 +317,10 @@ func (h *Index) distanceBetweenNodes(n1, n2 *Node) (float64, error) {
 
 // SearchWithScores finds the K nearest neighbors to a query vector, returning their scores (distances)
 func (h *Index) SearchWithScores(query []float32, k int, allowList *roaring.Bitmap, efSearch int) []types.SearchResult {
+	if h.isClosed() {
+		return []types.SearchResult{}
+	}
+
 	// NOTA: Non acquisiamo metaMu qui perché searchInternal gestisce il locking in modo fine-grained
 	// Questo permette ai writer (Add) di acquisire il lock globale senza starvation da parte dei reader
 	candidates, err := h.searchInternal(query, k, allowList, efSearch)
@@ -308,6 +342,11 @@ func (h *Index) searchInternal(query []float32, k int, allowList *roaring.Bitmap
 	// defer h.metaMu.RUnlock()
 
 	h.metaMu.RLock()
+	// Check closed flag inside lock to prevent race with Close()
+	if h.closed.Load() {
+		h.metaMu.RUnlock()
+		return nil, nil
+	}
 	currentEntryPoint := h.entrypointID.Load()
 	currentMaxLevel := int(h.maxLevel.Load())
 	currentCounter := uint32(h.nodeCounter.Load()) // Leggiamo anche questo sotto lock per coerenza
@@ -388,6 +427,10 @@ func (h *Index) searchInternal(query []float32, k int, allowList *roaring.Bitmap
 // Add inserts a new vector into the index.
 // THREAD-SAFE: Uses fine-grained locking to allow concurrent searches during insertion.
 func (h *Index) Add(id string, vector []float32) (uint32, error) {
+	if h.isClosed() {
+		return 0, fmt.Errorf("index is closed")
+	}
+
 	// --- PHASE 0: PRE-CALCULATION (CPU Bound, No Locks) ---
 
 	// Pre-process vector (Normalize/Quantize) locally to avoid holding locks during math
@@ -473,6 +516,12 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	*/
 
 	h.metaMu.Lock()
+
+	// Check closed flag inside lock to prevent race with Close()
+	if h.closed.Load() {
+		h.metaMu.Unlock()
+		return 0, fmt.Errorf("index is closed")
+	}
 
 	if _, exists := h.externalToInternalID[id]; exists {
 		h.metaMu.Unlock()
@@ -570,6 +619,12 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 		h.entrypointID.Store(internalID)
 		h.maxLevel.Store(int32(level)) // Set max level to this node's level
 		h.metaMu.Unlock()              // Unlock and return
+
+		// Record write for maintenance coordination
+		if h.maintenanceCoord != nil {
+			h.maintenanceCoord.RecordWrite()
+		}
+
 		return internalID, nil
 	}
 
@@ -579,6 +634,11 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 
 	// We can unlock global structure now. The node exists, but is disconnected (invisible to search traversal).
 	h.metaMu.Unlock()
+
+	// Check if index was closed while we were holding the lock
+	if h.isClosed() {
+		return 0, fmt.Errorf("index is closed")
+	}
 
 	// --- PHASE 2: SEARCH (No Locks, CPU Bound) ---
 
@@ -702,6 +762,11 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 			h.entrypointID.Store(internalID)
 		}
 		h.metaMu.Unlock()
+	}
+
+	// Record write for maintenance coordination
+	if h.maintenanceCoord != nil {
+		h.maintenanceCoord.RecordWrite()
 	}
 
 	return internalID, nil
@@ -848,6 +913,12 @@ func (h *Index) AddOld(id string, vector []float32) (uint32, error) {
 		h.maxLevel.Store(int32(level))
 		h.entrypointID.Store(internalID)
 	}
+
+	// Record write for maintenance coordination
+	if h.maintenanceCoord != nil {
+		h.maintenanceCoord.RecordWrite()
+	}
+
 	return internalID, nil
 }
 
@@ -1351,6 +1422,10 @@ func (h *Index) AddBatchOldOK(objects []types.BatchObject) error {
 
 // versione ottimizzatra da testare
 func (h *Index) AddBatch(objects []types.BatchObject) error {
+	if h.isClosed() {
+		return fmt.Errorf("index is closed")
+	}
+
 	numVectors := len(objects)
 	if numVectors == 0 {
 		return nil
@@ -1359,6 +1434,11 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 	// Check dimensione grafo: sotto soglia, usiamo Add() singolo per non
 	// sprecare l'overhead del batch su grafi ancora piccoli.
 	h.metaMu.RLock()
+	// Check closed flag inside lock to prevent race with Close()
+	if h.closed.Load() {
+		h.metaMu.RUnlock()
+		return fmt.Errorf("index is closed")
+	}
 	currentSize := h.nodeCounter.Load()
 	h.metaMu.RUnlock()
 
@@ -1452,6 +1532,12 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 
 	h.metaMu.Lock()
 
+	// Check closed flag inside lock to prevent race with Close()
+	if h.closed.Load() {
+		h.metaMu.Unlock()
+		return fmt.Errorf("index is closed")
+	}
+
 	if batchDim > 0 {
 		if err := h.initArenaIfNeeded(batchDim); err != nil {
 			h.metaMu.Unlock()
@@ -1490,6 +1576,13 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 	}
 
 	h.metaMu.Unlock()
+
+	// CRITICAL: Check closed flag BEFORE starting parallel work
+	// This prevents accessing arena after it's been closed
+	if h.isClosed() {
+		return fmt.Errorf("index is closed")
+	}
+
 	// ← Da qui in poi: nessun global lock per tutto il lavoro pesante.
 	//   Il tempo sotto metaMu è ora O(N) map writes, non O(N * dim) memcpy.
 
@@ -1534,6 +1627,12 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 				}
 
 				node := &Node{Id: objects[i].Id, InternalID: internalID}
+
+				// Check closed flag inside worker goroutine before accessing arena
+				if h.isClosed() {
+					errCh <- fmt.Errorf("index is closed during batch insert")
+					return
+				}
 
 				if h.arena != nil {
 					if _, err := h.arena.AllocSlot(internalID); err != nil {
@@ -1924,6 +2023,11 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 	h.entrypointID.Store(updatedEntrypoint)
 	h.metaMu.Unlock()
 
+	// Record write for maintenance coordination
+	if h.maintenanceCoord != nil {
+		h.maintenanceCoord.RecordWrite()
+	}
+
 	return nil
 }
 
@@ -2141,8 +2245,17 @@ func (h *Index) GetExternalID(internalID uint32) (string, bool) {
 // Delete marks a node as deleted (soft delete).
 // It does not remove the node from the graph to maintain structural stability.
 func (h *Index) Delete(id string) {
+	if h.isClosed() {
+		return
+	}
+
 	h.metaMu.Lock()
 	defer h.metaMu.Unlock()
+
+	// Check closed flag again inside lock to prevent race with Close()
+	if h.closed.Load() {
+		return
+	}
 
 	// lookup internal ID matching external ID
 	internalID, ok := h.externalToInternalID[id]
@@ -2180,6 +2293,10 @@ func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level i
 // searchLayerUnlocked performs a greedy search on a specific layer.
 // OPTIMIZED: Uses value semantics and loop devirtualization.
 func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level int, allowList *roaring.Bitmap, efSearch int, maxID uint32, out []types.Candidate) ([]types.Candidate, error) {
+	// Check if index is closed to prevent accessing freed arena memory
+	if h.isClosed() {
+		return nil, fmt.Errorf("index is closed")
+	}
 
 	// 1. Setup Data Structures (Zero Alloc)
 	visited := h.visitedPool.Get().(*BitSet)
@@ -2452,6 +2569,10 @@ func (h *Index) randomLevel() int {
 // selectNeighbors implements the advanced neighbor selection heuristic from the HNSW paper.
 // It aims to select a diverse set of neighbors.
 func (h *Index) selectNeighbors(candidates []types.Candidate, m int) []types.Candidate {
+	if h.isClosed() {
+		return candidates
+	}
+
 	if len(candidates) <= m {
 		return candidates
 	}
@@ -2833,6 +2954,14 @@ func (h *Index) GetParametersUnlocked() (distance.DistanceMetric, distance.Preci
 // SnapshotData exports the internal data of the index for persistence.
 // It expects the caller to handle locking.
 func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uint32, int, *distance.Quantizer, []float32) {
+	// Try to acquire snapshot lock to prevent compaction during snapshot
+	if h.maintenanceCoord != nil {
+		if !h.maintenanceCoord.TryAcquireSnapshotLock() {
+			slog.Warn("[HNSW] SnapshotData: could not acquire snapshot lock, proceeding anyway")
+		}
+		defer h.maintenanceCoord.ReleaseSnapshotLock()
+	}
+
 	// This method expects the caller to have already acquired a lock.
 	nodes := h.getNodes()
 
@@ -3233,19 +3362,70 @@ func (h *Index) GetMemoryConfig() MemoryConfig {
 }
 
 // Close safely unmaps the virtual memory and closes file handles.
+// Uses a timeout to prevent deadlock if compactor cannot stop.
 func (h *Index) Close() error {
-	h.metaMu.Lock()
-	defer h.metaMu.Unlock()
+	done := make(chan error, 1)
 
-	if h.arena != nil {
-		// Stop compactor before closing arena
-		h.arena.StopCompactor()
-		return h.arena.Close()
+	go func() {
+		h.metaMu.Lock()
+		defer h.metaMu.Unlock()
+
+		slog.Info("[HNSW] Close goroutine started", "arena_dir", h.arenaDir)
+
+		// CRITICAL: Set closed flag FIRST to prevent new operations
+		h.closed.Store(true)
+		slog.Info("[HNSW] Index marked as closed")
+
+		if h.arena != nil {
+			// Stop compactor after marking as closed
+			slog.Info("[HNSW] Stopping compactor before closing arena")
+			h.arena.StopCompactor()
+
+			// Wait for compactor to be fully stopped using channel (no lock held)
+			slog.Info("[HNSW] Waiting for compactor to stop")
+			h.arena.WaitForStopped()
+
+			slog.Info("[HNSW] Now closing arena")
+			err := h.arena.Close()
+			if err != nil {
+				slog.Error("[HNSW] Error closing arena", "error", err)
+				done <- err
+				return
+			}
+			slog.Info("[HNSW] Arena closed successfully")
+			h.arena = nil
+		}
+		done <- nil
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(10 * time.Second):
+		slog.Error("[HNSW] Close timed out after 10 seconds - forcing close", "arena_dir", h.arenaDir)
+		// Force set closed flag to prevent new operations
+		h.closed.Store(true)
+		// Force close the arena without waiting for compactor
+		if h.arena != nil {
+			if err := h.arena.ForceClose(); err != nil {
+				slog.Warn("[HNSW] ForceClose error", "error", err)
+			}
+			h.arena = nil
+		}
+		return fmt.Errorf("close timed out after 10 seconds - possible deadlock in compactor")
 	}
-	return nil
 }
 
 // --- ATOMIC SLICE HELPERS ---
+
+func (h *Index) isClosed() bool {
+	return h.closed.Load()
+}
+
+// MarkClosed sets the closed flag. Used during testing or forced shutdown.
+func (h *Index) MarkClosed() {
+	h.closed.Store(true)
+}
 
 func (h *Index) getNodes() []*Node {
 	val := h.nodes.Load()
@@ -3287,9 +3467,14 @@ func (h *Index) loadNode(id uint32) *Node {
 // This is called by the ArenaCompactor when a vector's physical location changes.
 // We need to update the node's vector pointer to point to the new memory location.
 func (h *Index) UpdateNodePointer(internalID uint32, newVectorBytes []byte) {
-	// Get the node - we need to hold the lock while updating
-	h.RLockNode(internalID)
-	defer h.RUnlockNode(internalID)
+	// Check if index is closed - don't update pointers if arena is being closed
+	if h.isClosed() {
+		return
+	}
+
+	// Get the node - we need to hold the WRITE lock while updating
+	h.LockNode(internalID)
+	defer h.UnlockNode(internalID)
 
 	nodes := h.getNodes()
 	if internalID >= uint32(len(nodes)) {
@@ -3312,4 +3497,41 @@ func (h *Index) UpdateNodePointer(internalID uint32, newVectorBytes []byte) {
 	case distance.Int8:
 		node.VectorI8 = mmap.BytesToInt8Slice(newVectorBytes, h.vectorDim)
 	}
+}
+
+type hnswMaintenanceCoord struct {
+	h              *Index
+	compactionLock sync.Mutex
+	snapshotLock   sync.Mutex
+	writeCounter   atomic.Int64
+}
+
+const writeThreshold = 10000
+
+func (c *hnswMaintenanceCoord) TryAcquireCompactionLock() bool {
+	return c.compactionLock.TryLock()
+}
+
+func (c *hnswMaintenanceCoord) ReleaseCompactionLock() {
+	c.compactionLock.Unlock()
+}
+
+func (c *hnswMaintenanceCoord) TryAcquireSnapshotLock() bool {
+	return c.snapshotLock.TryLock()
+}
+
+func (c *hnswMaintenanceCoord) ReleaseSnapshotLock() {
+	c.snapshotLock.Unlock()
+}
+
+func (c *hnswMaintenanceCoord) RecordWrite() {
+	c.writeCounter.Add(1)
+}
+
+func (c *hnswMaintenanceCoord) IsWriteHeavy() bool {
+	return c.writeCounter.Load() > writeThreshold
+}
+
+func (c *hnswMaintenanceCoord) ResetWriteCounter() {
+	c.writeCounter.Store(0)
 }

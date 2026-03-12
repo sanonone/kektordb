@@ -13,6 +13,7 @@ import (
 	"log"
 	"log/slog"
 	"math"
+	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -817,16 +818,26 @@ func (s *DB) DeleteVectorIndex(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	slog.Info("[DB] DeleteVectorIndex started", "index", name)
+
 	idx, ok := s.vectorIndexes[name]
 	if !ok {
+		slog.Warn("[DB] Index not found for deletion", "index", name)
 		return fmt.Errorf("index '%s' not found", name)
 	}
 
+	slog.Info("[DB] Calling index.Close()", "index", name)
+
+	// Get arena directory before closing (we'll delete it after)
+	arenaDir := idx.GetArenaDir()
+
 	// close the index (unmap file)
 	if err := idx.Close(); err != nil {
-		slog.Warn("Error closing index during deletion", "index", name, "error", err)
+		slog.Error("[DB] Error closing index during deletion", "index", name, "error", err)
+		// Continue anyway to clean up the map
 	}
 
+	slog.Info("[DB] Removing index from maps", "index", name)
 	delete(s.vectorIndexes, name)
 
 	delete(s.indexLocks, name) // Remove the lock
@@ -841,7 +852,17 @@ func (s *DB) DeleteVectorIndex(name string) error {
 
 	delete(s.metadataMap, name)
 
-	slog.Info("Index and all associated data have been deleted", "index", name)
+	// Remove arena directory from disk if it exists
+	if arenaDir != "" {
+		slog.Info("[DB] Removing arena directory", "index", name, "dir", arenaDir)
+		if err := os.RemoveAll(arenaDir); err != nil {
+			slog.Error("[DB] Failed to remove arena directory", "index", name, "dir", arenaDir, "error", err)
+		} else {
+			slog.Info("[DB] Arena directory removed successfully", "index", name, "dir", arenaDir)
+		}
+	}
+
+	slog.Info("[DB] Index and all associated data have been deleted", "index", name)
 	return nil
 }
 

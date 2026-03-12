@@ -168,34 +168,51 @@ func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int
 // VDeleteIndex completely removes an index and all its data.
 // The operation is persisted to the AOF log as a VDROP command.
 func (e *Engine) VDeleteIndex(name string) error {
+	slog.Info("[Engine] VDeleteIndex requested", "index", name)
+
 	cmd := persistence.FormatCommand("VDROP", []byte(name))
 	if err := e.AOF.Write(cmd); err != nil {
 		return fmt.Errorf("persistence error: %w", err)
 	}
 
 	err := e.DB.DeleteVectorIndex(name)
-	if err == nil {
-		atomic.AddInt64(&e.dirtyCounter, 1)
-
-		// remove file from arena direct
-		arenaPath := filepath.Join(e.opts.DataDir, "arenas", name)
-		go func(path string) {
-			var rmErr error
-			for i := 0; i < 3; i++ {
-				rmErr = os.RemoveAll(path)
-				if rmErr == nil || os.IsNotExist(rmErr) {
-					break // deleted
-				}
-				time.Sleep(15 * time.Millisecond) // wait and retry
-			}
-			if rmErr != nil && !os.IsNotExist(rmErr) {
-				slog.Error("Failed to physically delete arena directory", "path", path, "error", rmErr)
-			} else {
-				slog.Debug("Arena directory physically deleted", "path", path)
-			}
-		}(arenaPath)
-
+	if err != nil {
+		slog.Error("[Engine] DeleteVectorIndex failed", "index", name, "error", err)
+		return err
 	}
+
+	atomic.AddInt64(&e.dirtyCounter, 1)
+	slog.Info("[Engine] Index deleted from DB, scheduling physical deletion", "index", name)
+
+	// remove file from arena directory
+	arenaPath := filepath.Join(e.opts.DataDir, "arenas", name)
+	slog.Info("[Engine] Arena path for deletion", "path", arenaPath, "data_dir", e.opts.DataDir)
+
+	go func(path string) {
+		slog.Info("[Engine] Starting physical deletion of arena directory", "path", path)
+
+		// First check if directory exists
+		if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+			slog.Warn("[Engine] Arena directory does not exist, skipping deletion", "path", path)
+			return
+		}
+
+		var rmErr error
+		for i := 0; i < 5; i++ {
+			rmErr = os.RemoveAll(path)
+			if rmErr == nil || os.IsNotExist(rmErr) {
+				slog.Info("[Engine] Arena directory physically deleted", "path", path)
+				return
+			}
+			slog.Warn("[Engine] Retry deleting arena directory", "path", path, "attempt", i+1, "error", rmErr)
+			time.Sleep(50 * time.Millisecond) // wait and retry
+		}
+
+		if rmErr != nil && !os.IsNotExist(rmErr) {
+			slog.Error("[Engine] Failed to physically delete arena directory after retries", "path", path, "error", rmErr)
+		}
+	}(arenaPath)
+
 	return err
 }
 

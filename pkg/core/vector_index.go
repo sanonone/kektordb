@@ -38,12 +38,20 @@ type VectorIndex interface {
 	Metric() distance.DistanceMetric
 	// Precision returns the data type precision used for storing vectors (e.g., float32, int8).
 	Precision() distance.PrecisionType
+	// GetArenaDir returns the directory path for the vector arena (mmap files).
+	// Returns empty string if no arena is used.
+	GetArenaDir() string
 	Close() error
 }
 
 // Close for BruteForceIndex is a no-op since it only uses GC RAM.
 func (idx *BruteForceIndex) Close() error {
 	return nil
+}
+
+// GetArenaDir for BruteForceIndex returns empty string since it doesn't use mmap.
+func (idx *BruteForceIndex) GetArenaDir() string {
+	return ""
 }
 
 // --- BruteForceIndex Implementation ---

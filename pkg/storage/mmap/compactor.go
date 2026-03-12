@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -47,18 +48,27 @@ type NodePointerUpdater interface {
 type MaintenanceCoordinator interface {
 	TryAcquireCompactionLock() bool
 	ReleaseCompactionLock()
+	TryAcquireSnapshotLock() bool
+	ReleaseSnapshotLock()
+	RecordWrite()
+	IsWriteHeavy() bool
+	ResetWriteCounter()
 }
 
 type AsyncCompactor struct {
 	arena            *VectorArena
 	config           ArenaCompactionConfig
 	stopCh           chan struct{}
+	stoppedCh        chan struct{} // Closed when compactor is fully stopped
 	ticker           *time.Ticker
 	mu               sync.Mutex
 	running          bool
 	nodeUpdater      NodePointerUpdater
 	maintenanceCoord MaintenanceCoordinator
 	lock             sync.Mutex
+	wg               sync.WaitGroup
+	stopped          atomic.Bool
+	draining         atomic.Bool
 }
 
 func NewAsyncCompactor(arena *VectorArena, config ArenaCompactionConfig) *AsyncCompactor {
@@ -76,11 +86,12 @@ func NewAsyncCompactor(arena *VectorArena, config ArenaCompactionConfig) *AsyncC
 	}
 
 	return &AsyncCompactor{
-		arena:   arena,
-		config:  config,
-		stopCh:  make(chan struct{}),
-		ticker:  time.NewTicker(config.Interval),
-		running: false,
+		arena:     arena,
+		config:    config,
+		stopCh:    make(chan struct{}),
+		stoppedCh: make(chan struct{}),
+		ticker:    time.NewTicker(config.Interval),
+		running:   false,
 	}
 }
 
@@ -99,6 +110,7 @@ func (ac *AsyncCompactor) Start() {
 		return
 	}
 	ac.running = true
+	ac.stopped.Store(false)
 	ac.mu.Unlock()
 
 	jitter := time.Duration(fastRandn(30000)) * time.Millisecond
@@ -106,6 +118,7 @@ func (ac *AsyncCompactor) Start() {
 		time.Sleep(jitter)
 	}
 
+	ac.wg.Add(1)
 	go ac.runLoop()
 	slog.Info("[ArenaCompactor] Started", "interval", ac.config.Interval,
 		"threshold", ac.config.Threshold, "jitter", jitter)
@@ -113,36 +126,94 @@ func (ac *AsyncCompactor) Start() {
 
 func (ac *AsyncCompactor) Stop() {
 	ac.mu.Lock()
-	defer ac.mu.Unlock()
-
 	if !ac.running {
+		ac.mu.Unlock()
 		return
 	}
 
-	close(ac.stopCh)
-	ac.ticker.Stop()
-	ac.running = false
+	slog.Info("[ArenaCompactor] Stop requested, setting draining flag")
 
-	slog.Info("[ArenaCompactor] Stopped")
+	ac.draining.Store(true)
+
+	if ac.stopped.CompareAndSwap(false, true) {
+		close(ac.stopCh)
+		ac.mu.Unlock()
+
+		done := make(chan struct{})
+		go func() {
+			ac.wg.Wait()
+			ac.ticker.Stop()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			slog.Info("[ArenaCompactor] Stopped complete")
+		case <-time.After(5 * time.Second):
+			slog.Warn("[ArenaCompactor] Stop timed out after 5 seconds - goroutine may be blocked")
+		}
+
+		ac.mu.Lock()
+		select {
+		case <-ac.stoppedCh:
+		default:
+			close(ac.stoppedCh)
+		}
+		ac.running = false
+		ac.mu.Unlock()
+		return
+	}
+	ac.mu.Unlock()
+}
+
+// WaitForStopped waits for the compactor to be fully stopped.
+// Returns immediately if the compactor is not running.
+func (ac *AsyncCompactor) WaitForStopped() {
+	ac.mu.Lock()
+	if !ac.running {
+		ac.mu.Unlock()
+		return
+	}
+	ac.mu.Unlock()
+
+	// Wait for the stopped channel to be closed
+	<-ac.stoppedCh
 }
 
 func (ac *AsyncCompactor) runLoop() {
+	defer ac.wg.Done()
 	for {
 		select {
 		case <-ac.stopCh:
+			slog.Debug("[ArenaCompactor] runLoop exiting due to stopCh closed")
 			return
 		case <-ac.ticker.C:
+			// Skip if we're draining (shutdown in progress)
+			if ac.draining.Load() {
+				slog.Debug("[ArenaCompactor] Skipping - draining set")
+				continue
+			}
 			ac.RunCycle()
 		}
 	}
 }
 
 func (ac *AsyncCompactor) RunCycle() {
+	// Skip if we're draining (shutdown in progress)
+	if ac.draining.Load() {
+		slog.Debug("[ArenaCompactor] Skipping - draining (shutdown in progress)")
+		return
+	}
+
 	if !ac.config.Enabled {
 		return
 	}
 
 	if ac.maintenanceCoord != nil {
+		if ac.maintenanceCoord.IsWriteHeavy() {
+			slog.Debug("[ArenaCompactor] Skipping - high write activity")
+			return
+		}
 		if !ac.maintenanceCoord.TryAcquireCompactionLock() {
 			slog.Debug("[ArenaCompactor] Skipping - HNSW Vacuum running")
 			return
@@ -152,6 +223,12 @@ func (ac *AsyncCompactor) RunCycle() {
 
 	ac.lock.Lock()
 	defer ac.lock.Unlock()
+
+	// Double check draining after acquiring lock
+	if ac.draining.Load() {
+		slog.Debug("[ArenaCompactor] Skipping - draining flag set during lock acquisition")
+		return
+	}
 
 	if !ac.config.Enabled {
 		return
@@ -171,28 +248,45 @@ func (ac *AsyncCompactor) RunCycle() {
 		return
 	}
 
-	slog.Info("[ArenaCompactor] Starting compaction",
+	slog.Info("[ArenaCompactor] Starting compaction cycle",
 		"fragmentation", stats.FragmentationRatio,
 		"threshold", ac.config.Threshold,
 		"total_slots", stats.TotalPhysicalSlots,
-		"free_slots", stats.FreePhysicalSlots)
+		"free_slots", stats.FreePhysicalSlots,
+		"chunks_to_process", len(stats.ChunkStats))
 
 	relocated := 0
 	freed := 0
 
-	// Compact each chunk
+	// Compact each chunk - check draining after each chunk
 	for _, cs := range stats.ChunkStats {
+		// Check draining BEFORE processing each chunk
+		if ac.draining.Load() {
+			slog.Debug("[ArenaCompactor] Stopping chunk processing - draining set")
+			break
+		}
+
 		if cs.UsedSlots == 0 {
 			continue
 		}
+		slog.Debug("[ArenaCompactor] Processing chunk",
+			"chunk_id", cs.ChunkID,
+			"used_slots", cs.UsedSlots,
+			"free_slots", cs.FreeSlots)
 		chunkRelocated, chunkFreed := ac.compactChunk(cs.ChunkID)
 		relocated += chunkRelocated
 		freed += chunkFreed
 
 		ac.tryDropEmptyChunks()
+
+		// Check draining after each chunk
+		if ac.draining.Load() {
+			slog.Debug("[ArenaCompactor] Stopping after chunk - draining set")
+			break
+		}
 	}
 
-	slog.Info("[ArenaCompactor] Compaction completed",
+	slog.Info("[ArenaCompactor] Compaction cycle completed",
 		"vectors_relocated", relocated,
 		"slots_freed", freed,
 		"chunks_remaining", len(ac.arena.chunks))
@@ -202,6 +296,11 @@ func (ac *AsyncCompactor) compactChunk(chunkID int) (relocated, freed int) {
 	const batchSize = 100
 
 	for {
+		// Check draining BEFORE acquiring locks - this ensures we exit quickly during shutdown
+		if ac.draining.Load() {
+			return relocated, freed
+		}
+
 		select {
 		case <-ac.stopCh:
 			return relocated, freed
@@ -352,12 +451,26 @@ func (ac *AsyncCompactor) identifyVectorsToMove(chunkID, maxBatch int) []uint32 
 }
 
 func (ac *AsyncCompactor) tryDropEmptyChunks() {
-	ac.arena.mu.Lock()
-	defer ac.arena.mu.Unlock()
+	// Skip if we're draining (shutdown in progress)
+	if ac.draining.Load() {
+		return
+	}
 
+	// Lock ordering: slotMu -> mu (consistent with compactChunk)
 	ac.arena.slotMu.Lock()
 	defer ac.arena.slotMu.Unlock()
 
+	ac.arena.mu.Lock()
+	defer ac.arena.mu.Unlock()
+
+	if len(ac.arena.chunks) == 0 {
+		return
+	}
+
+	slog.Debug("[ArenaCompactor] Checking for empty chunks to drop",
+		"total_chunks", len(ac.arena.chunks))
+
+	droppedCount := 0
 	for len(ac.arena.chunks) > 0 {
 		lastChunkIdx := len(ac.arena.chunks) - 1
 		chunk := ac.arena.chunks[lastChunkIdx]
@@ -383,6 +496,8 @@ func (ac *AsyncCompactor) tryDropEmptyChunks() {
 
 		slog.Info("[ArenaCompactor] Dropping empty chunk", "chunk", lastChunkIdx)
 
+		droppedCount++
+
 		if err := munmapFile(chunk.Data); err != nil {
 			slog.Warn("[ArenaCompactor] Failed to unmap chunk", "chunk", lastChunkIdx, "error", err)
 		}
@@ -399,6 +514,12 @@ func (ac *AsyncCompactor) tryDropEmptyChunks() {
 		}
 
 		ac.arena.chunks = ac.arena.chunks[:lastChunkIdx]
+	}
+
+	if droppedCount > 0 {
+		slog.Info("[ArenaCompactor] Dropped empty chunks",
+			"dropped", droppedCount,
+			"chunks_remaining", len(ac.arena.chunks))
 	}
 }
 
