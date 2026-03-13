@@ -17,6 +17,8 @@ func TestRichGraphFeatures(t *testing.T) {
 	}
 	defer eng.Close()
 
+	idx := "richGraph_test"
+
 	source := "User_Alice"
 	target := "Doc_Specs"
 	rel := "authored"
@@ -33,13 +35,13 @@ func TestRichGraphFeatures(t *testing.T) {
 	// SCENARIO A: Rich Link Creation & Retrieval
 	// ----------------------------------------------------------------
 	t.Run("RichLinkCreation", func(t *testing.T) {
-		err := eng.VLink(source, target, rel, "", inputWeight, inputProps)
+		err := eng.VLink(idx, source, target, rel, "", inputWeight, inputProps)
 		if err != nil {
 			t.Fatalf("VLink failed: %v", err)
 		}
 
 		// Verify Forward Edge (VGetEdges)
-		edges, found := eng.VGetEdges(source, rel, 0) // 0 = Now
+		edges, found := eng.VGetEdges(idx, source, rel, 0) // 0 = Now
 		if !found || len(edges) != 1 {
 			t.Fatalf("Expected 1 edge, got %d", len(edges))
 		}
@@ -67,7 +69,7 @@ func TestRichGraphFeatures(t *testing.T) {
 	// ----------------------------------------------------------------
 	t.Run("ReverseIndexProps", func(t *testing.T) {
 		// Check Incoming Edges on Target
-		inEdges, found := eng.VGetIncomingEdges(target, rel, 0)
+		inEdges, found := eng.VGetIncomingEdges(idx, target, rel, 0)
 		if !found || len(inEdges) != 1 {
 			t.Fatalf("Reverse edge missing")
 		}
@@ -94,18 +96,18 @@ func TestRichGraphFeatures(t *testing.T) {
 		time.Sleep(1 * time.Millisecond)
 
 		// 2. Perform Soft Delete
-		if err := eng.VUnlink(source, target, rel, "", false); err != nil {
+		if err := eng.VUnlink(idx, source, target, rel, "", false); err != nil {
 			t.Fatalf("Soft VUnlink failed: %v", err)
 		}
 
 		// 3. Check Present (Should be empty)
-		edgesNow, _ := eng.VGetEdges(source, rel, 0)
+		edgesNow, _ := eng.VGetEdges(idx, source, rel, 0)
 		if len(edgesNow) != 0 {
 			t.Errorf("Soft delete failed. Edge still visible in present: %v", edgesNow)
 		}
 
 		// 4. Check Past (Should exist)
-		edgesPast, _ := eng.VGetEdges(source, rel, pastSnapshot)
+		edgesPast, _ := eng.VGetEdges(idx, source, rel, pastSnapshot)
 		if len(edgesPast) != 1 {
 			t.Errorf("Time Travel failed. Edge not found in snapshot at %d", pastSnapshot)
 		} else {
@@ -121,19 +123,19 @@ func TestRichGraphFeatures(t *testing.T) {
 	// ----------------------------------------------------------------
 	t.Run("HardDelete", func(t *testing.T) {
 		// Re-create a link first
-		eng.VLink("X", "Y", "temp", "", 1.0, nil)
+		eng.VLink(idx, "X", "Y", "temp", "", 1.0, nil)
 
 		// Verify it exists
-		e, _ := eng.VGetEdges("X", "temp", 0)
+		e, _ := eng.VGetEdges(idx, "X", "temp", 0)
 		if len(e) != 1 {
 			t.Fatal("Setup failed")
 		}
 
 		// Hard Delete
-		eng.VUnlink("X", "Y", "temp", "", true)
+		eng.VUnlink(idx, "X", "Y", "temp", "", true)
 
 		// Verify it's gone from Present
-		eNow, _ := eng.VGetEdges("X", "temp", 0)
+		eNow, _ := eng.VGetEdges(idx, "X", "temp", 0)
 		if len(eNow) != 0 {
 			t.Error("Hard delete failed (visible in present)")
 		}
@@ -141,7 +143,7 @@ func TestRichGraphFeatures(t *testing.T) {
 		// Verify it's gone from History (Time Travel shouldn't find it if physically removed)
 		// Note: VGetEdges filters by list content. If list entry is gone, it's gone forever.
 		// We use a timestamp from "before" the delete (which is now)
-		ePast, _ := eng.VGetEdges("X", "temp", time.Now().UnixNano())
+		ePast, _ := eng.VGetEdges(idx, "X", "temp", time.Now().UnixNano())
 		if len(ePast) != 0 {
 			t.Error("Hard delete failed (visible in past/history)")
 		}
@@ -152,7 +154,7 @@ func TestRichGraphFeatures(t *testing.T) {
 	t.Run("SubgraphTimeTravel", func(t *testing.T) {
 		// Setup: Root -> (link) -> Leaf.
 		// 1. Create link
-		eng.VLink("Root", "Leaf", "test_sub", "", 1.0, nil)
+		eng.VLink(idx, "Root", "Leaf", "test_sub", "", 1.0, nil)
 
 		// 2. Snapshot Past
 		time.Sleep(1 * time.Millisecond)
@@ -160,16 +162,16 @@ func TestRichGraphFeatures(t *testing.T) {
 		time.Sleep(1 * time.Millisecond)
 
 		// 3. Soft Delete
-		eng.VUnlink("Root", "Leaf", "test_sub", "", false)
+		eng.VUnlink(idx, "Root", "Leaf", "test_sub", "", false)
 
 		// 4. Extract Subgraph NOW (Should verify link is gone)
-		subNow, _ := eng.VExtractSubgraph("", "Root", []string{"test_sub"}, 1, 0, nil, 0)
+		subNow, _ := eng.VExtractSubgraph(idx, "Root", []string{"test_sub"}, 1, 0, nil, 0)
 		if len(subNow.Edges) != 0 {
 			t.Errorf("Subgraph NOW should be empty, got %d edges", len(subNow.Edges))
 		}
 
 		// 5. Extract Subgraph PAST (Should see the link)
-		subPast, _ := eng.VExtractSubgraph("", "Root", []string{"test_sub"}, 1, past, nil, 0)
+		subPast, _ := eng.VExtractSubgraph(idx, "Root", []string{"test_sub"}, 1, past, nil, 0)
 		if len(subPast.Edges) != 1 {
 			t.Errorf("Subgraph PAST should have 1 edge, got %d", len(subPast.Edges))
 		} else {

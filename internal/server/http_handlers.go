@@ -17,6 +17,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sanonone/kektordb/internal/server/ui"
+	"github.com/sanonone/kektordb/pkg/auth"
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/embeddings"
@@ -103,6 +104,11 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 
 	// promhttp.Handler() Create a standard handler that formats data for Prometheus
 	mux.Handle("GET /metrics", promhttp.Handler())
+
+	// Auth endpoints
+	mux.HandleFunc("POST /auth/keys", s.handleCreateAPIKey)
+	mux.HandleFunc("GET /auth/keys", s.handleListAPIKeys)
+	mux.HandleFunc("DELETE /auth/keys/{id}", s.handleRevokeAPIKey)
 }
 
 // --- INDEX HANDLERS ---
@@ -565,8 +571,8 @@ func (s *Server) handleGraphLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.SourceID == "" || req.TargetID == "" || req.RelationType == "" {
-		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("source_id, target_id, and relation_type are required"))
+	if req.IndexName == "" || req.SourceID == "" || req.TargetID == "" || req.RelationType == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name, source_id, target_id, and relation_type are required"))
 		return
 	}
 
@@ -576,7 +582,7 @@ func (s *Server) handleGraphLink(w http.ResponseWriter, r *http.Request) {
 		weight = 1.0
 	}
 
-	if err := s.Engine.VLink(req.SourceID, req.TargetID, req.RelationType, req.InverseRelationType, weight, req.Props); err != nil {
+	if err := s.Engine.VLink(req.IndexName, req.SourceID, req.TargetID, req.RelationType, req.InverseRelationType, weight, req.Props); err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("Error in Vlink: %v", err))
 		return
 	}
@@ -591,12 +597,12 @@ func (s *Server) handleGraphUnlink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.SourceID == "" || req.TargetID == "" || req.RelationType == "" {
-		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("source_id, target_id, and relation_type are required"))
+	if req.IndexName == "" || req.SourceID == "" || req.TargetID == "" || req.RelationType == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name, source_id, target_id, and relation_type are required"))
 		return
 	}
 
-	if err := s.Engine.VUnlink(req.SourceID, req.TargetID, req.RelationType, req.InverseRelationType, req.HardDelete); err != nil {
+	if err := s.Engine.VUnlink(req.IndexName, req.SourceID, req.TargetID, req.RelationType, req.InverseRelationType, req.HardDelete); err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("Error in Unlink: %v", err))
 		return
 	}
@@ -611,12 +617,12 @@ func (s *Server) handleGraphGetLinks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.SourceID == "" || req.RelationType == "" {
+	if req.IndexName == "" || req.SourceID == "" || req.RelationType == "" {
 		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("source_id and relation_type are required"))
 		return
 	}
 
-	targets, found := s.Engine.VGetLinks(req.SourceID, req.RelationType)
+	targets, found := s.Engine.VGetLinks(req.IndexName, req.SourceID, req.RelationType)
 	if !found {
 		// We return an empty list instead of 404 to facilitate the client
 		targets = []string{}
@@ -683,12 +689,12 @@ func (s *Server) handleGraphGetIncoming(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if req.TargetID == "" || req.RelationType == "" {
+	if req.IndexName == "" || req.TargetID == "" || req.RelationType == "" {
 		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("target_id and relation_type are required"))
 		return
 	}
 
-	sources, found := s.Engine.VGetIncoming(req.TargetID, req.RelationType)
+	sources, found := s.Engine.VGetIncoming(req.IndexName, req.TargetID, req.RelationType)
 	if !found {
 		sources = []string{}
 	}
@@ -855,8 +861,8 @@ func (s *Server) handleGraphGetEdges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.RelationType == "" {
-		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("relation_type required"))
+	if req.IndexName == "" || req.RelationType == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name and relation_type required"))
 		return
 	}
 
@@ -869,14 +875,14 @@ func (s *Server) handleGraphGetEdges(w http.ResponseWriter, r *http.Request) {
 			s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("target_id required for 'in' direction"))
 			return
 		}
-		edges, found = s.Engine.VGetIncomingEdges(req.TargetID, req.RelationType, req.AtTime)
+		edges, found = s.Engine.VGetIncomingEdges(req.IndexName, req.TargetID, req.RelationType, req.AtTime)
 	} else {
 		// Out / Forward
 		if req.SourceID == "" {
 			s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("source_id required for 'out' direction"))
 			return
 		}
-		edges, found = s.Engine.VGetEdges(req.SourceID, req.RelationType, req.AtTime)
+		edges, found = s.Engine.VGetEdges(req.IndexName, req.SourceID, req.RelationType, req.AtTime)
 	}
 
 	if !found {
@@ -928,12 +934,12 @@ func (s *Server) handleGraphGetAllRelations(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if req.NodeID == "" {
-		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("node_id is required"))
+	if req.IndexName == "" || req.NodeID == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name and node_id are required"))
 		return
 	}
+	relations := s.Engine.VGetRelations(req.IndexName, req.NodeID)
 
-	relations := s.Engine.VGetRelations(req.NodeID)
 	if relations == nil {
 		// Ritorniamo una mappa vuota invece di null per comodità dei client
 		relations = make(map[string][]string)
@@ -953,12 +959,12 @@ func (s *Server) handleGraphGetAllIncoming(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if req.NodeID == "" {
-		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("node_id is required"))
+	if req.IndexName == "" || req.NodeID == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name and node_id are required"))
 		return
 	}
+	relations := s.Engine.VGetIncomingRelations(req.IndexName, req.NodeID)
 
-	relations := s.Engine.VGetIncomingRelations(req.NodeID)
 	if relations == nil {
 		relations = make(map[string][]string)
 	}
@@ -1221,7 +1227,7 @@ func (s *Server) handleUIExplore(w http.ResponseWriter, r *http.Request) {
 		// FIX 3: Rimossa variabile inutilizzata 'hasRelations'
 
 		for _, rel := range relationsToCheck {
-			targetIDs, found := s.Engine.VGetLinks(id, rel)
+			targetIDs, found := s.Engine.VGetLinks("", id, rel)
 			if found && len(targetIDs) > 0 {
 
 				// FIX 4: Usa engine.GraphNode
@@ -1275,6 +1281,70 @@ func (s *Server) decodeJSON(r *http.Request, v interface{}) error {
 	return nil
 }
 
+// --- AUTH HANDLERS ---
+
+type CreateKeyRequest struct {
+	Description string   `json:"description"`
+	Role        string   `json:"role"`
+	Namespaces  []string `json:"namespaces"`
+}
+
+func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
+	var req CreateKeyRequest
+	if err := s.decodeJSON(r, &req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if len(req.Namespaces) == 0 {
+		req.Namespaces = []string{"*"} // Default a tutti i namespace
+	}
+
+	clearToken, policy, err := s.authService.GenerateKey(req.Description, req.Role, req.Namespaces)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	// Ritorniamo il token in chiaro SOLO in questo momento.
+	// Dopo questa risposta, non sarà mai più recuperabile.
+	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
+		"token":   clearToken,
+		"policy":  policy,
+		"warning": "Copy this token now. You won't be able to see it again.",
+	})
+}
+
+func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
+	// Questo richiede una scansione del KV store per le chiavi che iniziano con "_sys_auth::"
+	keys := s.Engine.DB.GetKVStore().GetKeysWithPrefix("_sys_auth::", 0)
+
+	var policies []*auth.APIKeyPolicy
+	for _, key := range keys {
+		if val, found := s.Engine.DB.GetKVStore().Get(key); found {
+			var policy auth.APIKeyPolicy
+			if err := json.Unmarshal(val, &policy); err == nil {
+				policies = append(policies, &policy)
+			}
+		}
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, policies)
+}
+
+func (s *Server) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request) {
+	// L'ID nell'URL è in realtà l'hash (che si può recuperare da GET /auth/keys)
+	hashedKey := r.PathValue("id")
+	if hashedKey == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("key id missing"))
+		return
+	}
+
+	s.authService.RevokeKey(hashedKey)
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "revoked"})
+}
+
+/*
 // authMiddleware wraps an http.Handler and checks for the Bearer token.
 // It acts as a gatekeeper for all incoming requests.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
@@ -1301,3 +1371,4 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+*/

@@ -74,20 +74,20 @@ func TestAutoLinking(t *testing.T) {
 	// 6. Verify Links (The "Smart Graph" check)
 
 	// A. Check Forward Link: Does task_A point to project_alpha?
-	targets, found := eng.VGetLinks("task_A", "belongs_to_project")
+	targets, found := eng.VGetLinks(indexName, "task_A", "belongs_to_project")
 	if !found || !slices.Contains(targets, "project_alpha") {
 		t.Errorf("Auto-link failed for VAdd. task_A should point to project_alpha. Got: %v", targets)
 	}
 
 	// B. Check Batch Link: Does task_D point to project_beta?
-	targetsD, foundD := eng.VGetLinks("task_D", "belongs_to_project")
+	targetsD, foundD := eng.VGetLinks(indexName, "task_D", "belongs_to_project")
 	if !foundD || !slices.Contains(targetsD, "project_beta") {
 		t.Errorf("Auto-link failed for VAddBatch. task_D should point to project_beta. Got: %v", targetsD)
 	}
 
 	// C. Check Reverse Aggregation (Critical for RAG/Agents)
 	// "project_alpha" should automatically know it contains task_A, task_B, and task_C.
-	sources, foundRev := eng.VGetIncoming("project_alpha", "belongs_to_project")
+	sources, foundRev := eng.VGetIncoming(indexName, "project_alpha", "belongs_to_project")
 	if !foundRev {
 		t.Fatal("Reverse index entry for project_alpha not found")
 	}
@@ -100,7 +100,7 @@ func TestAutoLinking(t *testing.T) {
 	}
 
 	// D. Check project_beta (should only have task_D)
-	sourcesBeta, _ := eng.VGetIncoming("project_beta", "belongs_to_project")
+	sourcesBeta, _ := eng.VGetIncoming(indexName, "project_beta", "belongs_to_project")
 	if len(sourcesBeta) != 1 || sourcesBeta[0] != "task_D" {
 		t.Errorf("Reverse link error for project_beta. Expected [task_D], got: %v", sourcesBeta)
 	}

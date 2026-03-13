@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/sanonone/kektordb/pkg/auth"
 	"github.com/sanonone/kektordb/pkg/engine"
 )
 
@@ -21,7 +22,10 @@ type Server struct {
 	taskManager       *TaskManager
 	vectorizerConfig  *Config
 	vectorizerService *VectorizerService
-	authToken         string
+
+	// Auth
+	authToken   string            // Master Root Token
+	authService *auth.AuthService // RBAC Manager
 }
 
 // NewServer initializes the HTTP server using an existing Engine.
@@ -47,6 +51,7 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 		taskManager:      NewTaskManager(),
 		vectorizerConfig: vecConfig,
 		authToken:        authToken,
+		authService:      auth.NewAuthService(eng.DB.GetKVStore()),
 	}
 
 	// Initialize Vectorizer Service

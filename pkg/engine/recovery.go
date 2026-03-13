@@ -221,18 +221,20 @@ func (e *Engine) replayAOF() error {
 				}
 			}
 		case "GLINK":
-			if len(cmd.Args) >= 6 {
-				sourceID := string(cmd.Args[0])
-				targetID := string(cmd.Args[1])
-				relType := string(cmd.Args[2])
-				invRelType := string(cmd.Args[3])
+			if len(cmd.Args) >= 7 {
+				indexName := string(cmd.Args[0])
+				_ = indexName
+				sourceID := string(cmd.Args[1])
+				targetID := string(cmd.Args[2])
+				relType := string(cmd.Args[3])
+				invRelType := string(cmd.Args[4])
 
-				weight, _ := strconv.ParseFloat(string(cmd.Args[4]), 32)
-				props := cmd.Args[5]
+				weight, _ := strconv.ParseFloat(string(cmd.Args[5]), 32)
+				props := cmd.Args[6]
 
 				var ts int64
-				if len(cmd.Args) >= 7 {
-					ts, _ = strconv.ParseInt(string(cmd.Args[6]), 10, 64)
+				if len(cmd.Args) >= 8 {
+					ts, _ = strconv.ParseInt(string(cmd.Args[7]), 10, 64)
 				} else {
 					ts = time.Now().UnixNano()
 				}
@@ -243,16 +245,18 @@ func (e *Engine) replayAOF() error {
 				}
 			}
 		case "GUNLINK":
-			if len(cmd.Args) >= 5 {
-				sourceID := string(cmd.Args[0])
-				targetID := string(cmd.Args[1])
-				relType := string(cmd.Args[2])
-				invRelType := string(cmd.Args[3])
-				hardDelete := string(cmd.Args[4]) == "true"
+			if len(cmd.Args) >= 6 {
+				indexName := string(cmd.Args[0])
+				_ = indexName
+				sourceID := string(cmd.Args[1])
+				targetID := string(cmd.Args[2])
+				relType := string(cmd.Args[3])
+				invRelType := string(cmd.Args[4])
+				hardDelete := string(cmd.Args[5]) == "true"
 
 				var ts int64
-				if len(cmd.Args) >= 6 {
-					ts, _ = strconv.ParseInt(string(cmd.Args[5]), 10, 64)
+				if len(cmd.Args) >= 7 {
+					ts, _ = strconv.ParseInt(string(cmd.Args[6]), 10, 64)
 				} else {
 					ts = time.Now().UnixNano()
 				}
@@ -517,14 +521,20 @@ func (e *Engine) RewriteAOF() error {
 		weightStr := strconv.FormatFloat(float64(weight), 'f', -1, 32)
 		cTimeStr := strconv.FormatInt(cTime, 10)
 
+		parts := strings.SplitN(source, "::", 2)
+		indexName := ""
+		if len(parts) == 2 {
+			indexName = parts[0]
+		}
+
 		// 1. Scrive il comando di creazione
-		cmdAdd := persistence.FormatCommand("GLINK", []byte(source), []byte(target), []byte(rel), []byte(""), []byte(weightStr), props, []byte(cTimeStr))
+		cmdAdd := persistence.FormatCommand("GLINK", []byte(indexName), []byte(source), []byte(target), []byte(rel), []byte(""), []byte(weightStr), props, []byte(cTimeStr))
 		writer.Write(cmdAdd)
 
 		// 2. Se l'arco era "Soft Deleted" (Time Travel), scriviamo anche la sua cancellazione
 		if dTime > 0 {
 			dTimeStr := strconv.FormatInt(dTime, 10)
-			cmdDel := persistence.FormatCommand("GUNLINK", []byte(source), []byte(target), []byte(rel), []byte(""), []byte("false"), []byte(dTimeStr))
+			cmdDel := persistence.FormatCommand("GUNLINK", []byte(indexName), []byte(source), []byte(target), []byte(rel), []byte(""), []byte("false"), []byte(dTimeStr))
 			writer.Write(cmdDel)
 		}
 	})

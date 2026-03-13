@@ -72,6 +72,6 @@ func (a *KektorAdapter) GetMany(indexName string, ids []string) ([]core.VectorDa
 	return a.Engine.VGetMany(indexName, ids)
 }
 
-func (a *KektorAdapter) Link(sourceID, targetID, relationType, inverseRelationType string) error {
-	return a.Engine.VLink(sourceID, targetID, relationType, inverseRelationType, 1.0, nil)
+func (a *KektorAdapter) Link(indexName, sourceID, targetID, relationType, inverseRelationType string) error {
+	return a.Engine.VLink(indexName, sourceID, targetID, relationType, inverseRelationType, 1.0, nil)
 }

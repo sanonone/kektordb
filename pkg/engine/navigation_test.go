@@ -29,18 +29,18 @@ func TestIntelligentNavigation(t *testing.T) {
 	// B. Related & Similar: "Mars" (Linked to Rocket, Vector Similar)
 	vecMars := []float32{0.9, 0.1, 0.0} // Very close to Rocket
 	eng.VAdd(idx, "Mars", vecMars, nil)
-	eng.VLink("Rocket", "Mars", "destination", "", 1.0, nil)
+	eng.VLink(idx, "Rocket", "Mars", "destination", "", 1.0, nil)
 
 	// C. Related but Different Context: "Elon_Musk" (Linked to Rocket, Vector Different)
 	// Let's say in this embedding space, "Person" is orthogonal to "Machine"
 	vecElon := []float32{0.0, 1.0, 0.0} // Orthogonal to Rocket
 	eng.VAdd(idx, "Elon", vecElon, nil)
-	eng.VLink("Rocket", "Elon", "ceo", "", 1.0, nil)
+	eng.VLink(idx, "Rocket", "Elon", "ceo", "", 1.0, nil)
 
 	// D. Path Target: "Colony" (Linked to Mars)
 	vecColony := []float32{0.8, 0.2, 0.0}
 	eng.VAdd(idx, "Colony", vecColony, nil)
-	eng.VLink("Mars", "Colony", "contains", "", 1.0, nil)
+	eng.VLink(idx, "Mars", "Colony", "contains", "", 1.0, nil)
 
 	// Graph Structure:
 	// Elon <--[ceo]-- Rocket --[destination]--> Mars --[contains]--> Colony
@@ -125,8 +125,8 @@ func TestIntelligentNavigation(t *testing.T) {
 		// OR better: Update FindPath in engine to accept relations or wildcard.
 
 		// Re-link with standard relations for test stability
-		eng.VLink("Rocket", "Mars", "next", "", 1.0, nil)
-		eng.VLink("Mars", "Colony", "next", "", 1.0, nil)
+		eng.VLink(idx, "Rocket", "Mars", "next", "", 1.0, nil)
+		eng.VLink(idx, "Mars", "Colony", "next", "", 1.0, nil)
 
 		pathRes, err := eng.FindPath(idx, "Rocket", "Colony", []string{"next"}, 5, 0)
 		if err != nil {

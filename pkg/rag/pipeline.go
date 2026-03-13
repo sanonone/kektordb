@@ -353,7 +353,7 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 			// A. Sequential Link (Prev/Next)
 			if prevChunkID != "" {
 				// Atomic bidirectional: Prev <-> Curr
-				err := p.store.Link(prevChunkID, id, "next", "prev")
+				err := p.store.Link(p.cfg.IndexName, prevChunkID, id, "next", "prev")
 				if err != nil {
 					slog.Warn("[RAG] Link seq error", "error", err)
 				}
@@ -363,7 +363,7 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 			// B. Hierarchical Link (Parent/Child)
 			// Chunk --(parent)--> Doc
 			// Doc --(child)--> Chunk
-			err := p.store.Link(id, parentID, "parent", "child")
+			err := p.store.Link(p.cfg.IndexName, id, parentID, "parent", "child")
 			if err != nil {
 				slog.Warn("[RAG] Link parent error", "error", err)
 			}
@@ -544,7 +544,7 @@ func (p *Pipeline) extractAndLinkEntities(chunkID, text string) error {
 		entityID := fmt.Sprintf("entity:%s", safeName)
 
 		// Link IMMEDIATELY (VLink is safe and handles duplicates internally)
-		if err := p.store.Link(chunkID, entityID, "mentions", "mentioned_in"); err != nil {
+		if err := p.store.Link(p.cfg.IndexName, chunkID, entityID, "mentions", "mentioned_in"); err != nil {
 			slog.Warn("[RAG] Failed to link entity", "entity_name", entityName, "error", err)
 		}
 

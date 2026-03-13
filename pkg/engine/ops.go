@@ -333,13 +333,14 @@ func (e *Engine) VDelete(indexName, id string) error {
 	// Run in the background so as not to block the API response.
 	// Now use the new RAM graph API (O(1)).
 	go func(deadNodeID string) {
-		incomingRels := e.DB.GetAllRelations(deadNodeID, "in")
+		incomingRels := e.DB.GetAllRelations(buildGraphID(indexName, deadNodeID), "in")
 
 		for relType, sources := range incomingRels {
-			for _, sourceID := range sources {
+			for _, sourceIDInternal := range sources {
 				// Detach the source node from us (Soft Delete)
 				// VUnlink is thread-safe and will update both RAM and the AOF
-				_ = e.VUnlink(sourceID, deadNodeID, relType, "", false)
+				cleanSourceID := extractNodeID(sourceIDInternal)
+				_ = e.VUnlink(indexName, cleanSourceID, deadNodeID, relType, "", false)
 			}
 		}
 	}(id)
@@ -511,7 +512,7 @@ func (e *Engine) traversePath(indexName, currentID string, path []string, hydrat
 	remainingPath := path[1:] // ["child"]
 
 	// 1. Get Links (IDs)
-	targetIDs, found := e.VGetLinks(currentID, relType)
+	targetIDs, found := e.VGetLinks(indexName, currentID, relType)
 	if !found || len(targetIDs) == 0 {
 		return nil
 	}
@@ -912,7 +913,7 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 // SELF-REPAIR: If it encounters links to non-existent nodes, it removes them in background.
 func (e *Engine) VGetConnections(indexName, sourceID, relationType string) ([]core.VectorData, error) {
 	// 1. Retrieve link IDs from KV Store
-	targetIDs, found := e.VGetLinks(sourceID, relationType)
+	targetIDs, found := e.VGetLinks(indexName, sourceID, relationType)
 	if !found || len(targetIDs) == 0 {
 		return []core.VectorData{}, nil
 	}
@@ -940,7 +941,7 @@ func (e *Engine) VGetConnections(indexName, sourceID, relationType string) ([]co
 				tid := targetID // Capture loop variable to avoid race condition
 				go func() {
 					// VUnlink is thread-safe and handles lock and AOF
-					if err := e.VUnlink(sourceID, tid, relationType, "", false); err != nil {
+					if err := e.VUnlink(indexName, sourceID, tid, relationType, "", false); err != nil {
 						slog.Error("Self-repair unlink failed",
 							"error", err,
 							"source", sourceID,
@@ -1310,7 +1311,7 @@ func (e *Engine) processAutoLinks(indexName, sourceID string, metadata map[strin
 		// Create the Link (Bidirectional by default via VLink)
 		// Source -> (Relation) -> Target
 		// Example: Chunk_1 -> (belongs_to_chat) -> Chat_123
-		if err := e.VLink(sourceID, targetID, rule.RelationType, "", 1.0, nil); err != nil {
+		if err := e.VLink(indexName, sourceID, targetID, rule.RelationType, "", 1.0, nil); err != nil {
 			slog.Warn("Auto-linking failed",
 				"index", indexName,
 				"source", sourceID,

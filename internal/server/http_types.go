@@ -86,6 +86,7 @@ type RagRetrieveRequest struct {
 }
 
 type GraphLinkRequest struct {
+	IndexName           string                 `json:"index_name"`
 	SourceID            string                 `json:"source_id"`
 	TargetID            string                 `json:"target_id"`
 	RelationType        string                 `json:"relation_type"` // e.g. "parent", "next", "cited_by"
@@ -95,6 +96,7 @@ type GraphLinkRequest struct {
 }
 
 type GraphUnlinkRequest struct {
+	IndexName           string `json:"index_name"`
 	SourceID            string `json:"source_id"`
 	TargetID            string `json:"target_id"`
 	RelationType        string `json:"relation_type"`
@@ -103,6 +105,7 @@ type GraphUnlinkRequest struct {
 }
 
 type GraphGetLinksRequest struct {
+	IndexName    string `json:"index_name"`
 	SourceID     string `json:"source_id"`
 	RelationType string `json:"relation_type"`
 }
@@ -115,6 +118,7 @@ type GraphGetConnectionsRequest struct {
 
 // GraphGetEdgesRequest is used to fetch rich edges and perform time travel.
 type GraphGetEdgesRequest struct {
+	IndexName    string `json:"index_name"`
 	SourceID     string `json:"source_id"`     // Required for Forward
 	TargetID     string `json:"target_id"`     // Required for Incoming
 	RelationType string `json:"relation_type"` // Required
@@ -134,6 +138,7 @@ type GraphTraverseRequest struct {
 }
 
 type GraphGetIncomingRequest struct {
+	IndexName    string `json:"index_name"`
 	TargetID     string `json:"target_id"`
 	RelationType string `json:"relation_type"`
 }
@@ -184,7 +189,8 @@ type GraphFindPathRequest struct {
 // --- Graph Discovery (All Relations) ---
 
 type GraphGetAllRelationsRequest struct {
-	NodeID string `json:"node_id"`
+	IndexName string `json:"index_name"`
+	NodeID    string `json:"node_id"`
 }
 
 type GraphGetAllRelationsResponse struct {

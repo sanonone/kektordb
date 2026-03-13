@@ -91,7 +91,7 @@ func main() {
 	fmt.Printf("\nIspeziono Chunk Centrale: %s\n", middleChunkID)
 
 	// A. Controllo PREV
-	prevLinks, foundPrev := db.VGetLinks(middleChunkID, "prev")
+	prevLinks, foundPrev := db.VGetLinks(cfg.IndexName, middleChunkID, "prev")
 	if foundPrev && len(prevLinks) > 0 && prevLinks[0] == fmt.Sprintf("%s_0", filePath) {
 		fmt.Println("Link PREV trovato correttamente (punta a Chunk 0)")
 	} else {
@@ -99,7 +99,7 @@ func main() {
 	}
 
 	// B. Controllo NEXT
-	nextLinks, foundNext := db.VGetLinks(middleChunkID, "next")
+	nextLinks, foundNext := db.VGetLinks(cfg.IndexName, middleChunkID, "next")
 	if foundNext && len(nextLinks) > 0 && nextLinks[0] == fmt.Sprintf("%s_2", filePath) {
 		fmt.Println("Link NEXT trovato correttamente (punta a Chunk 2)")
 	} else {

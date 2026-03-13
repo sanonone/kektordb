@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -18,6 +19,23 @@ const (
 	maxPropValueLength = 4096
 	maxPropsPerEdge    = 100
 )
+
+// buildGraphID creates the internal namespace-aware ID for the graph.
+func buildGraphID(indexName, nodeID string) string {
+	if indexName == "" {
+		return nodeID
+	}
+	return indexName + "::" + nodeID
+}
+
+// extractNodeID removes the namespace prefix from an internal graph ID.
+func extractNodeID(internalID string) string {
+	parts := strings.SplitN(internalID, "::", 2)
+	if len(parts) == 2 {
+		return parts[1]
+	}
+	return internalID
+}
 
 // validateProps sanitizes and validates user-provided properties to prevent injection and abuse.
 func validateProps(props map[string]any) error {
@@ -44,7 +62,10 @@ func validateProps(props map[string]any) error {
 }
 
 // VLink creates a rich directed edge between two nodes and automatically updates the reverse index.
-func (e *Engine) VLink(sourceID, targetID, relationType, inverseRelationType string, weight float32, props map[string]any) error {
+func (e *Engine) VLink(indexName, sourceID, targetID, relationType, inverseRelationType string, weight float32, props map[string]any) error {
+	internalSource := buildGraphID(indexName, sourceID)
+	internalTarget := buildGraphID(indexName, targetID)
+
 	if props != nil {
 		if err := validateProps(props); err != nil {
 			return fmt.Errorf("invalid properties: %w", err)
@@ -67,18 +88,18 @@ func (e *Engine) VLink(sourceID, targetID, relationType, inverseRelationType str
 	// We use the new native command: GLINK <source> <target> <rel> <inverseRel> <weight> <props>
 	weightStr := strconv.FormatFloat(float64(weight), 'f', -1, 32)
 	timeStr := strconv.FormatInt(now, 10)
-	cmd := persistence.FormatCommand("GLINK", []byte(sourceID), []byte(targetID), []byte(relationType), []byte(inverseRelationType), []byte(weightStr), rawProps, []byte(timeStr))
+	cmd := persistence.FormatCommand("GLINK", []byte(indexName), []byte(internalSource), []byte(internalTarget), []byte(relationType), []byte(inverseRelationType), []byte(weightStr), rawProps, []byte(timeStr))
 
 	if err := e.AOF.Write(cmd); err != nil {
 		return err
 	}
 
 	// 2. In-Memory Update (Blazing fast O(1))
-	e.DB.AddEdge(sourceID, targetID, relationType, weight, rawProps, now)
+	e.DB.AddEdge(internalSource, internalTarget, relationType, weight, rawProps, now)
 
 	// 3. Explicit Inverse Relation
 	if inverseRelationType != "" {
-		e.DB.AddEdge(targetID, sourceID, inverseRelationType, weight, rawProps, now)
+		e.DB.AddEdge(internalTarget, internalSource, inverseRelationType, weight, rawProps, now)
 	}
 
 	atomic.AddInt64(&e.dirtyCounter, 1)
@@ -88,7 +109,10 @@ func (e *Engine) VLink(sourceID, targetID, relationType, inverseRelationType str
 // VUnlink removes a directed edge and its reverse entry.
 // If hardDelete is true, the record is physically removed.
 // If hardDelete is false, it sets DeletedAt (Soft Delete).
-func (e *Engine) VUnlink(sourceID, targetID, relationType, inverseRelationType string, hardDelete bool) error {
+func (e *Engine) VUnlink(indexName, sourceID, targetID, relationType, inverseRelationType string, hardDelete bool) error {
+	internalSource := buildGraphID(indexName, sourceID)
+	internalTarget := buildGraphID(indexName, targetID)
+
 	now := time.Now().UnixNano()
 
 	// 1. Persistence (AOF)
@@ -97,17 +121,18 @@ func (e *Engine) VUnlink(sourceID, targetID, relationType, inverseRelationType s
 		hdStr = "true"
 	}
 	timeStr := strconv.FormatInt(now, 10)
-	cmd := persistence.FormatCommand("GUNLINK", []byte(sourceID), []byte(targetID), []byte(relationType), []byte(inverseRelationType), []byte(hdStr), []byte(timeStr))
+
+	cmd := persistence.FormatCommand("GUNLINK", []byte(indexName), []byte(internalSource), []byte(internalTarget), []byte(relationType), []byte(inverseRelationType), []byte(hdStr), []byte(timeStr))
 	if err := e.AOF.Write(cmd); err != nil {
 		return err
 	}
 
 	// 2. In-Memory Update
-	e.DB.RemoveEdge(sourceID, targetID, relationType, hardDelete, now)
+	e.DB.RemoveEdge(internalSource, internalTarget, relationType, hardDelete, now)
 
 	// 3. Explicit Inverse Relation
 	if inverseRelationType != "" {
-		e.DB.RemoveEdge(targetID, sourceID, inverseRelationType, hardDelete, now)
+		e.DB.RemoveEdge(internalTarget, internalSource, inverseRelationType, hardDelete, now)
 	}
 
 	atomic.AddInt64(&e.dirtyCounter, 1)
@@ -115,21 +140,31 @@ func (e *Engine) VUnlink(sourceID, targetID, relationType, inverseRelationType s
 }
 
 // VGetLinks retrieves ACTIVE links. (O(1) Memory lookup)
-func (e *Engine) VGetLinks(sourceID, relationType string) ([]string, bool) {
-	edges, found := e.DB.GetOutEdges(sourceID, relationType, 0)
+func (e *Engine) VGetLinks(indexName, sourceID, relationType string) ([]string, bool) {
+	internalSource := buildGraphID(indexName, sourceID)
+	edges, found := e.DB.GetOutEdges(internalSource, relationType, 0)
 	if !found {
 		return nil, false
 	}
 	targets := make([]string, len(edges))
 	for i, edge := range edges {
-		targets[i] = edge.TargetID
+		targets[i] = extractNodeID(edge.TargetID)
 	}
 	return targets, true
 }
 
 // VGetIncoming retrieves ACTIVE incoming links. (O(1) Reverse Index)
-func (e *Engine) VGetIncoming(targetID, relationType string) ([]string, bool) {
-	return e.DB.GetInEdges(targetID, relationType, 0)
+func (e *Engine) VGetIncoming(indexName, targetID, relationType string) ([]string, bool) {
+	internalTarget := buildGraphID(indexName, targetID)
+	sources, found := e.DB.GetInEdges(internalTarget, relationType, 0)
+	if !found {
+		return nil, false
+	}
+
+	for i := range sources {
+		sources[i] = extractNodeID(sources[i])
+	}
+	return sources, true
 }
 
 // resolveGraphFilter traverses the graph and returns a set of allowed Internal IDs.
@@ -187,14 +222,14 @@ func (e *Engine) resolveGraphFilter(indexName string, q GraphQuery) (*roaring.Bi
 
 		if q.Direction == "out" || q.Direction == "both" || q.Direction == "" {
 			for _, rel := range q.Relations {
-				targets, _ := e.VGetLinks(curr.id, rel)
+				targets, _ := e.VGetLinks(indexName, curr.id, rel)
 				processNeighbors(targets)
 			}
 		}
 
 		if q.Direction == "in" || q.Direction == "both" {
 			for _, rel := range q.Relations {
-				sources, _ := e.VGetIncoming(curr.id, rel)
+				sources, _ := e.VGetIncoming(indexName, curr.id, rel)
 				processNeighbors(sources)
 			}
 		}
@@ -204,13 +239,30 @@ func (e *Engine) resolveGraphFilter(indexName string, q GraphQuery) (*roaring.Bi
 }
 
 // VGetRelations retrieves ALL active outgoing relationships for a node.
-func (e *Engine) VGetRelations(sourceID string) map[string][]string {
-	return e.DB.GetAllRelations(sourceID, "out")
+func (e *Engine) VGetRelations(indexName, sourceID string) map[string][]string {
+	internalSource := buildGraphID(indexName, sourceID)
+	relMap := e.DB.GetAllRelations(internalSource, "out")
+
+	// Ripulisci gli ID nei target
+	for _, targets := range relMap {
+		for i := range targets {
+			targets[i] = extractNodeID(targets[i])
+		}
+	}
+	return relMap
 }
 
 // VGetIncomingRelations retrieves ALL active incoming relationships for a node.
-func (e *Engine) VGetIncomingRelations(targetID string) map[string][]string {
-	return e.DB.GetAllRelations(targetID, "in")
+func (e *Engine) VGetIncomingRelations(indexName, targetID string) map[string][]string {
+	internalTarget := buildGraphID(indexName, targetID)
+	relMap := e.DB.GetAllRelations(internalTarget, "in")
+
+	for _, sources := range relMap {
+		for i := range sources {
+			sources[i] = extractNodeID(sources[i])
+		}
+	}
+	return relMap
 }
 
 // --- Advanced Graph Operations ---
@@ -277,7 +329,7 @@ func (e *Engine) VExtractSubgraph(indexName, rootID string, relations []string, 
 
 		for _, rel := range relations {
 			// A. Outgoing Edges
-			outEdges, found := e.VGetEdges(current.id, rel, atTime)
+			outEdges, found := e.VGetEdges(indexName, current.id, rel, atTime)
 			if found {
 				for _, edge := range outEdges {
 					target := edge.TargetID
@@ -297,7 +349,7 @@ func (e *Engine) VExtractSubgraph(indexName, rootID string, relations []string, 
 			}
 
 			// B. Incoming Edges
-			inEdges, found := e.VGetIncomingEdges(current.id, rel, atTime)
+			inEdges, found := e.VGetIncomingEdges(indexName, current.id, rel, atTime)
 			if found {
 				for _, edge := range inEdges {
 					source := edge.TargetID // See API contract in VGetIncomingEdges
@@ -329,8 +381,9 @@ func (e *Engine) VExtractSubgraph(indexName, rootID string, relations []string, 
 // --- Time Travel & Rich Data Access ---
 
 // VGetEdges retrieves full edge details for outgoing links.
-func (e *Engine) VGetEdges(sourceID, relationType string, atTime int64) ([]GraphEdge, bool) {
-	coreEdges, found := e.DB.GetOutEdges(sourceID, relationType, atTime)
+func (e *Engine) VGetEdges(indexName, sourceID, relationType string, atTime int64) ([]GraphEdge, bool) {
+	internalSource := buildGraphID(indexName, sourceID)
+	coreEdges, found := e.DB.GetOutEdges(internalSource, relationType, atTime)
 	if !found {
 		return nil, false
 	}
@@ -338,7 +391,7 @@ func (e *Engine) VGetEdges(sourceID, relationType string, atTime int64) ([]Graph
 	res := make([]GraphEdge, len(coreEdges))
 	for i, ce := range coreEdges {
 		res[i] = GraphEdge{
-			TargetID:  ce.TargetID,
+			TargetID:  extractNodeID(ce.TargetID),
 			CreatedAt: ce.CreatedAt,
 			DeletedAt: ce.DeletedAt,
 			Weight:    ce.Weight,
@@ -350,20 +403,21 @@ func (e *Engine) VGetEdges(sourceID, relationType string, atTime int64) ([]Graph
 
 // VGetIncomingEdges retrieves full edge details for incoming links (Lazy Hydration).
 // NOTE: By contract, the returned GraphEdge.TargetID contains the ID of the SOURCE node.
-func (e *Engine) VGetIncomingEdges(targetID, relationType string, atTime int64) ([]GraphEdge, bool) {
-	sources, found := e.DB.GetInEdges(targetID, relationType, atTime)
+func (e *Engine) VGetIncomingEdges(indexName, targetID, relationType string, atTime int64) ([]GraphEdge, bool) {
+	internalTarget := buildGraphID(indexName, targetID)
+	sources, found := e.DB.GetInEdges(internalTarget, relationType, atTime)
 	if !found {
 		return nil, false
 	}
 
 	var res []GraphEdge
-	for _, sourceID := range sources {
-		outEdges, ok := e.DB.GetOutEdges(sourceID, relationType, atTime)
+	for _, sourceIDInternal := range sources {
+		outEdges, ok := e.DB.GetOutEdges(sourceIDInternal, relationType, atTime)
 		if ok {
 			for _, oe := range outEdges {
-				if oe.TargetID == targetID {
+				if oe.TargetID == internalTarget {
 					res = append(res, GraphEdge{
-						TargetID:  sourceID, // Maintain API contract!
+						TargetID:  extractNodeID(sourceIDInternal), // Maintain API contract!
 						CreatedAt: oe.CreatedAt,
 						DeletedAt: oe.DeletedAt,
 						Weight:    oe.Weight,

@@ -49,7 +49,7 @@ func (e *Engine) FindPath(indexName, sourceID, targetID string, relations []stri
 
 				// Iterate ONLY user-provided relations
 				for _, rel := range relations {
-					edges, found := e.VGetEdges(curr, rel, atTime)
+					edges, found := e.VGetEdges(indexName, curr, rel, atTime)
 					if found {
 						for _, edge := range edges {
 							neighbor := edge.TargetID
@@ -77,7 +77,7 @@ func (e *Engine) FindPath(indexName, sourceID, targetID string, relations []stri
 
 				for _, rel := range relations {
 					// Follow Incoming Links (Reverse Index)
-					edges, found := e.VGetIncomingEdges(curr, rel, atTime)
+					edges, found := e.VGetIncomingEdges(indexName, curr, rel, atTime)
 					if found {
 						for _, edge := range edges {
 							neighbor := edge.TargetID

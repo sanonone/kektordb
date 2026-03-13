@@ -25,5 +25,5 @@ type Store interface {
 	GetMany(indexName string, ids []string) ([]core.VectorData, error)
 
 	// Graph Ops
-	Link(sourceID, targetID, relationType, inverseRelationType string) error
+	Link(indexName, sourceID, targetID, relationType, inverseRelationType string) error
 }

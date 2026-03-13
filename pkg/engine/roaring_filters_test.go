@@ -46,8 +46,8 @@ func TestRoaringBitmapsFilters(t *testing.T) {
 	// Setup per il test del Graph Filter
 	// Creiamo un grafo: category_root -> doc_3, doc_4
 	eng.VAdd(indexName, "category_root", zeroVec, map[string]any{"name": "tech_media"})
-	eng.VLink("category_root", "doc_3", "contains", "", 1.0, nil)
-	eng.VLink("category_root", "doc_4", "contains", "", 1.0, nil)
+	eng.VLink(indexName, "category_root", "doc_3", "contains", "", 1.0, nil)
+	eng.VLink(indexName, "category_root", "doc_4", "contains", "", 1.0, nil)
 
 	// Helper per eseguire la ricerca ed estrarre solo gli ID
 	runSearch := func(filter string, graphQuery *GraphQuery) []string {
