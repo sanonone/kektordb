@@ -9,20 +9,22 @@ import (
 )
 
 type ArenaCompactionConfig struct {
-	Enabled    bool          `json:"enabled"`
-	Interval   time.Duration `json:"interval"`
-	Threshold  float64       `json:"threshold"`
-	BatchSize  int           `json:"batch_size"`
-	BatchDelay time.Duration `json:"batch_delay"`
+	Enabled      bool          `json:"enabled"`
+	Interval     time.Duration `json:"interval"`
+	Threshold    float64       `json:"threshold"`
+	BatchSize    int           `json:"batch_size"`
+	BatchDelay   time.Duration `json:"batch_delay"`
+	InitialDelay time.Duration `json:"initial_delay"` // Initial delay/jitter before first cycle (default: 0, uses random 0-30s in production)
 }
 
 func DefaultArenaCompactionConfig() ArenaCompactionConfig {
 	return ArenaCompactionConfig{
-		Enabled:    true,
-		Interval:   5 * time.Minute,
-		Threshold:  0.3,
-		BatchSize:  100,
-		BatchDelay: 1 * time.Millisecond,
+		Enabled:      true,
+		Interval:     5 * time.Minute,
+		Threshold:    0.3,
+		BatchSize:    100,
+		BatchDelay:   1 * time.Millisecond,
+		InitialDelay: -1, // -1 means use random jitter (0-30s), 0 = no delay, >0 = specific delay
 	}
 }
 
@@ -113,15 +115,12 @@ func (ac *AsyncCompactor) Start() {
 	ac.stopped.Store(false)
 	ac.mu.Unlock()
 
-	jitter := time.Duration(fastRandn(30000)) * time.Millisecond
-	if jitter > 0 {
-		time.Sleep(jitter)
-	}
-
+	// Start the goroutine immediately - jitter will be applied inside runLoop
+	// This prevents blocking the calling thread (e.g., Add() operations)
 	ac.wg.Add(1)
 	go ac.runLoop()
 	slog.Info("[ArenaCompactor] Started", "interval", ac.config.Interval,
-		"threshold", ac.config.Threshold, "jitter", jitter)
+		"threshold", ac.config.Threshold)
 }
 
 func (ac *AsyncCompactor) Stop() {
@@ -182,6 +181,30 @@ func (ac *AsyncCompactor) WaitForStopped() {
 
 func (ac *AsyncCompactor) runLoop() {
 	defer ac.wg.Done()
+
+	// Apply initial delay INSIDE the goroutine - this prevents blocking Add() operations
+	// while still avoiding thundering herd on restart
+	// InitialDelay = 0 means no delay (use -1 to use random jitter, 0 = no delay, >0 = specific delay)
+	var initialDelay time.Duration
+	if ac.config.InitialDelay < 0 {
+		// Use random jitter if configured with negative value (default: -1)
+		initialDelay = time.Duration(fastRandn(30000)) * time.Millisecond
+	} else {
+		// Use configured value (0 = no delay, >0 = specific delay)
+		initialDelay = ac.config.InitialDelay
+	}
+
+	if initialDelay > 0 {
+		slog.Debug("[ArenaCompactor] Initial delay", "delay", initialDelay)
+		select {
+		case <-ac.stopCh:
+			slog.Debug("[ArenaCompactor] Exited before first cycle - stopped during initial delay")
+			return
+		case <-time.After(initialDelay):
+			// Delay completed, proceed with regular cycles
+		}
+	}
+
 	for {
 		select {
 		case <-ac.stopCh:

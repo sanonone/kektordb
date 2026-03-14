@@ -339,6 +339,7 @@ func TestAsyncCompactor_FragmentationAfterCompaction(t *testing.T) {
 	cfg.Threshold = 0.3
 	cfg.Interval = 50 * time.Millisecond
 	cfg.BatchSize = 10
+	cfg.InitialDelay = 0 // Use deterministic behavior for test - no random jitter
 
 	compactor = NewAsyncCompactor(arena, cfg)
 	compactor.SetNodeUpdater(mockUpdater)
