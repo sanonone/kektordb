@@ -52,6 +52,8 @@ type Index struct {
 	mMax0          int // Max number of connections per node at layer 0
 	efConstruction int // Size of the dynamic candidate list during construction/insertion [default = 200]
 
+	needsRefine atomic.Bool
+
 	// ml is a normalization factor for the level probability distribution
 	ml float64
 
@@ -355,8 +357,22 @@ func (h *Index) searchInternal(query []float32, k int, allowList *roaring.Bitmap
 		return []types.Candidate{}, nil
 	}
 
+	actualEfSearch := efSearch
+	if h.needsRefine.Load() {
+		boosted := int(float64(efSearch) * 2)
+		if boosted < 80 {
+			boosted = 80 // Minimo sindacale per non perdere recall se l'utente mette ef=10
+		}
+		if boosted > 200 {
+			boosted = 200 // Oltre i 200 non ha senso spingersi
+		}
+		if boosted > actualEfSearch {
+			actualEfSearch = boosted
+		}
+	}
+
 	// Size based on efSearch because it's the maximum that searchLayerUnlocked can return
-	scratchOut := make([]types.Candidate, 0, efSearch)
+	scratchOut := make([]types.Candidate, 0, actualEfSearch)
 
 	// --- PHASE 0: Query Preparation ---
 	// Normalization (if Cosine)
@@ -416,7 +432,7 @@ func (h *Index) searchInternal(query []float32, k int, allowList *roaring.Bitmap
 	}
 
 	// 2) Base layer search
-	nearestNeighbors, err := h.searchLayerUnlocked(finalQuery, currentEntryPoint, k, 0, allowList, efSearch, currentCounter, scratchOut)
+	nearestNeighbors, err := h.searchLayerUnlocked(finalQuery, currentEntryPoint, k, 0, allowList, actualEfSearch, currentCounter, scratchOut)
 	if err != nil {
 		return nil, err
 	}
@@ -944,6 +960,13 @@ func (h *Index) MaintenanceRun(forceType string) bool {
 	return false
 }
 
+// RunTurboRefine triggers the aggressive background optimization.
+func (h *Index) RunTurboRefine() {
+	if h.optimizer != nil {
+		h.optimizer.RunTurboRefine()
+	}
+}
+
 // AddBatch inserts a large batch of vectors concurrently.
 // It partitions the data, allocates nodes in parallel, finds neighbors
 // in parallel, and then commits all link changes in a final, sequential step.
@@ -1420,8 +1443,20 @@ func (h *Index) AddBatchOldOK(objects []types.BatchObject) error {
 }
 */
 
-// versione ottimizzatra da testare
 func (h *Index) AddBatch(objects []types.BatchObject) error {
+	return h.addBatchInternal(objects, h.efConstruction)
+}
+
+func (h *Index) AddBatchFast(objects []types.BatchObject) error {
+	fastEf := h.mMax0
+	if fastEf < 40 {
+		fastEf = 40 // Hard floor di sicurezza per non frantumare il grafo
+	}
+	return h.addBatchInternal(objects, fastEf)
+}
+
+// versione ottimizzatra da testare
+func (h *Index) addBatchInternal(objects []types.BatchObject, efConst int) error {
 	if h.isClosed() {
 		return fmt.Errorf("index is closed")
 	}
@@ -1442,7 +1477,7 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 	currentSize := h.nodeCounter.Load()
 	h.metaMu.RUnlock()
 
-	if currentSize < uint64(h.efConstruction) {
+	if currentSize < uint64(efConst) {
 		for _, obj := range objects {
 			_, err := h.Add(obj.Id, obj.Vector)
 			if err != nil {
@@ -1735,7 +1770,7 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 
 			// Heuristic pre-allocation to avoid re-allocations
 			localReqs := make([]LinkRequest, 0, len(nodesSubset)*int(h.maxLevel.Load())*2)
-			scratchBuffer := make([]types.Candidate, 0, h.efConstruction+50)
+			scratchBuffer := make([]types.Candidate, 0, efConst+50)
 
 			// Read current entrypoint (with fast RLock or atomic if possible, here we use RLock on meta)
 			h.metaMu.RLock()
@@ -1772,7 +1807,7 @@ func (h *Index) AddBatch(objects []types.BatchObject) error {
 				// 2. Insertion at node levels
 				for l := min(nodeLevel, currentMaxLevel); l >= 0; l-- {
 					// Search for efConstruction candidates
-					candidates, err := h.searchLayerUnlocked(queryObj, currEp, h.efConstruction, l, nil, h.efConstruction, maxID, scratchBuffer)
+					candidates, err := h.searchLayerUnlocked(queryObj, currEp, efConst, l, nil, efConst, maxID, scratchBuffer)
 					if err != nil || len(candidates) == 0 {
 						continue
 					}
@@ -3414,6 +3449,16 @@ func (h *Index) Close() error {
 		}
 		return fmt.Errorf("close timed out after 10 seconds - possible deadlock in compactor")
 	}
+}
+
+// SetNeedsRefine marks the index as dirty (needing optimization) or clean.
+func (h *Index) SetNeedsRefine(val bool) {
+	h.needsRefine.Store(val)
+}
+
+// NeedsRefine returns true if the index was fast-imported and needs optimization.
+func (h *Index) NeedsRefine() bool {
+	return h.needsRefine.Load()
 }
 
 // --- ATOMIC SLICE HELPERS ---

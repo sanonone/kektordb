@@ -627,3 +627,48 @@ func (o *GraphOptimizer) reconnectNode(node *Node, ignoreSet map[uint32]struct{}
 		node.Connections[l] = newConns
 	}
 }
+
+// RunTurboRefine launches an aggressive, continuous optimization loop.
+// It uses max CPU and huge batches until the entire graph has been re-evaluated.
+// Designed to run immediately after a Fast Bulk Import.
+func (o *GraphOptimizer) RunTurboRefine() {
+	slog.Info("[Optimizer] Starting TURBO Refine Mode. Max CPU utilization expected.")
+
+	// 1. Salva la configurazione originale e applica settaggi estremi
+	o.mu.Lock()
+	oldBatchSize := o.config.RefineBatchSize
+	oldEf := o.config.RefineEfConstruction
+
+	o.config.RefineBatchSize = 500                         // Batch mostruoso per azzerare l'overhead di scheduling
+	o.config.RefineEfConstruction = o.index.efConstruction // Usa l'ef originale ad alta qualità (es. 200)
+	o.lastScanIdx = 0                                      // Ripartiamo dall'inizio del grafo
+	o.mu.Unlock()
+
+	// 2. Eseguiamo cicli continui (Niente sleep!)
+	// Il Refine interno usa gli Shard Lock (rilasciandoli istantaneamente),
+	// quindi le query degli utenti continueranno a passare.
+	totalNodes := int(o.index.nodeCounter.Load())
+	processed := 0
+
+	for processed < totalNodes {
+		didWork := o.Refine()
+		if !didWork {
+			// Se il Refine restituisce false, significa che non ci sono più nodi validi da processare
+			break
+		}
+		processed += 500
+
+		// Un micro-yield per far respirare il Garbage Collector durante import mastodontici
+		time.Sleep(10 * time.Second)
+	}
+
+	// 3. Ripristina la normalità
+	o.mu.Lock()
+	o.config.RefineBatchSize = oldBatchSize
+	o.config.RefineEfConstruction = oldEf
+	o.mu.Unlock()
+
+	// 4. Dichiara il database pulito! (Spegne l'auto-compensazione in lettura)
+	o.index.SetNeedsRefine(false)
+	slog.Info("[Optimizer] TURBO Refine completed. Graph restored to pristine quality.")
+}

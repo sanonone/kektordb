@@ -33,6 +33,10 @@ type BatchAddVectorsRequest struct {
 	Vectors   []types.BatchObject `json:"vectors"`
 }
 
+type VectorImportCommitRequest struct {
+	IndexName string `json:"index_name"`
+}
+
 type BatchGetVectorsRequest struct {
 	IndexName string   `json:"index_name"`
 	IDs       []string `json:"ids"`

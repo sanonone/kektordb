@@ -58,6 +58,7 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /vector/actions/add", s.handleVectorAdd)
 	mux.HandleFunc("POST /vector/actions/add-batch", s.handleVectorAddBatch)
 	mux.HandleFunc("POST /vector/actions/import", s.handleVectorImport)
+	mux.HandleFunc("POST /vector/actions/import/commit", s.handleVectorImportCommit)
 	mux.HandleFunc("POST /vector/actions/search", s.handleVectorSearch)
 	mux.HandleFunc("POST /vector/actions/search-with-scores", s.handleVectorSearchWithScores)
 	mux.HandleFunc("POST /vector/actions/delete_vector", s.handleVectorDelete)
@@ -363,23 +364,39 @@ func (s *Server) handleVectorImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create the Task
-	task := s.taskManager.NewTask()
+	if err := s.Engine.VImport(req.IndexName, req.Vectors); err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		return
+	}
 
-	// Execute in background
-	go func() {
-		// ENGINE CALL (VImport)
-		// Note: VImport is blocking, so the goroutine lives until it finishes.
-		if err := s.Engine.VImport(req.IndexName, req.Vectors); err != nil {
-			task.SetError(err)
-		} else {
-			task.SetStatus(TaskStatusCompleted)
-			task.SetProgress(fmt.Sprintf("Imported %d vectors", len(req.Vectors)))
-		}
-	}()
+	s.writeHTTPResponse(w, http.StatusOK, map[string]interface{}{
+		"status":        "OK",
+		"vectors_added": len(req.Vectors),
+	})
+}
 
-	// Return immediately with 202 Accepted and the Task ID
-	s.writeHTTPResponse(w, http.StatusAccepted, task)
+func (s *Server) handleVectorImportCommit(w http.ResponseWriter, r *http.Request) {
+	var req VectorImportCommitRequest
+	if err := s.decodeJSON(r, &req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.IndexName == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name required"))
+		return
+	}
+
+	// Questa è un'operazione "pesante" (salva su disco), ma vogliamo aspettare che finisca
+	// prima di dire "OK" all'utente, per garantire la durabilità dei dati.
+	if err := s.Engine.VImportCommit(req.IndexName); err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{
+		"status":  "OK",
+		"message": "Import committed to disk. Turbo Refine started in background.",
+	})
 }
 
 func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {

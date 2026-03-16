@@ -1152,42 +1152,104 @@ func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 // VImport performs a high-speed bulk insertion of vectors.
 //
 // Unlike VAddBatch, this method bypasses the AOF log to maximize throughput.
-// It creates a full database Snapshot (.kdb) upon completion.
 //
 // Use this method for initial dataset loading or massive restores.
 // Note: This operation acquires a global administrative lock to ensure consistency during the snapshot.
 func (e *Engine) VImport(indexName string, items []types.BatchObject) error {
 	idx, ok := e.DB.GetVectorIndex(indexName)
 	if !ok {
-		return fmt.Errorf("index '%s' not found", indexName)
+		return fmt.Errorf("index not found")
 	}
 	hnswIdx, ok := idx.(*hnsw.Index)
 	if !ok {
-		return fmt.Errorf("index is not HNSW")
+		return fmt.Errorf("not hnsw")
 	}
 
-	// Block administrative operations (like other saves/rewrites) during import
-	e.adminMu.Lock()
-	defer e.adminMu.Unlock()
+	// 1. Dichiara l'indice "Sporco" (Questo attiverà l'Auto-Compensazione in lettura!)
+	hnswIdx.SetNeedsRefine(true)
 
-	// 1. Mass insertion in memory (HNSW)
-	if err := hnswIdx.AddBatch(items); err != nil {
+	// --- MEMORY TIMESTAMPING ---
+	memCfg := hnswIdx.GetMemoryConfig()
+	if memCfg.Enabled {
+		now := float64(time.Now().Unix())
+		for i := range items {
+			if items[i].Metadata == nil {
+				items[i].Metadata = make(map[string]any)
+			}
+			if _, exists := items[i].Metadata["_created_at"]; !exists {
+				items[i].Metadata["_created_at"] = now
+			}
+		}
+	}
+
+	// --- ZERO VECTOR LOGIC ---
+	targetDim := hnswIdx.GetDimension()
+	if targetDim == 0 {
+		for _, item := range items {
+			if len(item.Vector) > 0 {
+				targetDim = len(item.Vector)
+				break
+			}
+		}
+	}
+
+	for i := range items {
+		item := &items[i]
+		if len(item.Vector) == 0 {
+			if targetDim == 0 {
+				return fmt.Errorf("cannot add zero-vector entity: index is empty")
+			}
+			item.Vector = make([]float32, targetDim)
+		} else if targetDim > 0 && len(item.Vector) != targetDim {
+			return fmt.Errorf("dimension mismatch for item %s", item.Id)
+		}
+	}
+
+	// 2. FAST Memory Batch (NIENTE AOF!)
+	if err := hnswIdx.AddBatchFast(items); err != nil {
 		return err
 	}
 
-	// 2. Add Metadata
+	// 3. Metadata & AutoLinks
+	rules := hnswIdx.GetAutoLinks()
 	for _, item := range items {
 		if len(item.Metadata) > 0 {
 			id, _ := hnswIdx.GetInternalID(item.Id)
 			e.DB.AddMetadata(indexName, id, item.Metadata)
+			if len(rules) > 0 {
+				e.processAutoLinks(indexName, item.Id, item.Metadata, rules)
+			}
 		}
 	}
 
-	// 3. Immediate Snapshot (Bulk Persistence)
-	// Uses the private version that assumes adminMu is already held.
-	if err := e.saveSnapshotLocked(); err != nil {
-		return fmt.Errorf("import memory success but snapshot failed: %w", err)
+	// Nota: Non incrementiamo e.dirtyCounter perché non vogliamo innescare
+	// autosave casuali a metà di una transazione di importazione massiva.
+	return nil
+}
+
+// VImportCommit finalizes a bulk import transaction.
+// It forces a disk snapshot to make data durable, and kicks off the Turbo Refine.
+func (e *Engine) VImportCommit(indexName string) error {
+	idx, ok := e.DB.GetVectorIndex(indexName)
+	if !ok {
+		return fmt.Errorf("index not found")
 	}
+	hnswIdx, ok := idx.(*hnsw.Index)
+	if !ok {
+		return fmt.Errorf("not hnsw")
+	}
+
+	// 1. Forza il salvataggio globale (Snapshot su .kdb e pulizia AOF)
+	// Questo rende i dati appena caricati in RAM resistenti ai crash.
+	if err := e.SaveSnapshot(); err != nil {
+		return fmt.Errorf("failed to commit import to disk: %w", err)
+	}
+
+	// 2. Lancia il Turbo Refine in background.
+	// La risposta API tornerà subito al client, mentre la CPU server lavorerà per ottimizzare il grafo.
+	go func() {
+		hnswIdx.RunTurboRefine()
+	}()
 
 	return nil
 }

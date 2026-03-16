@@ -312,7 +312,10 @@ class KektorDBClient:
         self._request("POST", "/vector/actions/add", json=payload)
 
     def vadd_batch(
-        self, index_name: str, vectors: List[Dict[str, Any]], timeout: Union[int, float, None] = None
+        self,
+        index_name: str,
+        vectors: List[Dict[str, Any]],
+        timeout: Union[int, float, None] = None,
     ) -> Dict[str, Any]:
         """
         Adds a batch of vectors to an index in a single request.
@@ -338,29 +341,35 @@ class KektorDBClient:
         """
         payload = {"index_name": index_name, "vectors": vectors}
         kwargs = {"timeout": timeout} if timeout is not None else {}
-        return self._request("POST", "/vector/actions/add-batch", json=payload, **kwargs)
+        return self._request(
+            "POST", "/vector/actions/add-batch", json=payload, **kwargs
+        )
 
     def vimport(
-        self, index_name: str, vectors: List[Dict[str, Any]], wait: bool = True, timeout: Union[int, float, None] = None
-    ) -> Task:
+        self, index_name: str, vectors: List[Dict[str, Any]], batch_size: int = 10000
+    ):
         """
-        Importa massivamente vettori (Async).
-
-        Args:
-            index_name: Nome indice.
-            vectors: Lista vettori.
-            wait: Se True, blocca finché l'import non è finito.
-            timeout: Optional timeout per la richiesta HTTP iniziale.
+        Caricamento iper-veloce per grandi dataset. Gestisce automaticamente i batch
+        e fa il commit finale per far partire l'ottimizzazione in background sul server.
         """
-        payload = {"index_name": index_name, "vectors": vectors}
-        kwargs = {"timeout": timeout} if timeout is not None else {}
-        # Non serve più il timeout gigante qui, ma in batch massivi l'invio può impiegare >30s
-        response = self._request("POST", "/vector/actions/import", json=payload, **kwargs)
+        import time
 
-        task = Task(self, response)
-        if wait:
-            return task.wait(interval=1, timeout=600)  # Timeout lungo per il polling
-        return task
+        print(f"Starting turbo import of {len(vectors)} vectors...")
+        start_t = time.time()
+
+        # 1. Invia i batch saltando il log del disco
+        for i in range(0, len(vectors), batch_size):
+            batch = vectors[i : i + batch_size]
+            payload = {"index_name": index_name, "vectors": batch}
+            self._request("POST", "/vector/actions/import", json=payload)
+            print(f"  Sent batch {i // batch_size + 1} ({len(batch)} items)...")
+
+        # 2. Chiude la transazione e sveglia il Turbo Refine
+        print("Committing to disk and launching Turbo Refine...")
+        payload = {"index_name": index_name}
+        self._request("POST", "/vector/actions/import/commit", json=payload)
+
+        print(f"Import completed in {time.time() - start_t:.2f} seconds!")
 
     def vdelete(self, index_name: str, item_id: str) -> None:
         """
@@ -497,7 +506,9 @@ class KektorDBClient:
         }
 
         kwargs = {"timeout": timeout} if timeout is not None else {}
-        data = self._request("POST", "/vector/actions/search-with-scores", json=payload, **kwargs)
+        data = self._request(
+            "POST", "/vector/actions/search-with-scores", json=payload, **kwargs
+        )
         return data.get("results", [])
 
     # --- Graph / Relationship Methods ---
