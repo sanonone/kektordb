@@ -22,7 +22,7 @@ func TestRoaringBitmapsFilters(t *testing.T) {
 	defer eng.Close()
 
 	indexName := "roaring_test_idx"
-	err = eng.VCreate(indexName, distance.Euclidean, 16, 200, distance.Float32, "english", nil, nil, nil)
+	err = eng.VCreate(indexName, distance.Euclidean, 16, 200, distance.Float32, "english", nil, nil, nil, false, 0)
 	if err != nil {
 		t.Fatalf("Failed to create index: %v", err)
 	}

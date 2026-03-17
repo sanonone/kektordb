@@ -38,7 +38,7 @@ func TestRewriteAOFConcurrentWithAddBatch(t *testing.T) {
 
 	indexName := "deadlock_test_index"
 	arenaDir := filepath.Join(dataDir, "arenas", indexName)
-	if err := eng.VCreate(indexName, distance.Euclidean, 8, 100, distance.Float32, "", nil, nil, nil); err != nil {
+	if err := eng.VCreate(indexName, distance.Euclidean, 8, 100, distance.Float32, "", nil, nil, nil, false, 0); err != nil {
 		t.Fatalf("VCreate() failed: %v", err)
 	}
 	_ = arenaDir // usato implicitamente da VCreate via DataDir
@@ -117,7 +117,7 @@ func TestRewriteAOFPreservesData(t *testing.T) {
 	}
 
 	indexName := "preserve_test"
-	if err := eng.VCreate(indexName, distance.Euclidean, 8, 100, distance.Float32, "", nil, nil, nil); err != nil {
+	if err := eng.VCreate(indexName, distance.Euclidean, 8, 100, distance.Float32, "", nil, nil, nil, false, 0); err != nil {
 		t.Fatalf("VCreate() failed: %v", err)
 	}
 

@@ -31,9 +31,11 @@ import (
 // applied to the graph. It is used by the concurrent AddBatch method and can be
 // extended for future graph repair mechanisms.
 type LinkRequest struct {
-	NodeID       uint32
-	Level        int
-	NewNeighbors []uint32
+	NodeID          uint32
+	Level           int
+	NewNeighbors    []uint32
+	ReverseNeighbor uint32
+	IsReverse       bool
 }
 
 const NumShards = 128
@@ -1791,9 +1793,8 @@ func (h *Index) addBatchInternal(objects []types.BatchObject, efConst int) error
 					queryObj = node.VectorI8
 				}
 
-				h.RLockNode(node.InternalID)
+				// OPTIMIZATION P2: nodeLevel is already set when node was created, no lock needed
 				nodeLevel := len(node.Connections) - 1
-				h.RUnlockNode(node.InternalID)
 				currEp := entryPointID
 
 				// 1. Zoom-in from higher levels (no neighbor saving, just approach)
@@ -1806,8 +1807,18 @@ func (h *Index) addBatchInternal(objects []types.BatchObject, efConst int) error
 
 				// 2. Insertion at node levels
 				for l := min(nodeLevel, currentMaxLevel); l >= 0; l-- {
+					// OPTIMIZATION P5: Use smaller ef for higher levels (sparser graph)
+					efLevel := efConst
+					if l > 0 {
+						// Higher levels have fewer connections, less search needed
+						efLevel = h.m * 2
+						if efLevel < 32 {
+							efLevel = 32
+						}
+					}
+
 					// Search for efConstruction candidates
-					candidates, err := h.searchLayerUnlocked(queryObj, currEp, efConst, l, nil, efConst, maxID, scratchBuffer)
+					candidates, err := h.searchLayerUnlocked(queryObj, currEp, efLevel, l, nil, efLevel, maxID, scratchBuffer)
 					if err != nil || len(candidates) == 0 {
 						continue
 					}
@@ -1857,12 +1868,14 @@ func (h *Index) addBatchInternal(objects []types.BatchObject, efConst int) error
 
 			// B. Reverse Link: Found neighbors should (possibly) connect to the new node
 			// HNSW is an approximate bidirectional graph.
+			// OPTIMIZATION P0: Use ReverseNeighbor field instead of creating new slice
 			for _, neighborID := range req.NewNeighbors {
 				revShardIdx := neighborID & (NumShards - 1)
 				shardedReqs[revShardIdx] = append(shardedReqs[revShardIdx], LinkRequest{
-					NodeID:       neighborID,
-					Level:        req.Level,
-					NewNeighbors: []uint32{req.NodeID}, // Only 1 neighbor: the new node
+					NodeID:          neighborID,
+					Level:           req.Level,
+					ReverseNeighbor: req.NodeID,
+					IsReverse:       true,
 				})
 			}
 		}
@@ -1935,11 +1948,18 @@ func (h *Index) addBatchInternal(objects []types.BatchObject, efConst int) error
 				}
 
 				// Raggruppiamo le richieste per livello
+				// OPTIMIZATION P0: Handle both direct and reverse links efficiently
 				newNeighborsPerLevel := make([][]uint32, maxLvl+1)
 				for k := idx; k < endIdx; k++ {
 					lvl := requests[k].Level
 					if lvl <= maxLvl {
-						newNeighborsPerLevel[lvl] = append(newNeighborsPerLevel[lvl], requests[k].NewNeighbors...)
+						if requests[k].IsReverse {
+							// Reverse link: use single ReverseNeighbor field
+							newNeighborsPerLevel[lvl] = append(newNeighborsPerLevel[lvl], requests[k].ReverseNeighbor)
+						} else {
+							// Direct link: use the full NewNeighbors slice
+							newNeighborsPerLevel[lvl] = append(newNeighborsPerLevel[lvl], requests[k].NewNeighbors...)
+						}
 					}
 				}
 
@@ -1961,27 +1981,23 @@ func (h *Index) addBatchInternal(objects []types.BatchObject, efConst int) error
 					h.RUnlockNode(currentNodeID)
 
 					// 3. Elaborazione Dati (Fuori dal Lock)
-					uniqueIDs := append(currentConns, newCands...)
-					slices.Sort(uniqueIDs)
-
-					uniqCount := 0
-					if len(uniqueIDs) > 0 {
-						readHead := 0
-						if uniqueIDs[0] == currentNodeID {
-							readHead = 1
-						}
-						if readHead < len(uniqueIDs) {
-							uniqueIDs[0] = uniqueIDs[readHead]
-							uniqCount = 1
-							for r := readHead + 1; r < len(uniqueIDs); r++ {
-								val := uniqueIDs[r]
-								if val != currentNodeID && val != uniqueIDs[uniqCount-1] {
-									uniqueIDs[uniqCount] = val
-									uniqCount++
-								}
-							}
+					// OPTIMIZATION P3: Use map for faster deduplication
+					uniqueMap := make(map[uint32]struct{}, len(currentConns)+len(newCands))
+					for _, id := range currentConns {
+						if id != currentNodeID {
+							uniqueMap[id] = struct{}{}
 						}
 					}
+					for _, id := range newCands {
+						if id != currentNodeID {
+							uniqueMap[id] = struct{}{}
+						}
+					}
+					uniqueIDs := make([]uint32, 0, len(uniqueMap))
+					for id := range uniqueMap {
+						uniqueIDs = append(uniqueIDs, id)
+					}
+					uniqCount := len(uniqueIDs)
 
 					maxM := h.m
 					if lvl == 0 {
@@ -1991,33 +2007,44 @@ func (h *Index) addBatchInternal(objects []types.BatchObject, efConst int) error
 
 					if uniqCount <= maxM {
 						finalConns = make([]uint32, uniqCount)
-						copy(finalConns, uniqueIDs[:uniqCount])
+						copy(finalConns, uniqueIDs)
 					} else {
-						// Pruning
-						candidatesScratch = candidatesScratch[:0]
-						for i := 0; i < uniqCount; i++ {
-							id := uniqueIDs[i]
-							targetNode := h.loadNode(id)
-							if targetNode != nil && !targetNode.Deleted.Load() {
-								dist, _ := h.distanceBetweenNodes(node, targetNode)
-								candidatesScratch = append(candidatesScratch, types.Candidate{Id: id, Distance: dist})
-							}
+						// OPTIMIZATION P4: Fast pruning path
+						// Count how many are existing vs new
+						existingCount := 0
+						if lvl < len(node.Connections) && len(node.Connections[lvl]) > 0 {
+							existingCount = len(node.Connections[lvl])
 						}
+						newCount := uniqCount - existingCount
 
-						slices.SortFunc(candidatesScratch, func(a, b types.Candidate) int {
-							if a.Distance < b.Distance {
-								return -1
+						// If we have room for new ones without full pruning
+						if existingCount < maxM && newCount <= maxM-existingCount {
+							// Just keep all, let the sort handle it (no distance calc needed)
+							slices.SortFunc(uniqueIDs, func(a, b uint32) int {
+								return int(a) - int(b)
+							})
+							if len(uniqueIDs) > maxM {
+								uniqueIDs = uniqueIDs[:maxM]
 							}
-							if a.Distance > b.Distance {
-								return 1
+							finalConns = uniqueIDs
+						} else {
+							// Full pruning needed - calculate distances
+							candidatesScratch = candidatesScratch[:0]
+							for i := 0; i < uniqCount; i++ {
+								id := uniqueIDs[i]
+								targetNode := h.loadNode(id)
+								if targetNode != nil && !targetNode.Deleted.Load() {
+									dist, _ := h.distanceBetweenNodes(node, targetNode)
+									candidatesScratch = append(candidatesScratch, types.Candidate{Id: id, Distance: dist})
+								}
 							}
-							return 0
-						})
 
-						selected := h.selectNeighbors(candidatesScratch, maxM)
-						finalConns = make([]uint32, len(selected))
-						for k, s := range selected {
-							finalConns[k] = s.Id
+							// OPTIMIZATION P1: Use batch version that skips intra-candidate distance
+							selected := h.selectNeighborsBatch(candidatesScratch, maxM, true)
+							finalConns = make([]uint32, len(selected))
+							for k, s := range selected {
+								finalConns[k] = s.Id
+							}
 						}
 					}
 
@@ -2675,6 +2702,42 @@ func (h *Index) selectNeighbors(candidates []types.Candidate, m int) []types.Can
 	}
 
 	return results
+}
+
+// selectNeighborsBatch is an optimized version of selectNeighbors for batch insertion.
+// It uses a simplified algorithm that skips the expensive intra-candidate distance
+// calculations when the number of candidates is much larger than m.
+// This trades some graph quality for significantly better insertion performance.
+func (h *Index) selectNeighborsBatch(candidates []types.Candidate, m int, skipIntraDistance bool) []types.Candidate {
+	if h.isClosed() {
+		return candidates
+	}
+
+	if len(candidates) <= m {
+		return candidates
+	}
+
+	// Fast path: if we have many more candidates than m and skipIntraDistance is true,
+	// just sort by distance and take the top m
+	if skipIntraDistance && len(candidates) > m*4 {
+		// Sort by distance only (no intra-candidate distance calculation)
+		slices.SortFunc(candidates, func(a, b types.Candidate) int {
+			if a.Distance < b.Distance {
+				return -1
+			}
+			if a.Distance > b.Distance {
+				return 1
+			}
+			return 0
+		})
+		if len(candidates) > m {
+			return candidates[:m]
+		}
+		return candidates
+	}
+
+	// Standard algorithm (same as selectNeighbors) for smaller candidate sets
+	return h.selectNeighbors(candidates, m)
 }
 
 // --- Helper ---

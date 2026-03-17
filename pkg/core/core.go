@@ -813,6 +813,20 @@ func (s *DB) GetVectorIndexUnlocked(name string) (VectorIndex, bool) {
 	return idx, found
 }
 
+// SetVectorIndex sets a vector index directly without the duplicate check.
+// Used for FederatedIndex where creation is handled differently.
+func (s *DB) SetVectorIndex(name string, idx VectorIndex) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.vectorIndexes[name] = idx
+	s.indexLocks[name] = &sync.RWMutex{}
+	s.invertedIndex[name] = make(map[string]map[string]*roaring.Bitmap)
+	s.bTreeIndex[name] = make(map[string]*btree.BTreeG[BTreeItem])
+	s.textIndex[name] = make(map[string]map[string]PostingList)
+	s.textIndexStats[name] = make(map[string]*TextIndexStats)
+}
+
 // DeleteVectorIndex removes an entire vector index and all of its associated data.
 func (s *DB) DeleteVectorIndex(name string) error {
 	s.mu.Lock()

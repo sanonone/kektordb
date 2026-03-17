@@ -39,7 +39,7 @@ func (s *Service) ensureIndex(name string) {
 		}
 
 		// Create index with Memory Config
-		s.engine.VCreate(name, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, memConfig)
+		s.engine.VCreate(name, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, memConfig, false, 0)
 	}
 }
 

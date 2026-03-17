@@ -279,7 +279,7 @@ func (s *Server) handleVectorCreate(w http.ResponseWriter, r *http.Request) {
 		prec = distance.Float32
 	}
 
-	err := s.Engine.VCreate(req.IndexName, metric, req.M, req.EfConstruction, prec, req.TextLanguage, req.Maintenance, req.AutoLinks, req.MemoryConfig)
+	err := s.Engine.VCreate(req.IndexName, metric, req.M, req.EfConstruction, prec, req.TextLanguage, req.Maintenance, req.AutoLinks, req.MemoryConfig, req.Federated, req.NumShards)
 	if err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, err)
 		return
@@ -305,8 +305,17 @@ func (s *Server) handleVectorAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if hnswIdx, ok := idx.(*hnsw.Index); ok {
-		expectedDim := hnswIdx.GetDimension()
+	// Handle both HNSW Index and FederatedIndex
+	switch t := idx.(type) {
+	case *hnsw.Index:
+		expectedDim := t.GetDimension()
+		if expectedDim > 0 && len(req.Vector) != expectedDim {
+			s.writeHTTPError(w, http.StatusBadRequest,
+				fmt.Errorf("vector dimension mismatch: expected %d, got %d", expectedDim, len(req.Vector)))
+			return
+		}
+	case *hnsw.FederatedIndex:
+		expectedDim := t.GetDimension()
 		if expectedDim > 0 && len(req.Vector) != expectedDim {
 			s.writeHTTPError(w, http.StatusBadRequest,
 				fmt.Errorf("vector dimension mismatch: expected %d, got %d", expectedDim, len(req.Vector)))
@@ -823,8 +832,11 @@ func (s *Server) handleGraphSearchNodes(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var dim int
-	if hnswIdx, ok := idx.(*hnsw.Index); ok {
-		dim = hnswIdx.GetDimension()
+	switch t := idx.(type) {
+	case *hnsw.Index:
+		dim = t.GetDimension()
+	case *hnsw.FederatedIndex:
+		dim = t.GetDimension()
 	}
 	if dim == 0 {
 		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index empty or invalid"))
@@ -1215,6 +1227,11 @@ func (s *Server) handleUIExplore(w http.ResponseWriter, r *http.Request) {
 	// Usiamo HNSW per iterare velocemente
 	hnswIdx, ok := idx.(*hnsw.Index)
 	if !ok {
+		// Check if it's a FederatedIndex (not supported for this operation)
+		if _, ok := idx.(*hnsw.FederatedIndex); ok {
+			s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("federated index not supported for this operation"))
+			return
+		}
 		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("not hnsw index"))
 		return
 	}

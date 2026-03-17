@@ -198,6 +198,8 @@ class KektorDBClient:
         maintenance_config: Dict[str, Any] = None,
         auto_links: List[Dict[str, Any]] = None,
         memory_config: Dict[str, Any] = None,
+        federated: bool = False,
+        num_shards: int = 0,
     ) -> None:
         """
         Creates a new vector index.
@@ -213,6 +215,8 @@ class KektorDBClient:
             auto_links: Optional list of rules for auto-linking graph nodes based on metadata.
             memory_config: Optional dict for time-decay ranking settings.
                 Example: {"enabled": True, "decay_half_life": "1h"}
+            federated: If True, creates a FederatedIndex with multiple shards for parallel insert/search.
+            num_shards: Number of shards for federated index (0 = use default: NumCPU).
 
         Raises:
             APIError: If the index already exists or parameters are invalid.
@@ -234,6 +238,12 @@ class KektorDBClient:
 
         if memory_config:
             payload["memory_config"] = memory_config
+
+        if federated:
+            payload["federated"] = True
+
+        if num_shards > 0:
+            payload["num_shards"] = num_shards
 
         self._request("POST", "/vector/actions/create", json=payload)
 

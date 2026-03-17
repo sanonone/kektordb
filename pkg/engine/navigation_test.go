@@ -17,7 +17,7 @@ func TestIntelligentNavigation(t *testing.T) {
 
 	idx := "nav_test"
 	// Cosine Distance (0.0 = Identical, 1.0 = Orthogonal, 2.0 = Opposite)
-	eng.VCreate(idx, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
+	eng.VCreate(idx, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil, false, 0)
 
 	// 2. Data Setup
 	// Concept: SPACE TRAVEL

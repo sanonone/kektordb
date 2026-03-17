@@ -17,7 +17,7 @@ func TestMemoryReinforcement(t *testing.T) {
 	indexName := "mem_test"
 	// Half-Life molto breve: 1 secondo
 	cfg := &hnsw.MemoryConfig{Enabled: true, DecayHalfLife: hnsw.Duration(1 * time.Second)}
-	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, cfg)
+	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, cfg, false, 0)
 
 	vec := []float32{1.0, 0.0}
 

@@ -84,10 +84,11 @@ func (e *Engine) IndexExists(name string) bool {
 // 'metric' defines the distance function (e.g., distance.Cosine, distance.Euclidean).
 // 'prec' defines the storage precision (float32, float16, int8).
 // 'lang' enables hybrid search features (e.g., "english", "italian") or "" to disable.
-// accept AutoLinkRules.
+// 'federated' creates a FederatedIndex with multiple shards for parallel insert/search.
+// 'numShards' specifies the number of shards for federated index (0 = use default: NumCPU).
 //
 // Returns an error if an index with the same name already exists.
-func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int, prec distance.PrecisionType, lang string, config *hnsw.AutoMaintenanceConfig, autoLinks []hnsw.AutoLinkRule, memoryConfig *hnsw.MemoryConfig) error {
+func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int, prec distance.PrecisionType, lang string, config *hnsw.AutoMaintenanceConfig, autoLinks []hnsw.AutoLinkRule, memoryConfig *hnsw.MemoryConfig, federated bool, numShards int) error {
 	// 1. Prepare AOF Command Arguments
 	args := [][]byte{
 		[]byte(name),
@@ -96,6 +97,14 @@ func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int
 		[]byte("EF_CONSTRUCTION"), []byte(strconv.Itoa(efC)),
 		[]byte("PRECISION"), []byte(prec),
 		[]byte("TEXT_LANGUAGE"), []byte(lang),
+	}
+
+	// Add federated flag to AOF
+	if federated {
+		args = append(args, []byte("FEDERATED"), []byte("true"))
+		if numShards > 0 {
+			args = append(args, []byte("NUM_SHARDS"), []byte(strconv.Itoa(numShards)))
+		}
 	}
 
 	// 2. Serialize AutoLinks to JSON for AOF
@@ -121,6 +130,18 @@ func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int
 	}
 
 	// 4. Create Index in Memory
+	if federated {
+		// Create FederatedIndex (in-memory only for now)
+		idx, err := hnsw.NewFederatedIndex(m, efC, metric, prec, numShards)
+		if err != nil {
+			return err
+		}
+		e.DB.SetVectorIndex(name, idx)
+		atomic.AddInt64(&e.dirtyCounter, 1)
+		return nil
+	}
+
+	// Standard HNSW Index
 	arenaPath := filepath.Join(e.opts.DataDir, "arenas", name)
 
 	err := e.DB.CreateVectorIndex(name, metric, m, efC, prec, lang, arenaPath)
@@ -634,11 +655,40 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 	if !ok {
 		return nil, fmt.Errorf("index '%s' not found", indexName)
 	}
-	hnswIndex, ok := idx.(*hnsw.Index)
-	if !ok {
+
+	// Support both HNSW Index and FederatedIndex
+	var hnswIndex *hnsw.Index
+	var fedIdx *hnsw.FederatedIndex
+
+	switch t := idx.(type) {
+	case *hnsw.Index:
+		hnswIndex = t
+	case *hnsw.FederatedIndex:
+		fedIdx = t
+	default:
 		return nil, fmt.Errorf("index is not HNSW")
 	}
 
+	// Handle FederatedIndex - only basic vector search supported
+	if fedIdx != nil {
+		// For FederatedIndex, skip filters and advanced features for now
+		if filter != "" || explicitTextQuery != "" || graphQuery != nil {
+			return nil, fmt.Errorf("federated index does not support filters, text search, or graph queries")
+		}
+
+		// Basic vector search
+		results := fedIdx.SearchWithScores(query, k, nil, efSearch)
+
+		// Convert to fusedResult
+		fused := make([]fusedResult, len(results))
+		for i, r := range results {
+			extID, _ := fedIdx.GetExternalIDFromDocID(r.DocID)
+			fused[i] = fusedResult{id: extID, score: r.Score}
+		}
+		return fused, nil
+	}
+
+	// HNSW Index - full feature support
 	// Parsing Filters
 	var booleanFilters, textQuery, textQueryField string
 
@@ -1042,9 +1092,23 @@ func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 		return fmt.Errorf("index not found")
 	}
 
-	hnswIdx, ok := idx.(*hnsw.Index)
-	if !ok {
+	// Support both HNSW Index and FederatedIndex
+	var hnswIdx *hnsw.Index
+	var fedIdx *hnsw.FederatedIndex
+
+	switch t := idx.(type) {
+	case *hnsw.Index:
+		hnswIdx = t
+	case *hnsw.FederatedIndex:
+		fedIdx = t
+	default:
 		return fmt.Errorf("not hnsw")
+	}
+
+	// Handle FederatedIndex separately
+	if fedIdx != nil {
+		// For FederatedIndex, just use AddBatch directly (no metadata for now)
+		return fedIdx.AddBatch(items)
 	}
 
 	// --- MEMORY TIMESTAMPING ---
@@ -1160,9 +1224,24 @@ func (e *Engine) VImport(indexName string, items []types.BatchObject) error {
 	if !ok {
 		return fmt.Errorf("index not found")
 	}
-	hnswIdx, ok := idx.(*hnsw.Index)
-	if !ok {
+
+	// Support both HNSW Index and FederatedIndex
+	var hnswIdx *hnsw.Index
+	var fedIdx *hnsw.FederatedIndex
+
+	switch t := idx.(type) {
+	case *hnsw.Index:
+		hnswIdx = t
+	case *hnsw.FederatedIndex:
+		fedIdx = t
+	default:
 		return fmt.Errorf("not hnsw")
+	}
+
+	// Handle FederatedIndex separately
+	if fedIdx != nil {
+		// For FederatedIndex, just use AddBatch directly (no metadata for now)
+		return fedIdx.AddBatch(items)
 	}
 
 	// 1. Dichiara l'indice "Sporco" (Questo attiverà l'Auto-Compensazione in lettura!)

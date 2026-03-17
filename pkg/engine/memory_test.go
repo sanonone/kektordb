@@ -30,7 +30,7 @@ func TestMemoryEngine(t *testing.T) {
 	t.Run("StandardIndexRegression", func(t *testing.T) {
 		idxName := "standard_idx"
 		// Create standard index (nil memory config)
-		err := eng.VCreate(idxName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
+		err := eng.VCreate(idxName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil, false, 0)
 		if err != nil {
 			t.Fatalf("VCreate failed: %v", err)
 		}
@@ -72,7 +72,7 @@ func TestMemoryEngine(t *testing.T) {
 			DecayHalfLife: hnsw.Duration(1 * time.Hour),
 		}
 
-		err := eng.VCreate(idxName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, memConfig)
+		err := eng.VCreate(idxName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, memConfig, false, 0)
 		if err != nil {
 			t.Fatalf("VCreate Memory failed: %v", err)
 		}

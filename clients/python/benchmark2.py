@@ -193,6 +193,8 @@ class KektorDBRunner(DBRunner):
             precision="float32",
             m=config.get("m", 16),
             ef_construction=config.get("ef_construction", 200),
+            federated=True,
+            num_shards=4,
         )
 
         start = time.time()

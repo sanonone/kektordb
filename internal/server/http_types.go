@@ -17,6 +17,8 @@ type VectorCreateRequest struct {
 	Maintenance    *hnsw.AutoMaintenanceConfig `json:"maintenance,omitempty"`
 	AutoLinks      []hnsw.AutoLinkRule         `json:"auto_links,omitempty"`
 	MemoryConfig   *hnsw.MemoryConfig          `json:"memory_config,omitempty"`
+	Federated      bool                        `json:"federated,omitempty"`
+	NumShards      int                         `json:"num_shards,omitempty"`
 }
 
 // VectorAddRequest defines the body for adding a single vector.
