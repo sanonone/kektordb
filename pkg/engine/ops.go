@@ -1418,3 +1418,96 @@ func (e *Engine) computeDistance(indexName, nodeID string, queryVec []float32) (
 	// Let's implement this helper in HNSW package.
 	return hnswIdx.ComputeDistanceToVector(nodeID, queryVec)
 }
+
+// VFilter returns vector IDs matching the given metadata filter without vector similarity.
+// This is useful for exact metadata-based queries without semantic search.
+func (e *Engine) VFilter(indexName string, filter string, limit int) ([]string, error) {
+	if filter == "" {
+		return nil, fmt.Errorf("filter required")
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+
+	result, err := e.DB.FindIDsByFilter(indexName, filter)
+	if err != nil {
+		return nil, fmt.Errorf("invalid filter: %w", err)
+	}
+
+	if result == nil || result.IsEmpty() {
+		return []string{}, nil
+	}
+
+	ids := result.ToArray()
+	if len(ids) > limit {
+		ids = ids[:limit]
+	}
+
+	idx, ok := e.DB.GetVectorIndex(indexName)
+	if !ok {
+		return nil, fmt.Errorf("index not found")
+	}
+
+	hnswIdx, ok := idx.(*hnsw.Index)
+	if !ok {
+		return nil, fmt.Errorf("not an hnsw index")
+	}
+
+	var extIDs []string
+	for _, id := range ids {
+		extID, found := hnswIdx.GetExternalID(id)
+		if found {
+			extIDs = append(extIDs, extID)
+		}
+	}
+
+	return extIDs, nil
+}
+
+// VUpdateAutoLinks updates the auto-linking rules for an index at runtime.
+func (e *Engine) VUpdateAutoLinks(indexName string, rules []hnsw.AutoLinkRule) error {
+	idx, ok := e.DB.GetVectorIndex(indexName)
+	if !ok {
+		return fmt.Errorf("index not found: %s", indexName)
+	}
+
+	hnswIdx, ok := idx.(*hnsw.Index)
+	if !ok {
+		return fmt.Errorf("not an hnsw index")
+	}
+
+	hnswIdx.SetAutoLinks(rules)
+
+	// Persist to AOF
+	rulesBytes, err := json.Marshal(rules)
+	if err == nil {
+		cmdStr := persistence.FormatCommand("VAUTOLINKS", []byte(indexName), rulesBytes)
+		if err := e.AOF.Write(cmdStr); err != nil {
+			slog.Error("Failed to persist VAUTOLINKS command to AOF",
+				"error", err,
+				"index", indexName)
+			return fmt.Errorf("persistence error: %w", err)
+		}
+	} else {
+		return fmt.Errorf("failed to marshal rules for persistence: %w", err)
+	}
+
+	atomic.AddInt64(&e.dirtyCounter, 1)
+
+	return nil
+}
+
+// VGetAutoLinks returns the current auto-linking rules for an index.
+func (e *Engine) VGetAutoLinks(indexName string) ([]hnsw.AutoLinkRule, error) {
+	idx, ok := e.DB.GetVectorIndex(indexName)
+	if !ok {
+		return nil, fmt.Errorf("index not found: %s", indexName)
+	}
+
+	hnswIdx, ok := idx.(*hnsw.Index)
+	if !ok {
+		return nil, fmt.Errorf("not an hnsw index")
+	}
+
+	return hnswIdx.GetAutoLinks(), nil
+}

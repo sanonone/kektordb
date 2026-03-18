@@ -276,7 +276,7 @@ func (s *Service) Traverse(ctx context.Context, req *mcp.CallToolRequest, args T
 	}
 
 	// Pass 'relations' instead of 'args.Relations'
-	subgraph, err := s.engine.VExtractSubgraph(idx, args.RootID, relations, depth, 0, guideVec, threshold)
+	subgraph, err := s.engine.VExtractSubgraph(idx, args.RootID, relations, depth, args.AtTime, guideVec, threshold)
 	if err != nil {
 		return nil, TraverseResult{}, err
 	}
@@ -386,7 +386,7 @@ func (s *Service) FindConnection(ctx context.Context, req *mcp.CallToolRequest, 
 
 	// Call Engine.FindPath
 	// MaxDepth 4 is usually enough for causal links
-	res, err := s.engine.FindPath(idx, args.SourceID, args.TargetID, relations, 4, 0)
+	res, err := s.engine.FindPath(idx, args.SourceID, args.TargetID, relations, 4, args.AtTime)
 	if err != nil {
 		return nil, FindConnectionResult{}, err
 	}
@@ -413,6 +413,137 @@ func (s *Service) FindConnection(ctx context.Context, req *mcp.CallToolRequest, 
 	}
 
 	return nil, FindConnectionResult{PathDescription: sb.String()}, nil
+}
+
+func (s *Service) FilterVectors(ctx context.Context, req *mcp.CallToolRequest, args FilterVectorsArgs) (*mcp.CallToolResult, FilterVectorsResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+
+	limit := args.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+
+	ids, err := s.engine.VFilter(idx, args.Filter, limit)
+	if err != nil {
+		return nil, FilterVectorsResult{}, fmt.Errorf("filter error: %w", err)
+	}
+
+	return nil, FilterVectorsResult{Results: ids}, nil
+}
+
+func (s *Service) UnpinMemory(ctx context.Context, req *mcp.CallToolRequest, args UnpinMemoryArgs) (*mcp.CallToolResult, UnpinMemoryResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+
+	data, err := s.engine.VGet(idx, args.MemoryID)
+	if err != nil {
+		return nil, UnpinMemoryResult{}, fmt.Errorf("memory not found: %w", err)
+	}
+
+	delete(data.Metadata, "_pinned")
+
+	err = s.engine.VAdd(idx, args.MemoryID, data.Vector, data.Metadata)
+	if err != nil {
+		return nil, UnpinMemoryResult{}, fmt.Errorf("failed to unpin: %w", err)
+	}
+
+	return nil, UnpinMemoryResult{Status: "unpinned"}, nil
+}
+
+func (s *Service) ConfigureAutoLinks(ctx context.Context, req *mcp.CallToolRequest, args ConfigureAutoLinksArgs) (*mcp.CallToolResult, ConfigureAutoLinksResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+
+	rules := make([]hnsw.AutoLinkRule, len(args.Rules))
+	for i, r := range args.Rules {
+		rules[i] = hnsw.AutoLinkRule{
+			MetadataField: r.MetadataField,
+			RelationType:  r.RelationType,
+			CreateNode:    r.CreateNode,
+		}
+	}
+
+	err := s.engine.VUpdateAutoLinks(idx, rules)
+	if err != nil {
+		return nil, ConfigureAutoLinksResult{}, fmt.Errorf("failed to update auto-links: %w", err)
+	}
+
+	return nil, ConfigureAutoLinksResult{Status: "updated"}, nil
+}
+
+func (s *Service) ListVectors(ctx context.Context, req *mcp.CallToolRequest, args ListVectorsArgs) (*mcp.CallToolResult, ListVectorsResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+
+	limit := args.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+
+	offset := args.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	var vectors []struct {
+		ID       string         `json:"id"`
+		Metadata map[string]any `json:"metadata"`
+	}
+
+	count := 0
+	skipped := 0
+	var idsToFetch []string
+
+	idxRef, ok := s.engine.DB.GetVectorIndex(idx)
+	if !ok {
+		return nil, ListVectorsResult{Vectors: vectors, HasMore: false}, nil
+	}
+	hnswIdx, ok := idxRef.(*hnsw.Index)
+	if !ok {
+		return nil, ListVectorsResult{Vectors: vectors, HasMore: false}, nil
+	}
+
+	hnswIdx.IterateRaw(func(id string, vec interface{}) {
+		if skipped < offset {
+			skipped++
+			return
+		}
+		if count >= limit {
+			return
+		}
+		idsToFetch = append(idsToFetch, id)
+		count++
+	})
+
+	// Safely fetch data in batch without holding the Index Read Lock
+	if len(idsToFetch) > 0 {
+		vectorDataList, _ := s.engine.VGetMany(idx, idsToFetch)
+		for _, vData := range vectorDataList {
+			vectors = append(vectors, struct {
+				ID       string         `json:"id"`
+				Metadata map[string]any `json:"metadata"`
+			}{
+				ID:       vData.ID,
+				Metadata: vData.Metadata,
+			})
+		}
+	}
+
+	hasMore := count == limit
+
+	return nil, ListVectorsResult{
+		Vectors: vectors,
+		HasMore: hasMore,
+	}, nil
 }
 
 // formatResults hydrates the IDs into text strings

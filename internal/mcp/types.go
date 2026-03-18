@@ -57,6 +57,7 @@ type TraverseArgs struct {
 	Depth      int      `json:"depth,omitempty" jsonschema:"Depth (default 1)"`
 	GuideQuery string   `json:"guide_query,omitempty" jsonschema:"description=Optional text concept to guide the traversal. Only nodes semantically similar to this query will be followed."`
 	Threshold  float64  `json:"threshold,omitempty" jsonschema:"description=Similarity threshold (0.0-1.0) for guide_query. Default 0.5."`
+	AtTime     int64    `json:"at_time,omitempty" jsonschema:"description=Unix nanoseconds timestamp to query historical data (0 = current time)"`
 }
 
 type TraverseResult struct {
@@ -67,8 +68,55 @@ type FindConnectionArgs struct {
 	SourceID  string   `json:"source_id" jsonschema:"description=Start Node ID,required"`
 	TargetID  string   `json:"target_id" jsonschema:"description=End Node ID,required"`
 	Relations []string `json:"relations,omitempty" jsonschema:"description=Allowed relation types to traverse (optional)"`
+	AtTime    int64    `json:"at_time,omitempty" jsonschema:"description=Unix nanoseconds timestamp to query historical data (0 = current time)"`
 }
 
 type FindConnectionResult struct {
 	PathDescription string `json:"path_description"` // "A -> B -> C"
+}
+
+type FilterVectorsArgs struct {
+	IndexName string `json:"index_name" jsonschema:"The index to search in. Defaults to 'mcp_memory'"`
+	Filter    string `json:"filter" jsonschema:"Metadata filter expression (e.g. type='person' AND tag='important')"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"Max results to return (default 10)"`
+}
+
+type FilterVectorsResult struct {
+	Results []string `json:"results"`
+}
+
+type UnpinMemoryArgs struct {
+	IndexName string `json:"index_name" jsonschema:"Index name (defaults to 'mcp_memory')"`
+	MemoryID  string `json:"memory_id" jsonschema:"The memory node ID to unpin"`
+}
+
+type UnpinMemoryResult struct {
+	Status string `json:"status"`
+}
+
+type ConfigureAutoLinksArgs struct {
+	IndexName string `json:"index_name" jsonschema:"Index name (defaults to 'mcp_memory')"`
+	Rules     []struct {
+		MetadataField string `json:"metadata_field" jsonschema:"The metadata key to link on (e.g. chat_id)"`
+		RelationType  string `json:"relation_type" jsonschema:"The relation type to create (e.g. belongs_to_chat)"`
+		CreateNode    bool   `json:"create_node,omitempty" jsonschema:"Whether to create a stub node if target doesn't exist"`
+	} `json:"rules" jsonschema:"List of auto-linking rules"`
+}
+
+type ConfigureAutoLinksResult struct {
+	Status string `json:"status"`
+}
+
+type ListVectorsArgs struct {
+	IndexName string `json:"index_name" jsonschema:"Index name (defaults to 'mcp_memory')"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"Max results (default 50)"`
+	Offset    int    `json:"offset,omitempty" jsonschema:"Offset for pagination"`
+}
+
+type ListVectorsResult struct {
+	Vectors []struct {
+		ID       string         `json:"id"`
+		Metadata map[string]any `json:"metadata"`
+	} `json:"vectors"`
+	HasMore bool `json:"has_more"`
 }

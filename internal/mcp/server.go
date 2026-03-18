@@ -52,5 +52,25 @@ func NewMCPServer(eng *engine.Engine, embedder embeddings.Embedder) *mcp.Server 
 		Description: "Discover how two concepts or memories are connected in the graph (Pathfinding).",
 	}, service.FindConnection)
 
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "filter_vectors",
+		Description: "Search vectors by metadata filter only, without vector similarity. Useful for exact matches on tags, types, or properties.",
+	}, service.FilterVectors)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "unpin_memory",
+		Description: "Remove the pinned status from a memory, allowing it to decay naturally over time.",
+	}, service.UnpinMemory)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "configure_auto_links",
+		Description: "Configure automatic link creation rules for an index. Rules define which metadata fields trigger automatic graph connections.",
+	}, service.ConfigureAutoLinks)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "list_vectors",
+		Description: "List all vectors in an index with pagination. Useful for exporting or auditing stored data.",
+	}, service.ListVectors)
+
 	return s
 }

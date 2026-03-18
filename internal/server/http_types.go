@@ -46,7 +46,7 @@ type BatchGetVectorsRequest struct {
 type VectorSearchRequest struct {
 	IndexName        string             `json:"index_name"`
 	K                int                `json:"k"`
-	QueryVector      []float32          `json:"query_vector"`
+	QueryVector      []float32          `json:"query_vector,omitempty"` // Optional - if empty/missing and filter provided, performs filter-only search
 	Filter           string             `json:"filter,omitempty"`
 	EfSearch         int                `json:"ef_search,omitempty"`
 	Alpha            float64            `json:"alpha,omitempty"`
@@ -207,4 +207,28 @@ type GraphGetAllRelationsResponse struct {
 type UIExploreRequest struct {
 	IndexName string `json:"index_name"`
 	Limit     int    `json:"limit"`
+}
+
+type UpdateAutoLinksRequest struct {
+	Rules []hnsw.AutoLinkRule `json:"rules"`
+}
+
+type UpdateAutoLinksResponse struct {
+	Status string `json:"status"`
+}
+
+type GetAutoLinksResponse struct {
+	Rules []hnsw.AutoLinkRule `json:"rules"`
+}
+
+type ExportVectorItem struct {
+	ID       string         `json:"id"`
+	Metadata map[string]any `json:"metadata"`
+}
+
+type ExportVectorsResponse struct {
+	Data       []ExportVectorItem `json:"data"`
+	HasMore    bool               `json:"has_more"`
+	NextOffset int                `json:"next_offset"`
+	TotalCount int                `json:"total_count"`
 }

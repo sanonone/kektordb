@@ -277,6 +277,17 @@ func (e *Engine) replayAOF() error {
 					}
 				}
 			}
+		case "VAUTOLINKS":
+			if len(cmd.Args) == 2 {
+				idxName := string(cmd.Args[0])
+				rulesJSON := cmd.Args[1]
+				if idxState, ok := indexes[idxName]; ok {
+					var rules []hnsw.AutoLinkRule
+					if json.Unmarshal(rulesJSON, &rules) == nil {
+						idxState.autoLinks = rules
+					}
+				}
+			}
 		}
 
 		// Advance the valid offset pointer.

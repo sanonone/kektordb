@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/pprof"
+	"strconv"
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -90,6 +91,9 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 
 	mux.HandleFunc("POST /vector/indexes/{name}/config", s.handleIndexConfig)
 	mux.HandleFunc("POST /vector/indexes/{name}/maintenance", s.handleIndexMaintenance)
+	mux.HandleFunc("PUT /vector/indexes/{name}/auto-links", s.handleUpdateAutoLinks)
+	mux.HandleFunc("GET /vector/indexes/{name}/auto-links", s.handleGetAutoLinks)
+	mux.HandleFunc("GET /vector/indexes/{name}/export", s.handleExportVectors)
 
 	// Specific vector retrieval
 	mux.HandleFunc("GET /vector/indexes/{name}/vectors/{id}", s.handleGetVector)
@@ -407,6 +411,18 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.IndexName == "" {
 		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name required"))
+		return
+	}
+
+	// FILTER-ONLY: If QueryVector is empty/missing and filter is provided
+	isQueryVectorEmpty := len(req.QueryVector) == 0
+	if isQueryVectorEmpty && req.Filter != "" {
+		ids, err := s.Engine.VFilter(req.IndexName, req.Filter, req.K)
+		if err != nil {
+			s.writeHTTPError(w, http.StatusInternalServerError, err)
+			return
+		}
+		s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": ids})
 		return
 	}
 
@@ -756,8 +772,13 @@ func (s *Server) handleGraphSetProperties(w http.ResponseWriter, r *http.Request
 	}
 
 	// "Set Properties" is semantically an Upsert with no vector change.
-	// Passing nil vector triggers the Zero-Vector logic in Engine.
-	err := s.Engine.VAdd(req.IndexName, req.NodeID, nil, req.Properties)
+	// We first fetch the existing vector to prevent overwriting it with zeros.
+	var vec []float32
+	if data, er := s.Engine.VGet(req.IndexName, req.NodeID); er == nil {
+		vec = data.Vector
+	}
+
+	err := s.Engine.VAdd(req.IndexName, req.NodeID, vec, req.Properties)
 	if err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, err)
 		return
@@ -1389,3 +1410,111 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	})
 }
 */
+
+func (s *Server) handleUpdateAutoLinks(w http.ResponseWriter, r *http.Request) {
+	indexName := r.PathValue("name")
+	if indexName == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index name required"))
+		return
+	}
+
+	var req UpdateAutoLinksRequest
+	if err := s.decodeJSON(r, &req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if err := s.Engine.VUpdateAutoLinks(indexName, req.Rules); err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, UpdateAutoLinksResponse{Status: "OK"})
+}
+
+func (s *Server) handleGetAutoLinks(w http.ResponseWriter, r *http.Request) {
+	indexName := r.PathValue("name")
+	if indexName == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index name required"))
+		return
+	}
+
+	rules, err := s.Engine.VGetAutoLinks(indexName)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, GetAutoLinksResponse{Rules: rules})
+}
+
+func (s *Server) handleExportVectors(w http.ResponseWriter, r *http.Request) {
+	indexName := r.PathValue("name")
+	if indexName == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index name required"))
+		return
+	}
+
+	limit := 1000
+	offset := 0
+
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	if o := r.URL.Query().Get("offset"); o != "" {
+		if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+
+	idx, ok := s.Engine.DB.GetVectorIndex(indexName)
+	if !ok {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("index not found"))
+		return
+	}
+
+	hnswIdx, ok := idx.(*hnsw.Index)
+	if !ok {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("not an hnsw index"))
+		return
+	}
+
+	var results []ExportVectorItem
+	var idsToFetch []string
+	count := 0
+	skipped := 0
+
+	hnswIdx.IterateRaw(func(id string, vec interface{}) {
+		if skipped < offset {
+			skipped++
+			return
+		}
+		if count >= limit {
+			return
+		}
+		idsToFetch = append(idsToFetch, id)
+		count++
+	})
+
+	// Safely fetch data in batch without holding the Index Read Lock
+	if len(idsToFetch) > 0 {
+		vectorDataList, _ := s.Engine.VGetMany(indexName, idsToFetch)
+		for _, vData := range vectorDataList {
+			results = append(results, ExportVectorItem{
+				ID:       vData.ID,
+				Metadata: vData.Metadata,
+			})
+		}
+	}
+
+	hasMore := count == limit
+
+	s.writeHTTPResponse(w, http.StatusOK, ExportVectorsResponse{
+		Data:       results,
+		HasMore:    hasMore,
+		NextOffset: offset + count,
+		TotalCount: offset + count,
+	})
+}
