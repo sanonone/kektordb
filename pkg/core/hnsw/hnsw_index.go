@@ -2827,6 +2827,34 @@ func (h *Index) GetInternalIDUnlocked(externalID string) (uint32, bool) {
 	return val, ok
 }
 
+// GetIDsByCursor retrieves a batch of external IDs starting from a specific internal ID.
+// It returns the slice of IDs and the next internal ID to use as a cursor.
+// This is O(limit) and avoids the Deep Paging problem of standard offset iteration.
+func (h *Index) GetIDsByCursor(startCursor uint32, limit int) ([]string, uint32) {
+	h.metaMu.RLock()
+	defer h.metaMu.RUnlock()
+
+	var ids []string
+	nodes := h.getNodes()
+	maxID := uint32(len(nodes))
+	curr := startCursor
+
+	for curr < maxID && len(ids) < limit {
+		node := h.loadNode(curr)
+		if node != nil && !node.Deleted.Load() {
+			ids = append(ids, node.Id)
+		}
+		curr++
+	}
+
+	// Se siamo arrivati alla fine dell'array, resettiamo il cursore a 0 per ricominciare il ciclo
+	if curr >= maxID {
+		curr = 0
+	}
+
+	return ids, curr
+}
+
 // GetParameters returns the configuration parameters of the index.
 func (h *Index) GetParameters() (distance.DistanceMetric, int, int) {
 	return h.metric, h.m, h.efConstruction

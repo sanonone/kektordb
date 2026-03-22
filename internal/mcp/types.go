@@ -120,3 +120,49 @@ type ListVectorsResult struct {
 	} `json:"vectors"`
 	HasMore bool `json:"has_more"`
 }
+
+// --- Reflection / Subconscious Tools ---
+
+type CheckSubconsciousArgs struct {
+	IndexName string `json:"index_name,omitempty"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"Max number of reflections to retrieve (default 5)"`
+}
+
+type CheckSubconsciousResult struct {
+	Reflections []string `json:"reflections"`
+}
+
+type ResolveConflictArgs struct {
+	IndexName    string `json:"index_name,omitempty"`
+	ReflectionID string `json:"reflection_id" jsonschema:"The ID of the reflection node to resolve,required"`
+	Resolution   string `json:"resolution" jsonschema:"The logical decision made by the AI to resolve this conflict,required"`
+	DiscardID    string `json:"discard_id,omitempty" jsonschema:"Optional ID of the memory to soft-delete/archive if it was deemed false or outdated"`
+}
+
+type ResolveConflictResult struct {
+	Status string `json:"status"`
+}
+
+type AskMetaQuestionArgs struct {
+	IndexName string `json:"index_name,omitempty"`
+	Query     string `json:"query" jsonschema:"The meta-query to search within reflections (e.g. 'How did my opinion on X change?'),required"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"Max number of meta-memories to retrieve (default 5)"`
+}
+
+type AskMetaQuestionResult struct {
+	Reflections []string `json:"reflections"`
+}
+
+type ResolveReflectionRequest struct {
+	Resolution string `json:"resolution"`
+	DiscardID  string `json:"discard_id,omitempty"` // ID of the memory to archive
+}
+
+type ReflectionItem struct {
+	ID       string         `json:"id"`
+	Metadata map[string]any `json:"metadata"`
+}
+
+type GetReflectionsResponse struct {
+	Reflections []ReflectionItem `json:"reflections"`
+}

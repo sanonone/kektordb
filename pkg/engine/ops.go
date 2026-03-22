@@ -627,6 +627,52 @@ func (e *Engine) VReinforce(indexName string, ids []string) error {
 	return nil
 }
 
+// VSetMetadata updates the properties of an existing node without altering its vector.
+// It merges the new properties with the existing ones and persists the change via VMETA.
+func (e *Engine) VSetMetadata(indexName, id string, newProps map[string]any) error {
+	idx, ok := e.DB.GetVectorIndex(indexName)
+	if !ok {
+		return fmt.Errorf("index not found")
+	}
+	hnswIdx, ok := idx.(*hnsw.Index)
+	if !ok {
+		return fmt.Errorf("not hnsw")
+	}
+
+	internalID, found := hnswIdx.GetInternalID(id)
+	if !found {
+		return fmt.Errorf("node not found")
+	}
+
+	// 1. Legge i metadati correnti (sotto lock)
+	e.DB.RLock()
+	meta := e.DB.GetMetadataForNodeUnlocked(indexName, internalID)
+	e.DB.RUnlock()
+
+	if meta == nil {
+		meta = make(map[string]any)
+	}
+
+	// 2. Esegue il merge delle nuove proprietà
+	for k, v := range newProps {
+		meta[k] = v
+	}
+
+	// 3. Aggiorna in memoria (Aggiorna anche gli indici secondari/Roaring Bitmaps)
+	if err := e.DB.AddMetadata(indexName, internalID, meta); err != nil {
+		return fmt.Errorf("failed to update memory metadata: %w", err)
+	}
+
+	// 4. Persiste nell'AOF
+	metaBytes, err := json.Marshal(meta)
+	if err == nil {
+		cmd := persistence.FormatCommand("VMETA", []byte(indexName), []byte(id), metaBytes)
+		_ = e.AOF.Write(cmd)
+	}
+
+	return nil
+}
+
 // Contains all Parsing, Filtering, Hybrid Fusion logic
 func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filter string, explicitTextQuery string, efSearch int, alpha float64, graphQuery *GraphQuery) ([]fusedResult, error) {
 	// TODO Future: If performance becomes critical, move CreatedAt and LastAccessed directly into the hnsw.Node struct (as native int64 fields), avoiding the generic metadata map.
@@ -1510,4 +1556,19 @@ func (e *Engine) VGetAutoLinks(indexName string) ([]hnsw.AutoLinkRule, error) {
 	}
 
 	return hnswIdx.GetAutoLinks(), nil
+}
+
+// VGetIDsByCursor exposes the fast cursor-based iteration for background jobs and API pagination.
+func (e *Engine) VGetIDsByCursor(indexName string, cursor uint32, limit int) ([]string, uint32, error) {
+	idx, ok := e.DB.GetVectorIndex(indexName)
+	if !ok {
+		return nil, 0, fmt.Errorf("index not found")
+	}
+	hnswIdx, ok := idx.(*hnsw.Index)
+	if !ok {
+		return nil, 0, fmt.Errorf("not hnsw")
+	}
+
+	ids, nextCursor := hnswIdx.GetIDsByCursor(cursor, limit)
+	return ids, nextCursor, nil
 }

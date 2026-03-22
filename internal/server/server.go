@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/sanonone/kektordb/pkg/auth"
+	"github.com/sanonone/kektordb/pkg/cognitive"
 	"github.com/sanonone/kektordb/pkg/engine"
+	"github.com/sanonone/kektordb/pkg/llm"
 )
 
 // Server holds the HTTP interface and the underlying Database Engine.
@@ -26,6 +28,8 @@ type Server struct {
 	// Auth
 	authToken   string            // Master Root Token
 	authService *auth.AuthService // RBAC Manager
+
+	gardener *cognitive.Gardener
 }
 
 // NewServer initializes the HTTP server using an existing Engine.
@@ -53,6 +57,17 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 		authToken:        authToken,
 		authService:      auth.NewAuthService(eng.DB.GetKVStore()),
 	}
+
+	gardenerCfg := cognitive.Config{
+		Enabled:  true,
+		Interval: 30 * time.Second,
+	}
+
+	// Initialize a FastLLM for the Gardener (default Local Ollama)
+	fastLLMCfg := llm.DefaultConfig()
+	brain := llm.NewClient(fastLLMCfg)
+
+	s.gardener = cognitive.NewGardener(eng, brain, gardenerCfg)
 
 	// Initialize Vectorizer Service
 	vecService, err := NewVectorizerService(s, assetsPath)
@@ -101,6 +116,11 @@ func (s *Server) Run() error {
 		s.vectorizerService.Start()
 	}
 
+	// start gardener
+	if s.gardener != nil {
+		s.gardener.Start()
+	}
+
 	log.Printf("HTTP server listening on %s", s.httpServer.Addr)
 	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("HTTP server startup failed: %w", err)
@@ -122,5 +142,10 @@ func (s *Server) Shutdown() {
 
 	if s.vectorizerService != nil {
 		s.vectorizerService.Stop()
+	}
+
+	// stop gardener
+	if s.gardener != nil {
+		s.gardener.Stop()
 	}
 }

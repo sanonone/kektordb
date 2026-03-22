@@ -232,3 +232,19 @@ type ExportVectorsResponse struct {
 	NextOffset int                `json:"next_offset"`
 	TotalCount int                `json:"total_count"`
 }
+
+// --- Cognitive Engine REST API ---
+
+type ResolveReflectionRequest struct {
+	Resolution string `json:"resolution"`
+	DiscardID  string `json:"discard_id,omitempty"` // ID of the memory to archive
+}
+
+type ReflectionItem struct {
+	ID       string         `json:"id"`
+	Metadata map[string]any `json:"metadata"`
+}
+
+type GetReflectionsResponse struct {
+	Reflections []ReflectionItem `json:"reflections"`
+}

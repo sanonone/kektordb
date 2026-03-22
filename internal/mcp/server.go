@@ -72,5 +72,20 @@ func NewMCPServer(eng *engine.Engine, embedder embeddings.Embedder) *mcp.Server 
 		Description: "List all vectors in an index with pagination. Useful for exporting or auditing stored data.",
 	}, service.ListVectors)
 
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "check_subconscious",
+		Description: "Queries the database's background reflection engine for unresolved contradictions, pattern shifts, or important insights generated recently.",
+	}, service.CheckSubconscious)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "resolve_conflict",
+		Description: "Resolves a pending contradiction/reflection by providing a logical conclusion and optionally discarding the incorrect memory.",
+	}, service.ResolveConflict)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "ask_meta_question",
+		Description: "Search strictly within the agent's meta-knowledge (insights, consolidated memories, and past reflections) to understand how concepts or behaviors evolved over time. Do not use this for raw fact retrieval.",
+	}, service.AskMetaQuestion)
+
 	return s
 }

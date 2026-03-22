@@ -15,6 +15,7 @@ import (
 	"net/http/pprof"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sanonone/kektordb/internal/server/ui"
@@ -83,6 +84,11 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /graph/actions/get-all-relations", s.handleGraphGetAllRelations)
 	mux.HandleFunc("POST /graph/actions/get-all-incoming", s.handleGraphGetAllIncoming)
 
+	// Cognitive Engine API
+	mux.HandleFunc("GET /vector/indexes/{name}/reflections", s.handleGetReflections)
+	mux.HandleFunc("POST /vector/indexes/{name}/reflections/{id}/resolve", s.handleResolveReflection)
+	mux.HandleFunc("POST /vector/indexes/{name}/cognitive/think", s.handleTriggerCognitive)
+
 	mux.HandleFunc("POST /rag/retrieve", s.handleRagRetrieve)
 
 	// Dynamic index routes
@@ -143,9 +149,8 @@ func (s *Server) handleSingleIndexGet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSingleIndexDelete(w http.ResponseWriter, r *http.Request) {
 	indexName := r.PathValue("name")
-	// Check if exists first to return 404? Or just try delete.
-	// DB.DeleteVectorIndex returns error if not found.
-	err := s.Engine.DB.DeleteVectorIndex(indexName)
+	// Use VDeleteIndex to ensure AOF persistence, dirty counter, and arena cleanup.
+	err := s.Engine.VDeleteIndex(indexName)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			s.writeHTTPError(w, http.StatusNotFound, err)
@@ -1010,6 +1015,116 @@ func (s *Server) handleGraphGetAllIncoming(w http.ResponseWriter, r *http.Reques
 	s.writeHTTPResponse(w, http.StatusOK, GraphGetAllRelationsResponse{
 		NodeID:    req.NodeID,
 		Relations: relations,
+	})
+}
+
+// --- COGNITIVE ENGINE HANDLERS ---
+
+func (s *Server) handleGetReflections(w http.ResponseWriter, r *http.Request) {
+	indexName := r.PathValue("name")
+	if indexName == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name required"))
+		return
+	}
+
+	// Permettiamo di filtrare per status tramite query string (es. ?status=unresolved)
+	status := r.URL.Query().Get("status")
+
+	// Sfruttiamo le Roaring Bitmaps e il VFilter!
+	filter := "type='reflection'"
+	if status != "" {
+		filter += fmt.Sprintf(" AND status='%s'", status)
+	}
+
+	// Limit opzionale
+	limit := 50 // Default
+
+	reflectionIDs, err := s.Engine.VFilter(indexName, filter, limit)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	if len(reflectionIDs) == 0 {
+		s.writeHTTPResponse(w, http.StatusOK, GetReflectionsResponse{Reflections: []ReflectionItem{}})
+		return
+	}
+
+	// Fetch parallelo dei dati (Hydration)
+	data, _ := s.Engine.VGetMany(indexName, reflectionIDs)
+	var items []ReflectionItem
+
+	for _, item := range data {
+		items = append(items, ReflectionItem{
+			ID:       item.ID,
+			Metadata: item.Metadata,
+		})
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, GetReflectionsResponse{Reflections: items})
+}
+
+func (s *Server) handleResolveReflection(w http.ResponseWriter, r *http.Request) {
+	indexName := r.PathValue("name")
+	reflectionID := r.PathValue("id")
+
+	if indexName == "" || reflectionID == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name and reflection id required"))
+		return
+	}
+
+	var req ResolveReflectionRequest
+	if err := s.decodeJSON(r, &req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	// 1. Aggiorna lo stato della Reflection
+	updateProps := map[string]any{
+		"status":      "resolved",
+		"resolution":  req.Resolution,
+		"_updated_at": float64(time.Now().Unix()),
+	}
+
+	if err := s.Engine.VSetMetadata(indexName, reflectionID, updateProps); err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	// 2. Se l'utente umano/dashboard ha specificato un ID da scartare, lo archiviamo
+	if req.DiscardID != "" {
+		discardProps := map[string]any{
+			"_archived":      true,
+			"invalidated_by": reflectionID,
+		}
+		_ = s.Engine.VSetMetadata(indexName, req.DiscardID, discardProps)
+		_ = s.Engine.VDelete(indexName, req.DiscardID)
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{
+		"status": "resolved",
+		"id":     reflectionID,
+	})
+}
+
+func (s *Server) handleTriggerCognitive(w http.ResponseWriter, r *http.Request) {
+	indexName := r.PathValue("name")
+	if indexName == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name required"))
+		return
+	}
+
+	if s.gardener == nil {
+		s.writeHTTPError(w, http.StatusServiceUnavailable, fmt.Errorf("cognitive engine is disabled on this server"))
+		return
+	}
+
+	// Eseguiamo il ciclo in background per non bloccare la risposta HTTP
+	go s.gardener.ForceThink(indexName)
+
+	s.writeHTTPResponse(w, http.StatusAccepted, map[string]string{
+		"status":  "accepted",
+		"message": "Cognitive reflection cycle triggered in background.",
 	})
 }
 
