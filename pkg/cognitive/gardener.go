@@ -20,7 +20,7 @@ type ReflectionType string
 const (
 	TypeConsolidation ReflectionType = "consolidation" // Merged redundant memories
 	TypeContradiction ReflectionType = "contradiction" // Detected conflicting facts
-	TypeImportance    ReflectionType = "importance"    // Centrality shift in the graph
+	TypeImportance    ReflectionType = "importance"    // Importance shift
 )
 
 // Reflection defines the schema for a meta-memory node.
@@ -35,15 +35,17 @@ type Reflection struct {
 
 // Config holds the scheduling and AI settings for the cognitive engine.
 type Config struct {
-	Enabled  bool
-	Interval time.Duration
+	Enabled       bool
+	Interval      time.Duration
+	Mode          string   // "basic" (No LLM), "advanced" (Uses LLM)
+	TargetIndexes []string // ["*"] for all, or["mcp_memory", "tenant_A"]
 }
 
 // Gardener is the autonomous background worker that analyzes the database graph
 // to consolidate memories and generate reflections.
 type Gardener struct {
 	eng         *engine.Engine
-	llm         llm.Client // The "Fast Brain" for synthesis and reasoning
+	llm         llm.Client // LLM client for synthesis and reasoning
 	cfg         Config
 	stopCh      chan struct{}
 	scanCursors map[string]uint32 // Remember where we left off for each Namespace
@@ -100,38 +102,77 @@ func (g *Gardener) loop() {
 	}
 }
 
+// isIndexAllowed checks whether this index is in the Gardener's target list.
+func (c *Config) isIndexAllowed(indexName string) bool {
+	if len(c.TargetIndexes) == 0 {
+		return false
+	}
+	for _, target := range c.TargetIndexes {
+		if target == "*" || target == indexName {
+			return true
+		}
+	}
+	return false
+}
+
 // think is the main entry point for the "REM Sleep" phase of the database.
 func (g *Gardener) think() {
-	slog.Info("[Cognitive Engine] Gardener is thinking... analyzing graph topology and memory redundancy.")
+	slog.Info("[Cognitive Engine] Gardener is waking up... scanning all active namespaces.")
 
-	const targetIndex = "mcp_memory"
-	if !g.eng.IndexExists(targetIndex) {
+	indexInfos, err := g.eng.DB.GetVectorIndexInfoAPI()
+	if err != nil || len(indexInfos) == 0 {
 		return
 	}
 
-	// 1. CONSOLIDAMENTO (LLM)
-	clusters := g.findRedundantClusters(targetIndex, 0.90, 5)
-	for _, cluster := range clusters {
-		g.consolidateCluster(targetIndex, cluster)
+	for _, info := range indexInfos {
+		idx := info.Name
+
+		// 1. Skip indexes not in the target list.
+		if !g.cfg.isIndexAllowed(idx) {
+			continue
+		}
+
+		// 2. Skip indexes with too few vectors to produce meaningful clusters.
+		if info.VectorCount < 10 {
+			continue
+		}
+
+		slog.Debug("[Cognitive Engine] Analyzing namespace", "index", idx, "mode", g.cfg.Mode)
+
+		// =====================================================================
+		// LAYER 1: BASIC (Fast, Math & Graph Only, NO LLM)
+		// Always active when enabled. CPU cost: low.
+		// =====================================================================
+
+		g.detectKnowledgeGaps(idx)
+		g.detectImportanceShifts(idx)
+		g.detectSentimentShifts(idx)
+		g.detectCentralityShifts(idx)
+		g.detectForgettingPatterns(idx)
+
+		// =====================================================================
+		// LAYER 2: ADVANCED & META (Slow, LLM Required)
+		// Active only when Mode is "advanced" or "meta" and an LLM client is configured.
+		// =====================================================================
+
+		if g.cfg.Mode == "advanced" || g.cfg.Mode == "meta" {
+			if g.llm != nil {
+				// 1. Consolidation
+				clusters := g.findRedundantClusters(idx, 0.90, 5)
+				for _, cluster := range clusters {
+					g.consolidateCluster(idx, cluster)
+				}
+
+				// 2. Contradiction detection
+				g.detectContradictions(idx)
+			} else {
+				slog.Warn("[Cognitive Engine] Advanced mode requested but no LLM client provided. Skipping deep reflections.", "index", idx)
+			}
+		}
 	}
 
-	// 2. CONTRADDICTION DETECTION (LLM)
-	g.detectContradictions(targetIndex)
+	slog.Info("[Cognitive Engine] Sleep cycle completed. Graph optimized.")
 
-	// 3. KNOWLEDGE GAP DETECTOR (Graph vs Vectors)
-	g.detectKnowledgeGaps(targetIndex)
-
-	// 4. IMPORTANCE SHIFT (Topological Spike)
-	g.detectImportanceShifts(targetIndex)
-
-	// 5. SENTIMENT SHIFT (Temporal Lexicon)
-	g.detectSentimentShifts(targetIndex)
-
-	// 6. CENTRALITY SHIFT (Time-Travel Graph Math)
-	g.detectCentralityShifts(targetIndex)
-
-	// 7. FORGETTING PATTERNS (Temporal Decay)
-	g.detectForgettingPatterns(targetIndex)
 }
 
 // MemoryCluster represents a group of highly similar memories.
@@ -162,7 +203,7 @@ func (g *Gardener) findRedundantClusters(indexName string, similarityThreshold f
 			continue
 		}
 
-		// FIX: Ignoriamo memorie già archiviate o meta-memorie (Master/Reflections)
+		// Skip archived memories and meta-nodes (master/reflections).
 		if archived, ok := vData.Metadata["_archived"].(bool); ok && archived {
 			continue
 		}
@@ -179,7 +220,7 @@ func (g *Gardener) findRedundantClusters(indexName string, similarityThreshold f
 		for _, res := range results {
 			if res.Score >= similarityThreshold {
 				if _, seen := clusteredSet[res.ID]; !seen {
-					// FIX: Controlliamo che anche il vicino non sia archiviato
+					// Also skip archived or meta-type neighbors.
 					neighborData, err := g.eng.VGet(indexName, res.ID)
 					if err == nil {
 						if arch, ok := neighborData.Metadata["_archived"].(bool); ok && arch {
@@ -221,18 +262,22 @@ func (g *Gardener) consolidateCluster(indexName string, cluster MemoryCluster) {
 	dim := len(items[0].Vector)
 	avgVector := make([]float32, dim)
 
-	for _, item := range items {
+	maxItemsForLLM := 15
+
+	for i, item := range items {
 		content := ""
 		if val, ok := item.Metadata["content"]; ok {
 			content = fmt.Sprintf("%v", val)
 		}
-		// List for the LLM prompt
-		texts = append(texts, fmt.Sprintf("- %s", content))
 
-		// Vector Sum
+		if i < maxItemsForLLM {
+			texts = append(texts, fmt.Sprintf("- %s", content))
+		}
+
+		// Sum all vectors in the cluster (not just the LLM subset) to compute a precise average.
 		if len(item.Vector) == dim {
-			for i, v := range item.Vector {
-				avgVector[i] += v
+			for j, v := range item.Vector {
+				avgVector[j] += v
 			}
 		}
 	}
@@ -261,7 +306,7 @@ func (g *Gardener) consolidateCluster(indexName string, cluster MemoryCluster) {
 	masterID := fmt.Sprintf("consolidation_%d", time.Now().UnixNano())
 	masterMeta := map[string]any{
 		"content":            summary,
-		"type":               "consolidated_memory", // Nodo speciale!
+		"type":               "consolidated_memory",
 		"_created_at":        float64(time.Now().Unix()),
 		"derived_from_count": float64(len(items)),
 	}
@@ -274,12 +319,11 @@ func (g *Gardener) consolidateCluster(indexName string, cluster MemoryCluster) {
 
 	// 5. Update and Link old memories (Archive them)
 	for _, item := range items {
-		// Crea l'arco nel grafo: Vecchia_Memoria -> [consolidated_into] -> Nuova_Memoria
+		// Link: old memory --[consolidated_into]--> master memory
 		if err := g.eng.VLink(indexName, item.ID, masterID, "consolidated_into", "derived_from", 1.0, nil); err != nil {
 			slog.Warn("[Cognitive Engine] Failed to link consolidated memory", "from", item.ID, "error", err)
 		}
 
-		// Aggiorna i metadati per nasconderli o marcarli
 		metaUpdate := map[string]any{
 			"_archived":          true,
 			"_consolidated_into": masterID,
@@ -295,9 +339,9 @@ func (g *Gardener) consolidateCluster(indexName string, cluster MemoryCluster) {
 		"summary_preview", summary[:min(50, len(summary))]+"...")
 }
 
-// detectContradictions cerca memorie che parlano dello stesso argomento ma dicono cose opposte.
+// detectContradictions finds memories about the same topic that make conflicting claims.
 func (g *Gardener) detectContradictions(indexName string) {
-	// Usiamo il cursore per processare 50 nodi alla volta (batch piccolo perché usa l'LLM)
+	// Small batch (50) because each pair triggers an LLM call.
 	currentCursor := g.scanCursors[indexName+"_contradictions"]
 	ids, nextCursor, err := g.eng.VGetIDsByCursor(indexName, currentCursor, 50)
 	if err != nil || len(ids) == 0 {
@@ -308,14 +352,12 @@ func (g *Gardener) detectContradictions(indexName string) {
 	nodes, _ := g.eng.VGetMany(indexName, ids)
 
 	for _, node := range nodes {
-		// Filtriamo i nodi non testuali o già processati
 		contentA, ok := node.Metadata["content"].(string)
 		if !ok || contentA == "" {
 			continue
 		}
 
-		// Cerchiamo argomenti simili (score moderato, es. 0.70-0.85, non cloni perfetti)
-		// Vogliamo frasi che parlano dello stesso topic ma non sono identiche.
+		// Find semantically similar but non-identical memories (score 0.70–0.95).
 		neighbors, _ := g.eng.VSearchWithScores(indexName, node.Vector, 5)
 
 		for _, neighbor := range neighbors {
@@ -323,8 +365,7 @@ func (g *Gardener) detectContradictions(indexName string) {
 				continue
 			}
 
-			// DEDUPLICAZIONE O(1): Abbiamo già analizzato questa coppia in passato?
-			// Guardiamo se esiste già un arco nel grafo!
+			// Dedup via graph edge: skip if this pair was already analyzed.
 			existingLinks, found := g.eng.VGetLinks(indexName, node.ID, "analyzed_against")
 			if found {
 				skip := false
@@ -339,13 +380,12 @@ func (g *Gardener) detectContradictions(indexName string) {
 				}
 			}
 
-			// Segniamo nel grafo che stiamo analizzando questa coppia per non rifarlo mai più
+			// Mark the pair as analyzed to prevent re-processing.
 			if err := g.eng.VLink(indexName, node.ID, neighbor.ID, "analyzed_against", "analyzed_against", 1.0, nil); err != nil {
 				slog.Warn("[Cognitive Engine] Failed to mark pair as analyzed", "error", err)
 				continue
 			}
 
-			// Recuperiamo il testo del vicino
 			neighborData, err := g.eng.VGet(indexName, neighbor.ID)
 			if err != nil {
 				continue
@@ -355,7 +395,7 @@ func (g *Gardener) detectContradictions(indexName string) {
 				continue
 			}
 
-			// CHIEDIAMO ALL'LLM
+			// Ask the LLM for a contradiction analysis.
 			sysPrompt := `Analyze the following two memory statements from an AI agent.
 Do they logically contradict each other? (e.g., Statement A says the price is $10, B says it's $20).
 Return ONLY a valid JSON object: {"contradiction": true/false, "reason": "brief explanation"}`
@@ -367,19 +407,21 @@ Return ONLY a valid JSON object: {"contradiction": true/false, "reason": "brief 
 				continue
 			}
 
-			// Pulizia JSON dalle allucinazioni Markdown dell'LLM
-			respText = strings.TrimPrefix(strings.TrimSpace(respText), "```json")
-			respText = strings.TrimSuffix(respText, "```")
+			// Extract JSON from the response, stripping any markdown or extra text.
+			startIdx := strings.Index(respText, "{")
+			endIdx := strings.LastIndex(respText, "}")
+			if startIdx != -1 && endIdx != -1 && endIdx > startIdx {
+				respText = respText[startIdx : endIdx+1]
+			}
 
 			var aiAnalysis llmContradictionResponse
 			if err := json.Unmarshal([]byte(respText), &aiAnalysis); err == nil {
 				if aiAnalysis.Contradiction {
 					slog.Info("[Cognitive Engine] ⚠️ Contradiction Detected!", "reason", aiAnalysis.Reason)
 
-					// CREIAMO LA REFLECTION
 					reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
 
-					// Embedding a costo zero (media dei due concetti contrastanti)
+					// Zero-cost embedding: average of the two conflicting vectors.
 					dim := len(node.Vector)
 					avgVec := make([]float32, dim)
 					for i := range node.Vector {
@@ -395,7 +437,7 @@ Return ONLY a valid JSON object: {"contradiction": true/false, "reason": "brief 
 
 					g.eng.VAdd(indexName, reflectionID, avgVec, meta)
 
-					// LEGHIAMO LE MEMORIE ALLA REFLECTION (Il Grafo della Coscienza)
+					// Link both memories to the reflection node.
 					if err := g.eng.VLink(indexName, reflectionID, node.ID, "contradicts", "contradicted_by", 1.0, nil); err != nil {
 						slog.Warn("[Cognitive Engine] Failed to link contradiction", "error", err)
 					}
@@ -408,8 +450,8 @@ Return ONLY a valid JSON object: {"contradiction": true/false, "reason": "brief 
 	}
 }
 
-// detectImportanceShifts controlla se un'entità è diventata improvvisamente popolare
-// sfruttando i Timestamp degli archi del Grafo, senza usare l'LLM.
+// detectImportanceShifts detects entities that have suddenly become popular
+// by comparing edge timestamps over the last 3 days.
 func (g *Gardener) detectImportanceShifts(indexName string) {
 	currentCursor := g.scanCursors[indexName+"_shifts"]
 	ids, nextCursor, err := g.eng.VGetIDsByCursor(indexName, currentCursor, 200)
@@ -422,16 +464,15 @@ func (g *Gardener) detectImportanceShifts(indexName string) {
 	threeDaysAgo := now - (3 * 24 * int64(time.Hour))
 
 	for _, id := range ids {
-		// Vogliamo sapere chi punta a questa entità usando la relazione "mentions"
 		edges, found := g.eng.VGetIncomingEdges(indexName, id, "mentions", 0)
 		if !found || len(edges) < 5 {
-			continue // Pochi link, non è un'entità importante
+			continue // Too few links to be significant.
 		}
 
 		recentMentions := 0
 		oldMentions := 0
 
-		// Il Time Travel Topologico! Contiamo quando sono nati i link
+		// Count when edges were created (time-travel query).
 		for _, edge := range edges {
 			if edge.CreatedAt > threeDaysAgo {
 				recentMentions++
@@ -440,11 +481,11 @@ func (g *Gardener) detectImportanceShifts(indexName string) {
 			}
 		}
 
-		// Euristica dello Spike: Se ha avuto più menzioni negli ultimi 3 giorni che in tutta la sua storia precedente
+		// Spike heuristic: more mentions in the last 3 days than in all prior history.
 		if recentMentions > 5 && recentMentions > (oldMentions*2) {
 			slog.Info("[Cognitive Engine] 📈 Importance Shift Detected!", "entity", id, "recent_mentions", recentMentions)
 
-			// Controlliamo se abbiamo già creato una reflection recente per evitare spam
+			// Anti-spam: skip if a reflection already exists for this entity.
 			alreadyFlagged := false
 			if existingRefs, ok := g.eng.VGetIncoming(indexName, id, "focus_shifted"); ok {
 				if len(existingRefs) > 0 {
@@ -455,7 +496,6 @@ func (g *Gardener) detectImportanceShifts(indexName string) {
 			if !alreadyFlagged {
 				reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
 
-				// Visto che è un insight logico, usiamo un vettore nullo (Entity) o estraiamo il vettore del nodo
 				nodeData, _ := g.eng.VGet(indexName, id)
 
 				meta := map[string]any{
@@ -482,25 +522,45 @@ func (g *Gardener) ForceThink(indexName string) {
 		return
 	}
 
-	slog.Info("[Cognitive Engine] Manual reflection cycle triggered.", "index", indexName)
-
-	clusters := g.findRedundantClusters(indexName, 0.90, 5)
-	for _, cluster := range clusters {
-		g.consolidateCluster(indexName, cluster)
+	// Security check: verify index is in the target list.
+	if !g.cfg.isIndexAllowed(indexName) {
+		slog.Warn("[Cognitive Engine] Index not in target list for cognitive analysis", "index", indexName)
+		return
 	}
 
-	g.detectContradictions(indexName)
+	slog.Info("[Cognitive Engine] Manual reflection cycle triggered.", "index", indexName, "mode", g.cfg.Mode)
+
+	// =====================================================================
+	// LAYER 1: BASIC (Fast, Math & Graph Only, NO LLM)
+	// =====================================================================
 	g.detectKnowledgeGaps(indexName)
 	g.detectImportanceShifts(indexName)
 	g.detectSentimentShifts(indexName)
 	g.detectCentralityShifts(indexName)
 	g.detectForgettingPatterns(indexName)
+
+	// =====================================================================
+	// LAYER 2: ADVANCED & META (Slow, LLM Required)
+	// =====================================================================
+	if g.cfg.Mode == "advanced" || g.cfg.Mode == "meta" {
+		if g.llm != nil {
+			// 1. Consolidation
+			clusters := g.findRedundantClusters(indexName, 0.90, 5)
+			for _, cluster := range clusters {
+				g.consolidateCluster(indexName, cluster)
+			}
+
+			// 2. Contradiction detection
+			g.detectContradictions(indexName)
+		} else {
+			slog.Warn("[Cognitive Engine] Advanced mode requested but no LLM client provided. Skipping deep reflections.", "index", indexName)
+		}
+	}
 }
 
 // detectKnowledgeGaps finds concepts that are semantically very close but
 // lack an explicit topological relationship in the graph.
 func (g *Gardener) detectKnowledgeGaps(indexName string) {
-	// 1. Iteriamo usando il cursore dedicato
 	currentCursor := g.scanCursors[indexName+"_gaps"]
 	ids, nextCursor, err := g.eng.VGetIDsByCursor(indexName, currentCursor, 100)
 	if err != nil || len(ids) == 0 {
@@ -511,17 +571,17 @@ func (g *Gardener) detectKnowledgeGaps(indexName string) {
 	nodes, _ := g.eng.VGetMany(indexName, ids)
 
 	for _, node := range nodes {
-		// Analizziamo solo le "Entity" o i "Documents" (ignoriamo i chunk grezzi per non creare rumore)
+		// Only analyze entities and documents; skip raw chunks to reduce noise.
 		nodeType, ok := node.Metadata["type"].(string)
 		if !ok || (nodeType != "entity" && nodeType != "document") {
 			continue
 		}
 
-		// 2. Pre-carichiamo le relazioni del nodo una volta sola (non per ogni vicino)
+		// Pre-load all relations once (not per neighbor).
 		outRels := g.eng.VGetRelations(indexName, node.ID)
 		inRels := g.eng.VGetIncomingRelations(indexName, node.ID)
 
-		// 3. Cerchiamo i vicini semantici stretti (Cosine Similarity > 0.85)
+		// Find top-5 semantically similar nodes (score > 0.85).
 		neighbors, _ := g.eng.VSearchWithScores(indexName, node.Vector, 5)
 
 		for _, neighbor := range neighbors {
@@ -529,7 +589,6 @@ func (g *Gardener) detectKnowledgeGaps(indexName string) {
 				continue
 			}
 
-			// Verifichiamo se anche il vicino è un'entità/documento
 			neighborData, err := g.eng.VGet(indexName, neighbor.ID)
 			if err != nil {
 				continue
@@ -539,11 +598,10 @@ func (g *Gardener) detectKnowledgeGaps(indexName string) {
 				continue
 			}
 
-			// 4. LA MAGIA: Esiste un arco diretto nel grafo tra Node e Neighbor?
-			// Guardiamo in entrambe le direzioni istantaneamente in RAM (cache sopra)
+			// Check if a direct graph edge exists between the two nodes (both directions).
 			connected := false
 
-			// Controlla OutEdges (Node -> Neighbor)
+			// Outgoing edges (node -> neighbor)
 			for _, targets := range outRels {
 				for _, t := range targets {
 					if t == neighbor.ID {
@@ -556,7 +614,7 @@ func (g *Gardener) detectKnowledgeGaps(indexName string) {
 				}
 			}
 
-			// Controlla InEdges (Neighbor -> Node)
+			// Incoming edges (neighbor -> node)
 			if !connected {
 				for _, sources := range inRels {
 					for _, s := range sources {
@@ -571,11 +629,11 @@ func (g *Gardener) detectKnowledgeGaps(indexName string) {
 				}
 			}
 
-			// 4. GAP TROVATO! Sono vicini vettorialmente ma isolati topologicamente
+			// 5. Gap found: semantically close but topologically disconnected.
 			if !connected {
 				slog.Info("[Cognitive Engine] 🧩 Knowledge Gap Detected!", "node_a", node.ID, "node_b", neighbor.ID)
 
-				// Controlliamo se abbiamo già flaggato questa coppia (Deduplicazione via Grafo)
+				// Dedup: check if this pair was already flagged.
 				existingLinks, found := g.eng.VGetLinks(indexName, node.ID, "gap_analyzed")
 				skip := false
 				if found {
@@ -588,16 +646,13 @@ func (g *Gardener) detectKnowledgeGaps(indexName string) {
 				}
 
 				if !skip {
-					// Segniamo che l'abbiamo analizzato
 					if err := g.eng.VLink(indexName, node.ID, neighbor.ID, "gap_analyzed", "gap_analyzed", 1.0, nil); err != nil {
 						slog.Warn("[Cognitive Engine] Failed to mark gap as analyzed", "error", err)
 						continue
 					}
 
-					// Generiamo la Reflection
 					reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
 
-					// Media vettoriale
 					dim := len(node.Vector)
 					avgVec := make([]float32, dim)
 					for i := range node.Vector {
@@ -634,8 +689,8 @@ func (g *Gardener) detectKnowledgeGaps(indexName string) {
 	}
 }
 
-// detectSentimentShifts analizza le memorie passate vs recenti per un'entità
-// e calcola se c'è stata un'inversione di sentiment/opinione.
+// detectSentimentShifts compares past vs recent sentiment for an entity
+// and detects opinion reversals over a 2-week window.
 func (g *Gardener) detectSentimentShifts(indexName string) {
 	currentCursor := g.scanCursors[indexName+"_sentiment"]
 	ids, nextCursor, err := g.eng.VGetIDsByCursor(indexName, currentCursor, 100)
@@ -653,15 +708,15 @@ func (g *Gardener) detectSentimentShifts(indexName string) {
 	for _, id := range ids {
 		edges, found := g.eng.VGetIncomingEdges(indexName, id, "mentions", 0)
 		if !found || len(edges) < 4 {
-			continue // Troppe poche memorie per stabilire un pattern
+			continue // Not enough memories to establish a pattern.
 		}
 
 		var pastScore, recentScore float64
 		var pastCount, recentCount int
 
-		// Analizziamo il testo delle memorie che puntano a questa entità
 		for _, edge := range edges {
-			sourceData, err := g.eng.VGet(indexName, edge.TargetID) // TargetID in VGetIncomingEdges è il Source
+			// Note: edge.TargetID is the source node for incoming edges.
+			sourceData, err := g.eng.VGet(indexName, edge.TargetID)
 			if err != nil {
 				continue
 			}
@@ -698,15 +753,14 @@ func (g *Gardener) detectSentimentShifts(indexName string) {
 			avgRecent := recentScore / float64(recentCount)
 			delta := avgRecent - avgPast
 
-			// Se c'è uno shift forte (es. da negativo a positivo)
+			// Strong sentiment shift detected (e.g., negative to positive).
 			if math.Abs(delta) >= 1.5 {
-				// Deduplicazione: abbiamo già notato questo shift?
 				links, found := g.eng.VGetLinks(indexName, id, "sentiment_analyzed")
 				if found && len(links) > 0 {
 					continue
 				}
 
-				if err := g.eng.VLink(indexName, id, id, "sentiment_analyzed", "", 1.0, nil); err != nil { // Self-link come marker
+				if err := g.eng.VLink(indexName, id, id, "sentiment_analyzed", "", 1.0, nil); err != nil { // Self-link as dedup marker
 					slog.Warn("[Cognitive Engine] Failed to mark sentiment as analyzed", "error", err)
 					continue
 				}
@@ -735,8 +789,8 @@ func (g *Gardener) detectSentimentShifts(indexName string) {
 	}
 }
 
-// detectCentralityShifts usa la topologia completa del grafo per vedere se un nodo
-// è diventato il centro nevralgico della conoscenza rispetto a un mese fa.
+// detectCentralityShifts detects nodes whose degree centrality has tripled
+// in the last 30 days using time-travel graph queries.
 func (g *Gardener) detectCentralityShifts(indexName string) {
 	currentCursor := g.scanCursors[indexName+"_centrality"]
 	ids, nextCursor, err := g.eng.VGetIDsByCursor(indexName, currentCursor, 100)
@@ -749,7 +803,7 @@ func (g *Gardener) detectCentralityShifts(indexName string) {
 	oneMonthAgo := now - (30 * 24 * int64(time.Hour))
 
 	for _, id := range ids {
-		// Degree Centrality OGGI
+		// Current degree centrality.
 		outRelsNow := g.eng.VGetRelations(indexName, id)
 		inRelsNow := g.eng.VGetIncomingRelations(indexName, id)
 		degreeNow := 0
@@ -760,12 +814,12 @@ func (g *Gardener) detectCentralityShifts(indexName string) {
 			degreeNow += len(sources)
 		}
 
-		// Se il nodo non è molto connesso oggi, ignoriamo
+		// Skip low-connectivity nodes.
 		if degreeNow < 10 {
 			continue
 		}
 
-		// Degree Centrality UN MESE FA (Time Travel O(1)!)
+		// Degree centrality 30 days ago (time-travel query).
 		degreePast := 0
 		for rel := range outRelsNow {
 			if edges, found := g.eng.VGetEdges(indexName, id, rel, oneMonthAgo); found {
@@ -778,9 +832,8 @@ func (g *Gardener) detectCentralityShifts(indexName string) {
 			}
 		}
 
-		// Se la sua importanza è più che triplicata
+		// Centrality has more than tripled.
 		if degreePast > 0 && float64(degreeNow) > float64(degreePast)*3.0 {
-			// Deduplicazione
 			links, found := g.eng.VGetLinks(indexName, id, "centrality_analyzed")
 			if found && len(links) > 0 {
 				continue
@@ -808,7 +861,8 @@ func (g *Gardener) detectCentralityShifts(indexName string) {
 	}
 }
 
-// detectForgettingPatterns cerca entità storicamente importanti ma abbandonate di recente.
+// detectForgettingPatterns finds historically important entities that have been
+// abandoned for over 30 days.
 func (g *Gardener) detectForgettingPatterns(indexName string) {
 	currentCursor := g.scanCursors[indexName+"_forgetting"]
 	ids, nextCursor, err := g.eng.VGetIDsByCursor(indexName, currentCursor, 200)
@@ -823,7 +877,7 @@ func (g *Gardener) detectForgettingPatterns(indexName string) {
 	for _, id := range ids {
 		edges, found := g.eng.VGetIncomingEdges(indexName, id, "mentions", 0)
 		if !found || len(edges) < 5 {
-			continue // Mai stato veramente importante
+			continue // Never significant enough to track.
 		}
 
 		recentActivity := false
@@ -835,7 +889,6 @@ func (g *Gardener) detectForgettingPatterns(indexName string) {
 		}
 
 		if !recentActivity {
-			// Deduplicazione
 			links, found := g.eng.VGetLinks(indexName, id, "decay_analyzed")
 			if found && len(links) > 0 {
 				continue
