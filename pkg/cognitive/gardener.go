@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sanonone/kektordb/pkg/core"
 	"github.com/sanonone/kektordb/pkg/engine"
 	"github.com/sanonone/kektordb/pkg/llm"
 )
@@ -146,28 +147,19 @@ func (g *Gardener) think() {
 
 		g.detectKnowledgeGaps(idx)
 		g.detectImportanceShifts(idx)
-		g.detectSentimentShifts(idx)
+		g.detectSentimentShifts(idx, info.TextLanguage)
 		g.detectCentralityShifts(idx)
 		g.detectForgettingPatterns(idx)
 
-		// =====================================================================
-		// LAYER 2: ADVANCED & META (Slow, LLM Required)
-		// Active only when Mode is "advanced" or "meta" and an LLM client is configured.
-		// =====================================================================
+		// Consolidation: cluster finding is pure math (no LLM needed).
+		clusters := g.findRedundantClusters(idx, 0.90, 5)
+		for _, cluster := range clusters {
+			g.consolidateCluster(idx, cluster) // LLM used if available, deterministic fallback otherwise.
+		}
 
-		if g.cfg.Mode == "advanced" || g.cfg.Mode == "meta" {
-			if g.llm != nil {
-				// 1. Consolidation
-				clusters := g.findRedundantClusters(idx, 0.90, 5)
-				for _, cluster := range clusters {
-					g.consolidateCluster(idx, cluster)
-				}
-
-				// 2. Contradiction detection
-				g.detectContradictions(idx)
-			} else {
-				slog.Warn("[Cognitive Engine] Advanced mode requested but no LLM client provided. Skipping deep reflections.", "index", idx)
-			}
+		// Advanced-only: contradiction detection (requires LLM).
+		if g.llm != nil && (g.cfg.Mode == "advanced" || g.cfg.Mode == "meta") {
+			g.detectContradictions(idx)
 		}
 	}
 
@@ -287,20 +279,28 @@ func (g *Gardener) consolidateCluster(indexName string, cluster MemoryCluster) {
 		avgVector[i] /= float32(len(items))
 	}
 
-	// 3. LLM Synthesis (The Cognitive Phase)
-	sysPrompt := "You are a cognitive memory consolidator for an AI agent. Read the following redundant memory snippets and synthesize them into a single, comprehensive, and clear memory/fact. Keep it concise but retain all key information. Return ONLY the synthesized text, nothing else."
-	userPrompt := strings.Join(texts, "\n")
+	// 3. Synthesis: LLM if available, otherwise deterministic fallback.
+	var summary string
+	if g.llm != nil {
+		sysPrompt := "You are a cognitive memory consolidator for an AI agent. Read the following redundant memory snippets and synthesize them into a single, comprehensive, and clear memory/fact. Keep it concise but retain all key information. Return ONLY the synthesized text, nothing else."
+		userPrompt := strings.Join(texts, "\n")
 
-	slog.Info("[Cognitive Engine] Asking LLM to synthesize memories...", "cluster_size", len(items))
+		slog.Info("[Cognitive Engine] Asking LLM to synthesize memories...", "cluster_size", len(items))
 
-	summary, err := g.llm.Chat(sysPrompt, userPrompt)
-	if err != nil || summary == "" {
-		slog.Warn("[Cognitive Engine] LLM synthesis failed", "error", err)
-		return
+		summary, err = g.llm.Chat(sysPrompt, userPrompt)
+		if err != nil || summary == "" {
+			slog.Warn("[Cognitive Engine] LLM synthesis failed", "error", err)
+			return
+		}
+		summary = strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(summary, "```"), "```"))
+	} else {
+		// Deterministic fallback: pick the most graph-central member as master.
+		slog.Info("[Cognitive Engine] No LLM available. Using most graph-central member as master.", "cluster_size", len(items))
+		summary = g.pickCentralContent(indexName, items)
+		if summary == "" {
+			return
+		}
 	}
-
-	// Clean up potential markdown formatting from LLM
-	summary = strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(summary, "```"), "```"))
 
 	// 4. Save Master Memory to DB
 	masterID := fmt.Sprintf("consolidation_%d", time.Now().UnixNano())
@@ -317,7 +317,80 @@ func (g *Gardener) consolidateCluster(indexName string, cluster MemoryCluster) {
 		return
 	}
 
-	// 5. Update and Link old memories (Archive them)
+	// 5. Transfer external graph edges from old memories to the master node.
+	clusterSet := make(map[string]struct{})
+	for _, item := range items {
+		clusterSet[item.ID] = struct{}{}
+	}
+
+	skipEdges := map[string]bool{
+		"consolidated_into":    true,
+		"derived_from":         true,
+		"analyzed_against":     true,
+		"gap_analyzed":         true,
+		"sentiment_analyzed":   true,
+		"centrality_analyzed":  true,
+		"decay_analyzed":       true,
+		"suggests_link":        true,
+		"contradicts":          true,
+		"contradicted_by":      true,
+		"focus_shifted":        true,
+		"focus_shifted_by":     true,
+		"sentiment_shift":      true,
+		"sentiment_shifted_by": true,
+		"became_central":       true,
+		"centralized_by":       true,
+		"knowledge_decay":      true,
+		"decaying_in":          true,
+	}
+
+	for _, item := range items {
+		oldID := item.ID
+
+		// A. Outgoing edges (master -> target)
+		outRels := g.eng.VGetRelations(indexName, oldID)
+		for relType := range outRels {
+			if skipEdges[relType] {
+				continue
+			}
+			edges, found := g.eng.VGetEdges(indexName, oldID, relType, 0)
+			if !found {
+				continue
+			}
+			for _, edge := range edges {
+				if _, inCluster := clusterSet[edge.TargetID]; inCluster {
+					continue
+				}
+				if err := g.eng.VLink(indexName, masterID, edge.TargetID, relType, "", edge.Weight, edge.GetProps()); err != nil {
+					slog.Warn("[Cognitive Engine] Failed to transfer outgoing edge", "error", err)
+				}
+			}
+		}
+
+		// B. Incoming edges (source -> master)
+		inRels := g.eng.VGetIncomingRelations(indexName, oldID)
+		for relType := range inRels {
+			if skipEdges[relType] {
+				continue
+			}
+			edges, found := g.eng.VGetIncomingEdges(indexName, oldID, relType, 0)
+			if !found {
+				continue
+			}
+			for _, edge := range edges {
+				// In VGetIncomingEdges, TargetID is the source node.
+				sourceID := edge.TargetID
+				if _, inCluster := clusterSet[sourceID]; inCluster {
+					continue
+				}
+				if err := g.eng.VLink(indexName, sourceID, masterID, relType, "", edge.Weight, edge.GetProps()); err != nil {
+					slog.Warn("[Cognitive Engine] Failed to transfer incoming edge", "error", err)
+				}
+			}
+		}
+	}
+
+	// 6. Archive old memories
 	for _, item := range items {
 		// Link: old memory --[consolidated_into]--> master memory
 		if err := g.eng.VLink(indexName, item.ID, masterID, "consolidated_into", "derived_from", 1.0, nil); err != nil {
@@ -337,6 +410,30 @@ func (g *Gardener) consolidateCluster(indexName string, cluster MemoryCluster) {
 		"master_id", masterID,
 		"merged_count", len(items),
 		"summary_preview", summary[:min(50, len(summary))]+"...")
+}
+
+// pickCentralContent returns the content of the most graph-connected member in the cluster.
+// Used as a deterministic fallback when no LLM is available for synthesis.
+func (g *Gardener) pickCentralContent(indexName string, items []core.VectorData) string {
+	var bestContent string
+	maxDegree := -1
+	for _, item := range items {
+		outRels := g.eng.VGetRelations(indexName, item.ID)
+		inRels := g.eng.VGetIncomingRelations(indexName, item.ID)
+		degree := 0
+		for _, t := range outRels {
+			degree += len(t)
+		}
+		for _, s := range inRels {
+			degree += len(s)
+		}
+		content, _ := item.Metadata["content"].(string)
+		if degree > maxDegree || (degree == maxDegree && len(content) > len(bestContent)) {
+			maxDegree = degree
+			bestContent = content
+		}
+	}
+	return bestContent
 }
 
 // detectContradictions finds memories about the same topic that make conflicting claims.
@@ -432,6 +529,7 @@ Return ONLY a valid JSON object: {"contradiction": true/false, "reason": "brief 
 						"type":        "reflection",
 						"content":     fmt.Sprintf("Conflict detected: %s", aiAnalysis.Reason),
 						"status":      "unresolved",
+						"confidence":  0.7,
 						"_created_at": float64(time.Now().Unix()),
 					}
 
@@ -498,10 +596,12 @@ func (g *Gardener) detectImportanceShifts(indexName string) {
 
 				nodeData, _ := g.eng.VGet(indexName, id)
 
+				confidence := math.Min(1.0, float64(recentMentions)/10.0)
 				meta := map[string]any{
 					"type":        "reflection",
 					"content":     fmt.Sprintf("Sudden surge of interest in '%s'. Received %d new mentions recently.", id, recentMentions),
 					"status":      "insight",
+					"confidence":  confidence,
 					"_created_at": float64(time.Now().Unix()),
 				}
 
@@ -530,31 +630,30 @@ func (g *Gardener) ForceThink(indexName string) {
 
 	slog.Info("[Cognitive Engine] Manual reflection cycle triggered.", "index", indexName, "mode", g.cfg.Mode)
 
+	// Look up the index language for sentiment analysis.
+	var indexLang string
+	if info, err := g.eng.DB.GetSingleVectorIndexInfoAPI(indexName); err == nil {
+		indexLang = info.TextLanguage
+	}
+
 	// =====================================================================
 	// LAYER 1: BASIC (Fast, Math & Graph Only, NO LLM)
 	// =====================================================================
 	g.detectKnowledgeGaps(indexName)
 	g.detectImportanceShifts(indexName)
-	g.detectSentimentShifts(indexName)
+	g.detectSentimentShifts(indexName, indexLang)
 	g.detectCentralityShifts(indexName)
 	g.detectForgettingPatterns(indexName)
 
-	// =====================================================================
-	// LAYER 2: ADVANCED & META (Slow, LLM Required)
-	// =====================================================================
-	if g.cfg.Mode == "advanced" || g.cfg.Mode == "meta" {
-		if g.llm != nil {
-			// 1. Consolidation
-			clusters := g.findRedundantClusters(indexName, 0.90, 5)
-			for _, cluster := range clusters {
-				g.consolidateCluster(indexName, cluster)
-			}
+	// Consolidation: cluster finding is pure math (no LLM needed).
+	clusters := g.findRedundantClusters(indexName, 0.90, 5)
+	for _, cluster := range clusters {
+		g.consolidateCluster(indexName, cluster)
+	}
 
-			// 2. Contradiction detection
-			g.detectContradictions(indexName)
-		} else {
-			slog.Warn("[Cognitive Engine] Advanced mode requested but no LLM client provided. Skipping deep reflections.", "index", indexName)
-		}
+	// Advanced-only: contradiction detection (requires LLM).
+	if g.llm != nil && (g.cfg.Mode == "advanced" || g.cfg.Mode == "meta") {
+		g.detectContradictions(indexName)
 	}
 }
 
@@ -672,6 +771,7 @@ func (g *Gardener) detectKnowledgeGaps(indexName string) {
 						"type":        "reflection",
 						"content":     fmt.Sprintf("Implicit relationship discovered: '%v' and '%v' share high semantic similarity (%.2f) but lack an explicit graph connection. Consider linking them.", nameA, nameB, neighbor.Score),
 						"status":      "insight",
+						"confidence":  neighbor.Score,
 						"_created_at": float64(time.Now().Unix()),
 					}
 
@@ -691,7 +791,12 @@ func (g *Gardener) detectKnowledgeGaps(indexName string) {
 
 // detectSentimentShifts compares past vs recent sentiment for an entity
 // and detects opinion reversals over a 2-week window.
-func (g *Gardener) detectSentimentShifts(indexName string) {
+func (g *Gardener) detectSentimentShifts(indexName string, lang string) {
+	lex, ok := sentimentLexicons[lang]
+	if !ok {
+		return // Unsupported language — skip sentiment analysis.
+	}
+
 	currentCursor := g.scanCursors[indexName+"_sentiment"]
 	ids, nextCursor, err := g.eng.VGetIDsByCursor(indexName, currentCursor, 100)
 	if err != nil || len(ids) == 0 {
@@ -701,9 +806,6 @@ func (g *Gardener) detectSentimentShifts(indexName string) {
 
 	now := time.Now().UnixNano()
 	twoWeeksAgo := now - (14 * 24 * int64(time.Hour))
-
-	positiveWords := []string{"love", "great", "excellent", "good", "amazing", "prefer", "best"}
-	negativeWords := []string{"hate", "terrible", "bad", "frustrating", "slow", "worst", "disappointing"}
 
 	for _, id := range ids {
 		edges, found := g.eng.VGetIncomingEdges(indexName, id, "mentions", 0)
@@ -728,12 +830,12 @@ func (g *Gardener) detectSentimentShifts(indexName string) {
 
 			content = strings.ToLower(content)
 			score := 0.0
-			for _, w := range positiveWords {
+			for _, w := range lex.Positive {
 				if strings.Contains(content, w) {
 					score += 1.0
 				}
 			}
-			for _, w := range negativeWords {
+			for _, w := range lex.Negative {
 				if strings.Contains(content, w) {
 					score -= 1.0
 				}
@@ -774,10 +876,13 @@ func (g *Gardener) detectSentimentShifts(indexName string) {
 
 				nodeData, _ := g.eng.VGet(indexName, id)
 				reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
+				evidenceRatio := math.Min(1.0, float64(pastCount+recentCount)/8.0)
+				confidence := math.Min(1.0, (math.Abs(delta)/3.0)*evidenceRatio)
 				meta := map[string]any{
 					"type":        "reflection",
 					"content":     fmt.Sprintf("Sentiment shift detected for '%s'. Opinion has evolved in a heavily %s direction over the last 2 weeks.", id, direction),
 					"status":      "insight",
+					"confidence":  confidence,
 					"_created_at": float64(time.Now().Unix()),
 				}
 				g.eng.VAdd(indexName, reflectionID, nodeData.Vector, meta)
@@ -847,10 +952,12 @@ func (g *Gardener) detectCentralityShifts(indexName string) {
 
 			nodeData, _ := g.eng.VGet(indexName, id)
 			reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
+			confidence := math.Min(1.0, float64(degreeNow)/float64(degreePast)/5.0)
 			meta := map[string]any{
 				"type":        "reflection",
 				"content":     fmt.Sprintf("Graph Centrality Shift: '%s' has become a core concept in the knowledge base, growing from %d to %d connections in 30 days.", id, degreePast, degreeNow),
 				"status":      "insight",
+				"confidence":  confidence,
 				"_created_at": float64(time.Now().Unix()),
 			}
 			g.eng.VAdd(indexName, reflectionID, nodeData.Vector, meta)
@@ -889,6 +996,7 @@ func (g *Gardener) detectForgettingPatterns(indexName string) {
 		}
 
 		if !recentActivity {
+			// Deduplicazione
 			links, found := g.eng.VGetLinks(indexName, id, "decay_analyzed")
 			if found && len(links) > 0 {
 				continue
@@ -902,10 +1010,12 @@ func (g *Gardener) detectForgettingPatterns(indexName string) {
 
 			nodeData, _ := g.eng.VGet(indexName, id)
 			reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
+			confidence := math.Min(1.0, float64(len(edges))/10.0)
 			meta := map[string]any{
 				"type":        "reflection",
 				"content":     fmt.Sprintf("Knowledge Decay: The concept '%s' was previously important (%d mentions) but hasn't been accessed or mentioned in over 30 days.", id, len(edges)),
 				"status":      "insight",
+				"confidence":  confidence,
 				"_created_at": float64(time.Now().Unix()),
 			}
 			g.eng.VAdd(indexName, reflectionID, nodeData.Vector, meta)

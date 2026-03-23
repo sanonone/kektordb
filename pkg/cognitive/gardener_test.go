@@ -318,6 +318,10 @@ func TestImportanceShiftDetection(t *testing.T) {
 	if reflection.Metadata["status"] != "insight" {
 		t.Errorf("Expected status=insight, got %v", reflection.Metadata["status"])
 	}
+	conf, _ := reflection.Metadata["confidence"].(float64)
+	if conf < 0.5 || conf > 1.0 {
+		t.Errorf("Expected confidence between 0.5-1.0 (10 mentions), got %v", conf)
+	}
 	content, _ := reflection.Metadata["content"].(string)
 	if !strings.Contains(content, "topic_AI") {
 		t.Errorf("Reflection content should reference topic_AI: %s", content)
@@ -426,6 +430,9 @@ func TestKnowledgeGapsDetection(t *testing.T) {
 	if ref.Metadata["status"] != "insight" {
 		t.Errorf("Expected status=insight, got %v", ref.Metadata["status"])
 	}
+	if conf, ok := ref.Metadata["confidence"].(float64); !ok || conf <= 0 {
+		t.Errorf("Expected confidence > 0, got %v", ref.Metadata["confidence"])
+	}
 	content, _ := ref.Metadata["content"].(string)
 	if !strings.Contains(content, "Python") || !strings.Contains(content, "Django") {
 		t.Errorf("Reflection should reference both entity names: %s", content)
@@ -510,7 +517,7 @@ func TestSentimentShiftDetection(t *testing.T) {
 	eng.VLink(indexName, "new_pos_2", "entity_sent", "mentions", "mentioned_in", 1.0, nil)
 
 	gardener := NewGardener(eng, &MockLLM{}, Config{Enabled: true, Interval: time.Hour})
-	gardener.detectSentimentShifts(indexName)
+	gardener.detectSentimentShifts(indexName, "english")
 
 	refs := countReflections(eng, indexName)
 	if len(refs) != 1 {
@@ -539,7 +546,7 @@ func TestSentimentShiftDetection(t *testing.T) {
 	}
 
 	// Seconda chiamata: anti-spam
-	gardener.detectSentimentShifts(indexName)
+	gardener.detectSentimentShifts(indexName, "english")
 	refs2 := countReflections(eng, indexName)
 	if len(refs2) != 1 {
 		t.Errorf("Anti-spam failed: expected 1 reflection, found %d", len(refs2))
@@ -656,6 +663,9 @@ func TestForgettingPatternsDetection(t *testing.T) {
 	}
 
 	ref, _ := eng.VGet(indexName, refs[0])
+	if conf, ok := ref.Metadata["confidence"].(float64); !ok || conf <= 0 {
+		t.Errorf("Expected confidence > 0, got %v", ref.Metadata["confidence"])
+	}
 	content, _ := ref.Metadata["content"].(string)
 	if !strings.Contains(content, "forgotten") {
 		t.Errorf("Reflection should reference forgotten entity: %s", content)
@@ -675,4 +685,313 @@ func TestForgettingPatternsDetection(t *testing.T) {
 	}
 
 	t.Log("✅ Forgetting Patterns Detection Test Passed Successfully!")
+}
+
+func TestSentimentShiftItalian(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := engine.DefaultOptions(tmpDir)
+	opts.AutoSaveInterval = 0
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open engine: %v", err)
+	}
+	defer eng.Close()
+
+	indexName := "mcp_memory"
+	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "italian", nil, nil, nil)
+
+	now := time.Now().UnixNano()
+	twoWeeksAgo := now - (14 * 24 * int64(time.Hour))
+	oldTS := twoWeeksAgo - int64(time.Hour)
+
+	eng.VAdd(indexName, "entity_ita", []float32{1.0, 0.0}, map[string]any{"name": "KektorDB", "type": "entity"})
+
+	// Old mentions (negative Italian sentiment)
+	eng.VAdd(indexName, "old_neg_1", []float32{0.5, 0.5}, map[string]any{"content": "Servizio terribile e frustrante"})
+	eng.VAdd(indexName, "old_neg_2", []float32{0.5, 0.5}, map[string]any{"content": "Davvero brutto e deludente"})
+	addOldEdge(eng, indexName, "old_neg_1", "entity_ita", "mentions", oldTS)
+	addOldEdge(eng, indexName, "old_neg_2", "entity_ita", "mentions", oldTS)
+
+	// Recent mentions (positive Italian sentiment)
+	eng.VAdd(indexName, "new_pos_1", []float32{0.5, 0.5}, map[string]any{"content": "Questo framework è fantastico e ottimo"})
+	eng.VAdd(indexName, "new_pos_2", []float32{0.5, 0.5}, map[string]any{"content": "Eccellente lavoro, molto piacevole"})
+	eng.VLink(indexName, "new_pos_1", "entity_ita", "mentions", "mentioned_in", 1.0, nil)
+	eng.VLink(indexName, "new_pos_2", "entity_ita", "mentions", "mentioned_in", 1.0, nil)
+
+	gardener := NewGardener(eng, &MockLLM{}, Config{Enabled: true, Interval: time.Hour})
+	gardener.detectSentimentShifts(indexName, "italian")
+
+	refs := countReflections(eng, indexName)
+	if len(refs) != 1 {
+		t.Fatalf("Expected 1 sentiment reflection for Italian, found %d", len(refs))
+	}
+
+	ref, _ := eng.VGet(indexName, refs[0])
+	content, _ := ref.Metadata["content"].(string)
+	if !strings.Contains(content, "positive") {
+		t.Errorf("Expected positive direction in reflection: %s", content)
+	}
+
+	t.Log("✅ Sentiment Shift Italian Test Passed Successfully!")
+}
+
+func TestSentimentShiftUnsupportedLanguage(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := engine.DefaultOptions(tmpDir)
+	opts.AutoSaveInterval = 0
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open engine: %v", err)
+	}
+	defer eng.Close()
+
+	indexName := "mcp_memory"
+	// Empty language — no sentiment lexicon available.
+	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "", nil, nil, nil)
+
+	eng.VAdd(indexName, "entity_unsup", []float32{1.0, 0.0}, map[string]any{"type": "entity"})
+	eng.VAdd(indexName, "mem_pos", []float32{0.5, 0.5}, map[string]any{"content": "This is great and amazing"})
+	eng.VLink(indexName, "mem_pos", "entity_unsup", "mentions", "mentioned_in", 1.0, nil)
+
+	gardener := NewGardener(eng, &MockLLM{}, Config{Enabled: true, Interval: time.Hour})
+	// Should silently return without creating any reflection.
+	gardener.detectSentimentShifts(indexName, "")
+
+	refs := countReflections(eng, indexName)
+	if len(refs) != 0 {
+		t.Errorf("Expected 0 reflections for unsupported language, found %d", len(refs))
+	}
+
+	// Also test with a completely unknown language.
+	gardener.detectSentimentShifts(indexName, "spanish")
+	refs2 := countReflections(eng, indexName)
+	if len(refs2) != 0 {
+		t.Errorf("Expected 0 reflections for 'spanish', found %d", len(refs2))
+	}
+
+	t.Log("✅ Sentiment Shift Unsupported Language Test Passed Successfully!")
+}
+
+func TestConsolidationEdgeTransfer(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := engine.DefaultOptions(tmpDir)
+	opts.AutoSaveInterval = 0
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open engine: %v", err)
+	}
+	defer eng.Close()
+
+	indexName := "mcp_memory"
+	err = eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to create index: %v", err)
+	}
+
+	// 5 clone memories on Python (same vector → score ~1.0)
+	for i := 0; i < 5; i++ {
+		id := "mem_clone_" + string(rune('A'+i))
+		eng.VAdd(indexName, id, []float32{1.0, 0.0}, map[string]any{
+			"content": "Python is a good language but a bit slow",
+			"type":    "working_memory",
+		})
+	}
+
+	// External entities
+	eng.VAdd(indexName, "entity_Python", []float32{0.5, 0.5}, map[string]any{"name": "Python", "type": "entity"})
+	eng.VAdd(indexName, "entity_Django", []float32{0.3, 0.7}, map[string]any{"name": "Django", "type": "entity"})
+	eng.VAdd(indexName, "entity_AI", []float32{0.3, 0.7}, map[string]any{"name": "AI", "type": "entity"})
+
+	// Outgoing edges from old memories (should transfer to master)
+	eng.VLink(indexName, "mem_clone_A", "entity_Python", "mentions", "mentioned_in", 1.0, nil)
+	eng.VLink(indexName, "mem_clone_B", "entity_Python", "mentions", "mentioned_in", 1.0, nil) // dedup test
+	eng.VLink(indexName, "mem_clone_C", "entity_Django", "related_to", "related_to", 1.0, nil)
+
+	// Incoming edge to an old memory (should redirect to master)
+	eng.VLink(indexName, "entity_AI", "mem_clone_D", "references", "referenced_by", 1.0, nil)
+
+	// Intra-cluster edge (should NOT transfer — both ends are in the cluster)
+	eng.VLink(indexName, "mem_clone_A", "mem_clone_B", "related_to", "related_to", 1.0, nil)
+
+	// Outlier (not in cluster)
+	eng.VAdd(indexName, "mem_outlier", []float32{0.0, 1.0}, map[string]any{
+		"content": "I love eating pizza in Rome",
+		"type":    "working_memory",
+	})
+
+	mockBrain := &MockLLM{
+		ResponseText: "Python is a popular language known for being slow but easy to use.",
+	}
+	gardener := NewGardener(eng, mockBrain, Config{Enabled: true, Interval: 1 * time.Hour})
+
+	// Run consolidation
+	clusters := gardener.findRedundantClusters(indexName, 0.90, 4)
+	if len(clusters) != 1 {
+		t.Fatalf("Expected 1 cluster, found %d", len(clusters))
+	}
+	gardener.consolidateCluster(indexName, clusters[0])
+
+	// Find master ID via consolidated_into link from mem_clone_A
+	masterLinks, found := eng.VGetLinks(indexName, "mem_clone_A", "consolidated_into")
+	if !found || len(masterLinks) != 1 {
+		t.Fatalf("Failed to find master ID via consolidated_into link")
+	}
+	masterID := masterLinks[0]
+
+	// 1. Master should have mentions -> entity_Python (dedup: only 1 edge, not 2)
+	mentionsLinks, found := eng.VGetLinks(indexName, masterID, "mentions")
+	if !found || len(mentionsLinks) != 1 {
+		t.Errorf("Expected 1 'mentions' link from master (dedup), got %d", len(mentionsLinks))
+	}
+	if found && len(mentionsLinks) > 0 && mentionsLinks[0] != "entity_Python" {
+		t.Errorf("Expected master -> entity_Python via mentions, got %s", mentionsLinks[0])
+	}
+
+	// 2. Master should have related_to -> entity_Django
+	relatedLinks, found := eng.VGetLinks(indexName, masterID, "related_to")
+	if !found || len(relatedLinks) != 1 {
+		t.Errorf("Expected 1 'related_to' link from master, got %d", len(relatedLinks))
+	}
+	if found && len(relatedLinks) > 0 && relatedLinks[0] != "entity_Django" {
+		t.Errorf("Expected master -> entity_Django via related_to, got %s", relatedLinks[0])
+	}
+
+	// 3. Master should have incoming references from entity_AI (reverse index works)
+	incomingRefs, found := eng.VGetIncoming(indexName, masterID, "references")
+	if !found || len(incomingRefs) != 1 {
+		t.Errorf("Expected 1 incoming 'references' to master, got %d", len(incomingRefs))
+	}
+	if found && len(incomingRefs) > 0 && incomingRefs[0] != "entity_AI" {
+		t.Errorf("Expected entity_AI -> master via references, got %s", incomingRefs[0])
+	}
+
+	// 4. Master should NOT have intra-cluster edges (mem_clone_A -> mem_clone_B was skipped)
+	clusterRelated, _ := eng.VGetLinks(indexName, masterID, "related_to")
+	for _, target := range clusterRelated {
+		if target == "mem_clone_A" || target == "mem_clone_B" {
+			t.Errorf("Master should not have intra-cluster related_to edge to %s", target)
+		}
+	}
+
+	// 5. Reverse index: entity_Python's incoming mentions should include the master
+	incomingMentions, found := eng.VGetIncoming(indexName, "entity_Python", "mentions")
+	if !found {
+		t.Fatal("entity_Python should have incoming mentions")
+	}
+	hasMaster := false
+	for _, src := range incomingMentions {
+		if src == masterID {
+			hasMaster = true
+			break
+		}
+	}
+	if !hasMaster {
+		t.Errorf("Master not found in entity_Python's incoming mentions. Got: %v", incomingMentions)
+	}
+
+	// 6. Master is not an island: should have at least 3 external edges (mentions, related_to, references)
+	outRels := eng.VGetRelations(indexName, masterID)
+	inRels := eng.VGetIncomingRelations(indexName, masterID)
+	externalEdgeCount := 0
+	for relType, targets := range outRels {
+		if relType == "derived_from" || relType == "consolidated_into" {
+			continue
+		}
+		externalEdgeCount += len(targets)
+	}
+	for _, sources := range inRels {
+		externalEdgeCount += len(sources)
+	}
+	if externalEdgeCount < 3 {
+		t.Errorf("Master should have at least 3 external edges, got %d", externalEdgeCount)
+	}
+
+	t.Log("✅ Consolidation Edge Transfer Test Passed Successfully!")
+}
+
+func TestConsolidationBasicMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := engine.DefaultOptions(tmpDir)
+	opts.AutoSaveInterval = 0
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open engine: %v", err)
+	}
+	defer eng.Close()
+
+	indexName := "mcp_memory"
+	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
+
+	// 5 clone memories with DIFFERENT content (same vector for clustering).
+	// mem_central has graph edges — should be picked as master in basic mode.
+	eng.VAdd(indexName, "mem_central", []float32{1.0, 0.0}, map[string]any{
+		"content": "Python is a versatile language used in data science and web development",
+		"type":    "working_memory",
+	})
+	eng.VAdd(indexName, "mem_b", []float32{1.0, 0.0}, map[string]any{
+		"content": "Python is used a lot",
+	})
+	eng.VAdd(indexName, "mem_c", []float32{1.0, 0.0}, map[string]any{
+		"content": "Python good language",
+	})
+	eng.VAdd(indexName, "mem_d", []float32{1.0, 0.0}, map[string]any{
+		"content": "I like Python",
+	})
+	eng.VAdd(indexName, "mem_e", []float32{1.0, 0.0}, map[string]any{
+		"content": "Python is popular",
+	})
+
+	// Give mem_central graph connections — it's the most central member.
+	eng.VAdd(indexName, "entity_DS", []float32{0.3, 0.7}, map[string]any{"name": "DataScience", "type": "entity"})
+	eng.VAdd(indexName, "entity_Web", []float32{0.4, 0.6}, map[string]any{"name": "WebDev", "type": "entity"})
+	eng.VLink(indexName, "mem_central", "entity_DS", "mentions", "mentioned_in", 1.0, nil)
+	eng.VLink(indexName, "mem_central", "entity_Web", "mentions", "mentioned_in", 1.0, nil)
+
+	// Gardener with nil LLM (basic mode).
+	gardener := NewGardener(eng, nil, Config{Enabled: true, Interval: 1 * time.Hour})
+
+	clusters := gardener.findRedundantClusters(indexName, 0.90, 4)
+	if len(clusters) != 1 {
+		t.Fatalf("Expected 1 cluster, found %d", len(clusters))
+	}
+
+	// Consolidate WITHOUT LLM — should use deterministic fallback.
+	gardener.consolidateCluster(indexName, clusters[0])
+
+	// Find master via consolidated_into link.
+	masterLinks, found := eng.VGetLinks(indexName, "mem_central", "consolidated_into")
+	if !found || len(masterLinks) != 1 {
+		t.Fatalf("Failed to find master after basic consolidation")
+	}
+	masterID := masterLinks[0]
+
+	master, err := eng.VGet(indexName, masterID)
+	if err != nil {
+		t.Fatalf("Master node not found: %v", err)
+	}
+
+	// The master content should be mem_central's content (most graph-central member).
+	masterContent, _ := master.Metadata["content"].(string)
+	if masterContent != "Python is a versatile language used in data science and web development" {
+		t.Errorf("Expected master content from mem_central (most central), got: %s", masterContent)
+	}
+
+	// Verify master is a consolidated_memory.
+	if master.Metadata["type"] != "consolidated_memory" {
+		t.Errorf("Expected type=consolidated_memory, got %v", master.Metadata["type"])
+	}
+
+	// Verify old memories are archived.
+	oldMem, _ := eng.VGet(indexName, "mem_central")
+	if archived, ok := oldMem.Metadata["_archived"].(bool); !ok || !archived {
+		t.Errorf("mem_central should be archived")
+	}
+
+	// Verify edge transfer still works (mem_central had edges to entity_DS and entity_Web).
+	mentionsLinks, _ := eng.VGetLinks(indexName, masterID, "mentions")
+	if len(mentionsLinks) != 2 {
+		t.Errorf("Expected 2 mentions links on master (basic mode edge transfer), got %d", len(mentionsLinks))
+	}
+
+	t.Log("✅ Consolidation Basic Mode Test Passed Successfully!")
 }
