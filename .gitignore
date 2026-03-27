@@ -27,6 +27,12 @@ arenas/
 *.gz
 *.pyc
 
+node_modules/
+dist/
+build/
+.env
+*.log
+
 # Dev files
 /tempMcpDocs
 /tempDocs
