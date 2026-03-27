@@ -583,7 +583,7 @@ func (s *Service) CheckSubconscious(ctx context.Context, req *mcp.CallToolReques
 	}
 
 	// RICERCA PURA SUI METADATI (O(1) via Roaring Bitmaps)
-	filter := "type='reflection'"
+	filter := "type='reflection' OR type='user_profile_insight' OR type='failure_pattern' OR type='knowledge_evolution'"
 	reflectionIDs, err := s.engine.VFilter(idx, filter, limit)
 	if err != nil {
 		return nil, CheckSubconsciousResult{}, fmt.Errorf("failed to query subconscious: %w", err)
@@ -606,10 +606,9 @@ func (s *Service) CheckSubconscious(ctx context.Context, req *mcp.CallToolReques
 			}
 		}
 
-		// Raccogliamo i contesti (Chi è coinvolto nella reflection?)
-		// Usiamo il Grafo in RAM per vedere a chi è collegata questa reflection
+		// Gather context: who is involved in this reflection?
 		linkedMemories := ""
-		relationTypes := []string{"contradicts", "focus_shifted", "suggests_link", "sentiment_shift", "became_central", "knowledge_decay"}
+		relationTypes := []string{"contradicts", "focus_shifted", "suggests_link", "sentiment_shift", "became_central", "knowledge_decay", "failure_pattern_of", "derived_from_interactions", "evolution_of"}
 		for _, rel := range relationTypes {
 			if targets, found := s.engine.VGetLinks(idx, item.ID, rel); found {
 				linkedMemories = fmt.Sprintf(" [%s: %s]", rel, strings.Join(targets, ", "))
@@ -617,7 +616,21 @@ func (s *Service) CheckSubconscious(ctx context.Context, req *mcp.CallToolReques
 			}
 		}
 
-		res = append(res, fmt.Sprintf("[Reflection ID: %s] (%s) %v%s", item.ID, dateStr, content, linkedMemories))
+		// Show action_required and suggested_resolution if present.
+		actionStr := ""
+		if ar, ok := item.Metadata["action_required"].(bool); ok && ar {
+			actionStr = " [ACTION REQUIRED]"
+		}
+		severityStr := ""
+		if sev, ok := item.Metadata["severity"].(string); ok && sev != "" {
+			severityStr = fmt.Sprintf(" [SEVERITY: %s]", strings.ToUpper(sev))
+		}
+		resolutionStr := ""
+		if sr, ok := item.Metadata["suggested_resolution"].(string); ok && sr != "" {
+			resolutionStr = fmt.Sprintf(" Suggested: %s", sr)
+		}
+
+		res = append(res, fmt.Sprintf("[Reflection ID: %s] (%s) %v%s%s%s%s", item.ID, dateStr, content, linkedMemories, actionStr, severityStr, resolutionStr))
 	}
 
 	return nil, CheckSubconsciousResult{Reflections: res}, nil
@@ -683,7 +696,7 @@ func (s *Service) AskMetaQuestion(ctx context.Context, req *mcp.CallToolRequest,
 
 	// 2. Filtro stringente: SOLO riflessioni e memorie consolidate
 	// Le Roaring Bitmaps faranno un'intersezione (OR) in zero nanosecondi
-	filter := "type='reflection' OR type='consolidated_memory'"
+	filter := "type='reflection' OR type='consolidated_memory' OR type='user_profile_insight' OR type='failure_pattern' OR type='knowledge_evolution'"
 
 	// 3. Eseguiamo la ricerca semantica filtrata
 	ids, err := s.engine.VSearch(idx, vec, limit, filter, "", 0, 0.5, nil)

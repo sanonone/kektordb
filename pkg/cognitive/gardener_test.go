@@ -17,6 +17,9 @@ type MockLLM struct {
 	ReceivedPrompt     string
 	ResponseText       string
 	ContradictionReply string // Returned when system prompt contains "contradict"
+	PreferenceReply    string // Returned when system prompt contains "user behavior"
+	FailureReply       string // Returned when system prompt contains "debugging"
+	EvolutionReply     string // Returned when system prompt contains "evolution"
 }
 
 func (m *MockLLM) Chat(systemPrompt, userQuery string) (string, error) {
@@ -24,6 +27,15 @@ func (m *MockLLM) Chat(systemPrompt, userQuery string) (string, error) {
 	m.ReceivedPrompt = userQuery
 	if strings.Contains(systemPrompt, "contradict") && m.ContradictionReply != "" {
 		return m.ContradictionReply, nil
+	}
+	if strings.Contains(systemPrompt, "user behavior") && m.PreferenceReply != "" {
+		return m.PreferenceReply, nil
+	}
+	if strings.Contains(systemPrompt, "debugging") && m.FailureReply != "" {
+		return m.FailureReply, nil
+	}
+	if strings.Contains(systemPrompt, "evolution") && m.EvolutionReply != "" {
+		return m.EvolutionReply, nil
 	}
 	return m.ResponseText, nil
 }
@@ -177,7 +189,7 @@ func TestContradictionDetection(t *testing.T) {
 	})
 
 	mockBrain := &MockLLM{
-		ContradictionReply: `{"contradiction": true, "reason": "One states Python is fast, the other states it is slow"}`,
+		ContradictionReply: `{"contradiction": true, "reason": "One states Python is fast, the other states it is slow", "suggested_resolution": "Verify benchmark results and keep the most recent memory.", "action_required": true}`,
 	}
 	cfg := Config{Enabled: true, Interval: 1 * time.Hour}
 	gardener := NewGardener(eng, mockBrain, cfg)
@@ -217,6 +229,16 @@ func TestContradictionDetection(t *testing.T) {
 	content, _ := reflection.Metadata["content"].(string)
 	if !strings.Contains(content, "One states Python is fast") {
 		t.Errorf("Reflection content mismatch: %s", content)
+	}
+
+	// Verifica suggested_resolution e action_required
+	sr, _ := reflection.Metadata["suggested_resolution"].(string)
+	if sr != "Verify benchmark results and keep the most recent memory." {
+		t.Errorf("Expected suggested_resolution from LLM, got: %s", sr)
+	}
+	ar, _ := reflection.Metadata["action_required"].(bool)
+	if !ar {
+		t.Errorf("Expected action_required=true, got false")
 	}
 
 	// Verifica archi contradicts dalla reflection verso le memorie
@@ -825,7 +847,7 @@ func TestConsolidationEdgeTransfer(t *testing.T) {
 	gardener := NewGardener(eng, mockBrain, Config{Enabled: true, Interval: 1 * time.Hour})
 
 	// Run consolidation
-	clusters := gardener.findRedundantClusters(indexName, 0.90, 4)
+	clusters := gardener.findRedundantClusters(indexName, 0.90, 5)
 	if len(clusters) != 1 {
 		t.Fatalf("Expected 1 cluster, found %d", len(clusters))
 	}
@@ -994,4 +1016,469 @@ func TestConsolidationBasicMode(t *testing.T) {
 	}
 
 	t.Log("✅ Consolidation Basic Mode Test Passed Successfully!")
+}
+
+func TestDetectUserPreferences(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := engine.DefaultOptions(tmpDir)
+	opts.AutoSaveInterval = 0
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open engine: %v", err)
+	}
+	defer eng.Close()
+
+	indexName := "mcp_memory"
+	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
+
+	// Memories tagged as user interactions.
+	eng.VAdd(indexName, "mem_ui_1", []float32{0.5, 0.5}, map[string]any{
+		"content":     "User prefers concise technical explanations",
+		"tags":        []any{"user_interaction"},
+		"_created_at": float64(time.Now().Add(-10 * 24 * time.Hour).Unix()),
+	})
+	eng.VAdd(indexName, "mem_ui_2", []float32{0.6, 0.4}, map[string]any{
+		"content":     "User scheduled standup at 2pm instead of 9am",
+		"tags":        []any{"user_interaction"},
+		"_created_at": float64(time.Now().Add(-5 * 24 * time.Hour).Unix()),
+	})
+	eng.VAdd(indexName, "mem_obs_1", []float32{0.4, 0.6}, map[string]any{
+		"content":     "User asked to avoid jargon in reports",
+		"tags":        []any{"observation"},
+		"_created_at": float64(time.Now().Add(-2 * 24 * time.Hour).Unix()),
+	})
+
+	// Memories WITHOUT tags (should be excluded).
+	eng.VAdd(indexName, "mem_other_1", []float32{0.3, 0.7}, map[string]any{
+		"content": "Some random memory",
+	})
+	eng.VAdd(indexName, "mem_other_2", []float32{0.7, 0.3}, map[string]any{
+		"content": "Another memory without tags",
+	})
+
+	mockBrain := &MockLLM{
+		PreferenceReply: `{
+			"preferences_discovered": {
+				"communication_style": "concise and technical",
+				"preferred_meeting_time": "afternoon",
+				"reporting_style": "no jargon"
+			},
+			"recommendation": "Always use concise language. Schedule meetings after 1pm. Use plain language in reports."
+		}`,
+	}
+	gardener := NewGardener(eng, mockBrain, Config{Enabled: true, Interval: time.Hour})
+
+	gardener.detectUserPreferences(indexName)
+
+	if !mockBrain.Called {
+		t.Errorf("LLM was never called during user preference detection")
+	}
+
+	// Find the user_profile_insight node.
+	allIDs, _, _ := eng.VGetIDsByCursor(indexName, 0, 500)
+	var insightIDs []string
+	for _, id := range allIDs {
+		if strings.HasPrefix(id, "user_profile_") {
+			insightIDs = append(insightIDs, id)
+		}
+	}
+
+	if len(insightIDs) != 1 {
+		t.Fatalf("Expected 1 user_profile_insight, found %d", len(insightIDs))
+	}
+
+	insight, _ := eng.VGet(indexName, insightIDs[0])
+
+	// Verify type.
+	if insight.Metadata["type"] != "user_profile_insight" {
+		t.Errorf("Expected type=user_profile_insight, got %v", insight.Metadata["type"])
+	}
+
+	// Verify status.
+	if insight.Metadata["status"] != "active" {
+		t.Errorf("Expected status=active, got %v", insight.Metadata["status"])
+	}
+
+	// Verify confidence (3 memories / 10 = 0.3).
+	conf, _ := insight.Metadata["confidence"].(float64)
+	if conf < 0.2 || conf > 0.4 {
+		t.Errorf("Expected confidence ~0.3 (3 memories), got %v", conf)
+	}
+
+	// Verify preferences are stored.
+	prefs, ok := insight.Metadata["preferences"].(map[string]string)
+	if !ok {
+		t.Fatalf("Expected preferences to be a map[string]string, got %T", insight.Metadata["preferences"])
+	}
+	if prefs["communication_style"] != "concise and technical" {
+		t.Errorf("Expected communication_style=concise and technical, got %v", prefs["communication_style"])
+	}
+
+	// Verify recommendation.
+	content, _ := insight.Metadata["content"].(string)
+	if !strings.Contains(content, "concise language") {
+		t.Errorf("Expected recommendation to mention concise language: %s", content)
+	}
+
+	// Verify graph links to source memories.
+	links, found := eng.VGetLinks(indexName, insightIDs[0], "derived_from_interactions")
+	if !found || len(links) != 3 {
+		t.Errorf("Expected 3 derived_from_interactions links, got %d", len(links))
+	}
+
+	// Verify untagged memories are NOT linked.
+	for _, link := range links {
+		if link == "mem_other_1" || link == "mem_other_2" {
+			t.Errorf("Untagged memory %s should not be linked to insight", link)
+		}
+	}
+
+	t.Log("✅ User Preferences Detection Test Passed Successfully!")
+}
+
+func TestDetectUserPreferencesNoData(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := engine.DefaultOptions(tmpDir)
+	opts.AutoSaveInterval = 0
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open engine: %v", err)
+	}
+	defer eng.Close()
+
+	indexName := "mcp_memory"
+	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
+
+	// Memories with no user_interaction/observation tags.
+	eng.VAdd(indexName, "mem_a", []float32{0.5, 0.5}, map[string]any{"content": "Some memory"})
+	eng.VAdd(indexName, "mem_b", []float32{0.6, 0.4}, map[string]any{"content": "Another memory", "tags": []any{"random"}})
+
+	gardener := NewGardener(eng, &MockLLM{}, Config{Enabled: true, Interval: time.Hour})
+	gardener.detectUserPreferences(indexName)
+
+	// Should not create any user_profile_insight nodes.
+	allIDs, _, _ := eng.VGetIDsByCursor(indexName, 0, 500)
+	for _, id := range allIDs {
+		if strings.HasPrefix(id, "user_profile_") {
+			t.Errorf("Should not create user_profile_insight when no tagged memories exist")
+		}
+	}
+
+	t.Log("✅ User Preferences No Data Test Passed Successfully!")
+}
+
+func TestDetectRepeatedFailures(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := engine.DefaultOptions(tmpDir)
+	opts.AutoSaveInterval = 0
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open engine: %v", err)
+	}
+	defer eng.Close()
+
+	indexName := "mcp_memory"
+	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
+
+	now := float64(time.Now().Unix())
+
+	// 5 failures for action "search_file" (should trigger pattern detection).
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("fail_search_%d", i)
+		eng.VAdd(indexName, id, []float32{0.5, 0.5}, map[string]any{
+			"content":     "File not found: /data/report.csv",
+			"type":        "agent_action",
+			"status":      "failed",
+			"action":      "search_file",
+			"_created_at": now - float64(i*3600),
+		})
+	}
+
+	// 4 failures for action "query_db" (should trigger).
+	for i := 0; i < 4; i++ {
+		id := fmt.Sprintf("fail_db_%d", i)
+		eng.VAdd(indexName, id, []float32{0.3, 0.7}, map[string]any{
+			"content":     "Connection refused: PostgreSQL on localhost:5432",
+			"type":        "agent_action",
+			"status":      "failed",
+			"action":      "query_db",
+			"_created_at": now - float64(i*1800),
+		})
+	}
+
+	// 2 failures for action "rare_error" (should NOT trigger — too few).
+	for i := 0; i < 2; i++ {
+		id := fmt.Sprintf("fail_rare_%d", i)
+		eng.VAdd(indexName, id, []float32{0.1, 0.9}, map[string]any{
+			"content":     "Random transient error",
+			"type":        "agent_action",
+			"status":      "failed",
+			"action":      "rare_error",
+			"_created_at": now,
+		})
+	}
+
+	// Non-action memory (should be excluded).
+	eng.VAdd(indexName, "mem_other", []float32{0.8, 0.2}, map[string]any{
+		"content": "Some regular memory",
+		"type":    "memory",
+	})
+
+	mockBrain := &MockLLM{
+		FailureReply: `{"pattern": "Agent repeatedly tries to read a non-existent file", "root_cause": "File path is hardcoded but file does not exist in this environment", "recommendation": "Add file existence check (os.path.exists) before attempting to read.", "severity": "high"}`,
+	}
+	gardener := NewGardener(eng, mockBrain, Config{Enabled: true, Interval: time.Hour})
+
+	gardener.detectRepeatedFailures(indexName)
+
+	if !mockBrain.Called {
+		t.Errorf("LLM was never called during failure detection")
+	}
+
+	// Find failure_pattern nodes.
+	allIDs, _, _ := eng.VGetIDsByCursor(indexName, 0, 500)
+	var patternIDs []string
+	for _, id := range allIDs {
+		if strings.HasPrefix(id, "failure_pattern_") {
+			patternIDs = append(patternIDs, id)
+		}
+	}
+
+	// Should create 2 patterns (search_file + query_db), NOT rare_error.
+	if len(patternIDs) != 2 {
+		t.Fatalf("Expected 2 failure_pattern nodes, found %d", len(patternIDs))
+	}
+
+	// Verify one of the patterns.
+	found := false
+	for _, pid := range patternIDs {
+		pat, _ := eng.VGet(indexName, pid)
+		if pat.Metadata["type"] != "failure_pattern" {
+			t.Errorf("Expected type=failure_pattern, got %v", pat.Metadata["type"])
+		}
+		if pat.Metadata["severity"] == "high" {
+			found = true
+		}
+		content, _ := pat.Metadata["content"].(string)
+		if !strings.Contains(content, "existence check") {
+			t.Errorf("Expected recommendation about file check: %s", content)
+		}
+	}
+	if !found {
+		t.Errorf("Expected at least one pattern with severity=high")
+	}
+
+	// Verify graph links from pattern to failures.
+	for _, pid := range patternIDs {
+		links, found := eng.VGetLinks(indexName, pid, "failure_pattern_of")
+		if !found || len(links) < 3 {
+			t.Errorf("Expected >=3 failure_pattern_of links from %s, got %d", pid, len(links))
+		}
+	}
+
+	// Verify dedup: second call should not create new patterns.
+	gardener.detectRepeatedFailures(indexName)
+	allIDs2, _, _ := eng.VGetIDsByCursor(indexName, 0, 500)
+	var patternIDs2 []string
+	for _, id := range allIDs2 {
+		if strings.HasPrefix(id, "failure_pattern_") {
+			patternIDs2 = append(patternIDs2, id)
+		}
+	}
+	if len(patternIDs2) != 2 {
+		t.Errorf("Dedup failed: expected 2 patterns after second call, got %d", len(patternIDs2))
+	}
+
+	t.Log("✅ Repeated Failures Detection Test Passed Successfully!")
+}
+
+func TestDetectRepeatedFailuresNoData(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := engine.DefaultOptions(tmpDir)
+	opts.AutoSaveInterval = 0
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open engine: %v", err)
+	}
+	defer eng.Close()
+
+	indexName := "mcp_memory"
+	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
+
+	// Only regular memories, no agent_action nodes.
+	eng.VAdd(indexName, "mem_a", []float32{0.5, 0.5}, map[string]any{"content": "Some memory", "type": "memory"})
+	eng.VAdd(indexName, "mem_b", []float32{0.6, 0.4}, map[string]any{"content": "Another memory", "type": "memory"})
+
+	gardener := NewGardener(eng, &MockLLM{}, Config{Enabled: true, Interval: time.Hour})
+	gardener.detectRepeatedFailures(indexName)
+
+	allIDs, _, _ := eng.VGetIDsByCursor(indexName, 0, 500)
+	for _, id := range allIDs {
+		if strings.HasPrefix(id, "failure_pattern_") {
+			t.Errorf("Should not create failure_pattern when no agent_action failures exist")
+		}
+	}
+
+	t.Log("✅ Repeated Failures No Data Test Passed Successfully!")
+}
+
+func TestDetectKnowledgeEvolution(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := engine.DefaultOptions(tmpDir)
+	opts.AutoSaveInterval = 0
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open engine: %v", err)
+	}
+	defer eng.Close()
+
+	indexName := "mcp_memory"
+	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
+
+	// High-centrality entity: 20 incoming mentions (in-degree >= 15 → triggers).
+	eng.VAdd(indexName, "entity_QC", []float32{1.0, 0.0}, map[string]any{
+		"name": "Quantum Computing", "type": "entity",
+	})
+	for i := 0; i < 20; i++ {
+		memID := fmt.Sprintf("mem_qc_%d", i)
+		eng.VAdd(indexName, memID, []float32{0.5, 0.5}, map[string]any{
+			"content": fmt.Sprintf("Memory about quantum computing topic %d", i),
+		})
+		eng.VLink(indexName, memID, "entity_QC", "mentions", "mentioned_in", 1.0, nil)
+	}
+
+	// Low-centrality entity: only 3 incoming edges (should NOT trigger).
+	eng.VAdd(indexName, "entity_low", []float32{0.0, 1.0}, map[string]any{
+		"name": "Obscure Topic", "type": "entity",
+	})
+	for i := 0; i < 3; i++ {
+		memID := fmt.Sprintf("mem_low_%d", i)
+		eng.VAdd(indexName, memID, []float32{0.3, 0.7}, map[string]any{"content": "low topic memory"})
+		eng.VLink(indexName, memID, "entity_low", "mentions", "mentioned_in", 1.0, nil)
+	}
+
+	// Non-entity with high in-degree (should NOT trigger).
+	eng.VAdd(indexName, "mem_popular", []float32{0.7, 0.3}, map[string]any{
+		"content": "Popular memory", "type": "memory",
+	})
+	for i := 0; i < 20; i++ {
+		memID := fmt.Sprintf("mem_pop_%d", i)
+		eng.VAdd(indexName, memID, []float32{0.5, 0.5}, map[string]any{"content": "link to popular"})
+		eng.VLink(indexName, memID, "mem_popular", "mentions", "mentioned_in", 1.0, nil)
+	}
+
+	mockBrain := &MockLLM{
+		EvolutionReply: `{
+			"timeline": "30 days ago: initial exploration of quantum algorithms. 15 days ago: deep dive into quantum gates. Today: understanding of quantum error correction.",
+			"competency_level": "intermediate",
+			"knowledge_gaps": ["quantum entanglement protocols", "topological quantum computing"],
+			"next_steps": "Study Shor's algorithm implementation details and explore quantum hardware constraints."
+		}`,
+	}
+	gardener := NewGardener(eng, mockBrain, Config{Enabled: true, Interval: time.Hour})
+
+	gardener.detectKnowledgeEvolution(indexName)
+
+	if !mockBrain.Called {
+		t.Errorf("LLM was never called during knowledge evolution detection")
+	}
+
+	// Find knowledge_evolution nodes.
+	allIDs, _, _ := eng.VGetIDsByCursor(indexName, 0, 1000)
+	var evoIDs []string
+	for _, id := range allIDs {
+		if strings.HasPrefix(id, "knowledge_evolution_") {
+			evoIDs = append(evoIDs, id)
+		}
+	}
+
+	if len(evoIDs) != 1 {
+		t.Fatalf("Expected 1 knowledge_evolution node (only entity_QC), found %d", len(evoIDs))
+	}
+
+	evo, _ := eng.VGet(indexName, evoIDs[0])
+
+	// Verify type.
+	if evo.Metadata["type"] != "knowledge_evolution" {
+		t.Errorf("Expected type=knowledge_evolution, got %v", evo.Metadata["type"])
+	}
+
+	// Verify competency level.
+	if evo.Metadata["competency_level"] != "intermediate" {
+		t.Errorf("Expected competency_level=intermediate, got %v", evo.Metadata["competency_level"])
+	}
+
+	// Verify topic.
+	if evo.Metadata["topic"] != "Quantum Computing" {
+		t.Errorf("Expected topic=Quantum Computing, got %v", evo.Metadata["topic"])
+	}
+
+	// Verify knowledge_gaps.
+	gaps, ok := evo.Metadata["knowledge_gaps"].([]any)
+	if !ok || len(gaps) != 2 {
+		t.Errorf("Expected 2 knowledge_gaps, got %v", evo.Metadata["knowledge_gaps"])
+	}
+
+	// Verify timeline.
+	timeline, _ := evo.Metadata["timeline"].(string)
+	if !strings.Contains(timeline, "30 days ago") || !strings.Contains(timeline, "Today") {
+		t.Errorf("Timeline should describe 3 phases: %s", timeline)
+	}
+
+	// Verify graph link.
+	evoLinks, found := eng.VGetLinks(indexName, evoIDs[0], "evolution_of")
+	if !found || len(evoLinks) != 1 || evoLinks[0] != "entity_QC" {
+		t.Errorf("Expected evolution_of link to entity_QC, got %v", evoLinks)
+	}
+
+	// Verify dedup: second call should not create new nodes.
+	gardener.detectKnowledgeEvolution(indexName)
+	allIDs2, _, _ := eng.VGetIDsByCursor(indexName, 0, 1000)
+	var evoIDs2 []string
+	for _, id := range allIDs2 {
+		if strings.HasPrefix(id, "knowledge_evolution_") {
+			evoIDs2 = append(evoIDs2, id)
+		}
+	}
+	if len(evoIDs2) != 1 {
+		t.Errorf("Dedup failed: expected 1 evolution node after second call, got %d", len(evoIDs2))
+	}
+
+	t.Log("✅ Knowledge Evolution Detection Test Passed Successfully!")
+}
+
+func TestDetectKnowledgeEvolutionLowDegree(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := engine.DefaultOptions(tmpDir)
+	opts.AutoSaveInterval = 0
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open engine: %v", err)
+	}
+	defer eng.Close()
+
+	indexName := "mcp_memory"
+	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
+
+	// Entity with only 5 incoming edges (below threshold of 15).
+	eng.VAdd(indexName, "entity_small", []float32{1.0, 0.0}, map[string]any{
+		"name": "Small Topic", "type": "entity",
+	})
+	for i := 0; i < 5; i++ {
+		memID := fmt.Sprintf("mem_small_%d", i)
+		eng.VAdd(indexName, memID, []float32{0.5, 0.5}, map[string]any{"content": "small memory"})
+		eng.VLink(indexName, memID, "entity_small", "mentions", "mentioned_in", 1.0, nil)
+	}
+
+	gardener := NewGardener(eng, &MockLLM{}, Config{Enabled: true, Interval: time.Hour})
+	gardener.detectKnowledgeEvolution(indexName)
+
+	allIDs, _, _ := eng.VGetIDsByCursor(indexName, 0, 500)
+	for _, id := range allIDs {
+		if strings.HasPrefix(id, "knowledge_evolution_") {
+			t.Errorf("Should not create knowledge_evolution for low-centrality entity")
+		}
+	}
+
+	t.Log("✅ Knowledge Evolution Low Degree Test Passed Successfully!")
 }

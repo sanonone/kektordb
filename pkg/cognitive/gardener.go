@@ -53,8 +53,29 @@ type Gardener struct {
 }
 
 type llmContradictionResponse struct {
-	Contradiction bool   `json:"contradiction"`
-	Reason        string `json:"reason"`
+	Contradiction       bool   `json:"contradiction"`
+	Reason              string `json:"reason"`
+	SuggestedResolution string `json:"suggested_resolution"`
+	ActionRequired      bool   `json:"action_required"`
+}
+
+type llmPreferenceResponse struct {
+	PreferencesDiscovered map[string]string `json:"preferences_discovered"`
+	Recommendation        string            `json:"recommendation"`
+}
+
+type llmFailurePatternResponse struct {
+	Pattern        string `json:"pattern"`
+	RootCause      string `json:"root_cause"`
+	Recommendation string `json:"recommendation"`
+	Severity       string `json:"severity"`
+}
+
+type llmEvolutionResponse struct {
+	Timeline        string   `json:"timeline"`
+	CompetencyLevel string   `json:"competency_level"`
+	KnowledgeGaps   []string `json:"knowledge_gaps"`
+	NextSteps       string   `json:"next_steps"`
 }
 
 // NewGardener initializes the cognitive engine.
@@ -160,6 +181,9 @@ func (g *Gardener) think() {
 		// Advanced-only: contradiction detection (requires LLM).
 		if g.llm != nil && (g.cfg.Mode == "advanced" || g.cfg.Mode == "meta") {
 			g.detectContradictions(idx)
+			g.detectUserPreferences(idx)
+			g.detectRepeatedFailures(idx)
+			g.detectKnowledgeEvolution(idx)
 		}
 	}
 
@@ -493,11 +517,31 @@ func (g *Gardener) detectContradictions(indexName string) {
 			}
 
 			// Ask the LLM for a contradiction analysis.
-			sysPrompt := `Analyze the following two memory statements from an AI agent.
-Do they logically contradict each other? (e.g., Statement A says the price is $10, B says it's $20).
-Return ONLY a valid JSON object: {"contradiction": true/false, "reason": "brief explanation"}`
+			dateA := ""
+			if ts, ok := node.Metadata["_created_at"].(float64); ok {
+				dateA = time.Unix(int64(ts), 0).Format("2006-01-02")
+			}
+			dateB := ""
+			if ts, ok := neighborData.Metadata["_created_at"].(float64); ok {
+				dateB = time.Unix(int64(ts), 0).Format("2006-01-02")
+			}
 
-			userPrompt := fmt.Sprintf("Statement A: %s\nStatement B: %s", contentA, contentB)
+			sysPrompt := `Analyze the following two memory statements from an AI agent.
+Consider their timestamps — the more recent memory is likely more accurate.
+Do they logically contradict each other?
+Return ONLY a valid JSON object:
+{"contradiction": true/false, "reason": "...", "suggested_resolution": "...", "action_required": true/false}
+
+Guidelines for action_required:
+- true if the agent must manually investigate or choose which memory to keep
+- false if the contradiction is minor or can be auto-resolved by preferring the newer memory
+
+Guidelines for suggested_resolution:
+- If timestamps differ significantly, suggest: "Keep the newer memory (from <date>) and archive the older one."
+- If both are equally recent, suggest: "Verify which statement is correct and discard the other."
+- If not a contradiction, set to ""`
+
+			userPrompt := fmt.Sprintf("Memory A (from %s): %s\nMemory B (from %s): %s", dateA, contentA, dateB, contentB)
 
 			respText, err := g.llm.Chat(sysPrompt, userPrompt)
 			if err != nil {
@@ -526,11 +570,13 @@ Return ONLY a valid JSON object: {"contradiction": true/false, "reason": "brief 
 					}
 
 					meta := map[string]any{
-						"type":        "reflection",
-						"content":     fmt.Sprintf("Conflict detected: %s", aiAnalysis.Reason),
-						"status":      "unresolved",
-						"confidence":  0.7,
-						"_created_at": float64(time.Now().Unix()),
+						"type":                 "reflection",
+						"content":              fmt.Sprintf("Conflict detected: %s", aiAnalysis.Reason),
+						"status":               "unresolved",
+						"confidence":           0.7,
+						"suggested_resolution": aiAnalysis.SuggestedResolution,
+						"action_required":      aiAnalysis.ActionRequired,
+						"_created_at":          float64(time.Now().Unix()),
 					}
 
 					g.eng.VAdd(indexName, reflectionID, avgVec, meta)
@@ -654,6 +700,9 @@ func (g *Gardener) ForceThink(indexName string) {
 	// Advanced-only: contradiction detection (requires LLM).
 	if g.llm != nil && (g.cfg.Mode == "advanced" || g.cfg.Mode == "meta") {
 		g.detectContradictions(indexName)
+		g.detectUserPreferences(indexName)
+		g.detectRepeatedFailures(indexName)
+		g.detectKnowledgeEvolution(indexName)
 	}
 }
 
@@ -782,11 +831,144 @@ func (g *Gardener) detectKnowledgeGaps(indexName string) {
 					if err := g.eng.VLink(indexName, reflectionID, neighbor.ID, "suggests_link", "", 1.0, nil); err != nil {
 						slog.Warn("[Cognitive Engine] Failed to link knowledge gap", "error", err)
 					}
-					g.eng.VLink(indexName, reflectionID, neighbor.ID, "suggests_link", "", 1.0, nil)
 				}
 			}
 		}
 	}
+}
+
+// detectUserPreferences scans recent memories tagged as user interactions
+// and uses the LLM to extract structured user preferences.
+func (g *Gardener) detectUserPreferences(indexName string) {
+	currentCursor := g.scanCursors[indexName+"_preferences"]
+	ids, nextCursor, err := g.eng.VGetIDsByCursor(indexName, currentCursor, 200)
+	if err != nil || len(ids) == 0 {
+		return
+	}
+	g.scanCursors[indexName+"_preferences"] = nextCursor
+
+	nodes, _ := g.eng.VGetMany(indexName, ids)
+
+	// Filter for memories tagged as user interactions or observations.
+	var relevantIDs []string
+	var promptLines []string
+	for _, node := range nodes {
+		tags, ok := node.Metadata["tags"].([]any)
+		if !ok {
+			continue
+		}
+		isRelevant := false
+		for _, t := range tags {
+			tagStr, _ := t.(string)
+			if tagStr == "user_interaction" || tagStr == "observation" {
+				isRelevant = true
+				break
+			}
+		}
+		if !isRelevant {
+			continue
+		}
+
+		content, _ := node.Metadata["content"].(string)
+		if content == "" {
+			continue
+		}
+
+		dateStr := ""
+		if ts, ok := node.Metadata["_created_at"].(float64); ok {
+			dateStr = time.Unix(int64(ts), 0).Format("2006-01-02")
+		}
+
+		relevantIDs = append(relevantIDs, node.ID)
+		promptLines = append(promptLines, fmt.Sprintf("- [%s] %s", dateStr, content))
+	}
+
+	if len(promptLines) < 2 {
+		return // Not enough data to extract meaningful preferences.
+	}
+
+	sysPrompt := `You are a user behavior analyst for an AI agent. Analyze the following interaction memories and extract structured user preferences.
+Return ONLY a valid JSON object:
+{"preferences_discovered": {"key": "value", ...}, "recommendation": "..."}
+
+Guidelines:
+- Extract behavioral patterns (communication style, time preferences, topic interests).
+- Use descriptive keys (e.g., "communication_style", "preferred_meeting_time").
+- If no clear preferences emerge, return empty preferences_discovered.
+- The recommendation should suggest how the agent should adapt its behavior.`
+
+	userPrompt := "User interaction memories:\n" + strings.Join(promptLines, "\n")
+
+	slog.Info("[Cognitive Engine] Analyzing user preferences...", "memory_count", len(promptLines))
+
+	respText, err := g.llm.Chat(sysPrompt, userPrompt)
+	if err != nil {
+		return
+	}
+
+	// Extract JSON from the response.
+	startIdx := strings.Index(respText, "{")
+	endIdx := strings.LastIndex(respText, "}")
+	if startIdx != -1 && endIdx != -1 && endIdx > startIdx {
+		respText = respText[startIdx : endIdx+1]
+	}
+
+	var aiResp llmPreferenceResponse
+	if err := json.Unmarshal([]byte(respText), &aiResp); err != nil {
+		return
+	}
+
+	if len(aiResp.PreferencesDiscovered) == 0 {
+		return // No preferences found.
+	}
+
+	// Create a user_profile_insight node.
+	insightID := fmt.Sprintf("user_profile_%d", time.Now().UnixNano())
+
+	// Use the first source memory's vector as a base (average would be ideal but this is simpler).
+	vec, _ := g.eng.VGet(indexName, relevantIDs[0])
+	avgVec := make([]float32, len(vec.Vector))
+	for _, id := range relevantIDs {
+		d, err := g.eng.VGet(indexName, id)
+		if err != nil || len(d.Vector) != len(avgVec) {
+			continue
+		}
+		for j, v := range d.Vector {
+			avgVec[j] += v
+		}
+	}
+	for j := range avgVec {
+		avgVec[j] /= float32(len(relevantIDs))
+	}
+
+	confidence := math.Min(1.0, float64(len(promptLines))/10.0)
+
+	meta := map[string]any{
+		"type":                "user_profile_insight",
+		"content":             aiResp.Recommendation,
+		"preferences":         aiResp.PreferencesDiscovered,
+		"status":              "active",
+		"confidence":          confidence,
+		"source_memory_count": float64(len(relevantIDs)),
+		"_created_at":         float64(time.Now().Unix()),
+	}
+
+	if err := g.eng.VAdd(indexName, insightID, avgVec, meta); err != nil {
+		slog.Error("[Cognitive Engine] Failed to save user profile insight", "error", err)
+		return
+	}
+
+	// Link to source memories.
+	for _, srcID := range relevantIDs {
+		if err := g.eng.VLink(indexName, insightID, srcID, "derived_from_interactions", "interaction_of", 1.0, nil); err != nil {
+			slog.Warn("[Cognitive Engine] Failed to link user preference", "error", err)
+		}
+	}
+
+	slog.Info("[Cognitive Engine] User profile insight created.",
+		"insight_id", insightID,
+		"preferences_count", len(aiResp.PreferencesDiscovered),
+		"source_memories", len(relevantIDs))
 }
 
 // detectSentimentShifts compares past vs recent sentiment for an entity
@@ -1023,5 +1205,332 @@ func (g *Gardener) detectForgettingPatterns(indexName string) {
 				slog.Warn("[Cognitive Engine] Failed to link knowledge decay", "error", err)
 			}
 		}
+	}
+}
+
+// detectRepeatedFailures scans for agent actions that have failed repeatedly
+// and uses the LLM to diagnose the root cause and suggest a fix.
+func (g *Gardener) detectRepeatedFailures(indexName string) {
+	now := time.Now()
+	twentyFourHoursAgo := now.Add(-24 * time.Hour)
+	minTimestamp := float64(twentyFourHoursAgo.Unix())
+
+	// Use VFilter to efficiently find recent failed agent actions.
+	filter := "type='agent_action' AND status='failed'"
+	ids, err := g.eng.VFilter(indexName, filter, 500)
+	if err != nil || len(ids) < 3 {
+		return
+	}
+
+	nodes, _ := g.eng.VGetMany(indexName, ids)
+
+	// Group failures by action, filtering to last 24h.
+	type failureGroup struct {
+		action string
+		nodes  []core.VectorData
+	}
+	groups := make(map[string]*failureGroup)
+
+	for _, node := range nodes {
+		// Time filter: only consider failures from the last 24 hours.
+		if ts, ok := node.Metadata["_created_at"].(float64); ok && ts < minTimestamp {
+			continue
+		}
+
+		action, _ := node.Metadata["action"].(string)
+		if action == "" {
+			action = "unknown"
+		}
+
+		if _, exists := groups[action]; !exists {
+			groups[action] = &failureGroup{action: action}
+		}
+		groups[action].nodes = append(groups[action].nodes, node)
+	}
+
+	for _, group := range groups {
+		if len(group.nodes) < 3 {
+			continue // Need at least 3 failures to detect a pattern.
+		}
+
+		// Dedup: check if any failure node in this group was already analyzed.
+		alreadyAnalyzed := false
+		for _, n := range group.nodes {
+			existingLinks, found := g.eng.VGetLinks(indexName, n.ID, "failure_analyzed")
+			if found && len(existingLinks) > 0 {
+				alreadyAnalyzed = true
+				break
+			}
+		}
+		if alreadyAnalyzed {
+			continue
+		}
+
+		// Mark the first node as analyzed.
+		if err := g.eng.VLink(indexName, group.nodes[0].ID, group.nodes[0].ID, "failure_analyzed", "", 1.0, nil); err != nil {
+			slog.Warn("[Cognitive Engine] Failed to mark failure as analyzed", "error", err)
+			continue
+		}
+
+		// Build prompt with timestamps.
+		var promptLines []string
+		for _, n := range group.nodes {
+			content, _ := n.Metadata["content"].(string)
+			dateStr := "unknown"
+			if ts, ok := n.Metadata["_created_at"].(float64); ok {
+				dateStr = time.Unix(int64(ts), 0).Format("2006-01-02 15:04")
+			}
+			promptLines = append(promptLines, fmt.Sprintf("- [%s] %s", dateStr, content))
+		}
+
+		sysPrompt := `You are a debugging analyst for an AI agent. The agent has been repeatedly failing at the same action. Analyze the failure logs and identify the pattern.
+Return ONLY a valid JSON object:
+{"pattern": "...", "root_cause": "...", "recommendation": "...", "severity": "low|medium|high"}
+
+Guidelines:
+- pattern: concise description of what's going wrong
+- root_cause: the underlying reason
+- recommendation: specific fix the agent should apply
+- severity: "high" if agent is completely blocked, "medium" if degraded, "low" if intermittent`
+
+		userPrompt := fmt.Sprintf("Repeated failures for action \"%s\" (%d failures in last 24h):\n%s",
+			group.action, len(group.nodes), strings.Join(promptLines, "\n"))
+
+		slog.Info("[Cognitive Engine] Analyzing repeated failures...", "action", group.action, "count", len(group.nodes))
+
+		respText, err := g.llm.Chat(sysPrompt, userPrompt)
+		if err != nil {
+			continue
+		}
+
+		startIdx := strings.Index(respText, "{")
+		endIdx := strings.LastIndex(respText, "}")
+		if startIdx != -1 && endIdx != -1 && endIdx > startIdx {
+			respText = respText[startIdx : endIdx+1]
+		}
+
+		var aiResp llmFailurePatternResponse
+		if err := json.Unmarshal([]byte(respText), &aiResp); err != nil {
+			continue
+		}
+
+		if aiResp.Pattern == "" {
+			continue
+		}
+
+		// Create failure_pattern node.
+		patternID := fmt.Sprintf("failure_pattern_%d", time.Now().UnixNano())
+
+		// Average vector from source failures.
+		dim := len(group.nodes[0].Vector)
+		avgVec := make([]float32, dim)
+		for _, n := range group.nodes {
+			if len(n.Vector) == dim {
+				for j, v := range n.Vector {
+					avgVec[j] += v
+				}
+			}
+		}
+		for j := range avgVec {
+			avgVec[j] /= float32(len(group.nodes))
+		}
+
+		confidence := math.Min(1.0, float64(len(group.nodes))/10.0)
+
+		meta := map[string]any{
+			"type":          "failure_pattern",
+			"content":       aiResp.Recommendation,
+			"pattern":       aiResp.Pattern,
+			"root_cause":    aiResp.RootCause,
+			"severity":      aiResp.Severity,
+			"status":        "unresolved",
+			"confidence":    confidence,
+			"failure_count": float64(len(group.nodes)),
+			"_created_at":   float64(time.Now().Unix()),
+		}
+
+		if err := g.eng.VAdd(indexName, patternID, avgVec, meta); err != nil {
+			slog.Error("[Cognitive Engine] Failed to save failure pattern", "error", err)
+			continue
+		}
+
+		for _, n := range group.nodes {
+			if err := g.eng.VLink(indexName, patternID, n.ID, "failure_pattern_of", "has_failure_pattern", 1.0, nil); err != nil {
+				slog.Warn("[Cognitive Engine] Failed to link failure pattern", "error", err)
+			}
+		}
+
+		slog.Info("[Cognitive Engine] Failure pattern detected!",
+			"action", group.action,
+			"pattern", aiResp.Pattern,
+			"severity", aiResp.Severity)
+	}
+}
+
+// detectKnowledgeEvolution analyzes how an entity's knowledge neighborhood has evolved
+// over time using VExtractSubgraph time-travel snapshots at 3 points in time.
+func (g *Gardener) detectKnowledgeEvolution(indexName string) {
+	currentCursor := g.scanCursors[indexName+"_evolution"]
+	ids, nextCursor, err := g.eng.VGetIDsByCursor(indexName, currentCursor, 100)
+	if err != nil || len(ids) == 0 {
+		return
+	}
+	g.scanCursors[indexName+"_evolution"] = nextCursor
+
+	now := time.Now()
+	oneDayAgo := now.Add(-24 * time.Hour).UnixNano()
+	fifteenDaysAgo := now.Add(-15 * 24 * time.Hour).UnixNano()
+	thirtyDaysAgo := now.Add(-30 * 24 * time.Hour).UnixNano()
+
+	relations := []string{"mentions", "related_to", "about", "suggests_link", "consolidated_into", "derived_from"}
+
+	processed := 0
+	for _, id := range ids {
+		if processed >= 3 {
+			break // Limit to 3 entities per cycle to control cost.
+		}
+
+		// Only analyze high-centrality entities.
+		inRels := g.eng.VGetIncomingRelations(indexName, id)
+		inDegree := 0
+		for _, sources := range inRels {
+			inDegree += len(sources)
+		}
+		if inDegree < 15 {
+			continue
+		}
+
+		// Must be an entity type.
+		nodeData, err := g.eng.VGet(indexName, id)
+		if err != nil {
+			continue
+		}
+		nodeType, _ := nodeData.Metadata["type"].(string)
+		if nodeType != "entity" {
+			continue
+		}
+
+		// Dedup: skip if already analyzed.
+		existingLinks, found := g.eng.VGetLinks(indexName, id, "evolution_analyzed")
+		if found && len(existingLinks) > 0 {
+			continue
+		}
+
+		// Mark as analyzed.
+		if err := g.eng.VLink(indexName, id, id, "evolution_analyzed", "", 1.0, nil); err != nil {
+			slog.Warn("[Cognitive Engine] Failed to mark entity as evolution-analyzed", "error", err)
+			continue
+		}
+
+		// Extract 3 subgraph snapshots via time travel.
+		subgraphPast, _ := g.eng.VExtractSubgraph(indexName, id, relations, 2, thirtyDaysAgo, nil, 0)
+		subgraphMid, _ := g.eng.VExtractSubgraph(indexName, id, relations, 2, fifteenDaysAgo, nil, 0)
+		subgraphNow, _ := g.eng.VExtractSubgraph(indexName, id, relations, 2, oneDayAgo, nil, 0)
+
+		// Get topic name.
+		topicName := id
+		if name, ok := nodeData.Metadata["name"].(string); ok && name != "" {
+			topicName = name
+		}
+
+		// Format subgraphs as readable text for the LLM.
+		formatSnapshot := func(label string, sg *engine.SubgraphResult) string {
+			if sg == nil || len(sg.Nodes) <= 1 {
+				return fmt.Sprintf("%s: No connected knowledge yet.", label)
+			}
+			nodeNames := []string{}
+			for _, n := range sg.Nodes {
+				if n.ID == sg.RootID {
+					continue
+				}
+				name := n.ID
+				if nodeName, ok := n.Metadata["name"].(string); ok && nodeName != "" {
+					name = nodeName
+				} else if c, ok := n.Metadata["content"].(string); ok && len(c) > 50 {
+					name = c[:50] + "..."
+				}
+				nodeNames = append(nodeNames, name)
+			}
+			return fmt.Sprintf("%s: %d connected nodes — %s", label, len(nodeNames), strings.Join(nodeNames, ", "))
+		}
+
+		snapshotText := fmt.Sprintf("Topic: %s\n%s\n%s\n%s",
+			topicName,
+			formatSnapshot("30 days ago", subgraphPast),
+			formatSnapshot("15 days ago", subgraphMid),
+			formatSnapshot("Today", subgraphNow),
+		)
+
+		sysPrompt := `You are a knowledge evolution analyst for an AI agent. You are given 3 snapshots of what the agent knew about a specific topic at 3 different points in time. Analyze how the agent's understanding evolved and identify what's still missing.
+Return ONLY a valid JSON object:
+{"timeline": "...", "competency_level": "beginner|intermediate|advanced|expert", "knowledge_gaps": ["gap1", "gap2"], "next_steps": "..."}
+
+Guidelines:
+- timeline: describe the evolution in 3 phases
+- competency_level: rate the agent's current knowledge depth
+- knowledge_gaps: list specific topics the agent should study next
+- next_steps: concrete recommendation for what to learn/do next`
+
+		slog.Info("[Cognitive Engine] Analyzing knowledge evolution...", "entity", topicName, "in_degree", inDegree)
+
+		respText, err := g.llm.Chat(sysPrompt, snapshotText)
+		if err != nil {
+			continue
+		}
+
+		startIdx := strings.Index(respText, "{")
+		endIdx := strings.LastIndex(respText, "}")
+		if startIdx != -1 && endIdx != -1 && endIdx > startIdx {
+			respText = respText[startIdx : endIdx+1]
+		}
+
+		var aiResp llmEvolutionResponse
+		if err := json.Unmarshal([]byte(respText), &aiResp); err != nil {
+			continue
+		}
+
+		if aiResp.Timeline == "" {
+			continue
+		}
+
+		// Create knowledge_evolution node.
+		evoID := fmt.Sprintf("knowledge_evolution_%d", time.Now().UnixNano())
+
+		confidence := math.Min(1.0, float64(inDegree)/20.0)
+
+		meta := map[string]any{
+			"type":             "knowledge_evolution",
+			"content":          aiResp.NextSteps,
+			"topic":            topicName,
+			"timeline":         aiResp.Timeline,
+			"competency_level": aiResp.CompetencyLevel,
+			"status":           "active",
+			"confidence":       confidence,
+			"_created_at":      float64(time.Now().Unix()),
+		}
+
+		if len(aiResp.KnowledgeGaps) > 0 {
+			gapAnys := make([]any, len(aiResp.KnowledgeGaps))
+			for i, g := range aiResp.KnowledgeGaps {
+				gapAnys[i] = g
+			}
+			meta["knowledge_gaps"] = gapAnys
+		}
+
+		if err := g.eng.VAdd(indexName, evoID, nodeData.Vector, meta); err != nil {
+			slog.Error("[Cognitive Engine] Failed to save knowledge evolution", "error", err)
+			continue
+		}
+
+		if err := g.eng.VLink(indexName, evoID, id, "evolution_of", "evolved_by", 1.0, nil); err != nil {
+			slog.Warn("[Cognitive Engine] Failed to link knowledge evolution", "error", err)
+		}
+
+		slog.Info("[Cognitive Engine] Knowledge evolution tracked.",
+			"topic", topicName,
+			"competency", aiResp.CompetencyLevel,
+			"gaps_count", len(aiResp.KnowledgeGaps))
+
+		processed++
 	}
 }
