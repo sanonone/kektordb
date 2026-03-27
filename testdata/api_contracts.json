@@ -1,0 +1,374 @@
+{
+  "version": "0.5.0",
+  "description": "Shared API contracts for KektorDB client testing. All clients (Go, Python, TypeScript) must pass these contracts.",
+  "base_url": "http://localhost:9091",
+  "tests": [
+    {
+      "name": "healthz",
+      "method": "GET",
+      "path": "/healthz",
+      "auth": false,
+      "expected_status": 200,
+      "expected_response_fields": ["status"],
+      "validation": "response.status == 'ok'"
+    },
+    {
+      "name": "create_index",
+      "method": "POST",
+      "path": "/vector/actions/create",
+      "request": {
+        "index_name": "CONTRACT_TEST_IDX",
+        "metric": "cosine",
+        "precision": "float32",
+        "m": 16,
+        "ef_construction": 200,
+        "text_language": "english"
+      },
+      "expected_status": 200
+    },
+    {
+      "name": "list_indexes",
+      "method": "GET",
+      "path": "/vector/indexes",
+      "depends_on": ["create_index"],
+      "expected_status": 200,
+      "expected_response_type": "array",
+      "validation": "response contains index with name='CONTRACT_TEST_IDX'"
+    },
+    {
+      "name": "get_index_info",
+      "method": "GET",
+      "path": "/vector/indexes/CONTRACT_TEST_IDX",
+      "depends_on": ["create_index"],
+      "expected_status": 200,
+      "expected_response_fields": ["name", "metric", "precision", "vector_count"]
+    },
+    {
+      "name": "add_vector",
+      "method": "POST",
+      "path": "/vector/actions/add",
+      "depends_on": ["create_index"],
+      "request": {
+        "index_name": "CONTRACT_TEST_IDX",
+        "id": "vec_1",
+        "vector": [0.1, 0.2, 0.3, 0.4],
+        "metadata": {"content": "test memory", "type": "memory"}
+      },
+      "expected_status": 200
+    },
+    {
+      "name": "add_vector_entity",
+      "method": "POST",
+      "path": "/vector/actions/add",
+      "depends_on": ["create_index"],
+      "request": {
+        "index_name": "CONTRACT_TEST_IDX",
+        "id": "entity_1",
+        "vector": [],
+        "metadata": {"name": "Python", "type": "entity"}
+      },
+      "expected_status": 200
+    },
+    {
+      "name": "add_batch",
+      "method": "POST",
+      "path": "/vector/actions/add-batch",
+      "depends_on": ["create_index"],
+      "request": {
+        "index_name": "CONTRACT_TEST_IDX",
+        "vectors": [
+          {"id": "vec_2", "vector": [0.15, 0.25, 0.35, 0.45], "metadata": {"content": "batch 1"}},
+          {"id": "vec_3", "vector": [0.2, 0.3, 0.4, 0.5], "metadata": {"content": "batch 2"}}
+        ]
+      },
+      "expected_status": 200,
+      "expected_response_fields": ["status"]
+    },
+    {
+      "name": "get_vector",
+      "method": "GET",
+      "path": "/vector/indexes/CONTRACT_TEST_IDX/vectors/vec_1",
+      "depends_on": ["add_vector"],
+      "expected_status": 200,
+      "expected_response_fields": ["id", "vector", "metadata"]
+    },
+    {
+      "name": "get_vectors_batch",
+      "method": "POST",
+      "path": "/vector/actions/get-vectors",
+      "depends_on": ["add_vector"],
+      "request": {
+        "index_name": "CONTRACT_TEST_IDX",
+        "ids": ["vec_1", "vec_2"]
+      },
+      "expected_status": 200,
+      "expected_response_type": "array",
+      "validation": "response.length == 2"
+    },
+    {
+      "name": "search_vector",
+      "method": "POST",
+      "path": "/vector/actions/search",
+      "depends_on": ["add_vector"],
+      "request": {
+        "index_name": "CONTRACT_TEST_IDX",
+        "query_vector": [0.1, 0.2, 0.3, 0.4],
+        "k": 5
+      },
+      "expected_status": 200,
+      "expected_response_fields": ["results"],
+      "validation": "results.length > 0"
+    },
+    {
+      "name": "search_with_scores",
+      "method": "POST",
+      "path": "/vector/actions/search-with-scores",
+      "depends_on": ["add_vector"],
+      "request": {
+        "index_name": "CONTRACT_TEST_IDX",
+        "query_vector": [0.1, 0.2, 0.3, 0.4],
+        "k": 3
+      },
+      "expected_status": 200,
+      "expected_response_fields": ["results"],
+      "validation": "results[0] has 'id' and 'score' fields"
+    },
+    {
+      "name": "search_filter_only",
+      "method": "POST",
+      "path": "/vector/actions/search",
+      "depends_on": ["add_vector"],
+      "request": {
+        "index_name": "CONTRACT_TEST_IDX",
+        "query_vector": [],
+        "filter": "type='memory'",
+        "k": 10
+      },
+      "expected_status": 200,
+      "expected_response_fields": ["results"]
+    },
+    {
+      "name": "graph_link",
+      "method": "POST",
+      "path": "/graph/actions/link",
+      "depends_on": ["add_vector"],
+      "request": {
+        "index_name": "CONTRACT_TEST_IDX",
+        "source_id": "vec_1",
+        "target_id": "entity_1",
+        "relation_type": "mentions",
+        "inverse_relation_type": "mentioned_in"
+      },
+      "expected_status": 200
+    },
+    {
+      "name": "get_links",
+      "method": "POST",
+      "path": "/graph/actions/get-links",
+      "depends_on": ["graph_link"],
+      "request": {
+        "index_name": "CONTRACT_TEST_IDX",
+        "source_id": "vec_1",
+        "relation_type": "mentions"
+      },
+      "expected_status": 200,
+      "expected_response_fields": ["targets"],
+      "validation": "targets contains 'entity_1'"
+    },
+    {
+      "name": "get_incoming",
+      "method": "POST",
+      "path": "/graph/actions/get-incoming",
+      "depends_on": ["graph_link"],
+      "request": {
+        "index_name": "CONTRACT_TEST_IDX",
+        "target_id": "entity_1",
+        "relation_type": "mentioned_in"
+      },
+      "expected_status": 200,
+      "expected_response_fields": ["sources"],
+      "validation": "sources contains 'vec_1'"
+    },
+    {
+      "name": "get_all_relations",
+      "method": "POST",
+      "path": "/graph/actions/get-all-relations",
+      "depends_on": ["graph_link"],
+      "request": {
+        "index_name": "CONTRACT_TEST_IDX",
+        "node_id": "vec_1"
+      },
+      "expected_status": 200,
+      "expected_response_fields": ["relations"]
+    },
+    {
+      "name": "get_all_incoming",
+      "method": "POST",
+      "path": "/graph/actions/get-all-incoming",
+      "depends_on": ["graph_link"],
+      "request": {
+        "index_name": "CONTRACT_TEST_IDX",
+        "node_id": "entity_1"
+      },
+      "expected_status": 200,
+      "expected_response_fields": ["relations"]
+    },
+    {
+      "name": "extract_subgraph",
+      "method": "POST",
+      "path": "/graph/actions/extract-subgraph",
+      "depends_on": ["graph_link"],
+      "request": {
+        "index_name": "CONTRACT_TEST_IDX",
+        "root_id": "vec_1",
+        "relations": ["mentions"],
+        "max_depth": 2
+      },
+      "expected_status": 200,
+      "expected_response_fields": ["root_id", "nodes", "edges"]
+    },
+    {
+      "name": "find_path",
+      "method": "POST",
+      "path": "/graph/actions/find-path",
+      "depends_on": ["graph_link"],
+      "request": {
+        "index_name": "CONTRACT_TEST_IDX",
+        "source_id": "vec_1",
+        "target_id": "entity_1",
+        "relations": ["mentions"]
+      },
+      "expected_status": 200
+    },
+    {
+      "name": "set_node_properties",
+      "method": "POST",
+      "path": "/graph/actions/set-node-properties",
+      "depends_on": ["add_vector"],
+      "request": {
+        "index_name": "CONTRACT_TEST_IDX",
+        "node_id": "vec_1",
+        "properties": {"content": "updated test memory"}
+      },
+      "expected_status": 200
+    },
+    {
+      "name": "get_node_properties",
+      "method": "POST",
+      "path": "/graph/actions/get-node-properties",
+      "depends_on": ["set_node_properties"],
+      "request": {
+        "index_name": "CONTRACT_TEST_IDX",
+        "node_id": "vec_1"
+      },
+      "expected_status": 200,
+      "expected_response_fields": ["properties"]
+    },
+    {
+      "name": "reinforce",
+      "method": "POST",
+      "path": "/vector/actions/reinforce",
+      "depends_on": ["add_vector"],
+      "request": {
+        "index_name": "CONTRACT_TEST_IDX",
+        "ids": ["vec_1"]
+      },
+      "expected_status": 200
+    },
+    {
+      "name": "get_reflections",
+      "method": "GET",
+      "path": "/vector/indexes/CONTRACT_TEST_IDX/reflections",
+      "depends_on": ["create_index"],
+      "expected_status": 200,
+      "expected_response_fields": ["reflections"]
+    },
+    {
+      "name": "cognitive_think",
+      "method": "POST",
+      "path": "/vector/indexes/CONTRACT_TEST_IDX/cognitive/think",
+      "depends_on": ["create_index"],
+      "expected_status": 202
+    },
+    {
+      "name": "save_snapshot",
+      "method": "POST",
+      "path": "/system/save",
+      "expected_status": 200
+    },
+    {
+      "name": "update_config",
+      "method": "POST",
+      "path": "/vector/indexes/CONTRACT_TEST_IDX/config",
+      "depends_on": ["create_index"],
+      "request": {"vacuum_interval": "300s"},
+      "expected_status": 200
+    },
+    {
+      "name": "set_auto_links",
+      "method": "PUT",
+      "path": "/vector/indexes/CONTRACT_TEST_IDX/auto-links",
+      "depends_on": ["create_index"],
+      "request": {
+        "rules": [{"metadata_field": "project_id", "relation_type": "belongs_to"}]
+      },
+      "expected_status": 200
+    },
+    {
+      "name": "get_auto_links",
+      "method": "GET",
+      "path": "/vector/indexes/CONTRACT_TEST_IDX/auto-links",
+      "depends_on": ["set_auto_links"],
+      "expected_status": 200,
+      "expected_response_fields": ["rules"]
+    },
+    {
+      "name": "export_vectors",
+      "method": "GET",
+      "path": "/vector/indexes/CONTRACT_TEST_IDX/export?limit=10&offset=0",
+      "depends_on": ["add_vector"],
+      "expected_status": 200,
+      "expected_response_fields": ["data", "has_more"]
+    },
+    {
+      "name": "delete_vector",
+      "method": "POST",
+      "path": "/vector/actions/delete_vector",
+      "depends_on": ["add_vector"],
+      "request": {
+        "index_name": "CONTRACT_TEST_IDX",
+        "id": "vec_3"
+      },
+      "expected_status": 200
+    },
+    {
+      "name": "graph_unlink",
+      "method": "POST",
+      "path": "/graph/actions/unlink",
+      "depends_on": ["graph_link"],
+      "request": {
+        "index_name": "CONTRACT_TEST_IDX",
+        "source_id": "vec_1",
+        "target_id": "entity_1",
+        "relation_type": "mentions",
+        "inverse_relation_type": "mentioned_in"
+      },
+      "expected_status": 200
+    },
+    {
+      "name": "delete_index",
+      "method": "DELETE",
+      "path": "/vector/indexes/CONTRACT_TEST_IDX",
+      "depends_on": ["create_index"],
+      "expected_status": 204
+    },
+    {
+      "name": "get_index_not_found",
+      "method": "GET",
+      "path": "/vector/indexes/CONTRACT_TEST_IDX",
+      "depends_on": ["delete_index"],
+      "expected_status": 404,
+      "description": "Index should not exist after deletion"
+    }
+  ]
+}

@@ -1,8 +1,8 @@
 openapi: 3.0.3
 info:
   title: KektorDB API
-  description: API documentation for KektorDB - The Local Memory Layer for AI Agents.
-  version: 0.4.0
+  description: API documentation for KektorDB — The Local Memory Layer for AI Agents.
+  version: 0.5.0
   license:
     name: Apache 2.0
     url: https://opensource.org/licenses/Apache-2.0
@@ -11,91 +11,468 @@ servers:
   - url: http://localhost:9091
     description: Default Local Server
 
+security:
+  - BearerAuth: []
+
 components:
   securitySchemes:
     BearerAuth:
       type: http
       scheme: bearer
+
   schemas:
+    # --- Shared ---
+    Task:
+      type: object
+      properties:
+        id: { type: string }
+        status: { type: string, enum: [pending, completed, failed] }
+        progress_message: { type: string }
+        error: { type: string }
+
+    IndexInfo:
+      type: object
+      properties:
+        name: { type: string }
+        vector_count: { type: integer }
+        metric: { type: string }
+        precision: { type: string }
+        dimension: { type: integer }
+        m: { type: integer }
+        ef_construction: { type: integer }
+        text_language: { type: string }
+
+    VectorData:
+      type: object
+      properties:
+        id: { type: string }
+        vector:
+          type: array
+          items: { type: number, format: float }
+        metadata:
+          type: object
+          additionalProperties: true
+
+    SearchResult:
+      type: object
+      properties:
+        id: { type: string }
+        score: { type: number, format: float }
+        metadata:
+          type: object
+          additionalProperties: true
+        relations:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+
+    GraphEdge:
+      type: object
+      properties:
+        target_id: { type: string }
+        relation: { type: string }
+        weight: { type: number, format: float }
+        created_at: { type: integer, format: int64 }
+        props:
+          type: object
+          additionalProperties: true
+
+    SubgraphNode:
+      type: object
+      properties:
+        id: { type: string }
+        metadata:
+          type: object
+          additionalProperties: true
+
+    SubgraphEdge:
+      type: object
+      properties:
+        source: { type: string }
+        target: { type: string }
+        relation: { type: string }
+        dir: { type: string, enum: [out, in] }
+
+    Reflection:
+      type: object
+      properties:
+        id: { type: string }
+        metadata:
+          type: object
+          properties:
+            type: { type: string }
+            content: { type: string }
+            status: { type: string }
+            confidence: { type: number }
+            suggested_resolution: { type: string }
+            action_required: { type: boolean }
+
+    # --- Request Schemas ---
+    CreateIndexRequest:
+      type: object
+      required: [index_name]
+      properties:
+        index_name: { type: string }
+        metric: { type: string, enum: [cosine, euclidean] }
+        precision: { type: string, enum: [float32, float16, int8] }
+        m: { type: integer }
+        ef_construction: { type: integer }
+        text_language: { type: string }
+        maintenance: { type: object, additionalProperties: true }
+        auto_links:
+          type: array
+          items:
+            type: object
+            properties:
+              metadata_field: { type: string }
+              relation_type: { type: string }
+              create_node: { type: boolean }
+        memory_config:
+          type: object
+          properties:
+            enabled: { type: boolean }
+            half_life_days: { type: integer }
+
     VectorAddRequest:
       type: object
       required: [index_name, id, vector]
       properties:
-        index_name:
-          type: string
-          example: "knowledge_base"
-        id:
-          type: string
-          example: "doc_1"
+        index_name: { type: string }
+        id: { type: string }
         vector:
           type: array
-          items:
-            type: number
-            format: float
-          example: [0.1, 0.2, 0.3]
+          items: { type: number, format: float }
         metadata:
           type: object
           additionalProperties: true
-          example: { "category": "docs", "year": 2024 }
 
     SearchRequest:
       type: object
       required: [index_name, k]
       properties:
-        index_name:
-          type: string
-        k:
-          type: integer
-          default: 10
+        index_name: { type: string }
+        k: { type: integer }
         query_vector:
           type: array
           items: { type: number, format: float }
-        filter:
-          type: string
-          description: "SQL-like filter (e.g., category='A')"
+        filter: { type: string }
+        text_query: { type: string }
+        ef_search: { type: integer }
+        alpha: { type: number, format: float }
+        graph_filter:
+          type: object
+          properties:
+            root_id: { type: string }
+            relations:
+              type: array
+              items: { type: string }
+            depth: { type: integer }
         include_relations:
           type: array
           items: { type: string }
-          example: ["prev", "next", "parent"]
-        hydrate_relations:
-          type: boolean
-          default: false
+        hydrate_relations: { type: boolean }
+
+    GraphLinkRequest:
+      type: object
+      required: [index_name, source_id, target_id, relation_type]
+      properties:
+        index_name: { type: string }
+        source_id: { type: string }
+        target_id: { type: string }
+        relation_type: { type: string }
+        inverse_relation_type: { type: string }
+        weight: { type: number, format: float }
+
+    GraphGetLinksRequest:
+      type: object
+      required: [index_name, source_id, relation_type]
+      properties:
+        index_name: { type: string }
+        source_id: { type: string }
+        relation_type: { type: string }
+
+    GraphGetIncomingRequest:
+      type: object
+      required: [index_name, target_id, relation_type]
+      properties:
+        index_name: { type: string }
+        target_id: { type: string }
+        relation_type: { type: string }
+
+    GraphExtractSubgraphRequest:
+      type: object
+      required: [index_name, root_id, relations]
+      properties:
+        index_name: { type: string }
+        root_id: { type: string }
+        relations:
+          type: array
+          items: { type: string }
+        max_depth: { type: integer }
+        at_time: { type: integer, format: int64 }
+        guide_vector:
+          type: array
+          items: { type: number, format: float }
+        semantic_threshold: { type: number, format: float }
+
+    GraphFindPathRequest:
+      type: object
+      required: [index_name, source_id, target_id]
+      properties:
+        index_name: { type: string }
+        source_id: { type: string }
+        target_id: { type: string }
+        relations:
+          type: array
+          items: { type: string }
+        max_depth: { type: integer }
+        at_time: { type: integer, format: int64 }
 
     RAGRequest:
       type: object
       required: [pipeline_name, query]
       properties:
-        pipeline_name:
-          type: string
-        query:
-          type: string
-        k:
-          type: integer
-          default: 3
-
-security:
-  - BearerAuth: []
+        pipeline_name: { type: string }
+        query: { type: string }
+        k: { type: integer }
 
 paths:
-  /vector/indexes:
+  # --- Key-Value ---
+  /kv/{key}:
+    parameters:
+      - name: key
+        in: path
+        required: true
+        schema: { type: string }
     get:
-      summary: List all indexes
-      tags: [Index Management]
+      summary: Get a key-value pair
+      tags: [Key-Value]
       responses:
         '200':
-          description: List of indexes and stats
+          description: Value retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key: { type: string }
+                  value: { type: string }
     post:
-      summary: Create a new index
-      tags: [Index Management]
+      summary: Set a key-value pair
+      tags: [Key-Value]
       requestBody:
         content:
           application/json:
             schema:
               type: object
+              required: [value]
               properties:
-                index_name: { type: string }
-                metric: { type: string, enum: [cosine, euclidean] }
-                precision: { type: string, enum: [float32, float16, int8] }
+                value: { type: string }
+      responses:
+        '200': { description: Value set }
+    delete:
+      summary: Delete a key
+      tags: [Key-Value]
+      responses:
+        '200': { description: Key deleted }
+
+  # --- Index Management ---
+  /vector/indexes:
+    get:
+      summary: List all vector indexes
+      tags: [Index Management]
+      responses:
+        '200':
+          description: List of indexes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/IndexInfo'
+    post:
+      summary: Create a new vector index
+      tags: [Index Management]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateIndexRequest'
+      responses:
+        '200': { description: Index created }
+
+  /vector/indexes/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Get index information
+      tags: [Index Management]
+      responses:
+        '200':
+          description: Index info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexInfo'
+    delete:
+      summary: Delete an index
+      tags: [Index Management]
+      responses:
+        '204': { description: Index deleted }
+
+  /vector/indexes/{name}/config:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Update maintenance configuration
+      tags: [Index Management]
+      responses:
+        '200': { description: Config updated }
+
+  /vector/indexes/{name}/maintenance:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Trigger manual maintenance
+      tags: [Index Management]
+      responses:
+        '200':
+          description: Task started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+
+  /vector/indexes/{name}/auto-links:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Get auto-linking rules
+      tags: [Index Management]
+      responses:
+        '200':
+          description: Rules
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rules:
+                    type: array
+                    items: { type: object }
+    put:
+      summary: Update auto-linking rules
+      tags: [Index Management]
+      responses:
+        '200': { description: Rules updated }
+
+  /vector/indexes/{name}/export:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Export vectors with pagination
+      tags: [Index Management]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 1000 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        '200':
+          description: Exported data
+
+  # --- Cognitive Engine ---
+  /vector/indexes/{name}/reflections:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Get reflection nodes
+      tags: [Cognitive Engine]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Reflections
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reflections:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Reflection'
+
+  /vector/indexes/{name}/reflections/{id}/resolve:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Resolve a reflection
+      tags: [Cognitive Engine]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resolution]
+              properties:
+                resolution: { type: string }
+                discard_id: { type: string }
+      responses:
+        '200': { description: Reflection resolved }
+
+  /vector/indexes/{name}/cognitive/think:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Trigger manual cognitive cycle
+      tags: [Cognitive Engine]
+      responses:
+        '202': { description: Cycle triggered }
+
+  # --- Vector Operations ---
+  /vector/actions/create:
+    post:
+      summary: Create a vector index (legacy)
+      tags: [Vector Operations]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateIndexRequest'
       responses:
         '200': { description: Index created }
 
@@ -109,11 +486,52 @@ paths:
             schema:
               $ref: '#/components/schemas/VectorAddRequest'
       responses:
-        '200': { description: Success }
+        '200': { description: Vector added }
+
+  /vector/actions/add-batch:
+    post:
+      summary: Add vectors in batch
+      tags: [Vector Operations]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [index_name, vectors]
+              properties:
+                index_name: { type: string }
+                vectors:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/VectorAddRequest'
+      responses:
+        '200':
+          description: Batch added
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  vectors_added: { type: integer }
+
+  /vector/actions/import:
+    post:
+      summary: High-speed bulk import (no AOF)
+      tags: [Vector Operations]
+      responses:
+        '200': { description: Import batch received }
+
+  /vector/actions/import/commit:
+    post:
+      summary: Commit import to disk
+      tags: [Vector Operations]
+      responses:
+        '200': { description: Import committed }
 
   /vector/actions/search:
     post:
-      summary: Perform vector/hybrid search
+      summary: Vector/hybrid/graph search
       tags: [Vector Operations]
       requestBody:
         content:
@@ -123,7 +541,271 @@ paths:
       responses:
         '200':
           description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SearchResult'
 
+  /vector/actions/search-with-scores:
+    post:
+      summary: Search with relevance scores
+      tags: [Vector Operations]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [index_name, query_vector, k]
+              properties:
+                index_name: { type: string }
+                query_vector:
+                  type: array
+                  items: { type: number }
+                k: { type: integer }
+      responses:
+        '200':
+          description: Results with scores
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        score: { type: number }
+
+  /vector/actions/delete_vector:
+    post:
+      summary: Soft-delete a vector
+      tags: [Vector Operations]
+      responses:
+        '200': { description: Vector deleted }
+
+  /vector/actions/compress:
+    post:
+      summary: Compress index precision (async)
+      tags: [Vector Operations]
+      responses:
+        '200':
+          description: Compression started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+
+  /vector/actions/get-vectors:
+    post:
+      summary: Batch retrieve vectors
+      tags: [Vector Operations]
+      responses:
+        '200':
+          description: Vectors
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/VectorData'
+
+  /vector/actions/reinforce:
+    post:
+      summary: Reinforce memory freshness
+      tags: [Vector Operations]
+      responses:
+        '200': { description: Memories reinforced }
+
+  # --- Graph Operations ---
+  /graph/actions/link:
+    post:
+      summary: Create a directed edge
+      tags: [Graph Operations]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GraphLinkRequest'
+      responses:
+        '200': { description: Link created }
+
+  /graph/actions/unlink:
+    post:
+      summary: Remove an edge
+      tags: [Graph Operations]
+      responses:
+        '200': { description: Link removed }
+
+  /graph/actions/get-links:
+    post:
+      summary: Get outgoing link targets
+      tags: [Graph Operations]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GraphGetLinksRequest'
+      responses:
+        '200':
+          description: Targets
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  targets:
+                    type: array
+                    items: { type: string }
+
+  /graph/actions/get-incoming:
+    post:
+      summary: Get incoming link sources
+      tags: [Graph Operations]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GraphGetIncomingRequest'
+      responses:
+        '200':
+          description: Sources
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sources:
+                    type: array
+                    items: { type: string }
+
+  /graph/actions/extract-subgraph:
+    post:
+      summary: Extract BFS subgraph with time-travel
+      tags: [Graph Operations]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GraphExtractSubgraphRequest'
+      responses:
+        '200':
+          description: Subgraph
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  root_id: { type: string }
+                  nodes:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SubgraphNode'
+                  edges:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SubgraphEdge'
+
+  /graph/actions/find-path:
+    post:
+      summary: Find shortest path between two nodes
+      tags: [Graph Operations]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GraphFindPathRequest'
+      responses:
+        '200':
+          description: Path found
+
+  /graph/actions/get-edges:
+    post:
+      summary: Get edges with time-travel
+      tags: [Graph Operations]
+      responses:
+        '200':
+          description: Edges
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  edges:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GraphEdge'
+
+  /graph/actions/get-all-relations:
+    post:
+      summary: All outgoing links grouped by type
+      tags: [Graph Operations]
+      responses:
+        '200':
+          description: Relations
+
+  /graph/actions/get-all-incoming:
+    post:
+      summary: All incoming links grouped by type
+      tags: [Graph Operations]
+      responses:
+        '200':
+          description: Relations
+
+  /graph/actions/context:
+    post:
+      summary: Get backlinks to a node
+      tags: [Graph Operations]
+      responses:
+        '200':
+          description: Backlinks
+
+  /graph/actions/set-node-properties:
+    post:
+      summary: Update node metadata
+      tags: [Graph Operations]
+      responses:
+        '200': { description: Updated }
+
+  /graph/actions/get-node-properties:
+    post:
+      summary: Get node metadata
+      tags: [Graph Operations]
+      responses:
+        '200':
+          description: Properties
+
+  /graph/actions/search-nodes:
+    post:
+      summary: Filter-only node search
+      tags: [Graph Operations]
+      responses:
+        '200':
+          description: Nodes
+
+  /graph/actions/get-connections:
+    post:
+      summary: Get hydrated connected nodes
+      tags: [Graph Operations]
+      responses:
+        '200':
+          description: Connections
+
+  /graph/actions/traverse:
+    post:
+      summary: Deep graph traversal
+      tags: [Graph Operations]
+      responses:
+        '200':
+          description: Traversal result
+
+  # --- RAG ---
   /rag/retrieve:
     post:
       summary: Retrieve text chunks for RAG
@@ -136,20 +818,107 @@ paths:
       responses:
         '200': { description: Text chunks returned }
 
-  /graph/actions/link:
-    post:
-      summary: Create a semantic link between nodes
-      tags: [Graph Operations]
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [source_id, target_id, relation_type]
-              properties:
-                source_id: { type: string }
-                target_id: { type: string }
-                relation_type: { type: string }
-                inverse_relation_type: { type: string }
+  # --- Auth ---
+  /auth/keys:
+    get:
+      summary: List API keys
+      tags: [Auth]
       responses:
-        '200': { description: Link created }
+        '200':
+          description: Keys
+    post:
+      summary: Create API key
+      tags: [Auth]
+      responses:
+        '200':
+          description: Key created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key: { type: string }
+
+  /auth/keys/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    delete:
+      summary: Revoke API key
+      tags: [Auth]
+      responses:
+        '200': { description: Key revoked }
+
+  # --- System ---
+  /system/aof-rewrite:
+    post:
+      summary: Trigger AOF compaction
+      tags: [System]
+      responses:
+        '200':
+          description: Task started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+
+  /system/save:
+    post:
+      summary: Force database snapshot
+      tags: [System]
+      responses:
+        '200': { description: Snapshot saved }
+
+  /system/tasks/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Get task status
+      tags: [System]
+      responses:
+        '200':
+          description: Task status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+
+  /system/vectorizers:
+    get:
+      summary: List vectorizer statuses
+      tags: [System]
+      responses:
+        '200':
+          description: Vectorizers
+
+  /system/vectorizers/{name}/trigger:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      summary: Trigger vectorizer sync
+      tags: [System]
+      responses:
+        '200': { description: Triggered }
+
+  /healthz:
+    get:
+      summary: Health check
+      tags: [System]
+      security: []
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }

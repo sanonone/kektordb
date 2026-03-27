@@ -70,10 +70,9 @@ type VectorAddObject struct {
 }
 
 type AutoLinkRule struct {
-	SourceRegex   string `json:"source_regex"`   // Regex to match source metadata field
-	TargetRegex   string `json:"target_regex"`   // Regex to match target metadata field
-	Relation      string `json:"relation"`       // The relation name (e.g. "parent")
-	MetadataField string `json:"metadata_field"` // The specific metadata field to inspect
+	MetadataField string `json:"metadata_field"` // The metadata field to inspect
+	RelationType  string `json:"relation_type"`  // The relation name (e.g. "belongs_to")
+	CreateNode    bool   `json:"create_node,omitempty"`
 }
 
 type Task struct {
@@ -88,19 +87,29 @@ type Task struct {
 // --- Graph Structures ---
 
 type graphLinkRequest struct {
-	SourceID            string `json:"source_id"`
-	TargetID            string `json:"target_id"`
-	RelationType        string `json:"relation_type"`
-	InverseRelationType string `json:"inverse_relation_type,omitempty"`
+	IndexName           string                 `json:"index_name"`
+	SourceID            string                 `json:"source_id"`
+	TargetID            string                 `json:"target_id"`
+	RelationType        string                 `json:"relation_type"`
+	InverseRelationType string                 `json:"inverse_relation_type,omitempty"`
+	Weight              float32                `json:"weight,omitempty"`
+	Props               map[string]interface{} `json:"props,omitempty"`
 }
 
 type graphGetLinksRequest struct {
+	IndexName    string `json:"index_name"`
 	SourceID     string `json:"source_id"`
 	RelationType string `json:"relation_type"`
 }
 
 type graphGetLinksResponse struct {
 	Targets []string `json:"targets"`
+}
+
+type graphGetIncomingRequest struct {
+	IndexName    string `json:"index_name"`
+	TargetID     string `json:"target_id"`
+	RelationType string `json:"relation_type"`
 }
 
 type GraphNode struct {
@@ -169,10 +178,13 @@ type SubgraphResult struct {
 }
 
 type extractSubgraphRequest struct {
-	IndexName string   `json:"index_name"`
-	RootID    string   `json:"root_id"`
-	Relations []string `json:"relations"`
-	MaxDepth  int      `json:"max_depth"`
+	IndexName         string    `json:"index_name"`
+	RootID            string    `json:"root_id"`
+	Relations         []string  `json:"relations"`
+	MaxDepth          int       `json:"max_depth"`
+	AtTime            int64     `json:"at_time,omitempty"`
+	GuideVector       []float32 `json:"guide_vector,omitempty"`
+	SemanticThreshold float64   `json:"semantic_threshold,omitempty"`
 }
 
 // Graph Entity types
@@ -201,7 +213,8 @@ type graphSearchNodesResponse struct {
 }
 
 type graphGetAllRelationsRequest struct {
-	NodeID string `json:"node_id"`
+	IndexName string `json:"index_name"`
+	NodeID    string `json:"node_id"`
 }
 
 type graphGetAllRelationsResponse struct {
@@ -622,8 +635,9 @@ func (c *Client) VGetMany(indexName string, ids []string) ([]VectorData, error) 
 // --- Graph Methods ---
 
 // VLink creates a semantic relationship between two vectors (e.g. "chunk_1" -> "doc_A" as "parent").
-func (c *Client) VLink(sourceID, targetID, relationType, inverseRelationType string) error {
+func (c *Client) VLink(indexName, sourceID, targetID, relationType, inverseRelationType string) error {
 	req := graphLinkRequest{
+		IndexName:           indexName,
 		SourceID:            sourceID,
 		TargetID:            targetID,
 		RelationType:        relationType,
@@ -634,8 +648,9 @@ func (c *Client) VLink(sourceID, targetID, relationType, inverseRelationType str
 }
 
 // VUnlink removes a semantic relationship.
-func (c *Client) VUnlink(sourceID, targetID, relationType, inverseRelationType string) error {
+func (c *Client) VUnlink(indexName, sourceID, targetID, relationType, inverseRelationType string) error {
 	req := graphLinkRequest{
+		IndexName:           indexName,
 		SourceID:            sourceID,
 		TargetID:            targetID,
 		RelationType:        relationType,
@@ -646,8 +661,9 @@ func (c *Client) VUnlink(sourceID, targetID, relationType, inverseRelationType s
 }
 
 // VGetLinks retrieves all target IDs linked to a source ID by a specific relation type.
-func (c *Client) VGetLinks(sourceID, relationType string) ([]string, error) {
+func (c *Client) VGetLinks(indexName, sourceID, relationType string) ([]string, error) {
 	req := graphGetLinksRequest{
+		IndexName:    indexName,
 		SourceID:     sourceID,
 		RelationType: relationType,
 	}
@@ -664,15 +680,14 @@ func (c *Client) VGetLinks(sourceID, relationType string) ([]string, error) {
 }
 
 // VGetIncoming retrieves all source IDs that link TO the target ID with a specific relation.
-// VGetIncoming retrieves all source IDs that link TO the target ID with a specific relation.
-func (c *Client) VGetIncoming(targetID, relationType string) ([]string, error) {
-	// API expects key "target_id" for get-incoming
-	payload := map[string]string{
-		"target_id":     targetID,
-		"relation_type": relationType,
+func (c *Client) VGetIncoming(indexName, targetID, relationType string) ([]string, error) {
+	req := graphGetIncomingRequest{
+		IndexName:    indexName,
+		TargetID:     targetID,
+		RelationType: relationType,
 	}
 
-	respBody, err := c.jsonRequest(http.MethodPost, "/graph/actions/get-incoming", payload)
+	respBody, err := c.jsonRequest(http.MethodPost, "/graph/actions/get-incoming", req)
 	if err != nil {
 		return nil, err
 	}
@@ -688,9 +703,10 @@ func (c *Client) VGetIncoming(targetID, relationType string) ([]string, error) {
 }
 
 // VGetAllRelations returns all outgoing links from a node, grouped by relation type.
-func (c *Client) VGetAllRelations(nodeID string) (map[string][]string, error) {
+func (c *Client) VGetAllRelations(indexName, nodeID string) (map[string][]string, error) {
 	req := graphGetAllRelationsRequest{
-		NodeID: nodeID,
+		IndexName: indexName,
+		NodeID:    nodeID,
 	}
 
 	respBody, err := c.jsonRequest(http.MethodPost, "/graph/actions/get-all-relations", req)
@@ -707,9 +723,10 @@ func (c *Client) VGetAllRelations(nodeID string) (map[string][]string, error) {
 }
 
 // VGetAllIncoming returns all incoming links to a node, grouped by relation type.
-func (c *Client) VGetAllIncoming(nodeID string) (map[string][]string, error) {
+func (c *Client) VGetAllIncoming(indexName, nodeID string) (map[string][]string, error) {
 	req := graphGetAllRelationsRequest{
-		NodeID: nodeID,
+		IndexName: indexName,
+		NodeID:    nodeID,
 	}
 
 	respBody, err := c.jsonRequest(http.MethodPost, "/graph/actions/get-all-incoming", req)
@@ -808,12 +825,15 @@ func (c *Client) VTraverse(indexName, sourceID string, paths []string) (*GraphNo
 }
 
 // VExtractSubgraph retrieves a local subgraph (nodes and edges) around a root ID.
-func (c *Client) VExtractSubgraph(indexName, rootID string, relations []string, maxDepth int) (*SubgraphResult, error) {
+func (c *Client) VExtractSubgraph(indexName, rootID string, relations []string, maxDepth int, atTime int64, guideVector []float32, semanticThreshold float64) (*SubgraphResult, error) {
 	req := extractSubgraphRequest{
-		IndexName: indexName,
-		RootID:    rootID,
-		Relations: relations,
-		MaxDepth:  maxDepth,
+		IndexName:         indexName,
+		RootID:            rootID,
+		Relations:         relations,
+		MaxDepth:          maxDepth,
+		AtTime:            atTime,
+		GuideVector:       guideVector,
+		SemanticThreshold: semanticThreshold,
 	}
 
 	respBody, err := c.jsonRequest(http.MethodPost, "/graph/actions/extract-subgraph", req)
@@ -965,4 +985,256 @@ func (c *Client) GetMetrics() (string, error) {
 		return "", err
 	}
 	return string(body), nil
+}
+
+// --- New Request/Response Structs ---
+
+type graphFindPathRequest struct {
+	IndexName string   `json:"index_name"`
+	SourceID  string   `json:"source_id"`
+	TargetID  string   `json:"target_id"`
+	Relations []string `json:"relations"`
+	AtTime    int64    `json:"at_time,omitempty"`
+}
+
+type graphGetEdgesRequest struct {
+	IndexName    string `json:"index_name"`
+	SourceID     string `json:"source_id"`
+	RelationType string `json:"relation_type"`
+	AtTime       int64  `json:"at_time,omitempty"`
+}
+
+type graphGetEdgesResponse struct {
+	Edges []map[string]interface{} `json:"edges"`
+}
+
+type autoLinksRequest struct {
+	Rules []AutoLinkRule `json:"rules"`
+}
+
+type autoLinksResponse struct {
+	Rules []AutoLinkRule `json:"rules"`
+}
+
+type reflectionsResponse struct {
+	Reflections []map[string]interface{} `json:"reflections"`
+}
+
+type resolveRequest struct {
+	Resolution string `json:"resolution"`
+	DiscardID  string `json:"discard_id,omitempty"`
+}
+
+type apiKeyRequest struct {
+	Role      string `json:"role"`
+	Namespace string `json:"namespace,omitempty"`
+}
+
+type apiKeyResponse struct {
+	Key string `json:"key"`
+}
+
+type exportResponse struct {
+	Data       []VectorData `json:"data"`
+	HasMore    bool         `json:"has_more"`
+	NextOffset int          `json:"next_offset"`
+}
+
+// --- Graph: Pathfinding & Edges ---
+
+// FindPath finds the shortest path between two nodes in the graph.
+func (c *Client) FindPath(indexName, source, target string, relations []string, atTime int64) (map[string]interface{}, error) {
+	req := graphFindPathRequest{
+		IndexName: indexName,
+		SourceID:  source,
+		TargetID:  target,
+		Relations: relations,
+		AtTime:    atTime,
+	}
+	respBody, err := c.jsonRequest(http.MethodPost, "/graph/actions/find-path", req)
+	if err != nil {
+		return nil, err
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+	return resp, nil
+}
+
+// GetEdges retrieves edges with properties (supports time travel via atTime).
+func (c *Client) GetEdges(indexName, sourceID, relationType string, atTime int64) ([]map[string]interface{}, error) {
+	req := graphGetEdgesRequest{
+		IndexName:    indexName,
+		SourceID:     sourceID,
+		RelationType: relationType,
+		AtTime:       atTime,
+	}
+	respBody, err := c.jsonRequest(http.MethodPost, "/graph/actions/get-edges", req)
+	if err != nil {
+		return nil, err
+	}
+	var resp graphGetEdgesResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+	return resp.Edges, nil
+}
+
+// --- Vector: Reinforce & Export ---
+
+// VReinforce updates access timestamps for memories, boosting their search relevance.
+func (c *Client) VReinforce(indexName string, ids []string) error {
+	payload := map[string]interface{}{
+		"index_name": indexName,
+		"ids":        ids,
+	}
+	_, err := c.jsonRequest(http.MethodPost, "/vector/actions/reinforce", payload)
+	return err
+}
+
+// VExport exports vectors with pagination.
+func (c *Client) VExport(indexName string, limit, offset int) (*exportResponse, error) {
+	url := fmt.Sprintf("/vector/indexes/%s/export?limit=%d&offset=%d", indexName, limit, offset)
+	respBody, err := c.jsonRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp exportResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+	return &resp, nil
+}
+
+// VImportCommit commits a bulk import and triggers Turbo Refine optimization.
+func (c *Client) VImportCommit(indexName string) error {
+	payload := map[string]interface{}{
+		"index_name": indexName,
+	}
+	_, err := c.jsonRequest(http.MethodPost, "/vector/actions/import/commit", payload)
+	return err
+}
+
+// --- Auto-Links ---
+
+// SetAutoLinks updates the auto-linking rules for an index.
+func (c *Client) SetAutoLinks(indexName string, rules []AutoLinkRule) error {
+	req := autoLinksRequest{Rules: rules}
+	_, err := c.jsonRequest(http.MethodPut, fmt.Sprintf("/vector/indexes/%s/auto-links", indexName), req)
+	return err
+}
+
+// GetAutoLinks retrieves the current auto-linking rules for an index.
+func (c *Client) GetAutoLinks(indexName string) ([]AutoLinkRule, error) {
+	respBody, err := c.jsonRequest(http.MethodGet, fmt.Sprintf("/vector/indexes/%s/auto-links", indexName), nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp autoLinksResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+	return resp.Rules, nil
+}
+
+// --- Cognitive Engine ---
+
+// GetReflections retrieves reflection nodes from the cognitive engine.
+func (c *Client) GetReflections(indexName, status string) ([]map[string]interface{}, error) {
+	url := fmt.Sprintf("/vector/indexes/%s/reflections", indexName)
+	if status != "" {
+		url += "?status=" + status
+	}
+	respBody, err := c.jsonRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp reflectionsResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+	return resp.Reflections, nil
+}
+
+// ResolveReflection resolves a cognitive reflection.
+func (c *Client) ResolveReflection(indexName, reflectionID, resolution, discardID string) error {
+	req := resolveRequest{
+		Resolution: resolution,
+		DiscardID:  discardID,
+	}
+	_, err := c.jsonRequest(http.MethodPost, fmt.Sprintf("/vector/indexes/%s/reflections/%s/resolve", indexName, reflectionID), req)
+	return err
+}
+
+// Think triggers a manual cognitive reflection cycle for an index.
+func (c *Client) Think(indexName string) error {
+	_, err := c.jsonRequest(http.MethodPost, fmt.Sprintf("/vector/indexes/%s/cognitive/think", indexName), nil)
+	return err
+}
+
+// --- RAG ---
+
+// RagRetrieve retrieves text chunks via a configured RAG pipeline.
+func (c *Client) RagRetrieve(pipelineName, query string, k int) (map[string]interface{}, error) {
+	payload := map[string]interface{}{
+		"pipeline_name": pipelineName,
+		"query":         query,
+		"k":             k,
+	}
+	respBody, err := c.jsonRequest(http.MethodPost, "/rag/retrieve", payload)
+	if err != nil {
+		return nil, err
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+	return resp, nil
+}
+
+// --- System ---
+
+// Save forces a database snapshot.
+func (c *Client) Save() error {
+	_, err := c.jsonRequest(http.MethodPost, "/system/save", nil)
+	return err
+}
+
+// --- Auth ---
+
+// CreateApiKey creates a new API key with RBAC permissions.
+func (c *Client) CreateApiKey(role, namespace string) (string, error) {
+	req := apiKeyRequest{
+		Role:      role,
+		Namespace: namespace,
+	}
+	respBody, err := c.jsonRequest(http.MethodPost, "/auth/keys", req)
+	if err != nil {
+		return "", err
+	}
+	var resp apiKeyResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return "", fmt.Errorf("invalid JSON: %w", err)
+	}
+	return resp.Key, nil
+}
+
+// ListApiKeys lists all API key policies.
+func (c *Client) ListApiKeys() ([]map[string]interface{}, error) {
+	respBody, err := c.jsonRequest(http.MethodGet, "/auth/keys", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp []map[string]interface{}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+	return resp, nil
+}
+
+// RevokeApiKey revokes an API key.
+func (c *Client) RevokeApiKey(keyID string) error {
+	_, err := c.jsonRequest(http.MethodDelete, "/auth/keys/"+keyID, nil)
+	return err
 }

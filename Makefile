@@ -25,6 +25,10 @@ test: generate-avo
 	@echo "==> Running Go tests (Go/AVO implementation)..."
 	@go test -short -v ./...
 
+test-e2e: generate-avo
+	@echo "==> Running E2E tests with real server..."
+	@go test -v -run "TestClientFullLifecycle|TestAPIContracts" ./pkg/client/...
+
 test-rust: build-rust-native
 	@echo "==> Running Go tests (Rust CGO implementation)..."
 	@CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/release" \

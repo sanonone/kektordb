@@ -513,34 +513,46 @@ class KektorDBClient:
 
     # --- Graph / Relationship Methods ---
 
-    def vlink(self, source_id: str, target_id: str, relation_type: str) -> None:
+    def vlink(
+        self, index_name: str, source_id: str, target_id: str, relation_type: str
+    ) -> None:
         """
         Creates a directed semantic link between two nodes.
-        Example: vlink("chunk_5", "doc_manual_v1", "parent")
+        Example: vlink("my_index", "chunk_5", "doc_manual_v1", "parent")
         """
         payload = {
+            "index_name": index_name,
             "source_id": source_id,
             "target_id": target_id,
             "relation_type": relation_type,
         }
         self._request("POST", "/graph/actions/link", json=payload)
 
-    def vunlink(self, source_id: str, target_id: str, relation_type: str) -> None:
+    def vunlink(
+        self, index_name: str, source_id: str, target_id: str, relation_type: str
+    ) -> None:
         """
         Removes a directed semantic link.
         """
         payload = {
+            "index_name": index_name,
             "source_id": source_id,
             "target_id": target_id,
             "relation_type": relation_type,
         }
         self._request("POST", "/graph/actions/unlink", json=payload)
 
-    def vget_links(self, source_id: str, relation_type: str) -> List[str]:
+    def vget_links(
+        self, index_name: str, source_id: str, relation_type: str
+    ) -> List[str]:
         """
         Retrieves all target IDs linked from source_id with a specific relation type.
         """
-        payload = {"source_id": source_id, "relation_type": relation_type}
+        payload = {
+            "index_name": index_name,
+            "source_id": source_id,
+            "relation_type": relation_type,
+        }
         resp = self._request("POST", "/graph/actions/get-links", json=payload)
         return resp.get("targets", [])
 
@@ -561,7 +573,7 @@ class KektorDBClient:
     def vreinforce(self, index_name: str, item_ids: List[str]) -> None:
         """Reinforces memories, updating their last_accessed time."""
         payload = {"index_name": index_name, "ids": item_ids}
-        self._request("POST", "/memory/actions/reinforce", json=payload)
+        self._request("POST", "/vector/actions/reinforce", json=payload)
 
     def find_path(
         self, index_name: str, source: str, target: str, relations: List[str] = None
@@ -592,28 +604,34 @@ class KektorDBClient:
         """
         self._request("POST", f"/vector/indexes/{index_name}/config", json=config)
 
-    def get_incoming(self, target_id: str, relation_type: str) -> List[str]:
+    def get_incoming(
+        self, index_name: str, target_id: str, relation_type: str
+    ) -> List[str]:
         """
         Retrieves all source IDs that link TO the target_id with a specific relation type.
         (Reverse Index Lookup: Who points to me?)
         """
-        payload = {"target_id": target_id, "relation_type": relation_type}
+        payload = {
+            "index_name": index_name,
+            "target_id": target_id,
+            "relation_type": relation_type,
+        }
         resp = self._request("POST", "/graph/actions/get-incoming", json=payload)
         return resp.get("sources", [])
 
-    def get_all_relations(self, node_id: str) -> Dict[str, List[str]]:
+    def get_all_relations(self, index_name: str, node_id: str) -> Dict[str, List[str]]:
         """
         Retrieves all outgoing links from a node, grouped by relation type.
         """
-        payload = {"node_id": node_id}
+        payload = {"index_name": index_name, "node_id": node_id}
         resp = self._request("POST", "/graph/actions/get-all-relations", json=payload)
         return resp.get("relations", {})
 
-    def get_all_incoming(self, node_id: str) -> Dict[str, List[str]]:
+    def get_all_incoming(self, index_name: str, node_id: str) -> Dict[str, List[str]]:
         """
         Retrieves all incoming links to a node, grouped by relation type.
         """
-        payload = {"node_id": node_id}
+        payload = {"index_name": index_name, "node_id": node_id}
         resp = self._request("POST", "/graph/actions/get-all-incoming", json=payload)
         return resp.get("relations", {})
 
@@ -726,3 +744,139 @@ class KektorDBClient:
     def get_task_status(self, task_id: str) -> Dict[str, Any]:
         """Recupera lo stato di un task a lunga esecuzione."""
         return self._request("GET", f"/system/tasks/{task_id}")
+
+    # --- Cognitive Engine Methods ---
+
+    def get_reflections(
+        self, index_name: str, status: str = ""
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieves reflection nodes from the cognitive engine.
+
+        Args:
+            index_name: The index to query.
+            status: Optional filter (e.g., 'unresolved', 'resolved', 'insight').
+        """
+        endpoint = f"/vector/indexes/{index_name}/reflections"
+        if status:
+            endpoint += f"?status={status}"
+        data = self._request("GET", endpoint)
+        return data.get("reflections", [])
+
+    def resolve_reflection(
+        self,
+        index_name: str,
+        reflection_id: str,
+        resolution: str,
+        discard_id: str = "",
+    ) -> None:
+        """
+        Resolves a cognitive reflection.
+
+        Args:
+            index_name: The index.
+            reflection_id: The reflection to resolve.
+            resolution: Your logical conclusion.
+            discard_id: Optional memory ID to archive if deemed wrong.
+        """
+        payload = {"resolution": resolution}
+        if discard_id:
+            payload["discard_id"] = discard_id
+        self._request(
+            "POST",
+            f"/vector/indexes/{index_name}/reflections/{reflection_id}/resolve",
+            json=payload,
+        )
+
+    def think(self, index_name: str) -> None:
+        """Triggers a manual cognitive reflection cycle."""
+        self._request("POST", f"/vector/indexes/{index_name}/cognitive/think")
+
+    # --- Export & Auto-Links ---
+
+    def vexport(
+        self, index_name: str, limit: int = 1000, offset: int = 0
+    ) -> Dict[str, Any]:
+        """
+        Exports vectors with pagination.
+
+        Returns:
+            {"data": [...], "has_more": bool, "next_offset": int}
+        """
+        return self._request(
+            "GET", f"/vector/indexes/{index_name}/export?limit={limit}&offset={offset}"
+        )
+
+    def set_auto_links(self, index_name: str, rules: List[Dict[str, Any]]) -> None:
+        """Updates auto-linking rules for an index."""
+        self._request(
+            "PUT", f"/vector/indexes/{index_name}/auto-links", json={"rules": rules}
+        )
+
+    def get_auto_links(self, index_name: str) -> List[Dict[str, Any]]:
+        """Gets current auto-linking rules for an index."""
+        data = self._request("GET", f"/vector/indexes/{index_name}/auto-links")
+        return data.get("rules", [])
+
+    # --- Graph Traversal & Edges ---
+
+    def traverse(
+        self, index_name: str, source_id: str, paths: List[str]
+    ) -> Dict[str, Any]:
+        """
+        Deep graph traversal from a known node.
+
+        Args:
+            index_name: The index.
+            source_id: Starting node ID.
+            paths: List of relation types to follow.
+        """
+        payload = {"index_name": index_name, "source_id": source_id, "paths": paths}
+        return self._request("POST", "/graph/actions/traverse", json=payload)
+
+    def get_edges(
+        self, index_name: str, source_id: str, relation_type: str, at_time: int = 0
+    ) -> List[Dict[str, Any]]:
+        """
+        Gets edges with properties (supports time travel via at_time).
+        """
+        payload = {
+            "index_name": index_name,
+            "source_id": source_id,
+            "relation_type": relation_type,
+            "at_time": at_time,
+        }
+        data = self._request("POST", "/graph/actions/get-edges", json=payload)
+        return data.get("edges", [])
+
+    # --- RAG ---
+
+    def rag_retrieve(
+        self, pipeline_name: str, query: str, k: int = 5
+    ) -> Dict[str, Any]:
+        """Retrieves text chunks via a configured RAG pipeline."""
+        payload = {"pipeline_name": pipeline_name, "query": query, "k": k}
+        return self._request("POST", "/rag/retrieve", json=payload)
+
+    # --- Auth ---
+
+    def create_api_key(self, role: str, namespace: str = "") -> Dict[str, Any]:
+        """
+        Creates a new API key with RBAC permissions.
+
+        Args:
+            role: 'read', 'write', or 'admin'.
+            namespace: Scope the key to a specific index namespace.
+        """
+        payload = {"role": role}
+        if namespace:
+            payload["namespace"] = namespace
+        return self._request("POST", "/auth/keys", json=payload)
+
+    def list_api_keys(self) -> List[Dict[str, Any]]:
+        """Lists all API key policies."""
+        return self._request("GET", "/auth/keys")
+
+    def revoke_api_key(self, key_id: str) -> None:
+        """Revokes an API key."""
+        self._request("DELETE", f"/auth/keys/{key_id}")
