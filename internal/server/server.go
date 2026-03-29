@@ -34,7 +34,7 @@ type Server struct {
 
 // NewServer initializes the HTTP server using an existing Engine.
 // Note: The Engine must be initialized (Open) before passing it here.
-func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string, authToken string, dataDir string) (*Server, error) {
+func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string, authToken string, dataDir string, cognitiveConfigPath string) (*Server, error) {
 	// Load Vectorizer Configuration
 	vecConfig, err := LoadVectorizersConfig(vectorizersConfigPath)
 	if err != nil {
@@ -58,14 +58,20 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 		authService:      auth.NewAuthService(eng.DB.GetKVStore()),
 	}
 
-	gardenerCfg := cognitive.Config{
-		Enabled:  true,
-		Interval: 30 * time.Second,
+	// Load cognitive engine config (from YAML or defaults)
+	gardenerCfg, llmCfg, err := LoadCognitiveConfig(cognitiveConfigPath)
+	if err != nil {
+		log.Printf("WARNING: Cognitive config: %v (using defaults)", err)
+	}
+	if cognitiveConfigPath != "" {
+		log.Printf("Cognitive Engine: enabled=%v mode=%s targets=%v interval=%s",
+			gardenerCfg.Enabled, gardenerCfg.Mode, gardenerCfg.TargetIndexes, gardenerCfg.Interval)
 	}
 
-	// Initialize a FastLLM for the Gardener (default Local Ollama)
-	fastLLMCfg := llm.DefaultConfig()
-	brain := llm.NewClient(fastLLMCfg)
+	var brain llm.Client
+	if gardenerCfg.Enabled && (gardenerCfg.Mode == "advanced" || gardenerCfg.Mode == "meta") {
+		brain = llm.NewClient(llmCfg)
+	}
 
 	s.gardener = cognitive.NewGardener(eng, brain, gardenerCfg)
 

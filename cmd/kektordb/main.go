@@ -77,6 +77,7 @@ func main() {
 	authToken := flag.String("auth-token", defaultAuth, "API Authentication Token (empty = disabled)")
 	aofRewritePerc := flag.Int("aof-rewrite-percentage", 100, "Rewrite AOF at X% growth")
 	vectorizersConfig := flag.String("vectorizers-config", "", "Vectorizers YAML config")
+	cognitiveConfig := flag.String("cognitive-config", "", "Cognitive engine YAML config (enables Gardener)")
 
 	logLevel := flag.String("log-level", "info", "Log level: debug, info, warn, error")
 
@@ -164,7 +165,7 @@ func main() {
 	}
 
 	// Starting HTTP Server
-	srv, err := server.NewServer(eng, *httpAddr, *vectorizersConfig, *authToken, dataDir)
+	srv, err := server.NewServer(eng, *httpAddr, *vectorizersConfig, *authToken, dataDir, *cognitiveConfig)
 	if err != nil {
 		slog.Error("Failed to create server", "error", err)
 		eng.Close()

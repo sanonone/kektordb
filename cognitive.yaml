@@ -1,0 +1,47 @@
+# KektorDB — Cognitive Engine Configuration
+# Activate with: ./kektordb --cognitive-config cognitive.yaml
+
+gardener:
+  # Enable/disable the Gardener daemon
+  enabled: true
+
+  # Operation mode:
+  #   "basic"    — Graph & math detectors only (no LLM required)
+  #   "advanced" — + LLM-powered detectors (contradictions, user preferences, failure patterns, knowledge evolution)
+  #   "meta"     — + cross-detector confidence validation (requires advanced)
+  mode: "meta"
+
+  # How often the Gardener wakes up to analyze the graph
+  interval: "30s"
+
+  # Which indexes to analyze:
+  #   ["*"]           — all indexes
+  #   ["knowledge_base", "memories"] — specific indexes
+  target_indexes: ["*"]
+
+  # Adaptive scheduling:
+  # If this many write operations occur before the next interval,
+  # the Gardener wakes up early instead of waiting
+  adaptive_threshold: 50
+
+  # Minimum time between adaptive wakes (prevents rapid-fire analysis)
+  adaptive_min_interval: "30s"
+
+# LLM configuration (only used in "advanced" or "meta" mode)
+llm:
+  # API endpoint (OpenAI-compatible)
+  # Ollama: "http://localhost:11434/v1"
+  # OpenAI: "https://api.openai.com/v1"
+  base_url: "http://localhost:11434/v1"
+
+  # Model name
+  model: "gemma3:4b"
+
+  # API key (required for OpenAI, ignored by Ollama)
+  api_key: "kektor"
+
+  # Temperature (0.0 = deterministic, 1.0 = creative)
+  temperature: 0.0
+
+  # Max response tokens
+  max_tokens: 500

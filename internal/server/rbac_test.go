@@ -40,7 +40,7 @@ func TestRBACAndNamespaces(t *testing.T) {
 	defer eng.Close()
 
 	masterToken := "super-secret-admin"
-	srv, err := NewServer(eng, ":0", "", masterToken, tmpDir)
+	srv, err := NewServer(eng, ":0", "", masterToken, tmpDir, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1184,12 +1184,19 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	if s.Engine == nil || s.Engine.EventBus == nil {
+		http.Error(w, "Event bus not available", http.StatusInternalServerError)
+		return
+	}
 
 	ch := s.Engine.EventBus.Subscribe(128)
 	defer s.Engine.EventBus.Unsubscribe(ch)
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
 
 	ctx := r.Context()
 
@@ -1414,7 +1421,7 @@ func (s *Server) handleUIExplore(w http.ResponseWriter, r *http.Request) {
 		// FIX 3: Rimossa variabile inutilizzata 'hasRelations'
 
 		for _, rel := range relationsToCheck {
-			targetIDs, found := s.Engine.VGetLinks("", id, rel)
+			targetIDs, found := s.Engine.VGetLinks(req.IndexName, id, rel)
 			if found && len(targetIDs) > 0 {
 
 				// FIX 4: Usa engine.GraphNode

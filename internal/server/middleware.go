@@ -1,10 +1,13 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"strconv"
@@ -83,6 +86,23 @@ type responseWrapper struct {
 func (rw *responseWrapper) WriteHeader(code int) {
 	rw.statusCode = code
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+// Flush delegates to the underlying writer's Flush method.
+// Required for Server-Sent Events (SSE) to work through the logging middleware.
+func (rw *responseWrapper) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack delegates to the underlying writer's Hijack method.
+// Required for WebSocket upgrades and some streaming protocols.
+func (rw *responseWrapper) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := rw.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, fmt.Errorf("hijacking not supported")
 }
 
 // authMiddleware wraps an http.Handler and checks for the Bearer token.

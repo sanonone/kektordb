@@ -73,7 +73,7 @@ func TestVectorizerProcessing(t *testing.T) {
 		t.Fatalf("Failed to create config: %v", err)
 	}
 
-	server, err := NewServer(eng, ":0", configPath, "", "")
+	server, err := NewServer(eng, ":0", configPath, "", "", "")
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestVectorizerConcurrent(t *testing.T) {
 	configPath := filepath.Join(tmpDir, "vectorizers.yaml")
 	os.WriteFile(configPath, []byte(configBuilder), 0644)
 
-	server, err := NewServer(eng, ":0", configPath, "", "")
+	server, err := NewServer(eng, ":0", configPath, "", "", "")
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
