@@ -103,6 +103,7 @@ func (e *Engine) VLink(indexName, sourceID, targetID, relationType, inverseRelat
 	}
 
 	atomic.AddInt64(&e.dirtyCounter, 1)
+	e.EventBus.Emit(Event{Type: EventEdgeCreate, IndexName: indexName, ID: sourceID, TargetID: targetID, RelType: relationType, Timestamp: now})
 	return nil
 }
 
@@ -136,6 +137,7 @@ func (e *Engine) VUnlink(indexName, sourceID, targetID, relationType, inverseRel
 	}
 
 	atomic.AddInt64(&e.dirtyCounter, 1)
+	e.EventBus.Emit(Event{Type: EventEdgeDelete, IndexName: indexName, ID: sourceID, TargetID: targetID, RelType: relationType, Timestamp: now})
 	return nil
 }
 

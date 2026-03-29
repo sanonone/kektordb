@@ -306,6 +306,7 @@ func (e *Engine) VAdd(indexName, id string, vector []float32, metadata map[strin
 		}
 	}
 
+	e.EventBus.Emit(Event{Type: EventVectorAdd, IndexName: indexName, ID: id, Timestamp: time.Now().UnixNano()})
 	return nil
 }
 
@@ -328,6 +329,8 @@ func (e *Engine) VDelete(indexName, id string) error {
 	}
 
 	atomic.AddInt64(&e.dirtyCounter, 1)
+
+	e.EventBus.Emit(Event{Type: EventVectorDelete, IndexName: indexName, ID: id, Timestamp: time.Now().UnixNano()})
 
 	// --- 3. CASCADE DELETE (GRAPH INTEGRITY) ---
 	// Run in the background so as not to block the API response.
@@ -622,6 +625,7 @@ func (e *Engine) VReinforce(indexName string, ids []string) error {
 	if updatedCount > 0 {
 		e.AOF.Flush()
 		atomic.AddInt64(&e.dirtyCounter, updatedCount)
+		e.EventBus.Emit(Event{Type: EventVectorAccess, IndexName: indexName, ID: ids[0], Timestamp: time.Now().UnixNano()})
 	}
 
 	return nil
@@ -670,6 +674,7 @@ func (e *Engine) VSetMetadata(indexName, id string, newProps map[string]any) err
 		_ = e.AOF.Write(cmd)
 	}
 
+	e.EventBus.Emit(Event{Type: EventVectorUpdate, IndexName: indexName, ID: id, Timestamp: time.Now().UnixNano()})
 	return nil
 }
 

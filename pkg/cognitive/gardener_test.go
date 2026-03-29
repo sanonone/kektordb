@@ -1482,3 +1482,148 @@ func TestDetectKnowledgeEvolutionLowDegree(t *testing.T) {
 
 	t.Log("✅ Knowledge Evolution Low Degree Test Passed Successfully!")
 }
+
+func TestCrossDetectorConfidence(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := engine.DefaultOptions(tmpDir)
+	opts.AutoSaveInterval = 0
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open engine: %v", err)
+	}
+	defer eng.Close()
+
+	indexName := "mcp_memory"
+	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
+
+	// Create entity and two different detector-type reflections pointing to it
+	eng.VAdd(indexName, "entity_target", []float32{1.0, 0.0}, map[string]any{
+		"name": "Python", "type": "entity",
+	})
+
+	// Reflection 1: importance shift (focus_shifted → entity)
+	eng.VAdd(indexName, "ref_importance", []float32{0.5, 0.5}, map[string]any{
+		"type": "reflection", "content": "importance shift", "status": "insight", "confidence": 0.8,
+	})
+	eng.VLink(indexName, "ref_importance", "entity_target", "focus_shifted", "focus_shifted_by", 1.0, nil)
+
+	// Reflection 2: sentiment shift (sentiment_shift → entity)
+	eng.VAdd(indexName, "ref_sentiment", []float32{0.5, 0.5}, map[string]any{
+		"type": "reflection", "content": "sentiment shift", "status": "insight", "confidence": 0.6,
+	})
+	eng.VLink(indexName, "ref_sentiment", "entity_target", "sentiment_shift", "sentiment_shifted_by", 1.0, nil)
+
+	// Non-matching reflection (should NOT participate in cross-validation)
+	eng.VAdd(indexName, "ref_other", []float32{0.5, 0.5}, map[string]any{
+		"type": "reflection", "content": "some other insight", "status": "insight", "confidence": 0.9,
+	})
+
+	gardener := NewGardener(eng, &MockLLM{}, Config{Enabled: true, Interval: time.Hour})
+	gardener.newReflections = []string{"ref_importance", "ref_sentiment", "ref_other"}
+
+	gardener.detectCrossValidator(indexName)
+
+	// Find the cross-validation reflection
+	allIDs, _, _ := eng.VGetIDsByCursor(indexName, 0, 500)
+	var crossIDs []string
+	for _, id := range allIDs {
+		if strings.HasPrefix(id, "reflection_cross_") {
+			crossIDs = append(crossIDs, id)
+		}
+	}
+
+	if len(crossIDs) != 1 {
+		t.Fatalf("Expected 1 cross-validation reflection, found %d", len(crossIDs))
+	}
+
+	cross, _ := eng.VGet(indexName, crossIDs[0])
+
+	// Verify metadata
+	if cross.Metadata["status"] != "high_confidence" {
+		t.Errorf("Expected status=high_confidence, got %v", cross.Metadata["status"])
+	}
+
+	conf, _ := cross.Metadata["confidence"].(float64)
+	if conf <= 0 || conf > 1.0 {
+		t.Errorf("Expected confidence in (0, 1.0], got %v", conf)
+	}
+
+	detCount, _ := cross.Metadata["detector_count"].(float64)
+	if detCount != 2 {
+		t.Errorf("Expected detector_count=2, got %v", detCount)
+	}
+
+	content, _ := cross.Metadata["content"].(string)
+	if !strings.Contains(content, "Python") {
+		t.Errorf("Cross reflection should reference entity name: %s", content)
+	}
+	if !strings.Contains(content, "importance") || !strings.Contains(content, "sentiment") {
+		t.Errorf("Cross reflection should list detector types: %s", content)
+	}
+
+	// Verify graph links
+	links, found := eng.VGetLinks(indexName, crossIDs[0], "cross_validated")
+	if !found || len(links) != 1 || links[0] != "entity_target" {
+		t.Errorf("Expected cross_validated link to entity_target, got %v", links)
+	}
+
+	validatesLinks, found := eng.VGetLinks(indexName, crossIDs[0], "validates")
+	if !found || len(validatesLinks) != 2 {
+		t.Errorf("Expected 2 validates links, got %d", len(validatesLinks))
+	}
+
+	t.Log("✅ Cross-Detector Confidence Test Passed Successfully!")
+}
+
+func TestEventBusEmit(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := engine.DefaultOptions(tmpDir)
+	opts.AutoSaveInterval = 0
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open engine: %v", err)
+	}
+	defer eng.Close()
+
+	indexName := "mcp_memory"
+	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
+
+	// Subscribe to events
+	ch := eng.EventBus.Subscribe(10)
+	defer eng.EventBus.Unsubscribe(ch)
+
+	// Add a vector — should emit vector.add event
+	eng.VAdd(indexName, "test_vec", []float32{0.1, 0.2}, map[string]any{"content": "test"})
+
+	select {
+	case event := <-ch:
+		if event.Type != "vector.add" {
+			t.Errorf("Expected vector.add event, got %s", event.Type)
+		}
+		if event.ID != "test_vec" {
+			t.Errorf("Expected ID=test_vec, got %s", event.ID)
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("Timeout waiting for vector.add event")
+	}
+
+	// Create a link — should emit edge.create event
+	eng.VAdd(indexName, "test_entity", nil, map[string]any{"name": "E", "type": "entity"})
+	// Drain the vector.add event from the entity VAdd
+	<-ch
+	eng.VLink(indexName, "test_vec", "test_entity", "mentions", "mentioned_in", 1.0, nil)
+
+	select {
+	case event := <-ch:
+		if event.Type != "edge.create" {
+			t.Errorf("Expected edge.create event, got %s", event.Type)
+		}
+		if event.TargetID != "test_entity" {
+			t.Errorf("Expected TargetID=test_entity, got %s", event.TargetID)
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("Timeout waiting for edge.create event")
+	}
+
+	t.Log("✅ Event Bus Test Passed Successfully!")
+}

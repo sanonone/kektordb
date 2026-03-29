@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -36,20 +37,26 @@ type Reflection struct {
 
 // Config holds the scheduling and AI settings for the cognitive engine.
 type Config struct {
-	Enabled       bool
-	Interval      time.Duration
-	Mode          string   // "basic" (No LLM), "advanced" (Uses LLM)
-	TargetIndexes []string // ["*"] for all, or["mcp_memory", "tenant_A"]
+	Enabled             bool
+	Interval            time.Duration // Default polling interval
+	Mode                string        // "basic", "advanced", or "meta"
+	TargetIndexes       []string      // ["*"] for all, or ["mcp_memory"]
+	AdaptiveThreshold   int64         // Write count to trigger early think (default: 50)
+	AdaptiveMinInterval time.Duration // Min time between forced thinks (default: 30s)
 }
 
 // Gardener is the autonomous background worker that analyzes the database graph
 // to consolidate memories and generate reflections.
 type Gardener struct {
-	eng         *engine.Engine
-	llm         llm.Client // LLM client for synthesis and reasoning
-	cfg         Config
-	stopCh      chan struct{}
-	scanCursors map[string]uint32 // Remember where we left off for each Namespace
+	eng            *engine.Engine
+	llm            llm.Client // LLM client for synthesis and reasoning
+	cfg            Config
+	stopCh         chan struct{}
+	eventCh        chan engine.Event // Subscribed to engine event bus
+	scanCursors    map[string]uint32
+	writeCounter   int64     // Write events since last think
+	lastThinkTime  time.Time // When the last think() completed
+	newReflections []string  // Reflection IDs created in current think() cycle
 }
 
 type llmContradictionResponse struct {
@@ -83,11 +90,21 @@ func NewGardener(eng *engine.Engine, llmClient llm.Client, cfg Config) *Gardener
 	if cfg.Interval == 0 {
 		cfg.Interval = 10 * time.Minute // Default: think every 10 minutes
 	}
+	if cfg.AdaptiveThreshold == 0 {
+		cfg.AdaptiveThreshold = 50
+	}
+	if cfg.AdaptiveMinInterval == 0 {
+		cfg.AdaptiveMinInterval = 30 * time.Second
+	}
+
+	eventCh := eng.EventBus.Subscribe(64)
+
 	return &Gardener{
 		eng:         eng,
 		llm:         llmClient,
 		cfg:         cfg,
 		stopCh:      make(chan struct{}),
+		eventCh:     eventCh,
 		scanCursors: make(map[string]uint32),
 	}
 }
@@ -107,6 +124,7 @@ func (g *Gardener) Stop() {
 		return
 	}
 	close(g.stopCh)
+	g.eng.EventBus.Unsubscribe(g.eventCh)
 	slog.Info("[Cognitive Engine] Gardener stopped.")
 }
 
@@ -118,8 +136,31 @@ func (g *Gardener) loop() {
 		select {
 		case <-g.stopCh:
 			return
+		case event, ok := <-g.eventCh:
+			if !ok {
+				return
+			}
+			g.onEvent(event)
 		case <-ticker.C:
+			g.writeCounter = 0
 			g.think()
+			g.lastThinkTime = time.Now()
+		}
+	}
+}
+
+// onEvent processes engine write events for adaptive scheduling.
+func (g *Gardener) onEvent(event engine.Event) {
+	g.writeCounter++
+
+	// Adaptive trigger: wake up early if write rate exceeds threshold
+	if g.writeCounter >= g.cfg.AdaptiveThreshold {
+		if time.Since(g.lastThinkTime) > g.cfg.AdaptiveMinInterval {
+			g.writeCounter = 0
+			go func() {
+				g.think()
+				g.lastThinkTime = time.Now()
+			}()
 		}
 	}
 }
@@ -140,6 +181,8 @@ func (c *Config) isIndexAllowed(indexName string) bool {
 // think is the main entry point for the "REM Sleep" phase of the database.
 func (g *Gardener) think() {
 	slog.Info("[Cognitive Engine] Gardener is waking up... scanning all active namespaces.")
+
+	g.newReflections = nil // Reset tracking for this cycle
 
 	indexInfos, err := g.eng.DB.GetVectorIndexInfoAPI()
 	if err != nil || len(indexInfos) == 0 {
@@ -184,6 +227,11 @@ func (g *Gardener) think() {
 			g.detectUserPreferences(idx)
 			g.detectRepeatedFailures(idx)
 			g.detectKnowledgeEvolution(idx)
+		}
+
+		// Meta-analysis: cross-detector confidence validation (meta mode only).
+		if g.cfg.Mode == "meta" && len(g.newReflections) > 1 {
+			g.detectCrossValidator(idx)
 		}
 	}
 
@@ -561,6 +609,7 @@ Guidelines for suggested_resolution:
 					slog.Info("[Cognitive Engine] ⚠️ Contradiction Detected!", "reason", aiAnalysis.Reason)
 
 					reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
+					g.newReflections = append(g.newReflections, reflectionID)
 
 					// Zero-cost embedding: average of the two conflicting vectors.
 					dim := len(node.Vector)
@@ -639,6 +688,7 @@ func (g *Gardener) detectImportanceShifts(indexName string) {
 
 			if !alreadyFlagged {
 				reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
+				g.newReflections = append(g.newReflections, reflectionID)
 
 				nodeData, _ := g.eng.VGet(indexName, id)
 
@@ -800,6 +850,7 @@ func (g *Gardener) detectKnowledgeGaps(indexName string) {
 					}
 
 					reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
+					g.newReflections = append(g.newReflections, reflectionID)
 
 					dim := len(node.Vector)
 					avgVec := make([]float32, dim)
@@ -1058,6 +1109,7 @@ func (g *Gardener) detectSentimentShifts(indexName string, lang string) {
 
 				nodeData, _ := g.eng.VGet(indexName, id)
 				reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
+				g.newReflections = append(g.newReflections, reflectionID)
 				evidenceRatio := math.Min(1.0, float64(pastCount+recentCount)/8.0)
 				confidence := math.Min(1.0, (math.Abs(delta)/3.0)*evidenceRatio)
 				meta := map[string]any{
@@ -1134,6 +1186,7 @@ func (g *Gardener) detectCentralityShifts(indexName string) {
 
 			nodeData, _ := g.eng.VGet(indexName, id)
 			reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
+			g.newReflections = append(g.newReflections, reflectionID)
 			confidence := math.Min(1.0, float64(degreeNow)/float64(degreePast)/5.0)
 			meta := map[string]any{
 				"type":        "reflection",
@@ -1192,6 +1245,7 @@ func (g *Gardener) detectForgettingPatterns(indexName string) {
 
 			nodeData, _ := g.eng.VGet(indexName, id)
 			reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
+			g.newReflections = append(g.newReflections, reflectionID)
 			confidence := math.Min(1.0, float64(len(edges))/10.0)
 			meta := map[string]any{
 				"type":        "reflection",
@@ -1532,5 +1586,126 @@ Guidelines:
 			"gaps_count", len(aiResp.KnowledgeGaps))
 
 		processed++
+	}
+}
+
+// detectCrossValidator checks if the same entity was flagged by multiple detector types
+// in the current cycle and creates a high-confidence composite reflection.
+func (g *Gardener) detectCrossValidator(indexName string) {
+	if len(g.newReflections) == 0 {
+		return
+	}
+
+	detectorEdgeMap := map[string]string{
+		"focus_shifted":   "importance",
+		"sentiment_shift": "sentiment",
+		"became_central":  "centrality",
+		"knowledge_decay": "forgetting",
+		"suggests_link":   "knowledge_gap",
+		"contradicts":     "contradiction",
+	}
+
+	// Build entity -> detector type -> reflection IDs
+	entityDetectors := make(map[string]map[string][]string)
+
+	for _, reflID := range g.newReflections {
+		for edgeType, detectorName := range detectorEdgeMap {
+			targets, found := g.eng.VGetLinks(indexName, reflID, edgeType)
+			if !found {
+				continue
+			}
+			for _, entityID := range targets {
+				if entityDetectors[entityID] == nil {
+					entityDetectors[entityID] = make(map[string][]string)
+				}
+				entityDetectors[entityID][detectorName] = append(entityDetectors[entityID][detectorName], reflID)
+			}
+		}
+	}
+
+	// Create composite reflections for entities flagged by 2+ detector types
+	for entityID, detectors := range entityDetectors {
+		if len(detectors) < 2 {
+			continue
+		}
+
+		var allReflectionIDs []string
+		var confidences []float64
+		var detectorNames []string
+
+		for detName, reflIDs := range detectors {
+			detectorNames = append(detectorNames, detName)
+			for _, reflID := range reflIDs {
+				allReflectionIDs = append(allReflectionIDs, reflID)
+				if reflData, err := g.eng.VGet(indexName, reflID); err == nil {
+					if c, ok := reflData.Metadata["confidence"].(float64); ok {
+						confidences = append(confidences, c)
+					}
+				}
+			}
+		}
+
+		// Geometric mean of confidences × diversity boost
+		product := 1.0
+		for _, c := range confidences {
+			product *= c
+		}
+		geoMean := math.Pow(product, 1.0/float64(len(confidences)))
+		diversityBoost := 0.7 + 0.3*math.Min(1.0, float64(len(detectors))/3.0)
+		compositeConfidence := math.Min(1.0, geoMean*diversityBoost)
+
+		slices.Sort(detectorNames)
+
+		entityName := entityID
+		if nodeData, err := g.eng.VGet(indexName, entityID); err == nil {
+			if n, ok := nodeData.Metadata["name"].(string); ok && n != "" {
+				entityName = n
+			}
+		}
+
+		content := fmt.Sprintf("Cross-detector boost: '%s' flagged by %d detectors (%s). Composite confidence: %.2f.",
+			entityName, len(detectors), strings.Join(detectorNames, ", "), compositeConfidence)
+
+		reflectionID := fmt.Sprintf("reflection_cross_%d", time.Now().UnixNano())
+
+		var vec []float32
+		if nodeData, err := g.eng.VGet(indexName, entityID); err == nil {
+			vec = nodeData.Vector
+		}
+
+		detectorAnys := make([]any, len(detectorNames))
+		for i, d := range detectorNames {
+			detectorAnys[i] = d
+		}
+		sourceAnys := make([]any, len(allReflectionIDs))
+		for i, s := range allReflectionIDs {
+			sourceAnys[i] = s
+		}
+
+		meta := map[string]any{
+			"type":                 "reflection",
+			"content":              content,
+			"status":               "high_confidence",
+			"confidence":           compositeConfidence,
+			"detector_count":       float64(len(detectors)),
+			"detector_types":       detectorAnys,
+			"contributing_sources": sourceAnys,
+			"_created_at":          float64(time.Now().Unix()),
+		}
+
+		if err := g.eng.VAdd(indexName, reflectionID, vec, meta); err != nil {
+			slog.Warn("[Cognitive Engine] Failed to create cross-validation reflection", "error", err)
+			continue
+		}
+
+		g.eng.VLink(indexName, reflectionID, entityID, "cross_validated", "cross_validated_by", 1.0, nil)
+		for _, srcID := range allReflectionIDs {
+			g.eng.VLink(indexName, reflectionID, srcID, "validates", "validated_by", 1.0, nil)
+		}
+
+		slog.Info("[Cognitive Engine] Cross-detector confidence boost!",
+			"entity", entityName,
+			"detectors", len(detectors),
+			"confidence", compositeConfidence)
 	}
 }

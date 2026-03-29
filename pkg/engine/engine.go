@@ -117,6 +117,10 @@ type Engine struct {
 	closed    chan struct{}
 	closeOnce sync.Once
 	wg        sync.WaitGroup
+
+	// EventBus provides pub/sub for engine write operations.
+	// Consumers (Gardener, SSE handler) subscribe to receive events.
+	EventBus *EventBus
 }
 
 // Open initializes a new Engine instance using the provided options.
@@ -143,6 +147,7 @@ func Open(opts Options) (*Engine, error) {
 		snapPath:     snapPath,
 		lastSaveTime: time.Now(),
 		closed:       make(chan struct{}),
+		EventBus:     NewEventBus(),
 	}
 
 	// 1. Load Snapshot if exists
@@ -198,6 +203,11 @@ func (e *Engine) Close() error {
 	e.closeOnce.Do(func() {
 		close(e.closed)
 		e.wg.Wait() // Wait for background tasks
+
+		// Close the event bus (stops all subscribers)
+		if e.EventBus != nil {
+			e.EventBus.Close()
+		}
 
 		// Final sync
 		if e.AOF != nil {

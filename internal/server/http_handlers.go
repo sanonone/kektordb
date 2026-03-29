@@ -40,6 +40,9 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /system/save", s.handleSaveHTTP)
 	mux.HandleFunc("GET /system/tasks/{id}", s.handleTaskStatus)
 
+	// Event stream (SSE)
+	mux.HandleFunc("GET /events/stream", s.handleEventStream)
+
 	// Vectorizer management
 	mux.HandleFunc("GET /system/vectorizers", s.handleGetVectorizers)
 	mux.HandleFunc("POST /system/vectorizers/{name}/trigger", s.handleTriggerVectorizer)
@@ -1172,6 +1175,37 @@ func (s *Server) handleSaveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Snapshot created"})
+}
+
+func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "SSE not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	ch := s.Engine.EventBus.Subscribe(128)
+	defer s.Engine.EventBus.Unsubscribe(ch)
+
+	ctx := r.Context()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-ch:
+			if !ok {
+				return
+			}
+			data, _ := json.Marshal(event)
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, string(data))
+			flusher.Flush()
+		}
+	}
 }
 
 func (s *Server) handleAOFRewriteHTTP(w http.ResponseWriter, r *http.Request) {
