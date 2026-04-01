@@ -1627,3 +1627,159 @@ func TestEventBusEmit(t *testing.T) {
 
 	t.Log("✅ Event Bus Test Passed Successfully!")
 }
+
+func TestAutoResolveKnowledgeGaps(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := engine.DefaultOptions(tmpDir)
+	opts.AutoSaveInterval = 0
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open engine: %v", err)
+	}
+	defer eng.Close()
+
+	indexName := "mcp_memory"
+	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
+
+	// Two entities that are semantically close but not graph-connected.
+	eng.VAdd(indexName, "entity_py", []float32{0.5, 0.75, 0.1}, map[string]any{"name": "Python", "type": "entity"})
+	eng.VAdd(indexName, "entity_dj", []float32{0.7, 0.3, 0.2}, map[string]any{"name": "Django", "type": "entity"})
+
+	gardener := NewGardener(eng, &MockLLM{}, Config{
+		Enabled:             true,
+		Interval:            time.Hour,
+		AutoResolveEnabled:  true,
+		AutoResolveLinks:    true,
+		AutoResolveLinksMin: 0.80, // Score is ~0.857 for these vectors
+	})
+
+	// 1. Detect gaps → creates reflection with suggests_link edges.
+	gardener.detectKnowledgeGaps(indexName)
+
+	refs := countReflections(eng, indexName)
+	if len(refs) != 1 {
+		t.Fatalf("Expected 1 gap reflection, found %d", len(refs))
+	}
+
+	// 2. Auto-resolve → should create related_to link.
+	gardener.autoResolveReflections(indexName)
+
+	// Verify the link was created.
+	links, found := eng.VGetLinks(indexName, "entity_py", "related_to")
+	if !found || len(links) != 1 {
+		t.Errorf("Expected 1 related_to link from entity_py, found %d", len(links))
+	}
+	if found && len(links) > 0 && links[0] != "entity_dj" {
+		t.Errorf("Expected link to entity_dj, got %s", links[0])
+	}
+
+	// Verify reflection was marked resolved.
+	refData, _ := eng.VGet(indexName, refs[0])
+	if refData.Metadata["status"] != "resolved" {
+		t.Errorf("Expected status=resolved, got %v", refData.Metadata["status"])
+	}
+	if ar, _ := refData.Metadata["auto_resolved"].(bool); !ar {
+		t.Errorf("Expected auto_resolved=true")
+	}
+
+	t.Log("✅ Auto-Resolve Knowledge Gaps Test Passed Successfully!")
+}
+
+func TestAutoResolveMinorContradiction(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := engine.DefaultOptions(tmpDir)
+	opts.AutoSaveInterval = 0
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open engine: %v", err)
+	}
+	defer eng.Close()
+
+	indexName := "mcp_memory"
+	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
+
+	// Two memories that contradict (vectors chosen for similarity in 0.70-0.95 range).
+	eng.VAdd(indexName, "mem_a", []float32{0.5, 0.75, 0.1}, map[string]any{"content": "Python is fast", "type": "memory"})
+	eng.VAdd(indexName, "mem_b", []float32{0.7, 0.3, 0.2}, map[string]any{"content": "Python is slow", "type": "memory"})
+
+	mockBrain := &MockLLM{
+		ContradictionReply: `{"contradiction": true, "reason": "Speed claim differs", "suggested_resolution": "Keep the newer memory.", "action_required": false}`,
+	}
+
+	gardener := NewGardener(eng, mockBrain, Config{
+		Enabled:            true,
+		Interval:           time.Hour,
+		AutoResolveEnabled: true,
+		AutoResolveContra:  true,
+	})
+
+	// 1. Detect contradictions → creates reflection with action_required=false.
+	gardener.detectContradictions(indexName)
+
+	refs := countReflections(eng, indexName)
+	if len(refs) != 1 {
+		t.Fatalf("Expected 1 contradiction reflection, found %d", len(refs))
+	}
+
+	// 2. Auto-resolve → should mark as resolved.
+	gardener.autoResolveReflections(indexName)
+
+	refData, _ := eng.VGet(indexName, refs[0])
+	if refData.Metadata["status"] != "resolved" {
+		t.Errorf("Expected status=resolved, got %v", refData.Metadata["status"])
+	}
+	if ar, _ := refData.Metadata["auto_resolved"].(bool); !ar {
+		t.Errorf("Expected auto_resolved=true")
+	}
+	resolution, _ := refData.Metadata["resolution"].(string)
+	if resolution != "Keep the newer memory." {
+		t.Errorf("Expected resolution='Keep the newer memory.', got '%s'", resolution)
+	}
+
+	t.Log("✅ Auto-Resolve Minor Contradiction Test Passed Successfully!")
+}
+
+func TestAutoResolveSkipsActionRequired(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := engine.DefaultOptions(tmpDir)
+	opts.AutoSaveInterval = 0
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open engine: %v", err)
+	}
+	defer eng.Close()
+
+	indexName := "mcp_memory"
+	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
+
+	eng.VAdd(indexName, "mem_x", []float32{0.5, 0.75, 0.1}, map[string]any{"content": "Price is $10", "type": "memory"})
+	eng.VAdd(indexName, "mem_y", []float32{0.7, 0.3, 0.2}, map[string]any{"content": "Price is $20", "type": "memory"})
+
+	mockBrain := &MockLLM{
+		ContradictionReply: `{"contradiction": true, "reason": "Price differs", "suggested_resolution": "Verify which is correct.", "action_required": true}`,
+	}
+
+	gardener := NewGardener(eng, mockBrain, Config{
+		Enabled:            true,
+		Interval:           time.Hour,
+		AutoResolveEnabled: true,
+		AutoResolveContra:  true,
+	})
+
+	gardener.detectContradictions(indexName)
+
+	refs := countReflections(eng, indexName)
+	if len(refs) != 1 {
+		t.Fatalf("Expected 1 reflection, found %d", len(refs))
+	}
+
+	// Auto-resolve should SKIP this because action_required=true.
+	gardener.autoResolveReflections(indexName)
+
+	refData, _ := eng.VGet(indexName, refs[0])
+	if refData.Metadata["status"] == "resolved" {
+		t.Errorf("Should NOT auto-resolve when action_required=true")
+	}
+
+	t.Log("✅ Auto-Resolve Skips Action Required Test Passed Successfully!")
+}

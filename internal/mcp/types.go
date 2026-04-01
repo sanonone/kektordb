@@ -7,7 +7,7 @@ type SaveMemoryArgs struct {
 	IndexName string   `json:"index_name,omitempty" jsonschema:"The index to store data in. Defaults to 'mcp_memory'"`
 	Links     []string `json:"links,omitempty" jsonschema:"List of existing Entity IDs to link this memory to (e.g. 'project_alpha', 'user_mario')"`
 	Tags      []string `json:"tags,omitempty" jsonschema:"Optional tags or categories"`
-	Pin       bool     `json:"pin,omitempty" jsonschema:"description=If true, this memory will never decay over time (e.g. core rules, birthdays)."`
+	Pin       bool     `json:"pin,omitempty" jsonschema:"If true, this memory will never decay over time (e.g. core rules, birthdays)."`
 }
 
 type SaveMemoryResult struct {
@@ -36,7 +36,7 @@ type RecallArgs struct {
 	Query     string `json:"query" jsonschema:"The semantic query to search for,required"`
 	IndexName string `json:"index_name,omitempty"`
 	Limit     int    `json:"limit,omitempty" jsonschema:"Max number of results (default 5)"`
-	Reinforce bool   `json:"reinforce,omitempty" jsonschema:"description=If true, marks retrieved memories as 'accessed now', boosting their future relevance."`
+	Reinforce bool   `json:"reinforce,omitempty" jsonschema:"If true, marks retrieved memories as 'accessed now', boosting their future relevance."`
 }
 
 type ScopedRecallArgs struct {
@@ -55,9 +55,9 @@ type TraverseArgs struct {
 	RootID     string   `json:"root_id" jsonschema:"required"`
 	Relations  []string `json:"relations,omitempty" jsonschema:"Filter by relation types (e.g. ['mentions'])"`
 	Depth      int      `json:"depth,omitempty" jsonschema:"Depth (default 1)"`
-	GuideQuery string   `json:"guide_query,omitempty" jsonschema:"description=Optional text concept to guide the traversal. Only nodes semantically similar to this query will be followed."`
-	Threshold  float64  `json:"threshold,omitempty" jsonschema:"description=Similarity threshold (0.0-1.0) for guide_query. Default 0.5."`
-	AtTime     int64    `json:"at_time,omitempty" jsonschema:"description=Unix nanoseconds timestamp to query historical data (0 = current time)"`
+	GuideQuery string   `json:"guide_query,omitempty" jsonschema:"Optional text concept to guide the traversal. Only nodes semantically similar to this query will be followed."`
+	Threshold  float64  `json:"threshold,omitempty" jsonschema:"Similarity threshold (0.0-1.0) for guide_query. Default 0.5."`
+	AtTime     int64    `json:"at_time,omitempty" jsonschema:"Unix nanoseconds timestamp to query historical data (0 = current time)"`
 }
 
 type TraverseResult struct {
@@ -65,10 +65,10 @@ type TraverseResult struct {
 }
 
 type FindConnectionArgs struct {
-	SourceID  string   `json:"source_id" jsonschema:"description=Start Node ID,required"`
-	TargetID  string   `json:"target_id" jsonschema:"description=End Node ID,required"`
-	Relations []string `json:"relations,omitempty" jsonschema:"description=Allowed relation types to traverse (optional)"`
-	AtTime    int64    `json:"at_time,omitempty" jsonschema:"description=Unix nanoseconds timestamp to query historical data (0 = current time)"`
+	SourceID  string   `json:"source_id" jsonschema:"Start Node ID,required"`
+	TargetID  string   `json:"target_id" jsonschema:"End Node ID,required"`
+	Relations []string `json:"relations,omitempty" jsonschema:"Allowed relation types to traverse (optional)"`
+	AtTime    int64    `json:"at_time,omitempty" jsonschema:"Unix nanoseconds timestamp to query historical data (0 = current time)"`
 }
 
 type FindConnectionResult struct {

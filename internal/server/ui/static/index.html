@@ -68,10 +68,14 @@
     <div id="tab-cognitive" class="tab-content">
         <div class="toolbar">
             <button class="btn btn-primary" onclick="triggerThink()">Think Now</button>
-            <button class="btn btn-secondary btn-sm" onclick="loadReflections('')">All</button>
-            <button class="btn btn-secondary btn-sm" onclick="loadReflections('unresolved')">Unresolved</button>
-            <button class="btn btn-secondary btn-sm" onclick="loadReflections('insight')">Insights</button>
-            <button class="btn btn-secondary btn-sm" onclick="loadReflections('high_confidence')">High Conf</button>
+            <button class="btn btn-primary btn-sm status-btn" data-status="" onclick="loadReflections('')">All</button>
+            <button class="btn btn-secondary btn-sm status-btn" data-status="unresolved" onclick="loadReflections('unresolved')">Unresolved</button>
+            <button class="btn btn-secondary btn-sm status-btn" data-status="insight" onclick="loadReflections('insight')">Insights</button>
+            <button class="btn btn-secondary btn-sm status-btn" data-status="high_confidence" onclick="loadReflections('high_confidence')">High Conf</button>
+            <button class="btn btn-secondary btn-sm cog-filter" onclick="setCognitiveFilter('action_required')">Action Req</button>
+            <button class="btn btn-secondary btn-sm cog-filter" onclick="setCognitiveFilter('failures')">Failures</button>
+            <button class="btn btn-secondary btn-sm cog-filter" onclick="setCognitiveFilter('profiles')">Profiles</button>
+            <button class="btn btn-secondary btn-sm cog-filter" onclick="setCognitiveFilter('evolution')">Evolution</button>
             <span style="margin-left:auto;font-size:.8rem;color:var(--muted)">
                 <span class="live-dot" id="sse-dot" style="display:none"></span>
                 <span id="sse-status">SSE disconnected</span>

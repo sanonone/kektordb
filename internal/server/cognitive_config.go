@@ -12,8 +12,9 @@ import (
 
 // CognitiveConfigFile is the top-level structure for cognitive.yaml.
 type CognitiveConfigFile struct {
-	Gardener GardenerConfigYAML `yaml:"gardener"`
-	LLM      LLMConfigYAML      `yaml:"llm"`
+	Gardener    GardenerConfigYAML    `yaml:"gardener"`
+	AutoResolve AutoResolveConfigYAML `yaml:"auto_resolve"`
+	LLM         LLMConfigYAML         `yaml:"llm"`
 }
 
 // GardenerConfigYAML holds the Gardener settings from cognitive.yaml.
@@ -24,6 +25,29 @@ type GardenerConfigYAML struct {
 	TargetIndexes       []string `yaml:"target_indexes"`        // ["*"] for all, or ["idx1", "idx2"]
 	AdaptiveThreshold   int64    `yaml:"adaptive_threshold"`    // Write count to trigger early think
 	AdaptiveMinInterval string   `yaml:"adaptive_min_interval"` // Min time between forced thinks
+}
+
+// AutoResolveConfigYAML holds the auto-resolve settings.
+type AutoResolveConfigYAML struct {
+	Enabled bool                   `yaml:"enabled"`
+	Actions AutoResolveActionsYAML `yaml:"actions"`
+}
+
+// AutoResolveActionsYAML holds per-action settings for the auto-resolver.
+type AutoResolveActionsYAML struct {
+	CreateSuggestedLinks    AutoLinkResolveYAML   `yaml:"create_suggested_links"`
+	MarkMinorContradictions AutoActionResolveYAML `yaml:"mark_minor_contradictions"`
+}
+
+// AutoLinkResolveYAML configures auto-creation of suggested graph links.
+type AutoLinkResolveYAML struct {
+	Enabled       bool    `yaml:"enabled"`
+	MinConfidence float64 `yaml:"min_confidence"`
+}
+
+// AutoActionResolveYAML configures auto-resolution of minor contradictions.
+type AutoActionResolveYAML struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 // LLMConfigYAML holds the LLM settings for the cognitive engine.
@@ -83,6 +107,10 @@ func LoadCognitiveConfig(path string) (cognitive.Config, llm.Config, error) {
 		TargetIndexes:       cfg.Gardener.TargetIndexes,
 		AdaptiveThreshold:   cfg.Gardener.AdaptiveThreshold,
 		AdaptiveMinInterval: parseDuration(cfg.Gardener.AdaptiveMinInterval, 30*time.Second),
+		AutoResolveEnabled:  cfg.AutoResolve.Enabled,
+		AutoResolveLinks:    cfg.AutoResolve.Actions.CreateSuggestedLinks.Enabled,
+		AutoResolveLinksMin: cfg.AutoResolve.Actions.CreateSuggestedLinks.MinConfidence,
+		AutoResolveContra:   cfg.AutoResolve.Actions.MarkMinorContradictions.Enabled,
 	}
 
 	// Apply defaults for empty/zero values

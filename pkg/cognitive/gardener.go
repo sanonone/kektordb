@@ -43,6 +43,12 @@ type Config struct {
 	TargetIndexes       []string      // ["*"] for all, or ["mcp_memory"]
 	AdaptiveThreshold   int64         // Write count to trigger early think (default: 50)
 	AdaptiveMinInterval time.Duration // Min time between forced thinks (default: 30s)
+
+	// Auto-resolve settings
+	AutoResolveEnabled  bool    // Enable auto-resolution of whitelisted reflection types
+	AutoResolveLinks    bool    // Auto-create suggested graph links (from knowledge gaps)
+	AutoResolveLinksMin float64 // Min confidence to auto-create a link (default: 0.90)
+	AutoResolveContra   bool    // Auto-resolve minor contradictions (action_required=false)
 }
 
 // Gardener is the autonomous background worker that analyzes the database graph
@@ -232,6 +238,11 @@ func (g *Gardener) think() {
 		// Meta-analysis: cross-detector confidence validation (meta mode only).
 		if g.cfg.Mode == "meta" && len(g.newReflections) > 1 {
 			g.detectCrossValidator(idx)
+		}
+
+		// Auto-resolve: act on whitelisted reflection types.
+		if g.cfg.AutoResolveEnabled {
+			g.autoResolveReflections(idx)
 		}
 	}
 
@@ -726,6 +737,8 @@ func (g *Gardener) ForceThink(indexName string) {
 
 	slog.Info("[Cognitive Engine] Manual reflection cycle triggered.", "index", indexName, "mode", g.cfg.Mode)
 
+	g.newReflections = nil
+
 	// Look up the index language for sentiment analysis.
 	var indexLang string
 	if info, err := g.eng.DB.GetSingleVectorIndexInfoAPI(indexName); err == nil {
@@ -753,6 +766,11 @@ func (g *Gardener) ForceThink(indexName string) {
 		g.detectUserPreferences(indexName)
 		g.detectRepeatedFailures(indexName)
 		g.detectKnowledgeEvolution(indexName)
+	}
+
+	// Auto-resolve: act on whitelisted reflection types.
+	if g.cfg.AutoResolveEnabled {
+		g.autoResolveReflections(indexName)
 	}
 }
 
@@ -1707,5 +1725,80 @@ func (g *Gardener) detectCrossValidator(indexName string) {
 			"entity", entityName,
 			"detectors", len(detectors),
 			"confidence", compositeConfidence)
+	}
+}
+
+// autoResolveReflections acts on reflection nodes that have been whitelisted
+// for autonomous resolution. This is deterministic — no LLM call needed.
+// The LLM already made its decision during detection (suggested_resolution, action_required).
+func (g *Gardener) autoResolveReflections(indexName string) {
+	// Fetch all unresolved + insight reflections for this index.
+	refs, err := g.eng.VFilter(indexName, "type='reflection'", 200)
+	if err != nil || len(refs) == 0 {
+		return
+	}
+
+	for _, refID := range refs {
+		refData, err := g.eng.VGet(indexName, refID)
+		if err != nil {
+			continue
+		}
+
+		status, _ := refData.Metadata["status"].(string)
+		if status == "resolved" || status == "high_confidence" {
+			continue
+		}
+
+		confidence, _ := refData.Metadata["confidence"].(float64)
+
+		// Action 1: Auto-create suggested graph links (from knowledge gaps).
+		if g.cfg.AutoResolveLinks {
+			entities, found := g.eng.VGetLinks(indexName, refID, "suggests_link")
+			if found && len(entities) == 2 && confidence >= g.cfg.AutoResolveLinksMin {
+				// Check if the link already exists (dedup).
+				existingLinks, _ := g.eng.VGetLinks(indexName, entities[0], "related_to")
+				alreadyLinked := false
+				for _, el := range existingLinks {
+					if el == entities[1] {
+						alreadyLinked = true
+						break
+					}
+				}
+				if !alreadyLinked {
+					if err := g.eng.VLink(indexName, entities[0], entities[1],
+						"related_to", "related_to", float32(confidence),
+						map[string]any{"auto_resolved_from": refID}); err != nil {
+						slog.Warn("[Cognitive Engine] Auto-resolve: failed to create link", "error", err)
+						continue
+					}
+					g.eng.VSetMetadata(indexName, refID, map[string]any{
+						"status":        "resolved",
+						"resolution":    fmt.Sprintf("auto-resolved: link created based on semantic similarity %.2f", confidence),
+						"auto_resolved": true,
+						"_updated_at":   float64(time.Now().Unix()),
+					})
+					slog.Info("[Cognitive Engine] Auto-resolved: created suggested link",
+						"from", entities[0], "to", entities[1], "confidence", confidence)
+				}
+			}
+		}
+
+		// Action 2: Auto-resolve minor contradictions (action_required=false).
+		if g.cfg.AutoResolveContra {
+			actionRequired, _ := refData.Metadata["action_required"].(bool)
+			if !actionRequired {
+				suggestedResolution, _ := refData.Metadata["suggested_resolution"].(string)
+				if suggestedResolution != "" {
+					g.eng.VSetMetadata(indexName, refID, map[string]any{
+						"status":        "resolved",
+						"resolution":    suggestedResolution,
+						"auto_resolved": true,
+						"_updated_at":   float64(time.Now().Unix()),
+					})
+					slog.Info("[Cognitive Engine] Auto-resolved: minor contradiction",
+						"reflection", refID)
+				}
+			}
+		}
 	}
 }

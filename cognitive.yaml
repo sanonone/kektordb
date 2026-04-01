@@ -27,6 +27,23 @@ gardener:
   # Minimum time between adaptive wakes (prevents rapid-fire analysis)
   adaptive_min_interval: "30s"
 
+# Auto-resolve: let the Gardener autonomously act on whitelisted reflection types.
+# The LLM already made its decision during detection. The Resolver just executes it.
+auto_resolve:
+  enabled: true
+  actions:
+    # Auto-create graph links for knowledge gap reflections
+    # (entities that are semantically similar but not graph-connected)
+    create_suggested_links:
+      enabled: true
+      # Only auto-create if cosine similarity >= this threshold
+      min_confidence: 0.90
+
+    # Auto-resolve minor contradictions
+    # (only when the LLM determined action_required=false during detection)
+    mark_minor_contradictions:
+      enabled: true
+
 # LLM configuration (only used in "advanced" or "meta" mode)
 llm:
   # API endpoint (OpenAI-compatible)
@@ -41,7 +58,7 @@ llm:
   api_key: "kektor"
 
   # Temperature (0.0 = deterministic, 1.0 = creative)
-  temperature: 0.0
+  temperature: 0.5
 
   # Max response tokens
   max_tokens: 500

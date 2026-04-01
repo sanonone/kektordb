@@ -1034,7 +1034,7 @@ func (s *Server) handleGetReflections(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")
 
 	// Sfruttiamo le Roaring Bitmaps e il VFilter!
-	filter := "type='reflection'"
+	filter := "type='reflection' OR type='user_profile_insight' OR type='failure_pattern' OR type='knowledge_evolution'"
 	if status != "" {
 		filter += fmt.Sprintf(" AND status='%s'", status)
 	}
