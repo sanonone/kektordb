@@ -3,19 +3,23 @@ package llm
 // Config holds the connection settings for an LLM provider.
 // It is designed to be embedded in YAML configuration files.
 type Config struct {
+	// Provider selects the LLM backend. Supported values:
+	// - "openai" (default): OpenAI, LocalAI, vLLM
+	// - "ollama": Ollama local models
+	// - "huggingface": HuggingFace Serverless Inference API
+	Provider string `yaml:"provider" json:"provider"`
+
 	// BaseURL is the API endpoint.
-	// Examples:
-	// - OpenAI: "https://api.openai.com/v1"
-	// - Ollama: "http://localhost:11434/v1"
-	// - LocalAI: "http://localhost:8080/v1"
+	// Auto-configured based on Provider if left empty.
 	BaseURL string `yaml:"base_url" json:"base_url"`
 
 	// APIKey is the authentication token.
-	// Required for OpenAI ("sk-..."). Often ignored by local Ollama.
+	// Required for OpenAI ("sk-...") and HuggingFace ("hf_...").
+	// Often ignored by local Ollama.
 	APIKey string `yaml:"api_key" json:"api_key"`
 
 	// Model is the specific model identifier.
-	// Examples: "gpt-4o", "llama3", "mistral".
+	// Examples: "gpt-4o", "llama3", "meta-llama/Llama-3.1-8B-Instruct".
 	Model string `yaml:"model" json:"model"`
 
 	// Temperature controls randomness (0.0 = deterministic, 1.0 = creative).

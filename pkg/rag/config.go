@@ -6,6 +6,14 @@ import (
 	"github.com/sanonone/kektordb/pkg/llm"
 )
 
+// ParserConfig defines how raw text is extracted from files.
+type ParserConfig struct {
+	Type     string   // "internal" (default) or "cli"
+	Command  []string // CLI command template, e.g. ["liteparse", "-q", "{{file_path}}"]
+	Timeout  string   // CLI timeout, e.g. "2m"
+	Fallback string   // Fallback strategy if CLI fails: "internal" (default)
+}
+
 // Config holds all parameters to set up a RAG pipeline.
 type Config struct {
 	Name            string
@@ -26,6 +34,10 @@ type Config struct {
 	ChunkOverlap     int    `json:"chunk_overlap"`
 	// Custom separators for recursive splitter. If empty, defaults based on strategy.
 	CustomSeparators []string `json:"custom_separators"`
+
+	// --- Parser ---
+	// Configures how raw text is extracted from files (internal Go parsers or external CLI tools).
+	Parser ParserConfig
 
 	// --- Embedding Settings ---
 	EmbedderURL   string

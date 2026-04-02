@@ -11,9 +11,9 @@ vectorizers:
     exclude_patterns: ["draft_*"] # Ignora bozze
     index_config:
       metric: "cosine"
-      precision: "float32"       # <--- Risparmia 75% RAM!
-      m: 16                   # <--- Migliore qualità grafo
-      ef_construction: 200    # <--- Costruzione più lenta ma precisa
+      precision: "float32" # <--- Risparmia 75% RAM!
+      m: 16 # <--- Migliore qualità grafo
+      ef_construction: 200 # <--- Costruzione più lenta ma precisa
       text_language: "italian" # <--- Stemming italiano per la ricerca ibrida
     embedder:
       type: "ollama_api"
@@ -22,6 +22,13 @@ vectorizers:
     document_processor:
       chunking_strategy: "markdown" # <--- Rispetta la struttura MD
       chunk_size: 1000
+      parser:
+        type: "cli"
+        # IMPORTANT: options must come BEFORE the file argument (CLI convention).
+        # {{file_path}} is replaced with the actual path at runtime.
+        command: ["lit", "parse", "--format", "text", "{{file_path}}"]
+        timeout: "2m"
+        fallback: "internal" # Se il CLI fallisce, usa il parser Go interno
     metadata_template:
       source_file: "{{file_path}}"
       category: "study_notes"
@@ -30,13 +37,19 @@ vectorizers:
     llm:
       base_url: "http://localhost:11434/v1"
       model: "gemma3:4b" # O llama3, mistral, gpt-4o-mini...
-      temperature: 0.0  # Meglio deterministico per estrarre dati
+      temperature: 0.0 # Meglio deterministico per estrarre dati
+
+    # Esempio HuggingFace (Serverless Inference):
+    # llm:
+    #   provider: "huggingface"
+    #   api_key: "${HF_API_KEY}"
+    #   model: "meta-llama/Llama-3.1-8B-Instruct"
+    #   temperature: 0.0
 
     vision_llm:
       base_url: "http://localhost:11434/v1"
       # IMPORTANTE: Devi aver scaricato questo modello su Ollama!
       # Consigliato: llama3.2-vision (piccolo e potente) o llava
-      model: "gemma3:4b" 
+      model: "gemma3:4b"
       temperature: 0.0
       max_tokens: 300 # Limitiamo la descrizione per non intasare l'embedding
-      

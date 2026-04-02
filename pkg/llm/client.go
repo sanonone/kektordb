@@ -31,8 +31,26 @@ type OpenAIClient struct {
 	httpClient *http.Client
 }
 
-// NewClient initializes a new LLM client.
-func NewClient(cfg Config) *OpenAIClient {
+// NewClient initializes a new LLM client based on the configured provider.
+// All supported providers (OpenAI, Ollama, HuggingFace) use the OpenAI-compatible
+// /chat/completions endpoint, so they share the same underlying transport.
+func NewClient(cfg Config) Client {
+	// Set provider-specific defaults
+	switch cfg.Provider {
+	case "huggingface":
+		if cfg.BaseURL == "" {
+			cfg.BaseURL = "https://api-inference.huggingface.co/v1"
+		}
+	case "ollama":
+		if cfg.BaseURL == "" {
+			cfg.BaseURL = "http://localhost:11434/v1"
+		}
+	default: // "openai" or empty
+		if cfg.BaseURL == "" {
+			cfg.BaseURL = "https://api.openai.com/v1"
+		}
+	}
+
 	// Robustness: ensure BaseURL does not end with a slash
 	cfg.BaseURL = strings.TrimSuffix(cfg.BaseURL, "/")
 

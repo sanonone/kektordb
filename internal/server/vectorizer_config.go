@@ -65,13 +65,22 @@ type EmbedderConfig struct {
 	APIKey  string `yaml:"api_key"`
 }
 
+// ParserConfig defines how raw text is extracted from files.
+type ParserConfig struct {
+	Type     string   `yaml:"type"`     // "internal" (default) or "cli"
+	Command  []string `yaml:"command"`  // CLI command template, e.g. ["liteparse", "-q", "{{file_path}}"]
+	Timeout  string   `yaml:"timeout"`  // CLI timeout, e.g. "2m"
+	Fallback string   `yaml:"fallback"` // Fallback strategy if CLI fails: "internal" (default)
+}
+
 // DocProcessorConfig defines how source documents are processed before embedding.
 // This includes the strategy for splitting documents into smaller chunks.
 type DocProcessorConfig struct {
-	ChunkingStrategy string   `yaml:"chunking_strategy"`
-	ChunkSize        int      `yaml:"chunk_size"`
-	ChunkOverlap     int      `yaml:"chunk_overlap"`
-	CustomSeparators []string `yaml:"custom_separators"`
+	ChunkingStrategy string       `yaml:"chunking_strategy"`
+	ChunkSize        int          `yaml:"chunk_size"`
+	ChunkOverlap     int          `yaml:"chunk_overlap"`
+	CustomSeparators []string     `yaml:"custom_separators"`
+	Parser           ParserConfig `yaml:"parser"`
 }
 
 // LoadVectorizersConfig reads and parses the YAML configuration file from the given path.

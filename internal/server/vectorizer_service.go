@@ -85,6 +85,14 @@ func NewVectorizerService(server *Server, assetsDir string) (*VectorizerService,
 			ChunkOverlap:     overlap,
 			CustomSeparators: cfg.DocProcessor.CustomSeparators,
 
+			// Parser (CLI or internal)
+			Parser: rag.ParserConfig{
+				Type:     cfg.DocProcessor.Parser.Type,
+				Command:  cfg.DocProcessor.Parser.Command,
+				Timeout:  cfg.DocProcessor.Parser.Timeout,
+				Fallback: cfg.DocProcessor.Parser.Fallback,
+			},
+
 			// Embedding
 			EmbedderURL:     cfg.Embedder.URL,
 			EmbedderModel:   cfg.Embedder.Model,

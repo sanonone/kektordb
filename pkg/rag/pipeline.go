@@ -50,7 +50,7 @@ func NewPipeline(cfg Config, store Store, embedder embeddings.Embedder, llmClien
 
 	return &Pipeline{
 		cfg:            cfg,
-		loader:         NewAutoLoader(extractImages, cfg.AssetsOutputDir),
+		loader:         NewSmartLoader(cfg.Parser, extractImages, cfg.AssetsOutputDir),
 		splitter:       NewSplitterFactory(cfg),
 		embedder:       embedder,
 		llmClient:      llmClient,
