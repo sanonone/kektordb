@@ -256,3 +256,21 @@ type UserProfileItem struct {
 	LastUpdated        int64   `json:"last_updated"`
 	CommunicationStyle string  `json:"communication_style,omitempty"`
 }
+
+// --- Memory Transfer Tools ---
+
+type TransferMemoryArgs struct {
+	SourceIndex    string `json:"source_index" jsonschema:"Source index name (e.g. 'researcher_memory'),required"`
+	TargetIndex    string `json:"target_index" jsonschema:"Target index name (e.g. 'writer_memory'),required"`
+	Query          string `json:"query" jsonschema:"Semantic query to find memories to transfer,required"`
+	Limit          int    `json:"limit,omitempty" jsonschema:"Max memories to transfer (default 50, max 500)"`
+	WithGraph      bool   `json:"with_graph,omitempty" jsonschema:"If true, also transfer internal graph topology between selected nodes"`
+	TransferReason string `json:"transfer_reason,omitempty" jsonschema:"Optional reason/context for the transfer, stored in metadata"`
+}
+
+type TransferMemoryResult struct {
+	TransferredCount int      `json:"transferred_count"`
+	SkippedCount     int      `json:"skipped_count"`
+	TransferredIDs   []string `json:"transferred_ids"`
+	Message          string   `json:"message"`
+}

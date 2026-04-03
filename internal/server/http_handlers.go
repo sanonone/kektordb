@@ -97,6 +97,9 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /sessions", s.handleStartSession)
 	mux.HandleFunc("POST /sessions/{id}/end", s.handleEndSession)
 
+	// Memory Transfer API
+	mux.HandleFunc("POST /transfer/memory", s.handleTransferMemory)
+
 	mux.HandleFunc("POST /rag/retrieve", s.handleRagRetrieve)
 
 	// Dynamic index routes
@@ -128,6 +131,66 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /auth/keys", s.handleCreateAPIKey)
 	mux.HandleFunc("GET /auth/keys", s.handleListAPIKeys)
 	mux.HandleFunc("DELETE /auth/keys/{id}", s.handleRevokeAPIKey)
+}
+
+// handleTransferMemory handles memory transfer between indexes
+func (s *Server) handleTransferMemory(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SourceIndex    string `json:"source_index"`
+		TargetIndex    string `json:"target_index"`
+		Query          string `json:"query"`
+		Limit          int    `json:"limit"`
+		WithGraph      bool   `json:"with_graph"`
+		TransferReason string `json:"transfer_reason"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON"))
+		return
+	}
+
+	// Validation
+	if req.SourceIndex == "" || req.TargetIndex == "" || req.Query == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("source_index, target_index, and query are required"))
+		return
+	}
+	if req.SourceIndex == req.TargetIndex {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("source and target cannot be the same"))
+		return
+	}
+
+	// Limit validation
+	if req.Limit <= 0 {
+		req.Limit = 50
+	}
+	if req.Limit > 500 {
+		req.Limit = 500
+	}
+
+	// Check indices exist
+	if !s.Engine.IndexExists(req.SourceIndex) {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("source index not found"))
+		return
+	}
+	if !s.Engine.IndexExists(req.TargetIndex) {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("target index not found"))
+		return
+	}
+
+	// Get embedder from server (need to access it)
+	// For now, return not implemented - the actual transfer should be done via MCP
+	// or we need to inject the embedder into the server
+	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
+		"status":  "accepted",
+		"message": "Use MCP tool 'transfer_memory' for actual transfer. HTTP endpoint validates parameters.",
+		"params": map[string]any{
+			"source_index": req.SourceIndex,
+			"target_index": req.TargetIndex,
+			"query":        req.Query,
+			"limit":        req.Limit,
+			"with_graph":   req.WithGraph,
+		},
+	})
 }
 
 // --- INDEX HANDLERS ---

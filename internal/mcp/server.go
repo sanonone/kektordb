@@ -107,5 +107,10 @@ func NewMCPServer(eng *engine.Engine, embedder embeddings.Embedder) *mcp.Server 
 		Description: "List all user profiles in the database. Useful for multi-user dashboards or admin interfaces.",
 	}, service.ListUserProfiles)
 
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "transfer_memory",
+		Description: "Transfer memories from one agent index to another. Preserves metadata, handles dimension mismatches, and optionally copies graph topology. Useful for multi-agent systems where agents need to share knowledge.",
+	}, service.TransferMemory)
+
 	return s
 }
