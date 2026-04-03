@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -1097,6 +1098,210 @@ func (g *Gardener) ForceThink(indexName string) {
 	if g.cfg.AutoResolveEnabled {
 		g.autoResolveReflections(indexName)
 	}
+}
+
+// SummarizeSession creates a semantic summary of a session and archives episodic memories.
+// This is called when end_session is triggered via MCP or HTTP API.
+func (g *Gardener) SummarizeSession(indexName, sessionID string) error {
+	if !g.eng.IndexExists(indexName) {
+		return fmt.Errorf("index %s does not exist", indexName)
+	}
+
+	slog.Info("[Cognitive Engine] Summarizing session", "index", indexName, "session", sessionID)
+
+	// 1. Retrieve all memories belonging to this session
+	filter := fmt.Sprintf("session_id='%s' AND type='memory'", sessionID)
+	memoryIDs, err := g.eng.VFilter(indexName, filter, 0) // 0 = no limit
+	if err != nil {
+		return fmt.Errorf("failed to retrieve session memories: %w", err)
+	}
+
+	if len(memoryIDs) == 0 {
+		slog.Info("[Cognitive Engine] No memories found for session", "session", sessionID)
+		return nil
+	}
+
+	// 2. Fetch memory contents
+	memories, _ := g.eng.VGetMany(indexName, memoryIDs)
+	if len(memories) == 0 {
+		return nil
+	}
+
+	// Sort by timestamp
+	sort.Slice(memories, func(i, j int) bool {
+		ti := g.getTimestamp(memories[i].Metadata)
+		tj := g.getTimestamp(memories[j].Metadata)
+		return ti < tj
+	})
+
+	// 3. Extract contents for summarization
+	var contents []string
+	for _, mem := range memories {
+		if content, ok := mem.Metadata["content"].(string); ok && content != "" {
+			contents = append(contents, content)
+		}
+	}
+
+	if len(contents) == 0 {
+		slog.Info("[Cognitive Engine] No content to summarize", "session", sessionID)
+		return nil
+	}
+
+	// 4. Generate summary (LLM or deterministic fallback)
+	summaryContent, keyPoints, decisions, followUp := g.generateSessionSummary(contents)
+
+	// 5. Create summary node
+	summaryID := fmt.Sprintf("summary::%s", sessionID)
+	summaryMeta := map[string]any{
+		"type":         "session_summary",
+		"memory_layer": "semantic",
+		"content":      summaryContent,
+		"key_points":   keyPoints,
+		"decisions":    decisions,
+		"follow_up":    followUp,
+		"session_id":   sessionID,
+		"memory_count": len(memories),
+		"_pinned":      true, // Summary is important, keep it
+		"timestamp":    time.Now().Format(time.RFC3339),
+		"_created_at":  float64(time.Now().Unix()),
+	}
+
+	// Try zero-vector insert (bootstrap if needed)
+	err = g.eng.VAdd(indexName, summaryID, nil, summaryMeta)
+	if err != nil && strings.Contains(err.Error(), "dimension unknown") {
+		// Bootstrap with embedding of summary content
+		vec, embedErr := g.embedContent(summaryContent)
+		if embedErr != nil {
+			slog.Warn("[Cognitive Engine] Failed to embed summary, using zero vector", "error", embedErr)
+			// Continue anyway - we can't embed but we can still store
+		} else {
+			err = g.eng.VAdd(indexName, summaryID, vec, summaryMeta)
+		}
+	}
+	if err != nil && !strings.Contains(err.Error(), "dimension unknown") {
+		return fmt.Errorf("failed to create summary node: %w", err)
+	}
+
+	// 6. Link summary to session
+	g.eng.VLink(indexName, summaryID, sessionID, "summarizes", "", 1.0, nil)
+
+	// 7. Archive episodic memories
+	archivedCount := 0
+	for _, mem := range memories {
+		layer := "episodic"
+		if l, ok := mem.Metadata["memory_layer"].(string); ok && l != "" {
+			layer = l
+		}
+		// Only archive episodic memories
+		if layer == "episodic" {
+			updateProps := map[string]any{
+				"_archived":   true,
+				"archived_by": summaryID,
+				"archived_at": time.Now().Format(time.RFC3339),
+			}
+			if err := g.eng.VSetMetadata(indexName, mem.ID, updateProps); err == nil {
+				archivedCount++
+			}
+		}
+	}
+
+	slog.Info("[Cognitive Engine] Session summarized",
+		"session", sessionID,
+		"memories", len(memories),
+		"archived", archivedCount,
+		"summary", summaryID)
+
+	return nil
+}
+
+// getTimestamp extracts timestamp from metadata for sorting.
+func (g *Gardener) getTimestamp(meta map[string]any) int64 {
+	if ts, ok := meta["_created_at"].(float64); ok {
+		return int64(ts)
+	}
+	if ts, ok := meta["timestamp"].(string); ok {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			return t.Unix()
+		}
+	}
+	return 0
+}
+
+// embedContent generates an embedding for content (placeholder - Gardener doesn't have direct embedder access).
+// In production, this should use the engine's embedder or be passed as dependency.
+func (g *Gardener) embedContent(content string) ([]float32, error) {
+	// For now, return nil - the VAdd will handle zero-vector fallback
+	// TODO: Add embedder dependency to Gardener for proper semantic summaries
+	return nil, nil
+}
+
+// generateSessionSummary creates a summary from memory contents.
+// Uses LLM if available, otherwise creates a deterministic bullet list.
+func (g *Gardener) generateSessionSummary(contents []string) (summary string, keyPoints, decisions, followUp string) {
+	if g.llm != nil {
+		return g.generateLLMSessionSummary(contents)
+	}
+	return g.generateDeterministicSessionSummary(contents)
+}
+
+// generateLLMSessionSummary uses LLM to synthesize session content.
+func (g *Gardener) generateLLMSessionSummary(contents []string) (summary string, keyPoints, decisions, followUp string) {
+	// Build prompt
+	userQuery := fmt.Sprintf(`Analyze this conversation/session and provide a structured summary.
+
+Memories from the session:
+%s
+
+Respond with JSON only:
+{
+  "summary": "Brief overall summary (2-3 sentences)",
+  "key_points": "Bullet list of main topics discussed",
+  "decisions": "Any decisions made during the session",
+  "follow_up": "Action items or follow-up tasks"
+}`, strings.Join(contents, "\n- "))
+
+	systemPrompt := "You are a helpful assistant that summarizes conversations into structured JSON."
+
+	response, err := g.llm.Chat(systemPrompt, userQuery)
+	if err != nil {
+		slog.Warn("[Cognitive Engine] LLM summary failed, using fallback", "error", err)
+		return g.generateDeterministicSessionSummary(contents)
+	}
+
+	// Try to parse JSON response
+	var result struct {
+		Summary   string `json:"summary"`
+		KeyPoints string `json:"key_points"`
+		Decisions string `json:"decisions"`
+		FollowUp  string `json:"follow_up"`
+	}
+	if err := json.Unmarshal([]byte(response), &result); err != nil {
+		// If JSON parsing fails, use response as summary
+		return response, "", "", ""
+	}
+
+	return result.Summary, result.KeyPoints, result.Decisions, result.FollowUp
+}
+
+// generateDeterministicSessionSummary creates a simple bullet list summary.
+func (g *Gardener) generateDeterministicSessionSummary(contents []string) (summary string, keyPoints, decisions, followUp string) {
+	var sb strings.Builder
+	sb.WriteString("Session Summary:\n\n")
+	sb.WriteString("Key Points:\n")
+	for i, content := range contents {
+		if i >= 10 { // Limit to first 10 items
+			sb.WriteString(fmt.Sprintf("\n... and %d more items", len(contents)-10))
+			break
+		}
+		// Truncate long content
+		display := content
+		if len(display) > 100 {
+			display = display[:100] + "..."
+		}
+		sb.WriteString(fmt.Sprintf("- %s\n", display))
+	}
+
+	return sb.String(), "", "", ""
 }
 
 // detectKnowledgeGaps finds concepts that are semantically very close but

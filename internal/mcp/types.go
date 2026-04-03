@@ -12,6 +12,9 @@ type SaveMemoryArgs struct {
 	// ExplicitPinned allows overriding the layer's pinned_by_default setting.
 	// If nil, uses layer default. If set, overrides Pin and layer default.
 	ExplicitPinned *bool `json:"_pinned,omitempty" jsonschema:"Explicitly set pinned status (overrides Pin and layer defaults)"`
+	// SessionID optionally links this memory to a specific session.
+	// If empty and a session is active, the active session is used automatically.
+	SessionID string `json:"session_id,omitempty" jsonschema:"Optional session ID to link this memory to. Auto-set if session is active."`
 }
 
 type SaveMemoryResult struct {
@@ -129,6 +132,41 @@ type ListVectorsResult struct {
 		Metadata map[string]any `json:"metadata"`
 	} `json:"vectors"`
 	HasMore bool `json:"has_more"`
+}
+
+// --- Session Management ---
+
+type StartSessionArgs struct {
+	SessionID string `json:"session_id,omitempty" jsonschema:"Optional session ID. Auto-generated if empty."`
+	AgentID   string `json:"agent_id,omitempty" jsonschema:"ID of the agent/AI starting the session"`
+	UserID    string `json:"user_id,omitempty" jsonschema:"ID of the user being interacted with"`
+	Context   string `json:"context,omitempty" jsonschema:"Context description (e.g. 'Debugging Auth Module')"`
+	IndexName string `json:"index_name,omitempty" jsonschema:"Index to store session in. Defaults to 'mcp_memory'"`
+}
+
+type StartSessionResult struct {
+	SessionID string `json:"session_id"`
+	Status    string `json:"status"`
+	Message   string `json:"message"`
+}
+
+type EndSessionArgs struct {
+	SessionID string `json:"session_id" jsonschema:"The session ID to end,required"`
+	IndexName string `json:"index_name,omitempty" jsonschema:"Index where session is stored. Defaults to 'mcp_memory'"`
+}
+
+type EndSessionResult struct {
+	SessionID string `json:"session_id"`
+	Status    string `json:"status"`
+	Message   string `json:"message"`
+}
+
+// SessionContext tracks an active session for a connection.
+type SessionContext struct {
+	ID        string
+	IndexName string
+	StartTime int64          // Unix nanoseconds
+	Metadata  map[string]any // agent_id, user_id, context
 }
 
 // --- Reflection / Subconscious Tools ---

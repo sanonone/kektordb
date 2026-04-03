@@ -87,5 +87,15 @@ func NewMCPServer(eng *engine.Engine, embedder embeddings.Embedder) *mcp.Server 
 		Description: "Search strictly within the agent's meta-knowledge (insights, consolidated memories, and past reflections) to understand how concepts or behaviors evolved over time. Do not use this for raw fact retrieval.",
 	}, service.AskMetaQuestion)
 
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "start_session",
+		Description: "Start a new conversational session. All subsequent memories can be linked to this session. Returns a session ID to use with save_memory and end_session.",
+	}, service.StartSession)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "end_session",
+		Description: "End a session and trigger automatic summarization. The Gardener will create a semantic summary of all session memories and archive the episodic ones.",
+	}, service.EndSession)
+
 	return s
 }

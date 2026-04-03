@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -17,13 +18,41 @@ import (
 type Service struct {
 	engine   *engine.Engine
 	embedder embeddings.Embedder
+
+	// Session management (per-connection)
+	sessions   map[string]*SessionContext // key: connection ID or session ID
+	sessionsMu sync.RWMutex
 }
 
 func NewService(eng *engine.Engine, emb embeddings.Embedder) *Service {
 	return &Service{
 		engine:   eng,
 		embedder: emb,
+		sessions: make(map[string]*SessionContext),
 	}
+}
+
+// --- Session Management Helpers ---
+
+// getSession retrieves a session by ID.
+func (s *Service) getSession(sessionID string) *SessionContext {
+	s.sessionsMu.RLock()
+	defer s.sessionsMu.RUnlock()
+	return s.sessions[sessionID]
+}
+
+// setSession stores a session.
+func (s *Service) setSession(sess *SessionContext) {
+	s.sessionsMu.Lock()
+	defer s.sessionsMu.Unlock()
+	s.sessions[sess.ID] = sess
+}
+
+// removeSession removes a session.
+func (s *Service) removeSession(sessionID string) {
+	s.sessionsMu.Lock()
+	defer s.sessionsMu.Unlock()
+	delete(s.sessions, sessionID)
 }
 
 // ensureIndex helper to create the default index if missing
@@ -90,12 +119,17 @@ func (s *Service) SaveMemory(ctx context.Context, req *mcp.CallToolRequest, args
 	}
 	// Note: layer's pinned_by_default is applied in VAdd via applyLayerDefaults
 
-	// 4. Store
+	// 4. Session handling (explicit session_id from args)
+	if args.SessionID != "" {
+		meta["session_id"] = args.SessionID
+	}
+
+	// 5. Store
 	if err := s.engine.VAdd(idx, id, vec, meta); err != nil {
 		return nil, SaveMemoryResult{}, err
 	}
 
-	// 5. Links (Manual Graph Construction)
+	// 6. Links (Manual Graph Construction)
 	for _, target := range args.Links {
 		// Split target if user passed "id:rel", otherwise default to "related_to"
 		parts := strings.Split(target, ":")
@@ -105,6 +139,11 @@ func (s *Service) SaveMemory(ctx context.Context, req *mcp.CallToolRequest, args
 			rel = parts[1]
 		}
 		s.engine.VLink(idx, id, targetID, rel, "", 1.0, nil)
+	}
+
+	// 7. Auto-link to session if applicable
+	if args.SessionID != "" {
+		s.engine.VLink(idx, id, args.SessionID, "belongs_to", "", 1.0, nil)
 	}
 
 	return nil, SaveMemoryResult{MemoryID: id, Status: "saved"}, nil
@@ -820,4 +859,117 @@ func (s *Service) AskMetaQuestion(ctx context.Context, req *mcp.CallToolRequest,
 	formatted := s.formatResults(idx, ids)
 
 	return nil, AskMetaQuestionResult{Reflections: formatted.Results}, nil
+}
+
+// --- Session Management Tools ---
+
+// StartSession creates a new session entity and tracks it.
+func (s *Service) StartSession(ctx context.Context, req *mcp.CallToolRequest, args StartSessionArgs) (*mcp.CallToolResult, StartSessionResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	s.ensureIndex(idx)
+
+	// Generate session ID if not provided
+	sessionID := args.SessionID
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("session::%d", time.Now().UnixNano())
+	}
+
+	// Create session entity metadata
+	meta := map[string]any{
+		"type":           "session",
+		"session_status": "active",
+		"started_at":     time.Now().Format(time.RFC3339),
+	}
+	if args.AgentID != "" {
+		meta["agent_id"] = args.AgentID
+	}
+	if args.UserID != "" {
+		meta["user_id"] = args.UserID
+	}
+	if args.Context != "" {
+		meta["context"] = args.Context
+	}
+
+	// Try zero-vector insert first (bootstrap if needed)
+	err := s.engine.VAdd(idx, sessionID, nil, meta)
+	if err != nil && strings.Contains(err.Error(), "dimension unknown") {
+		// Bootstrap: create with a dummy embedding from context
+		bootstrapContent := fmt.Sprintf("Session %s: %s", sessionID, args.Context)
+		vec, errEmbed := s.embedder.Embed(bootstrapContent)
+		if errEmbed != nil {
+			return nil, StartSessionResult{}, fmt.Errorf("failed to bootstrap session embedding: %w", errEmbed)
+		}
+		err = s.engine.VAdd(idx, sessionID, vec, meta)
+	}
+	if err != nil {
+		return nil, StartSessionResult{}, fmt.Errorf("failed to create session: %w", err)
+	}
+
+	// Track the session
+	sess := &SessionContext{
+		ID:        sessionID,
+		IndexName: idx,
+		StartTime: time.Now().UnixNano(),
+		Metadata: map[string]any{
+			"agent_id": args.AgentID,
+			"user_id":  args.UserID,
+			"context":  args.Context,
+		},
+	}
+	s.setSession(sess)
+
+	return nil, StartSessionResult{
+		SessionID: sessionID,
+		Status:    "active",
+		Message:   fmt.Sprintf("Session started. All memories will be linked to %s", sessionID),
+	}, nil
+}
+
+// EndSession closes a session and triggers summarization.
+// Note: The actual summarization is done by the Gardener via HTTP API.
+func (s *Service) EndSession(ctx context.Context, req *mcp.CallToolRequest, args EndSessionArgs) (*mcp.CallToolResult, EndSessionResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+
+	sessionID := args.SessionID
+	if sessionID == "" {
+		return nil, EndSessionResult{}, fmt.Errorf("session_id is required")
+	}
+
+	// Verify session exists
+	data, err := s.engine.VGet(idx, sessionID)
+	if err != nil {
+		return nil, EndSessionResult{}, fmt.Errorf("session not found: %w", err)
+	}
+
+	// Update session status to ended
+	updateProps := map[string]any{
+		"session_status": "ended",
+		"ended_at":       time.Now().Format(time.RFC3339),
+	}
+
+	// Preserve existing metadata
+	for k, v := range data.Metadata {
+		if _, exists := updateProps[k]; !exists {
+			updateProps[k] = v
+		}
+	}
+
+	if err := s.engine.VSetMetadata(idx, sessionID, updateProps); err != nil {
+		return nil, EndSessionResult{}, fmt.Errorf("failed to end session: %w", err)
+	}
+
+	// Remove from active sessions
+	s.removeSession(sessionID)
+
+	return nil, EndSessionResult{
+		SessionID: sessionID,
+		Status:    "ended",
+		Message:   fmt.Sprintf("Session %s ended. Summarization triggered in background.", sessionID),
+	}, nil
 }

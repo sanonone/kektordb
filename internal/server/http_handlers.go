@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/http/pprof"
 	"strconv"
@@ -91,6 +92,10 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("GET /vector/indexes/{name}/reflections", s.handleGetReflections)
 	mux.HandleFunc("POST /vector/indexes/{name}/reflections/{id}/resolve", s.handleResolveReflection)
 	mux.HandleFunc("POST /vector/indexes/{name}/cognitive/think", s.handleTriggerCognitive)
+
+	// Session Management API
+	mux.HandleFunc("POST /sessions", s.handleStartSession)
+	mux.HandleFunc("POST /sessions/{id}/end", s.handleEndSession)
 
 	mux.HandleFunc("POST /rag/retrieve", s.handleRagRetrieve)
 
@@ -1128,6 +1133,130 @@ func (s *Server) handleTriggerCognitive(w http.ResponseWriter, r *http.Request) 
 	s.writeHTTPResponse(w, http.StatusAccepted, map[string]string{
 		"status":  "accepted",
 		"message": "Cognitive reflection cycle triggered in background.",
+	})
+}
+
+// handleStartSession creates a new session entity.
+func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SessionID string `json:"session_id,omitempty"`
+		AgentID   string `json:"agent_id,omitempty"`
+		UserID    string `json:"user_id,omitempty"`
+		Context   string `json:"context,omitempty"`
+		IndexName string `json:"index_name,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON"))
+		return
+	}
+
+	idx := req.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+
+	// Ensure index exists
+	if !s.Engine.IndexExists(idx) {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("index '%s' not found", idx))
+		return
+	}
+
+	// Generate session ID if not provided
+	sessionID := req.SessionID
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("session::%d", time.Now().UnixNano())
+	}
+
+	// Create session entity metadata
+	meta := map[string]any{
+		"type":           "session",
+		"session_status": "active",
+		"started_at":     time.Now().Format(time.RFC3339),
+	}
+	if req.AgentID != "" {
+		meta["agent_id"] = req.AgentID
+	}
+	if req.UserID != "" {
+		meta["user_id"] = req.UserID
+	}
+	if req.Context != "" {
+		meta["context"] = req.Context
+	}
+
+	// Try zero-vector insert
+	if err := s.Engine.VAdd(idx, sessionID, nil, meta); err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("failed to create session: %w", err))
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusCreated, map[string]string{
+		"session_id": sessionID,
+		"status":     "active",
+		"message":    "Session started successfully",
+	})
+}
+
+// handleEndSession closes a session and triggers Gardener summarization.
+func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("id")
+	if sessionID == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("session id is required"))
+		return
+	}
+
+	var req struct {
+		IndexName string `json:"index_name,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		// Body is optional, continue with defaults
+		req.IndexName = ""
+	}
+
+	idx := req.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+
+	// Verify session exists
+	data, err := s.Engine.VGet(idx, sessionID)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("session not found: %w", err))
+		return
+	}
+
+	// Update session status to ended
+	updateProps := map[string]any{
+		"session_status": "ended",
+		"ended_at":       time.Now().Format(time.RFC3339),
+	}
+
+	// Preserve existing metadata
+	for k, v := range data.Metadata {
+		if _, exists := updateProps[k]; !exists {
+			updateProps[k] = v
+		}
+	}
+
+	if err := s.Engine.VSetMetadata(idx, sessionID, updateProps); err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("failed to end session: %w", err))
+		return
+	}
+
+	// Trigger Gardener summarization in background if available
+	if s.gardener != nil {
+		go func() {
+			if err := s.gardener.SummarizeSession(idx, sessionID); err != nil {
+				slog.Warn("[Session] Gardener summarization failed", "error", err, "session", sessionID)
+			}
+		}()
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{
+		"session_id": sessionID,
+		"status":     "ended",
+		"message":    "Session ended. Summarization triggered in background.",
 	})
 }
 
