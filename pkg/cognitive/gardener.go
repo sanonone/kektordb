@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sanonone/kektordb/pkg/core"
@@ -54,6 +55,10 @@ type Config struct {
 
 	// Memory layer configuration
 	MemoryConfig hnsw.MemoryConfig
+
+	// User profiling
+	EnableUserProfiling    bool // Enable user personality profiling
+	ProfileUpdateThreshold int  // Number of user_interaction memories before profile update
 }
 
 // Gardener is the autonomous background worker that analyzes the database graph
@@ -68,6 +73,10 @@ type Gardener struct {
 	writeCounter   int64     // Write events since last think
 	lastThinkTime  time.Time // When the last think() completed
 	newReflections []string  // Reflection IDs created in current think() cycle
+
+	// User profiling
+	unassimilatedInteractions map[string]int // user_id -> count of new interactions
+	profileMutex              sync.RWMutex
 }
 
 // filterNodesByLayer filters a list of node IDs to include only those with the specified memory layer.
@@ -165,6 +174,9 @@ func NewGardener(eng *engine.Engine, llmClient llm.Client, cfg Config) *Gardener
 	if cfg.AdaptiveMinInterval == 0 {
 		cfg.AdaptiveMinInterval = 30 * time.Second
 	}
+	if cfg.ProfileUpdateThreshold == 0 {
+		cfg.ProfileUpdateThreshold = 20
+	}
 
 	eventCh := eng.EventBus.Subscribe(64)
 
@@ -175,6 +187,9 @@ func NewGardener(eng *engine.Engine, llmClient llm.Client, cfg Config) *Gardener
 		stopCh:      make(chan struct{}),
 		eventCh:     eventCh,
 		scanCursors: make(map[string]uint32),
+
+		// User profiling
+		unassimilatedInteractions: make(map[string]int),
 	}
 }
 
@@ -218,7 +233,7 @@ func (g *Gardener) loop() {
 	}
 }
 
-// onEvent processes engine write events for adaptive scheduling.
+// onEvent processes engine write events for adaptive scheduling and user profiling.
 func (g *Gardener) onEvent(event engine.Event) {
 	g.writeCounter++
 
@@ -231,6 +246,59 @@ func (g *Gardener) onEvent(event engine.Event) {
 				g.lastThinkTime = time.Now()
 			}()
 		}
+	}
+
+	// User profiling: track new user_interaction memories
+	if g.cfg.EnableUserProfiling && event.Type == "vector.add" {
+		g.trackUserInteraction(event)
+	}
+}
+
+// trackUserInteraction increments the unassimilated counter for user profiling.
+func (g *Gardener) trackUserInteraction(event engine.Event) {
+	if event.IndexName == "" || event.ID == "" {
+		return
+	}
+
+	data, err := g.eng.VGet(event.IndexName, event.ID)
+	if err != nil {
+		return
+	}
+
+	// Check if memory has user_id and tags include user_interaction
+	userID, hasUserID := data.Metadata["user_id"].(string)
+	if !hasUserID || userID == "" {
+		return
+	}
+
+	tags, hasTags := data.Metadata["tags"].([]any)
+	if !hasTags {
+		return
+	}
+
+	hasUserInteraction := false
+	for _, t := range tags {
+		if tagStr, ok := t.(string); ok && tagStr == "user_interaction" {
+			hasUserInteraction = true
+			break
+		}
+	}
+
+	if !hasUserInteraction {
+		return
+	}
+
+	// Increment counter
+	g.profileMutex.Lock()
+	g.unassimilatedInteractions[userID]++
+	count := g.unassimilatedInteractions[userID]
+	g.profileMutex.Unlock()
+
+	// If threshold reached, trigger profile update
+	if count >= g.cfg.ProfileUpdateThreshold {
+		go func() {
+			g.UpdateUserProfile(event.IndexName, userID)
+		}()
 	}
 }
 
@@ -1212,6 +1280,279 @@ func (g *Gardener) SummarizeSession(indexName, sessionID string) error {
 		"summary", summaryID)
 
 	return nil
+}
+
+// UserProfile represents the persistent personality profile of a user.
+// Used internally for LLM interactions and stored in metadata.
+type UserProfile struct {
+	UserID             string   `json:"user_id"`
+	CommunicationStyle string   `json:"communication_style"` // "concise", "verbose", "technical"
+	Language           string   `json:"language"`            // "it", "en", etc.
+	ExpertiseAreas     []string `json:"expertise_areas"`     // ["Go", "databases"]
+	Dislikes           []string `json:"dislikes"`            // Anti-preferences
+	ResponseLength     string   `json:"response_length"`     // "short", "medium", "long"
+	Confidence         float64  `json:"confidence"`
+	InteractionCount   int      `json:"interaction_count"`
+	LastUpdated        int64    `json:"last_updated"`
+	ProfileData        string   `json:"profile_data"` // Full JSON for LLM
+}
+
+// UpdateUserProfile updates the user profile based on recent interactions.
+// Called when unassimilatedInteractions count exceeds ProfileUpdateThreshold.
+func (g *Gardener) UpdateUserProfile(indexName, userID string) error {
+	if !g.cfg.EnableUserProfiling {
+		return nil
+	}
+
+	if !g.eng.IndexExists(indexName) {
+		return fmt.Errorf("index %s does not exist", indexName)
+	}
+
+	slog.Info("[Cognitive Engine] Updating user profile", "index", indexName, "user", userID)
+
+	// 1. Get recent user_interaction memories
+	filter := fmt.Sprintf("user_id='%s' AND tags CONTAINS 'user_interaction'", userID)
+	ids, err := g.eng.VFilter(indexName, filter, g.cfg.ProfileUpdateThreshold)
+	if err != nil {
+		return fmt.Errorf("failed to get user interactions: %w", err)
+	}
+
+	if len(ids) == 0 {
+		return nil
+	}
+
+	// 2. Fetch interaction contents
+	memories, _ := g.eng.VGetMany(indexName, ids)
+	if len(memories) == 0 {
+		return nil
+	}
+
+	// Sort by timestamp (newest first for LLM context)
+	sort.Slice(memories, func(i, j int) bool {
+		ti := getMemTimestamp(memories[i].Metadata)
+		tj := getMemTimestamp(memories[j].Metadata)
+		return ti > tj
+	})
+
+	var interactions []string
+	var timestamps []string
+	for _, mem := range memories {
+		if content, ok := mem.Metadata["content"].(string); ok && content != "" {
+			ts := ""
+			if t, ok := mem.Metadata["_created_at"].(float64); ok {
+				ts = time.Unix(int64(t), 0).Format("2006-01-02 15:04")
+			}
+			interactions = append(interactions, fmt.Sprintf("[%s] %s", ts, content))
+			timestamps = append(timestamps, ts)
+		}
+	}
+
+	if len(interactions) == 0 {
+		return nil
+	}
+
+	// 3. Get current profile or create default
+	profileID := fmt.Sprintf("_profile::%s", userID)
+	currentProfile := UserProfile{UserID: userID, Confidence: 0.0}
+
+	data, err := g.eng.VGet(indexName, profileID)
+	currentProfile.UserID = userID
+	currentProfile.Confidence = 0.0
+
+	if err == nil {
+		currentProfile.CommunicationStyle = getString(data.Metadata, "communication_style")
+		currentProfile.Language = getString(data.Metadata, "language")
+		currentProfile.ResponseLength = getString(data.Metadata, "response_length")
+		currentProfile.Confidence = getFloat(data.Metadata, "confidence")
+		currentProfile.InteractionCount = int(getFloat(data.Metadata, "interaction_count"))
+		currentProfile.LastUpdated = int64(getFloat(data.Metadata, "last_updated"))
+
+		if areas, ok := data.Metadata["expertise_areas"].(string); ok && areas != "" {
+			currentProfile.ExpertiseAreas = strings.Split(areas, ",")
+		}
+		if dis, ok := data.Metadata["dislikes"].(string); ok && dis != "" {
+			currentProfile.Dislikes = strings.Split(dis, ",")
+		}
+		if pd, ok := data.Metadata["profile_data"].(string); ok {
+			currentProfile.ProfileData = pd
+		}
+	}
+
+	// 4. Generate updated profile (LLM or fallback)
+	var updatedProfile UserProfile
+	if g.llm != nil {
+		updatedProfile = g.generateLLMProfileUpdate(currentProfile, interactions, timestamps)
+	} else {
+		updatedProfile = g.generateDeterministicProfileUpdate(currentProfile, interactions)
+	}
+
+	// 5. Store updated profile using VSetMetadata
+	expertiseStr := strings.Join(updatedProfile.ExpertiseAreas, ",")
+	dislikesStr := strings.Join(updatedProfile.Dislikes, ",")
+
+	meta := map[string]any{
+		"type":                "user_profile",
+		"user_id":             userID,
+		"communication_style": updatedProfile.CommunicationStyle,
+		"language":            updatedProfile.Language,
+		"expertise_areas":     expertiseStr,
+		"dislikes":            dislikesStr,
+		"response_length":     updatedProfile.ResponseLength,
+		"confidence":          updatedProfile.Confidence,
+		"interaction_count":   float64(updatedProfile.InteractionCount),
+		"last_updated":        float64(time.Now().Unix()),
+		"_pinned":             true, // Profile is important, no decay
+	}
+
+	profileJSON, _ := json.Marshal(updatedProfile)
+	meta["profile_data"] = string(profileJSON)
+
+	// Use VSetMetadata for update (VMETA command in AOF)
+	if err := g.eng.VSetMetadata(indexName, profileID, meta); err != nil {
+		// If node doesn't exist, create it
+		if strings.Contains(err.Error(), "not found") {
+			err = g.eng.VAdd(indexName, profileID, nil, meta)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to save profile: %w", err)
+		}
+	}
+
+	// 6. Reset unassimilated counter
+	g.profileMutex.Lock()
+	g.unassimilatedInteractions[userID] = 0
+	g.profileMutex.Unlock()
+
+	slog.Info("[Cognitive Engine] User profile updated",
+		"user", userID,
+		"confidence", updatedProfile.Confidence,
+		"interactions", updatedProfile.InteractionCount)
+
+	return nil
+}
+
+// generateLLMProfileUpdate uses LLM to update the user profile.
+func (g *Gardener) generateLLMProfileUpdate(current UserProfile, interactions, timestamps []string) UserProfile {
+	currentJSON := current.ProfileData
+	if currentJSON == "" {
+		currentJSON = "{}"
+	}
+
+	sysPrompt := `You are a user behavior analyst. Update the user profile based on recent interactions.
+
+IMPORTANT INSTRUCTIONS:
+1. If recent interactions contradict old preferences, the NEW preferences MUST override
+2. Pay attention to timestamps - recent preferences have more weight
+3. Extract both positives (likes, preferences) AND negatives (dislikes, anti-patterns)
+4. Output valid JSON only
+
+CURRENT PROFILE:
+` + currentJSON + `
+
+RECENT INTERACTIONS:
+` + strings.Join(interactions, "\n") + `
+
+Respond with JSON:
+{
+  "user_id": "...",
+  "communication_style": "concise|verbose|technical|mixed",
+  "language": "it|en|...",
+  "expertise_areas": ["Go", "databases", ...],
+  "dislikes": ["no markdown", "no java proposals", ...],
+  "response_length": "short|medium|long",
+  "confidence": 0.0-1.0,
+  "interaction_count": ...,
+  "last_updated": ...,
+  "profile_data": "FULL JSON STRING FOR LLM"
+}`
+
+	respText, err := g.llm.Chat(sysPrompt, "")
+	if err != nil {
+		slog.Warn("[Cognitive Engine] LLM profile update failed, using fallback", "error", err)
+		return g.generateDeterministicProfileUpdate(current, interactions)
+	}
+
+	var resp struct {
+		UserID             string   `json:"user_id"`
+		CommunicationStyle string   `json:"communication_style"`
+		Language           string   `json:"language"`
+		ExpertiseAreas     []string `json:"expertise_areas"`
+		Dislikes           []string `json:"dislikes"`
+		ResponseLength     string   `json:"response_length"`
+		Confidence         float64  `json:"confidence"`
+		InteractionCount   int      `json:"interaction_count"`
+		LastUpdated        int64    `json:"last_updated"`
+		ProfileData        string   `json:"profile_data"`
+	}
+
+	if err := json.Unmarshal([]byte(respText), &resp); err != nil {
+		slog.Warn("[Cognitive Engine] Failed to parse LLM profile response", "error", err)
+		return g.generateDeterministicProfileUpdate(current, interactions)
+	}
+
+	return resp
+}
+
+// generateDeterministicProfileUpdate creates a simple profile update without LLM.
+func (g *Gardener) generateDeterministicProfileUpdate(current UserProfile, interactions []string) UserProfile {
+	updated := current
+	updated.InteractionCount = current.InteractionCount + len(interactions)
+	updated.LastUpdated = time.Now().Unix()
+	updated.Confidence = math.Min(1.0, float64(updated.InteractionCount)/50.0)
+
+	// Simple keyword extraction from recent interactions
+	recentTexts := strings.Join(interactions, " ")
+	lowerText := strings.ToLower(recentTexts)
+
+	if strings.Contains(lowerText, "breve") || strings.Contains(lowerText, "conciso") || strings.Contains(lowerText, "short") {
+		updated.ResponseLength = "short"
+	} else if strings.Contains(lowerText, "lungo") || strings.Contains(lowerText, "verbose") || strings.Contains(lowerText, "long") {
+		updated.ResponseLength = "long"
+	}
+
+	if strings.Contains(lowerText, "italiano") || strings.Contains(lowerText, "italian") || strings.Contains(lowerText, "in italiano") {
+		updated.Language = "it"
+	} else if strings.Contains(lowerText, "english") || strings.Contains(lowerText, "in english") {
+		updated.Language = "en"
+	}
+
+	if strings.Contains(lowerText, "non usare") || strings.Contains(lowerText, "no ") || strings.Contains(lowerText, "avoid") {
+		updated.Dislikes = append(updated.Dislikes, "custom dislike detected")
+	}
+
+	profileJSON, _ := json.Marshal(updated)
+	updated.ProfileData = string(profileJSON)
+
+	return updated
+}
+
+// getString is a helper to safely extract string from metadata.
+func getString(m map[string]any, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// getFloat is a helper to safely extract float64 from metadata.
+func getFloat(m map[string]any, key string) float64 {
+	if v, ok := m[key].(float64); ok {
+		return v
+	}
+	return 0
+}
+
+// getMemTimestamp extracts timestamp from memory metadata for sorting.
+func getMemTimestamp(meta map[string]any) int64 {
+	if ts, ok := meta["_created_at"].(float64); ok {
+		return int64(ts)
+	}
+	if ts, ok := meta["timestamp"].(string); ok {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			return t.Unix()
+		}
+	}
+	return 0
 }
 
 // getTimestamp extracts timestamp from metadata for sorting.

@@ -122,6 +122,17 @@ func (s *Service) SaveMemory(ctx context.Context, req *mcp.CallToolRequest, args
 	// 4. Session handling (explicit session_id from args)
 	if args.SessionID != "" {
 		meta["session_id"] = args.SessionID
+		// Propagate user_id from session if present (for profiling)
+		if sess := s.getSession(args.SessionID); sess != nil {
+			if userID, ok := sess.Metadata["user_id"].(string); ok && userID != "" {
+				meta["user_id"] = userID
+			}
+		}
+	}
+
+	// 5. Explicit user_id (overrides session-based)
+	if args.UserID != "" {
+		meta["user_id"] = args.UserID
 	}
 
 	// 5. Store
@@ -972,4 +983,138 @@ func (s *Service) EndSession(ctx context.Context, req *mcp.CallToolRequest, args
 		Status:    "ended",
 		Message:   fmt.Sprintf("Session %s ended. Summarization triggered in background.", sessionID),
 	}, nil
+}
+
+// --- User Profile Tools ---
+
+func (s *Service) GetUserProfile(ctx context.Context, req *mcp.CallToolRequest, args GetUserProfileArgs) (*mcp.CallToolResult, GetUserProfileResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+
+	if args.UserID == "" {
+		return nil, GetUserProfileResult{}, fmt.Errorf("user_id is required")
+	}
+
+	profileID := fmt.Sprintf("_profile::%s", args.UserID)
+	data, err := s.engine.VGet(idx, profileID)
+	if err != nil {
+		return nil, GetUserProfileResult{
+			UserID: args.UserID,
+			Exists: false,
+		}, nil
+	}
+
+	var expertise []string
+	if areas, ok := data.Metadata["expertise_areas"].(string); ok && areas != "" {
+		expertise = strings.Split(areas, ",")
+	}
+
+	var dislikes []string
+	if dis, ok := data.Metadata["dislikes"].(string); ok && dis != "" {
+		dislikes = strings.Split(dis, ",")
+	}
+
+	result := GetUserProfileResult{
+		UserID:             args.UserID,
+		Exists:             true,
+		CommunicationStyle: getString(data.Metadata, "communication_style"),
+		Language:           getString(data.Metadata, "language"),
+		ExpertiseAreas:     expertise,
+		Dislikes:           dislikes,
+		ResponseLength:     getString(data.Metadata, "response_length"),
+		Confidence:         getFloat(data.Metadata, "confidence"),
+		ProfileData:        getString(data.Metadata, "profile_data"),
+		LastUpdated:        int64(getFloat(data.Metadata, "last_updated")),
+		InteractionCount:   int(getFloat(data.Metadata, "interaction_count")),
+	}
+
+	return nil, result, nil
+}
+
+func (s *Service) ListUserProfiles(ctx context.Context, req *mcp.CallToolRequest, args ListUserProfilesArgs) (*mcp.CallToolResult, ListUserProfilesResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+
+	limit := args.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+
+	offset := args.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	ids, err := s.engine.VFilter(idx, "type='user_profile'", 0)
+	if err != nil {
+		return nil, ListUserProfilesResult{}, fmt.Errorf("failed to list profiles: %w", err)
+	}
+
+	if len(ids) == 0 {
+		return nil, ListUserProfilesResult{
+			Profiles: []UserProfileItem{},
+			HasMore:  false,
+		}, nil
+	}
+
+	start := offset
+	if start >= len(ids) {
+		return nil, ListUserProfilesResult{
+			Profiles: []UserProfileItem{},
+			HasMore:  false,
+		}, nil
+	}
+
+	end := offset + limit
+	if end > len(ids) {
+		end = len(ids)
+	}
+
+	pageIDs := ids[start:end]
+
+	var profiles []UserProfileItem
+	for _, id := range pageIDs {
+		data, err := s.engine.VGet(idx, id)
+		if err != nil {
+			continue
+		}
+
+		userID := getString(data.Metadata, "user_id")
+		if userID == "" {
+			userID = strings.TrimPrefix(id, "_profile::")
+		}
+
+		profiles = append(profiles, UserProfileItem{
+			UserID:             userID,
+			Confidence:         getFloat(data.Metadata, "confidence"),
+			LastUpdated:        int64(getFloat(data.Metadata, "last_updated")),
+			CommunicationStyle: getString(data.Metadata, "communication_style"),
+		})
+	}
+
+	hasMore := (offset + limit) < len(ids)
+
+	return nil, ListUserProfilesResult{
+		Profiles: profiles,
+		HasMore:  hasMore,
+	}, nil
+}
+
+// Helper functions for safe type conversion
+func getString(m map[string]any, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func getFloat(m map[string]any, key string) float64 {
+	if v, ok := m[key].(float64); ok {
+		return v
+	}
+	return 0
 }

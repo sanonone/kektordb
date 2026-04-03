@@ -15,6 +15,9 @@ type SaveMemoryArgs struct {
 	// SessionID optionally links this memory to a specific session.
 	// If empty and a session is active, the active session is used automatically.
 	SessionID string `json:"session_id,omitempty" jsonschema:"Optional session ID to link this memory to. Auto-set if session is active."`
+	// UserID explicitly sets the user for this memory (for profiling).
+	// If empty and session_id is provided, user_id is propagated from session.
+	UserID string `json:"user_id,omitempty" jsonschema:"User ID for profiling. Auto-propagated from session if not set."`
 }
 
 type SaveMemoryResult struct {
@@ -213,4 +216,43 @@ type ReflectionItem struct {
 
 type GetReflectionsResponse struct {
 	Reflections []ReflectionItem `json:"reflections"`
+}
+
+// --- User Profile Tools ---
+
+type GetUserProfileArgs struct {
+	UserID    string `json:"user_id" jsonschema:"The user ID to retrieve profile for,required"`
+	IndexName string `json:"index_name,omitempty" jsonschema:"Index name (defaults to 'mcp_memory')"`
+}
+
+type GetUserProfileResult struct {
+	UserID             string   `json:"user_id"`
+	Exists             bool     `json:"exists"`
+	CommunicationStyle string   `json:"communication_style,omitempty"`
+	Language           string   `json:"language,omitempty"`
+	ExpertiseAreas     []string `json:"expertise_areas,omitempty"`
+	Dislikes           []string `json:"dislikes,omitempty"`
+	ResponseLength     string   `json:"response_length,omitempty"`
+	Confidence         float64  `json:"confidence"`
+	ProfileData        string   `json:"profile_data,omitempty"`
+	LastUpdated        int64    `json:"last_updated"`
+	InteractionCount   int      `json:"interaction_count"`
+}
+
+type ListUserProfilesArgs struct {
+	IndexName string `json:"index_name,omitempty" jsonschema:"Index name (defaults to 'mcp_memory')"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"Max results (default 50)"`
+	Offset    int    `json:"offset,omitempty" jsonschema:"Offset for pagination"`
+}
+
+type ListUserProfilesResult struct {
+	Profiles []UserProfileItem `json:"profiles"`
+	HasMore  bool              `json:"has_more"`
+}
+
+type UserProfileItem struct {
+	UserID             string  `json:"user_id"`
+	Confidence         float64 `json:"confidence"`
+	LastUpdated        int64   `json:"last_updated"`
+	CommunicationStyle string  `json:"communication_style,omitempty"`
 }

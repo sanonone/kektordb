@@ -97,5 +97,15 @@ func NewMCPServer(eng *engine.Engine, embedder embeddings.Embedder) *mcp.Server 
 		Description: "End a session and trigger automatic summarization. The Gardener will create a semantic summary of all session memories and archive the episodic ones.",
 	}, service.EndSession)
 
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "get_user_profile",
+		Description: "Retrieve the personality profile of a user. Returns communication style, expertise areas, preferences, and dislikes.",
+	}, service.GetUserProfile)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "list_user_profiles",
+		Description: "List all user profiles in the database. Useful for multi-user dashboards or admin interfaces.",
+	}, service.ListUserProfiles)
+
 	return s
 }

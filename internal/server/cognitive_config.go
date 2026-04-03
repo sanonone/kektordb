@@ -49,6 +49,10 @@ type GardenerConfigYAML struct {
 	AdaptiveThreshold   int64                  `yaml:"adaptive_threshold"`    // Write count to trigger early think
 	AdaptiveMinInterval string                 `yaml:"adaptive_min_interval"` // Min time between forced thinks
 	MemoryLayers        MemoryLayersConfigYAML `yaml:"memory_layers"`         // Per-layer memory configuration
+
+	// User Profiling
+	EnableUserProfiling    bool `yaml:"enable_user_profiling"`    // Enable user personality profiling
+	ProfileUpdateThreshold int  `yaml:"profile_update_threshold"` // Number of interactions before profile update (default: 20)
 }
 
 // AutoResolveConfigYAML holds the auto-resolve settings.
@@ -171,17 +175,19 @@ func LoadCognitiveConfig(path string) (cognitive.Config, llm.Config, error) {
 
 	// Build Gardener config
 	gardener := cognitive.Config{
-		Enabled:             cfg.Gardener.Enabled,
-		Mode:                cfg.Gardener.Mode,
-		Interval:            parseDuration(cfg.Gardener.Interval, 30*time.Second),
-		TargetIndexes:       cfg.Gardener.TargetIndexes,
-		AdaptiveThreshold:   cfg.Gardener.AdaptiveThreshold,
-		AdaptiveMinInterval: parseDuration(cfg.Gardener.AdaptiveMinInterval, 30*time.Second),
-		AutoResolveEnabled:  cfg.AutoResolve.Enabled,
-		AutoResolveLinks:    cfg.AutoResolve.Actions.CreateSuggestedLinks.Enabled,
-		AutoResolveLinksMin: cfg.AutoResolve.Actions.CreateSuggestedLinks.MinConfidence,
-		AutoResolveContra:   cfg.AutoResolve.Actions.MarkMinorContradictions.Enabled,
-		MemoryConfig:        buildMemoryConfig(cfg.Gardener.MemoryLayers),
+		Enabled:                cfg.Gardener.Enabled,
+		Mode:                   cfg.Gardener.Mode,
+		Interval:               parseDuration(cfg.Gardener.Interval, 30*time.Second),
+		TargetIndexes:          cfg.Gardener.TargetIndexes,
+		AdaptiveThreshold:      cfg.Gardener.AdaptiveThreshold,
+		AdaptiveMinInterval:    parseDuration(cfg.Gardener.AdaptiveMinInterval, 30*time.Second),
+		AutoResolveEnabled:     cfg.AutoResolve.Enabled,
+		AutoResolveLinks:       cfg.AutoResolve.Actions.CreateSuggestedLinks.Enabled,
+		AutoResolveLinksMin:    cfg.AutoResolve.Actions.CreateSuggestedLinks.MinConfidence,
+		AutoResolveContra:      cfg.AutoResolve.Actions.MarkMinorContradictions.Enabled,
+		MemoryConfig:           buildMemoryConfig(cfg.Gardener.MemoryLayers),
+		EnableUserProfiling:    cfg.Gardener.EnableUserProfiling,
+		ProfileUpdateThreshold: cfg.Gardener.ProfileUpdateThreshold,
 	}
 
 	// Apply defaults for empty/zero values
