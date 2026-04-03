@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -52,35 +53,49 @@ func (s *Service) SaveMemory(ctx context.Context, req *mcp.CallToolRequest, args
 	}
 	s.ensureIndex(idx)
 
-	// 1. Embedding
+	// 1. Validate and normalize layer
+	layer := args.Layer
+	if layer == "" {
+		layer = "episodic" // default
+	}
+	validLayers := map[string]bool{"episodic": true, "semantic": true, "procedural": true}
+	if !validLayers[layer] {
+		return nil, SaveMemoryResult{}, fmt.Errorf("invalid layer: %s (must be episodic, semantic, or procedural)", layer)
+	}
+
+	// 2. Embedding
 	vec, err := s.embedder.Embed(args.Content)
 	if err != nil {
 		return nil, SaveMemoryResult{}, fmt.Errorf("embedding error: %w", err)
 	}
 
-	// 2. Metadata
+	// 3. Metadata
 	id := fmt.Sprintf("mem_%d", time.Now().UnixNano())
 	meta := map[string]any{
-		"content":   args.Content,
-		"timestamp": time.Now().Format(time.RFC3339),
-		"source":    "mcp",
-		"type":      "memory",
+		"content":      args.Content,
+		"timestamp":    time.Now().Format(time.RFC3339),
+		"source":       "mcp",
+		"type":         "memory",
+		"memory_layer": layer, // Store the layer
 	}
 	if len(args.Tags) > 0 {
 		meta["tags"] = args.Tags
 	}
 
-	// Handle Pinning
-	if args.Pin {
+	// Handle Pinning (ExplicitPinned overrides everything)
+	if args.ExplicitPinned != nil {
+		meta["_pinned"] = *args.ExplicitPinned
+	} else if args.Pin {
 		meta["_pinned"] = true
 	}
+	// Note: layer's pinned_by_default is applied in VAdd via applyLayerDefaults
 
-	// 3. Store
+	// 4. Store
 	if err := s.engine.VAdd(idx, id, vec, meta); err != nil {
 		return nil, SaveMemoryResult{}, err
 	}
 
-	// 4. Links (Manual Graph Construction)
+	// 5. Links (Manual Graph Construction)
 	for _, target := range args.Links {
 		// Split target if user passed "id:rel", otherwise default to "related_to"
 		parts := strings.Split(target, ":")
@@ -185,15 +200,31 @@ func (s *Service) Recall(ctx context.Context, req *mcp.CallToolRequest, args Rec
 		return nil, RecallResult{}, err
 	}
 
-	// Hybrid Search (Standard)
-	ids, err := s.engine.VSearch(idx, vec, limit, "", "", 0, 0.5, nil)
+	// Build layer filter if specific layers requested
+	var filter string
+	if len(args.Layers) > 0 {
+		var parts []string
+		for _, layer := range args.Layers {
+			parts = append(parts, fmt.Sprintf("memory_layer='%s'", layer))
+		}
+		filter = strings.Join(parts, " OR ")
+	}
+
+	// Hybrid Search with optional layer filter
+	ids, err := s.engine.VSearch(idx, vec, limit*2, filter, "", 0, 0.5, nil) // Fetch more for re-ranking
 	if err != nil {
 		return nil, RecallResult{}, err
 	}
 
+	// Apply layer weights if configured
+	if len(args.LayerWeights) > 0 && len(ids) > 0 {
+		ids = s.applyLayerWeights(idx, ids, args.LayerWeights, limit)
+	} else if len(ids) > limit {
+		ids = ids[:limit]
+	}
+
 	if args.Reinforce && len(ids) > 0 {
 		// Fire and forget reinforcement (non-blocking for the response)
-		// We call VReinforce on the engine
 		go func() {
 			if err := s.engine.VReinforce(idx, ids); err != nil {
 				// Log error internally if needed
@@ -565,6 +596,79 @@ func (s *Service) formatResults(idx string, ids []string) RecallResult {
 		res = append(res, fmt.Sprintf("%v", content))
 	}
 	return RecallResult{Results: res}
+}
+
+// applyLayerWeights re-ranks results based on per-layer weights.
+// Default weights: semantic=0.5, episodic=0.4, procedural=0.1
+func (s *Service) applyLayerWeights(idx string, ids []string, weights map[string]float64, limit int) []string {
+	// Fetch metadata for all IDs
+	data, _ := s.engine.VGetMany(idx, ids)
+	if len(data) == 0 {
+		return ids[:min(limit, len(ids))]
+	}
+
+	// Default weights if not specified
+	defaultWeights := map[string]float64{
+		"semantic":   0.5,
+		"episodic":   0.4,
+		"procedural": 0.1,
+	}
+
+	// Merge user weights with defaults
+	layerWeights := make(map[string]float64)
+	for k, v := range defaultWeights {
+		layerWeights[k] = v
+	}
+	for k, v := range weights {
+		if v > 0 {
+			layerWeights[k] = v
+		}
+	}
+
+	// Score and sort results
+	type weightedResult struct {
+		id     string
+		weight float64
+		index  int // preserve original order for stability
+	}
+
+	results := make([]weightedResult, 0, len(data))
+	for i, item := range data {
+		layer := "episodic" // default
+		if l, ok := item.Metadata["memory_layer"].(string); ok && l != "" {
+			layer = l
+		}
+
+		weight := layerWeights[layer]
+		if weight == 0 {
+			weight = 0.1 // minimum weight
+		}
+
+		results = append(results, weightedResult{
+			id:     item.ID,
+			weight: weight,
+			index:  i,
+		})
+	}
+
+	// Sort by weight descending, then by original index for stability
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].weight != results[j].weight {
+			return results[i].weight > results[j].weight
+		}
+		return results[i].index < results[j].index
+	})
+
+	// Return top N
+	if len(results) > limit {
+		results = results[:limit]
+	}
+
+	ids = make([]string, len(results))
+	for i, r := range results {
+		ids[i] = r.id
+	}
+	return ids
 }
 
 // CheckSubconscious retrieves unresolved reflections generated by the Gardener.

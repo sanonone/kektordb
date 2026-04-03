@@ -247,6 +247,34 @@ func (e *Engine) VAdd(indexName, id string, vector []float32, metadata map[strin
 		}
 	}
 
+	// --- MEMORY LAYER DEFAULTS ---
+	// Apply layer-specific defaults (e.g., pinned_by_default for procedural)
+	if hnswIdx, ok := idx.(*hnsw.Index); ok {
+		memCfg := hnswIdx.GetMemoryConfig()
+		if memCfg.Enabled && len(memCfg.Layers) > 0 {
+			if metadata == nil {
+				metadata = make(map[string]any)
+			}
+			// Determine layer (default to "episodic")
+			layer := "episodic"
+			if l, ok := metadata["memory_layer"].(string); ok && l != "" {
+				layer = l
+			} else {
+				// Set default layer
+				metadata["memory_layer"] = layer
+			}
+
+			// Apply layer defaults if user hasn't explicitly set _pinned
+			if layerCfg, ok := memCfg.Layers[layer]; ok {
+				if layerCfg.PinnedByDefault {
+					if _, userSetPinned := metadata["_pinned"]; !userSetPinned {
+						metadata["_pinned"] = true
+					}
+				}
+			}
+		}
+	}
+
 	// --- ZERO VECTOR LOGIC ---
 	if len(vector) == 0 {
 		// We need to fetch the HNSW index to ask for dimension
@@ -926,12 +954,27 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 			}
 
 			if referenceTime > 0 {
-				factor := calculateTimeDecay(referenceTime, halfLife) // Uses global func
-				// Recalculate age here if calculateTimeDecay doesn't accept 'now'
-				// Or update calculateTimeDecay to take (now - created)
+				// Determine memory layer for per-layer decay
+				layer := "episodic" // default
+				if val, ok := meta["memory_layer"]; ok {
+					if s, ok := val.(string); ok && s != "" {
+						layer = s
+					}
+				}
 
-				// Let's assume calculateTimeDecay(created, halfLife) does:
-				// age = time.Now().Unix() - created.
+				// Get half-life for this layer (fallback to global)
+				layerHalfLife := halfLife
+				if memCfg.Layers != nil {
+					if layerCfg, ok := memCfg.Layers[layer]; ok {
+						if layerCfg.DecayHalfLife == 0 {
+							// No decay for this layer (e.g., procedural)
+							continue
+						}
+						layerHalfLife = float64(time.Duration(layerCfg.DecayHalfLife).Seconds())
+					}
+				}
+
+				factor := calculateTimeDecay(referenceTime, layerHalfLife)
 				fusedScores[docID] = score * factor
 			}
 		}
@@ -1036,14 +1079,35 @@ func (e *Engine) VSearchWithScores(indexName string, query []float32, k int) ([]
 	// Apply time decay if memory config is enabled
 	memCfg := hnswIdx.GetMemoryConfig()
 	if memCfg.Enabled {
-		halfLife := float64(time.Duration(memCfg.DecayHalfLife).Seconds())
-		if halfLife <= 0 {
-			halfLife = 604800 // 7 days default
+		globalHalfLife := float64(time.Duration(memCfg.DecayHalfLife).Seconds())
+		if globalHalfLife <= 0 {
+			globalHalfLife = 604800 // 7 days default
 		}
 
 		e.DB.RLock()
 		for i := range internalResults {
 			meta := e.DB.GetMetadataForNodeUnlocked(indexName, internalResults[i].DocID)
+
+			// Determine memory layer
+			layer := "episodic" // default
+			if val, ok := meta["memory_layer"]; ok {
+				if s, ok := val.(string); ok && s != "" {
+					layer = s
+				}
+			}
+
+			// Get half-life for this layer
+			layerHalfLife := globalHalfLife
+			if memCfg.Layers != nil {
+				if layerCfg, ok := memCfg.Layers[layer]; ok {
+					if layerCfg.DecayHalfLife == 0 {
+						// No decay for this layer
+						continue
+					}
+					layerHalfLife = float64(time.Duration(layerCfg.DecayHalfLife).Seconds())
+				}
+			}
+
 			if val, ok := meta["_created_at"]; ok {
 				var created float64
 				switch v := val.(type) {
@@ -1056,7 +1120,7 @@ func (e *Engine) VSearchWithScores(indexName string, query []float32, k int) ([]
 				}
 
 				if created > 0 {
-					factor := calculateTimeDecay(created, halfLife)
+					factor := calculateTimeDecay(created, layerHalfLife)
 					internalResults[i].Score *= factor
 				}
 			}

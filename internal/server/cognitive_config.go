@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sanonone/kektordb/pkg/cognitive"
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/llm"
 	"gopkg.in/yaml.v3"
 )
@@ -17,14 +18,37 @@ type CognitiveConfigFile struct {
 	LLM         LLMConfigYAML         `yaml:"llm"`
 }
 
+// MemoryLayerConfigYAML holds per-layer configuration.
+type MemoryLayerConfigYAML struct {
+	DecayHalfLife   string `yaml:"decay_half_life"`
+	PinnedByDefault bool   `yaml:"pinned_by_default"`
+	AutoSummarize   bool   `yaml:"auto_summarize"`
+	Description     string `yaml:"description,omitempty"`
+}
+
+// ConsolidationConfigYAML holds Gardener consolidation settings.
+type ConsolidationConfigYAML struct {
+	SimilarityThreshold float64 `yaml:"similarity_threshold"`
+	MaxEpisodicAge      string  `yaml:"max_episodic_age"`
+}
+
+// MemoryLayersConfigYAML holds all memory layer configurations.
+type MemoryLayersConfigYAML struct {
+	Episodic      MemoryLayerConfigYAML   `yaml:"episodic"`
+	Semantic      MemoryLayerConfigYAML   `yaml:"semantic"`
+	Procedural    MemoryLayerConfigYAML   `yaml:"procedural"`
+	Consolidation ConsolidationConfigYAML `yaml:"consolidation"`
+}
+
 // GardenerConfigYAML holds the Gardener settings from cognitive.yaml.
 type GardenerConfigYAML struct {
-	Enabled             bool     `yaml:"enabled"`
-	Mode                string   `yaml:"mode"`                  // "basic", "advanced", "meta"
-	Interval            string   `yaml:"interval"`              // e.g. "30s", "2m"
-	TargetIndexes       []string `yaml:"target_indexes"`        // ["*"] for all, or ["idx1", "idx2"]
-	AdaptiveThreshold   int64    `yaml:"adaptive_threshold"`    // Write count to trigger early think
-	AdaptiveMinInterval string   `yaml:"adaptive_min_interval"` // Min time between forced thinks
+	Enabled             bool                   `yaml:"enabled"`
+	Mode                string                 `yaml:"mode"`                  // "basic", "advanced", "meta"
+	Interval            string                 `yaml:"interval"`              // e.g. "30s", "2m"
+	TargetIndexes       []string               `yaml:"target_indexes"`        // ["*"] for all, or ["idx1", "idx2"]
+	AdaptiveThreshold   int64                  `yaml:"adaptive_threshold"`    // Write count to trigger early think
+	AdaptiveMinInterval string                 `yaml:"adaptive_min_interval"` // Min time between forced thinks
+	MemoryLayers        MemoryLayersConfigYAML `yaml:"memory_layers"`         // Per-layer memory configuration
 }
 
 // AutoResolveConfigYAML holds the auto-resolve settings.
@@ -71,6 +95,52 @@ func parseDuration(s string, defaultVal time.Duration) time.Duration {
 	return d
 }
 
+// buildMemoryConfig converts YAML layer config to hnsw.MemoryConfig.
+func buildMemoryConfig(yamlCfg MemoryLayersConfigYAML) hnsw.MemoryConfig {
+	memCfg := hnsw.DefaultMemoryConfig()
+
+	// Override with YAML values if provided
+	if yamlCfg.Episodic.DecayHalfLife != "" {
+		d := parseDuration(yamlCfg.Episodic.DecayHalfLife, 72*time.Hour)
+		memCfg.Layers["episodic"] = hnsw.LayerConfig{
+			DecayHalfLife:   hnsw.Duration(d),
+			PinnedByDefault: yamlCfg.Episodic.PinnedByDefault,
+			AutoSummarize:   yamlCfg.Episodic.AutoSummarize,
+			Description:     yamlCfg.Episodic.Description,
+		}
+	}
+
+	if yamlCfg.Semantic.DecayHalfLife != "" {
+		d := parseDuration(yamlCfg.Semantic.DecayHalfLife, 720*time.Hour)
+		memCfg.Layers["semantic"] = hnsw.LayerConfig{
+			DecayHalfLife:   hnsw.Duration(d),
+			PinnedByDefault: yamlCfg.Semantic.PinnedByDefault,
+			AutoSummarize:   yamlCfg.Semantic.AutoSummarize,
+			Description:     yamlCfg.Semantic.Description,
+		}
+	}
+
+	if yamlCfg.Procedural.DecayHalfLife != "" || yamlCfg.Procedural.PinnedByDefault {
+		d := parseDuration(yamlCfg.Procedural.DecayHalfLife, 0)
+		memCfg.Layers["procedural"] = hnsw.LayerConfig{
+			DecayHalfLife:   hnsw.Duration(d),
+			PinnedByDefault: yamlCfg.Procedural.PinnedByDefault,
+			AutoSummarize:   yamlCfg.Procedural.AutoSummarize,
+			Description:     yamlCfg.Procedural.Description,
+		}
+	}
+
+	// Consolidation config
+	if yamlCfg.Consolidation.SimilarityThreshold != 0 {
+		memCfg.Consolidation.SimilarityThreshold = yamlCfg.Consolidation.SimilarityThreshold
+	}
+	if yamlCfg.Consolidation.MaxEpisodicAge != "" {
+		memCfg.Consolidation.MaxEpisodicAge = hnsw.Duration(parseDuration(yamlCfg.Consolidation.MaxEpisodicAge, 168*time.Hour))
+	}
+
+	return memCfg
+}
+
 // LoadCognitiveConfig reads and parses a cognitive.yaml file.
 // Returns a cognitive.Config and an llm.Config ready for use.
 // If path is empty, returns defaults (disabled).
@@ -111,6 +181,7 @@ func LoadCognitiveConfig(path string) (cognitive.Config, llm.Config, error) {
 		AutoResolveLinks:    cfg.AutoResolve.Actions.CreateSuggestedLinks.Enabled,
 		AutoResolveLinksMin: cfg.AutoResolve.Actions.CreateSuggestedLinks.MinConfidence,
 		AutoResolveContra:   cfg.AutoResolve.Actions.MarkMinorContradictions.Enabled,
+		MemoryConfig:        buildMemoryConfig(cfg.Gardener.MemoryLayers),
 	}
 
 	// Apply defaults for empty/zero values

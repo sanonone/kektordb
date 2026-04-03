@@ -5,9 +5,13 @@ package mcp
 type SaveMemoryArgs struct {
 	Content   string   `json:"content" jsonschema:"The text content/fact to remember,required"`
 	IndexName string   `json:"index_name,omitempty" jsonschema:"The index to store data in. Defaults to 'mcp_memory'"`
+	Layer     string   `json:"layer,omitempty" jsonschema:"Memory layer: 'episodic' (events, default), 'semantic' (facts), or 'procedural' (rules)."`
 	Links     []string `json:"links,omitempty" jsonschema:"List of existing Entity IDs to link this memory to (e.g. 'project_alpha', 'user_mario')"`
 	Tags      []string `json:"tags,omitempty" jsonschema:"Optional tags or categories"`
 	Pin       bool     `json:"pin,omitempty" jsonschema:"If true, this memory will never decay over time (e.g. core rules, birthdays)."`
+	// ExplicitPinned allows overriding the layer's pinned_by_default setting.
+	// If nil, uses layer default. If set, overrides Pin and layer default.
+	ExplicitPinned *bool `json:"_pinned,omitempty" jsonschema:"Explicitly set pinned status (overrides Pin and layer defaults)"`
 }
 
 type SaveMemoryResult struct {
@@ -37,6 +41,12 @@ type RecallArgs struct {
 	IndexName string `json:"index_name,omitempty"`
 	Limit     int    `json:"limit,omitempty" jsonschema:"Max number of results (default 5)"`
 	Reinforce bool   `json:"reinforce,omitempty" jsonschema:"If true, marks retrieved memories as 'accessed now', boosting their future relevance."`
+	// Layers restricts the search to specific memory layers.
+	// If empty, searches all layers with weights defined in LayerWeights.
+	Layers []string `json:"layers,omitempty" jsonschema:"Filter by memory layers (e.g. ['episodic', 'semantic']). Empty = all layers."`
+	// LayerWeights defines scoring weights per layer. Keys: "episodic", "semantic", "procedural".
+	// Defaults: semantic=0.5, episodic=0.4, procedural=0.1
+	LayerWeights map[string]float64 `json:"layer_weights,omitempty" jsonschema:"Custom weights per layer for result ranking"`
 }
 
 type ScopedRecallArgs struct {

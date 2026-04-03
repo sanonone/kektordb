@@ -119,14 +119,84 @@ type AutoLinkRule struct {
 	CreateNode bool `json:"create_node"`
 }
 
+// LayerConfig defines the behavior of a specific memory layer (episodic, semantic, procedural).
+type LayerConfig struct {
+	// DecayHalfLife is the time duration after which a memory's relevance score is halved.
+	// Example: "72h" (3 days) for episodic, "720h" (30 days) for semantic.
+	// If 0, the layer has no decay (e.g., procedural memories).
+	DecayHalfLife Duration `json:"decay_half_life"`
+
+	// PinnedByDefault automatically sets _pinned=true for memories in this layer
+	// unless explicitly overridden by the user. Useful for procedural memories.
+	PinnedByDefault bool `json:"pinned_by_default"`
+
+	// AutoSummarize enables automatic consolidation of redundant memories
+	// in this layer into higher-level semantic memories.
+	AutoSummarize bool `json:"auto_summarize"`
+
+	// Description is an optional human-readable description of the layer's purpose.
+	Description string `json:"description,omitempty"`
+}
+
+// ConsolidationConfig controls how the Gardener consolidates redundant memories.
+type ConsolidationConfig struct {
+	// SimilarityThreshold (0.0-1.0) determines how similar memories must be
+	// to be considered for consolidation. Default: 0.90.
+	SimilarityThreshold float64 `json:"similarity_threshold"`
+
+	// MaxEpisodicAge limits consolidation to memories newer than this duration.
+	// Default: "168h" (7 days).
+	MaxEpisodicAge Duration `json:"max_episodic_age"`
+}
+
 // MemoryConfig controls the time-dependent ranking features.
 type MemoryConfig struct {
 	// Enabled activates time-decay logic via VSearch.
 	Enabled bool `json:"enabled"`
 
-	// DecayHalfLife is the time duration after which a memory's relevance score is halved.
+	// DecayHalfLife is the global time duration after which a memory's relevance score is halved.
 	// Example: "168h" (7 days). If 0, defaults to a standard value (e.g. 7 days).
+	// Deprecated: Use Layers for per-layer decay configuration.
 	DecayHalfLife Duration `json:"decay_half_life"`
+
+	// Layers defines per-layer configuration for episodic, semantic, and procedural memories.
+	// If empty, falls back to global DecayHalfLife for backward compatibility.
+	Layers map[string]LayerConfig `json:"layers,omitempty"`
+
+	// Consolidation controls how the Gardener merges redundant memories.
+	Consolidation ConsolidationConfig `json:"consolidation,omitempty"`
+}
+
+// DefaultMemoryConfig returns a MemoryConfig with sensible defaults for all layers.
+func DefaultMemoryConfig() MemoryConfig {
+	return MemoryConfig{
+		Enabled:       true,
+		DecayHalfLife: Duration(168 * time.Hour), // 7 days legacy default
+		Layers: map[string]LayerConfig{
+			"episodic": {
+				DecayHalfLife:   Duration(72 * time.Hour), // 3 days
+				PinnedByDefault: false,
+				AutoSummarize:   true,
+				Description:     "Time-bound events and experiences that fade quickly",
+			},
+			"semantic": {
+				DecayHalfLife:   Duration(720 * time.Hour), // 30 days
+				PinnedByDefault: false,
+				AutoSummarize:   false,
+				Description:     "Facts and knowledge that persist longer",
+			},
+			"procedural": {
+				DecayHalfLife:   0, // No decay
+				PinnedByDefault: true,
+				AutoSummarize:   false,
+				Description:     "System rules and procedures that never expire",
+			},
+		},
+		Consolidation: ConsolidationConfig{
+			SimilarityThreshold: 0.90,
+			MaxEpisodicAge:      Duration(168 * time.Hour), // 7 days
+		},
+	}
 }
 
 // IndexConfig holds the configuration parameters for a vector index.

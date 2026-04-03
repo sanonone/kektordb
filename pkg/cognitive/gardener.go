@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sanonone/kektordb/pkg/core"
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/engine"
 	"github.com/sanonone/kektordb/pkg/llm"
 )
@@ -49,6 +50,9 @@ type Config struct {
 	AutoResolveLinks    bool    // Auto-create suggested graph links (from knowledge gaps)
 	AutoResolveLinksMin float64 // Min confidence to auto-create a link (default: 0.90)
 	AutoResolveContra   bool    // Auto-resolve minor contradictions (action_required=false)
+
+	// Memory layer configuration
+	MemoryConfig hnsw.MemoryConfig
 }
 
 // Gardener is the autonomous background worker that analyzes the database graph
@@ -63,6 +67,64 @@ type Gardener struct {
 	writeCounter   int64     // Write events since last think
 	lastThinkTime  time.Time // When the last think() completed
 	newReflections []string  // Reflection IDs created in current think() cycle
+}
+
+// filterNodesByLayer filters a list of node IDs to include only those with the specified memory layer.
+func (g *Gardener) filterNodesByLayer(idx string, nodeIDs []string, layer string) []string {
+	var filtered []string
+	for _, id := range nodeIDs {
+		meta, err := g.eng.VGet(idx, id)
+		if err != nil {
+			continue
+		}
+		nodeLayer := "episodic" // default
+		if l, ok := meta.Metadata["memory_layer"].(string); ok && l != "" {
+			nodeLayer = l
+		}
+		if nodeLayer == layer {
+			filtered = append(filtered, id)
+		}
+	}
+	return filtered
+}
+
+// filterNodesByLayers filters a list of node IDs to include only those with layers in the specified set.
+func (g *Gardener) filterNodesByLayers(idx string, nodeIDs []string, layers []string) []string {
+	layerSet := make(map[string]bool)
+	for _, l := range layers {
+		layerSet[l] = true
+	}
+
+	var filtered []string
+	for _, id := range nodeIDs {
+		meta, err := g.eng.VGet(idx, id)
+		if err != nil {
+			continue
+		}
+		nodeLayer := "episodic" // default
+		if l, ok := meta.Metadata["memory_layer"].(string); ok && l != "" {
+			nodeLayer = l
+		}
+		if layerSet[nodeLayer] {
+			filtered = append(filtered, id)
+		}
+	}
+	return filtered
+}
+
+// getAllNodes retrieves all node IDs in an index, optionally filtered by layer.
+func (g *Gardener) getAllNodes(idx string, layerFilter string) []string {
+	// Use VFilter to get all nodes, optionally with layer filter
+	var filter string
+	if layerFilter != "" {
+		filter = fmt.Sprintf("memory_layer='%s'", layerFilter)
+	}
+
+	ids, err := g.eng.VFilter(idx, filter, 0) // 0 = no limit
+	if err != nil {
+		return nil
+	}
+	return ids
 }
 
 type llmContradictionResponse struct {
@@ -215,19 +277,30 @@ func (g *Gardener) think() {
 		// Always active when enabled. CPU cost: low.
 		// =====================================================================
 
+		// Memory-layer aware detection (operates on semantic + episodic, excludes procedural)
 		g.detectKnowledgeGaps(idx)
 		g.detectImportanceShifts(idx)
 		g.detectSentimentShifts(idx, info.TextLanguage)
 		g.detectCentralityShifts(idx)
 		g.detectForgettingPatterns(idx)
 
-		// Consolidation: cluster finding is pure math (no LLM needed).
+		// Consolidation: Handle episodic -> semantic separately from general consolidation
+		if g.cfg.MemoryConfig.Layers["episodic"].AutoSummarize {
+			// Find clusters specifically in episodic layer
+			episodicClusters := g.findRedundantClustersInLayer(idx, "episodic", g.cfg.MemoryConfig.Consolidation.SimilarityThreshold, 5)
+			for _, cluster := range episodicClusters {
+				g.consolidateEpisodicToSemantic(idx, cluster)
+			}
+		}
+
+		// General consolidation for non-episodic memories (or all if episodic auto-summarize is off)
 		clusters := g.findRedundantClusters(idx, 0.90, 5)
 		for _, cluster := range clusters {
 			g.consolidateCluster(idx, cluster) // LLM used if available, deterministic fallback otherwise.
 		}
 
 		// Advanced-only: contradiction detection (requires LLM).
+		// Operates on semantic + episodic layers, excludes procedural.
 		if g.llm != nil && (g.cfg.Mode == "advanced" || g.cfg.Mode == "meta") {
 			g.detectContradictions(idx)
 			g.detectUserPreferences(idx)
@@ -308,6 +381,83 @@ func (g *Gardener) findRedundantClusters(indexName string, similarityThreshold f
 						currentCluster = append(currentCluster, res.ID)
 						clusteredSet[res.ID] = struct{}{}
 					}
+				}
+			}
+		}
+
+		if len(currentCluster) >= minClusterSize {
+			clusters = append(clusters, MemoryCluster{
+				CenterID:  vData.ID,
+				MemberIDs: currentCluster,
+			})
+		}
+	}
+
+	return clusters
+}
+
+// findRedundantClustersInLayer finds clusters specifically within a single memory layer.
+// This is used for layer-specific consolidation (e.g., episodic -> semantic).
+func (g *Gardener) findRedundantClustersInLayer(indexName string, layer string, similarityThreshold float64, minClusterSize int) []MemoryCluster {
+	// Use VFilter to get all nodes in this layer
+	filter := fmt.Sprintf("memory_layer='%s'", layer)
+	ids, err := g.eng.VFilter(indexName, filter, 1000)
+	if err != nil || len(ids) == 0 {
+		return nil
+	}
+
+	vectorDataList, err := g.eng.VGetMany(indexName, ids)
+	if err != nil {
+		return nil
+	}
+
+	var clusters []MemoryCluster
+	clusteredSet := make(map[string]struct{})
+
+	for _, vData := range vectorDataList {
+		if _, alreadyClustered := clusteredSet[vData.ID]; alreadyClustered {
+			continue
+		}
+
+		// Skip archived memories and meta-nodes
+		if archived, ok := vData.Metadata["_archived"].(bool); ok && archived {
+			continue
+		}
+		if memType, ok := vData.Metadata["type"].(string); ok && (memType == "consolidated_memory" || memType == "reflection" || memType == "semantic_memory") {
+			continue
+		}
+
+		results, err := g.eng.VSearchWithScores(indexName, vData.Vector, 10)
+		if err != nil {
+			continue
+		}
+
+		var currentCluster []string
+		for _, res := range results {
+			if res.Score >= similarityThreshold {
+				if _, seen := clusteredSet[res.ID]; !seen {
+					neighborData, err := g.eng.VGet(indexName, res.ID)
+					if err != nil {
+						continue
+					}
+					// Verify neighbor is in the same layer
+					neighborLayer := "episodic"
+					if l, ok := neighborData.Metadata["memory_layer"].(string); ok && l != "" {
+						neighborLayer = l
+					}
+					if neighborLayer != layer {
+						continue
+					}
+					// Skip archived or meta-type neighbors
+					if arch, ok := neighborData.Metadata["_archived"].(bool); ok && arch {
+						continue
+					}
+					if memType, ok := neighborData.Metadata["type"].(string); ok && (memType == "consolidated_memory" || memType == "reflection" || memType == "semantic_memory") {
+						continue
+					}
+
+					currentCluster = append(currentCluster, res.ID)
+					clusteredSet[res.ID] = struct{}{}
 				}
 			}
 		}
@@ -492,6 +642,181 @@ func (g *Gardener) consolidateCluster(indexName string, cluster MemoryCluster) {
 	slog.Info("[Cognitive Engine] Cluster successfully consolidated! 🧠",
 		"master_id", masterID,
 		"merged_count", len(items),
+		"summary_preview", summary[:min(50, len(summary))]+"...")
+}
+
+// consolidateEpisodicToSemantic consolidates redundant episodic memories into
+// a single semantic memory. This upgrades the knowledge from time-bound events
+// to general facts.
+func (g *Gardener) consolidateEpisodicToSemantic(indexName string, cluster MemoryCluster) {
+	// 1. Fetch data for all memories in the cluster
+	items, err := g.eng.VGetMany(indexName, cluster.MemberIDs)
+	if err != nil || len(items) == 0 {
+		return
+	}
+
+	// Verify all are episodic (safety check)
+	for _, item := range items {
+		layer := "episodic"
+		if l, ok := item.Metadata["memory_layer"].(string); ok && l != "" {
+			layer = l
+		}
+		if layer != "episodic" {
+			slog.Warn("[Cognitive Engine] Skipping non-episodic memory in episodic consolidation", "id", item.ID, "layer", layer)
+			return
+		}
+	}
+
+	// 2. Prepare text and compute average vector
+	var texts []string
+	dim := len(items[0].Vector)
+	avgVector := make([]float32, dim)
+	maxItemsForLLM := 15
+
+	for i, item := range items {
+		content := ""
+		if val, ok := item.Metadata["content"]; ok {
+			content = fmt.Sprintf("%v", val)
+		}
+		if i < maxItemsForLLM {
+			texts = append(texts, fmt.Sprintf("- %s", content))
+		}
+		if len(item.Vector) == dim {
+			for j, v := range item.Vector {
+				avgVector[j] += v
+			}
+		}
+	}
+
+	for i := range avgVector {
+		avgVector[i] /= float32(len(items))
+	}
+
+	// 3. Synthesis via LLM or deterministic fallback
+	var summary string
+	if g.llm != nil {
+		sysPrompt := "You are a cognitive memory consolidator. The following are multiple observations of similar events. Synthesize them into a single, general fact or pattern. This should be a semantic memory (a general truth), not an episodic one (a specific event). Return ONLY the synthesized text."
+		userPrompt := strings.Join(texts, "\n")
+		slog.Info("[Cognitive Engine] Synthesizing episodic cluster into semantic memory...", "cluster_size", len(items))
+		summary, err = g.llm.Chat(sysPrompt, userPrompt)
+		if err != nil || summary == "" {
+			slog.Warn("[Cognitive Engine] LLM synthesis failed for semantic consolidation", "error", err)
+			return
+		}
+		summary = strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(summary, "```"), "```"))
+	} else {
+		// Deterministic fallback: use most central member
+		summary = g.pickCentralContent(indexName, items)
+		if summary == "" {
+			return
+		}
+	}
+
+	// 4. Create semantic master memory
+	masterID := fmt.Sprintf("semantic_%d", time.Now().UnixNano())
+	masterMeta := map[string]any{
+		"content":            summary,
+		"type":               "semantic_memory",
+		"memory_layer":       "semantic",
+		"_created_at":        float64(time.Now().Unix()),
+		"_source_cluster":    strings.Join(cluster.MemberIDs, ","),
+		"consolidated_count": float64(len(items)),
+		"consolidated_from":  "episodic",
+	}
+
+	err = g.eng.VAdd(indexName, masterID, avgVector, masterMeta)
+	if err != nil {
+		slog.Error("[Cognitive Engine] Failed to save semantic memory", "error", err)
+		return
+	}
+
+	// 5. Transfer edges (same logic as consolidateCluster)
+	clusterSet := make(map[string]struct{})
+	for _, item := range items {
+		clusterSet[item.ID] = struct{}{}
+	}
+
+	skipEdges := map[string]bool{
+		"consolidated_into":    true,
+		"derived_from":         true,
+		"analyzed_against":     true,
+		"gap_analyzed":         true,
+		"sentiment_analyzed":   true,
+		"centrality_analyzed":  true,
+		"decay_analyzed":       true,
+		"suggests_link":        true,
+		"contradicts":          true,
+		"contradicted_by":      true,
+		"focus_shifted":        true,
+		"focus_shifted_by":     true,
+		"sentiment_shift":      true,
+		"sentiment_shifted_by": true,
+		"became_central":       true,
+		"centralized_by":       true,
+		"knowledge_decay":      true,
+		"decaying_in":          true,
+	}
+
+	for _, item := range items {
+		oldID := item.ID
+		outRels := g.eng.VGetRelations(indexName, oldID)
+		for relType := range outRels {
+			if skipEdges[relType] {
+				continue
+			}
+			edges, found := g.eng.VGetEdges(indexName, oldID, relType, 0)
+			if !found {
+				continue
+			}
+			for _, edge := range edges {
+				if _, inCluster := clusterSet[edge.TargetID]; inCluster {
+					continue
+				}
+				if err := g.eng.VLink(indexName, masterID, edge.TargetID, relType, "", edge.Weight, edge.GetProps()); err != nil {
+					slog.Warn("[Cognitive Engine] Failed to transfer edge to semantic memory", "error", err)
+				}
+			}
+		}
+
+		inRels := g.eng.VGetIncomingRelations(indexName, oldID)
+		for relType := range inRels {
+			if skipEdges[relType] {
+				continue
+			}
+			edges, found := g.eng.VGetIncomingEdges(indexName, oldID, relType, 0)
+			if !found {
+				continue
+			}
+			for _, edge := range edges {
+				sourceID := edge.TargetID
+				if _, inCluster := clusterSet[sourceID]; inCluster {
+					continue
+				}
+				if err := g.eng.VLink(indexName, sourceID, masterID, relType, "", edge.Weight, edge.GetProps()); err != nil {
+					slog.Warn("[Cognitive Engine] Failed to transfer incoming edge", "error", err)
+				}
+			}
+		}
+	}
+
+	// 6. Archive old episodic memories
+	for _, item := range items {
+		if err := g.eng.VLink(indexName, item.ID, masterID, "consolidated_into", "derived_from", 1.0, nil); err != nil {
+			slog.Warn("[Cognitive Engine] Failed to link episodic to semantic", "from", item.ID, "error", err)
+		}
+		metaUpdate := map[string]any{
+			"_archived":           true,
+			"_consolidated_into":  masterID,
+			"_consolidation_type": "episodic_to_semantic",
+		}
+		if err := g.eng.VSetMetadata(indexName, item.ID, metaUpdate); err != nil {
+			slog.Warn("[Cognitive Engine] Failed to archive episodic memory", "id", item.ID, "error", err)
+		}
+	}
+
+	slog.Info("[Cognitive Engine] Episodic memories consolidated into semantic memory! 🧠",
+		"semantic_id", masterID,
+		"episodic_count", len(items),
 		"summary_preview", summary[:min(50, len(summary))]+"...")
 }
 

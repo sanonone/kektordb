@@ -1,6 +1,27 @@
 # KektorDB — Cognitive Engine Configuration
 # Activate with: ./kektordb --cognitive-config cognitive.yaml
 
+# Memory Layers Configuration (Episodic/Semantic/Procedural)
+# Uncomment to enable cognitive memory architecture:
+#
+# gardener:
+#   memory_layers:
+#     episodic:
+#       decay_half_life: "72h"      # Memories fade after 3 days
+#       auto_summarize: true         # Consolidate into semantic facts
+#       pinned_by_default: false
+#     semantic:
+#       decay_half_life: "720h"     # Facts last 30 days
+#       auto_summarize: false
+#       pinned_by_default: false
+#     procedural:
+#       decay_half_life: "0"        # Never decay
+#       auto_summarize: false
+#       pinned_by_default: true      # Auto-pin system rules
+#   consolidation:
+#     similarity_threshold: 0.90
+#     max_episodic_age: "7d"
+
 gardener:
   # Enable/disable the Gardener daemon
   enabled: true

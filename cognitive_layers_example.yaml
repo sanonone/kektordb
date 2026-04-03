@@ -1,0 +1,54 @@
+# Cognitive Engine Configuration with Memory Layers
+# This example demonstrates the Episodic/Semantic/Procedural memory architecture
+
+gardener:
+  enabled: true
+  mode: "advanced"  # "basic", "advanced", or "meta"
+  interval: "1h"
+  target_indexes: ["mcp_memory", "agent_knowledge"]
+  adaptive_threshold: 50
+  adaptive_min_interval: "30s"
+
+  # Memory Layers Configuration
+  # Defines how different types of memories behave in the system
+  memory_layers:
+    episodic:
+      decay_half_life: "72h"        # Memories fade after 3 days
+      auto_summarize: true           # Consolidate redundant episodes into semantic facts
+      pinned_by_default: false
+      description: "Time-bound events and experiences that fade quickly"
+    
+    semantic:
+      decay_half_life: "720h"       # Facts last 30 days
+      auto_summarize: false          # Don't consolidate semantic memories
+      pinned_by_default: false
+      description: "General facts and knowledge that persist longer"
+    
+    procedural:
+      decay_half_life: "0"          # Never decay (0 = no decay)
+      auto_summarize: false          # Don't alter system rules
+      pinned_by_default: true        # Auto-pin all procedural memories
+      description: "System rules and procedures that never expire"
+
+  # Consolidation settings for the Gardener
+  consolidation:
+    similarity_threshold: 0.90       # How similar memories must be to merge (0.0-1.0)
+    max_episodic_age: "7d"          # Only consolidate episodes newer than 7 days
+
+# Auto-resolve settings
+auto_resolve:
+  enabled: true
+  actions:
+    create_suggested_links:
+      enabled: true
+      min_confidence: 0.90
+    mark_minor_contradictions:
+      enabled: true
+
+# LLM configuration for cognitive synthesis
+llm:
+  base_url: "http://localhost:11434/v1"
+  model: "llama3.2"
+  api_key: ""  # Optional, for external APIs
+  temperature: 0.0  # Deterministic for consistent extraction
+  max_tokens: 500
