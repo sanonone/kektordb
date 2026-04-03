@@ -248,3 +248,32 @@ type ReflectionItem struct {
 type GetReflectionsResponse struct {
 	Reflections []ReflectionItem `json:"reflections"`
 }
+
+// --- Adaptive Context Retrieval ---
+
+// RagAdaptiveRetrieveRequest represents a request for adaptive RAG retrieval with graph-aware context expansion.
+type RagAdaptiveRetrieveRequest struct {
+	PipelineName   string  `json:"pipeline_name"`
+	Query          string  `json:"query"`
+	K              int     `json:"k,omitempty"`
+	MaxTokens      int     `json:"max_tokens,omitempty"`
+	Strategy       string  `json:"strategy,omitempty"` // "greedy", "density", "graph"
+	ExpansionDepth int     `json:"expansion_depth,omitempty"`
+	SemanticWeight float64 `json:"semantic_weight,omitempty"`
+	GraphWeight    float64 `json:"graph_weight,omitempty"`
+	DensityWeight  float64 `json:"density_weight,omitempty"`
+	CharsPerToken  float64 `json:"chars_per_token,omitempty"`
+}
+
+// RagAdaptiveRetrieveResponse represents the response from adaptive RAG retrieval.
+type RagAdaptiveRetrieveResponse struct {
+	ContextText    string `json:"context_text"`
+	ChunksUsed     int    `json:"chunks_used"`
+	TotalTokens    int    `json:"total_tokens"`
+	DocumentsUsed  int    `json:"documents_used"`
+	ExpansionStats struct {
+		SeedChunks     int `json:"seed_chunks"`
+		ExpandedChunks int `json:"expanded_chunks"`
+		TotalEvaluated int `json:"total_evaluated"`
+	} `json:"expansion_stats"`
+}

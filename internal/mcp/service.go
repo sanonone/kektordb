@@ -14,6 +14,7 @@ import (
 	"github.com/sanonone/kektordb/pkg/core/types"
 	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/engine"
+	"github.com/sanonone/kektordb/pkg/rag"
 )
 
 type Service struct {
@@ -1344,4 +1345,76 @@ func (s *Service) createAgentProxyNode(targetIdx, agentID, sourceIdx string, tra
 	for _, id := range transferredIDs {
 		s.engine.VLink(targetIdx, id, agentID, "transferred_from_agent", "", 1.0, nil)
 	}
+}
+
+// --- Adaptive Context Retrieval ---
+
+// AdaptiveRetrieve performs graph-aware context expansion for RAG.
+// It retrieves seed chunks, expands following graph relations, and assembles
+// a context window respecting the token budget.
+func (s *Service) AdaptiveRetrieve(ctx context.Context, req *mcp.CallToolRequest, args AdaptiveRetrieveArgs) (*mcp.CallToolResult, AdaptiveRetrieveResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+
+	// Ensure index exists
+	if !s.engine.IndexExists(idx) {
+		return nil, AdaptiveRetrieveResult{}, fmt.Errorf("index '%s' not found", idx)
+	}
+
+	// Set defaults
+	k := args.K
+	if k <= 0 {
+		k = 5
+	}
+
+	// Build config
+	config := rag.AdaptiveContextConfig{
+		MaxTokens:           args.MaxTokens,
+		ExpansionStrategy:   args.Strategy,
+		GraphExpansionDepth: args.ExpansionDepth,
+	}
+	if config.MaxTokens == 0 {
+		config.MaxTokens = 4096
+	}
+	if config.ExpansionStrategy == "" {
+		config.ExpansionStrategy = "graph"
+	}
+	if config.GraphExpansionDepth == 0 {
+		config.GraphExpansionDepth = 2
+	}
+
+	// Create adaptive retriever
+	retriever := rag.NewAdaptiveRetriever(s.engine, config)
+
+	// Embed query
+	queryVec, err := s.embedder.Embed(args.Query)
+	if err != nil {
+		return nil, AdaptiveRetrieveResult{}, fmt.Errorf("embedding failed: %w", err)
+	}
+
+	// Retrieve with context expansion
+	window, err := retriever.RetrieveWithContext(idx, queryVec, k)
+	if err != nil {
+		return nil, AdaptiveRetrieveResult{}, fmt.Errorf("adaptive retrieval failed: %w", err)
+	}
+
+	result := AdaptiveRetrieveResult{
+		ContextText:   window.ContextText,
+		ChunksUsed:    window.TotalChunks,
+		TotalTokens:   window.TotalTokens,
+		DocumentsUsed: window.DocumentsUsed,
+		ExpansionStats: struct {
+			SeedChunks     int `json:"seed_chunks"`
+			ExpandedChunks int `json:"expanded_chunks"`
+			TotalEvaluated int `json:"total_evaluated"`
+		}{
+			SeedChunks:     window.Stats.SeedChunks,
+			ExpandedChunks: window.Stats.ExpandedChunks,
+			TotalEvaluated: window.Stats.TotalEvaluated,
+		},
+	}
+
+	return nil, result, nil
 }

@@ -598,3 +598,52 @@ func (p *Pipeline) extractAndLinkEntities(chunkID, text string) error {
 
 	return nil
 }
+
+// RetrieveAdaptive performs graph-aware adaptive retrieval for RAG.
+// It retrieves seed chunks via semantic search, expands following graph relations,
+// and assembles a context window respecting the token budget.
+//
+// If the underlying store does not support adaptive retrieval (AdaptiveStore interface),
+// it falls back to standard Retrieve() method.
+func (p *Pipeline) RetrieveAdaptive(text string, k int, config AdaptiveContextConfig) (*ContextWindow, error) {
+	// Try to cast store to AdaptiveStore
+	adaptiveStore, ok := p.store.(AdaptiveStore)
+	if !ok {
+		// Fallback to standard retrieval
+		texts, err := p.Retrieve(text, k)
+		if err != nil {
+			return nil, fmt.Errorf("fallback retrieval failed: %w", err)
+		}
+
+		// Estimate tokens (len / chars_per_token)
+		totalTokens := 0
+		for _, t := range texts {
+			totalTokens += int(float64(len(t)) / config.CharsPerToken)
+		}
+
+		// Build context from retrieved texts
+		contextParts := make([]string, 0, len(texts))
+		for _, t := range texts {
+			contextParts = append(contextParts, t)
+		}
+
+		return &ContextWindow{
+			ContextText:   strings.Join(contextParts, "\n\n---\n\n"),
+			TotalTokens:   totalTokens,
+			TotalChunks:   len(texts),
+			DocumentsUsed: 0, // Unknown in fallback mode
+		}, nil
+	}
+
+	// Embed query
+	queryVec, err := p.embedder.Embed(text)
+	if err != nil {
+		return nil, fmt.Errorf("embedding failed: %w", err)
+	}
+
+	// Create adaptive retriever with config
+	retriever := NewAdaptiveRetriever(adaptiveStore, config)
+
+	// Execute adaptive retrieval
+	return retriever.RetrieveWithContext(p.cfg.IndexName, queryVec, k)
+}

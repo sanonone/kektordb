@@ -274,3 +274,26 @@ type TransferMemoryResult struct {
 	TransferredIDs   []string `json:"transferred_ids"`
 	Message          string   `json:"message"`
 }
+
+// --- Adaptive Context Retrieval ---
+
+type AdaptiveRetrieveArgs struct {
+	Query          string `json:"query" jsonschema:"The query to search for,required"`
+	IndexName      string `json:"index_name,omitempty" jsonschema:"Index to search (defaults to pipeline index)"`
+	K              int    `json:"k,omitempty" jsonschema:"Number of seed chunks (default: 5)"`
+	MaxTokens      int    `json:"max_tokens,omitempty" jsonschema:"Token budget (default: 4096)"`
+	Strategy       string `json:"strategy,omitempty" jsonschema:"Expansion strategy: greedy, density, graph (default: graph)"`
+	ExpansionDepth int    `json:"expansion_depth,omitempty" jsonschema:"Graph expansion depth (default: 2)"`
+}
+
+type AdaptiveRetrieveResult struct {
+	ContextText    string `json:"context_text"`
+	ChunksUsed     int    `json:"chunks_used"`
+	TotalTokens    int    `json:"total_tokens"`
+	DocumentsUsed  int    `json:"documents_used"`
+	ExpansionStats struct {
+		SeedChunks     int `json:"seed_chunks"`
+		ExpandedChunks int `json:"expanded_chunks"`
+		TotalEvaluated int `json:"total_evaluated"`
+	} `json:"expansion_stats"`
+}

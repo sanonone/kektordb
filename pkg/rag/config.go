@@ -66,6 +66,54 @@ type Config struct {
 	IndexTextLanguage   string
 }
 
+// AdaptiveContextConfig controls graph-aware context expansion for RAG retrieval.
+type AdaptiveContextConfig struct {
+	// Budget token
+	MaxTokens     int     `json:"max_tokens"`      // default: 4096
+	CharsPerToken float64 `json:"chars_per_token"` // default: 4.0
+
+	// Strategia di espansione
+	ExpansionStrategy string `json:"expansion_strategy"` // "greedy" | "density" | "graph"
+
+	// Parametri Graph
+	GraphExpansionDepth int                `json:"graph_expansion_depth"` // default: 2
+	MaxExpansionNodes   int                `json:"max_expansion_nodes"`   // default: 200
+	GraphRelations      []string           `json:"graph_relations"`
+	EdgeWeights         map[string]float64 `json:"edge_weights"`
+
+	// Parametri Density
+	DensityMinRatio float64 `json:"density_min_ratio"` // default: 0.5
+
+	// Pesi scoring finale
+	SemanticWeight float64 `json:"semantic_weight"` // default: 0.6
+	GraphWeight    float64 `json:"graph_weight"`    // default: 0.2
+	DensityWeight  float64 `json:"density_weight"`  // default: 0.2
+}
+
+// DefaultAdaptiveConfig returns sensible defaults for adaptive retrieval.
+func DefaultAdaptiveConfig() AdaptiveContextConfig {
+	return AdaptiveContextConfig{
+		MaxTokens:           4096,
+		CharsPerToken:       4.0,
+		ExpansionStrategy:   "graph",
+		GraphExpansionDepth: 2,
+		MaxExpansionNodes:   200,
+		GraphRelations:      []string{"next", "prev", "parent", "child", "mentions", "related_to"},
+		EdgeWeights: map[string]float64{
+			"next":       0.95, // Sequenziale forte
+			"prev":       0.95,
+			"parent":     0.80, // Gerarchia
+			"child":      0.70,
+			"mentions":   0.50, // Associativo più debole
+			"related_to": 0.40,
+		},
+		DensityMinRatio: 0.5,
+		SemanticWeight:  0.6,
+		GraphWeight:     0.2,
+		DensityWeight:   0.2,
+	}
+}
+
 func DefaultConfig() Config {
 	return Config{
 		PollingInterval:     1 * time.Minute,

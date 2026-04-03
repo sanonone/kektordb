@@ -75,3 +75,20 @@ func (a *KektorAdapter) GetMany(indexName string, ids []string) ([]core.VectorDa
 func (a *KektorAdapter) Link(indexName, sourceID, targetID, relationType, inverseRelationType string) error {
 	return a.Engine.VLink(indexName, sourceID, targetID, relationType, inverseRelationType, 1.0, nil)
 }
+
+// --- AdaptiveStore Interface Implementation ---
+
+// VSearch implements AdaptiveStore interface
+func (a *KektorAdapter) VSearch(indexName string, query []float32, k int, filter string, explicitTextQuery string, efSearch int, alpha float64, graphQuery *engine.GraphQuery) ([]string, error) {
+	return a.Engine.VSearch(indexName, query, k, filter, explicitTextQuery, efSearch, alpha, graphQuery)
+}
+
+// VGetRelations implements AdaptiveStore interface
+func (a *KektorAdapter) VGetRelations(indexName, sourceID string) map[string][]string {
+	return a.Engine.VGetRelations(indexName, sourceID)
+}
+
+// VGet implements AdaptiveStore interface
+func (a *KektorAdapter) VGet(indexName, id string) (core.VectorData, error) {
+	return a.Engine.VGet(indexName, id)
+}

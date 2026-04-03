@@ -25,6 +25,7 @@ import (
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/engine"
+	"github.com/sanonone/kektordb/pkg/rag"
 )
 
 // registerHTTPHandlers sets up all HTTP routes using Go 1.22+ routing.
@@ -101,6 +102,7 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /transfer/memory", s.handleTransferMemory)
 
 	mux.HandleFunc("POST /rag/retrieve", s.handleRagRetrieve)
+	mux.HandleFunc("POST /rag/retrieve-adaptive", s.handleAdaptiveRagRetrieve)
 
 	// Dynamic index routes
 	mux.HandleFunc("GET /vector/indexes/{name}", s.handleSingleIndexGet)
@@ -1357,6 +1359,83 @@ func (s *Server) handleRagRetrieve(w http.ResponseWriter, r *http.Request) {
 	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
 		"results": texts,
 	})
+}
+
+// handleAdaptiveRagRetrieve performs adaptive context retrieval using graph expansion.
+// It retrieves seed chunks via semantic search, expands following graph relations,
+// and assembles a context window respecting the token budget.
+func (s *Server) handleAdaptiveRagRetrieve(w http.ResponseWriter, r *http.Request) {
+	var req RagAdaptiveRetrieveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("Invalid JSON"))
+		return
+	}
+
+	// Validation
+	if req.Query == "" || req.PipelineName == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("pipeline_name and query are required"))
+		return
+	}
+	if req.K <= 0 {
+		req.K = 5
+	}
+
+	// Get pipeline
+	pipeline := s.vectorizerService.GetPipeline(req.PipelineName)
+	if pipeline == nil {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("pipeline '%s' not found", req.PipelineName))
+		return
+	}
+
+	// Build config with defaults
+	config := rag.DefaultAdaptiveConfig()
+	if req.MaxTokens > 0 {
+		config.MaxTokens = req.MaxTokens
+	}
+	if req.Strategy != "" {
+		config.ExpansionStrategy = req.Strategy
+	}
+	if req.ExpansionDepth > 0 {
+		config.GraphExpansionDepth = req.ExpansionDepth
+	}
+	if req.SemanticWeight > 0 {
+		config.SemanticWeight = req.SemanticWeight
+	}
+	if req.GraphWeight > 0 {
+		config.GraphWeight = req.GraphWeight
+	}
+	if req.DensityWeight > 0 {
+		config.DensityWeight = req.DensityWeight
+	}
+	if req.CharsPerToken > 0 {
+		config.CharsPerToken = req.CharsPerToken
+	}
+
+	// Execute adaptive retrieval
+	window, err := pipeline.RetrieveAdaptive(req.Query, req.K, config)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("adaptive retrieval failed: %w", err))
+		return
+	}
+
+	// Format response
+	response := RagAdaptiveRetrieveResponse{
+		ContextText:   window.ContextText,
+		ChunksUsed:    window.TotalChunks,
+		TotalTokens:   window.TotalTokens,
+		DocumentsUsed: window.DocumentsUsed,
+		ExpansionStats: struct {
+			SeedChunks     int `json:"seed_chunks"`
+			ExpandedChunks int `json:"expanded_chunks"`
+			TotalEvaluated int `json:"total_evaluated"`
+		}{
+			SeedChunks:     window.Stats.SeedChunks,
+			ExpandedChunks: window.Stats.ExpandedChunks,
+			TotalEvaluated: window.Stats.TotalEvaluated,
+		},
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, response)
 }
 
 // --- SYSTEM HANDLERS ---
