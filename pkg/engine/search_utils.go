@@ -86,3 +86,61 @@ func calculateTimeDecay(createdAt float64, halfLifeSeconds float64) float64 {
 	// Example: Age = 7 days, HalfLife = 7 days -> 2^-1 = 0.5
 	return math.Pow(2, -age/halfLifeSeconds)
 }
+
+// calculateTimeDecayModel computes the decay factor based on the selected model.
+func calculateTimeDecayModel(createdAt float64, halfLifeSeconds float64, model string, accessCount int) float64 {
+	// If decay disabled
+	if halfLifeSeconds <= 0 {
+		return 1.0
+	}
+
+	now := float64(time.Now().Unix())
+	age := now - createdAt
+	if age <= 0 {
+		return 1.0
+	}
+
+	switch model {
+	case "linear":
+		return calculateLinearDecay(age, halfLifeSeconds)
+	case "step":
+		return calculateStepDecay(age, halfLifeSeconds)
+	case "ebbinghaus":
+		return calculateEbbinghausDecay(age, halfLifeSeconds, accessCount)
+	case "exponential":
+		return calculateExponentialDecay(age, halfLifeSeconds)
+	default:
+		return calculateExponentialDecay(age, halfLifeSeconds)
+	}
+}
+
+// Exponential: 2^(-age/halfLife) - classic half-life decay
+func calculateExponentialDecay(age, halfLife float64) float64 {
+	return math.Pow(2, -age/halfLife)
+}
+
+// Linear: 1.0 - age/halfLife, clamped at 0.0
+func calculateLinearDecay(age, halfLife float64) float64 {
+	return math.Max(0.0, 1.0-age/halfLife)
+}
+
+// Step: 1.0 if age < halfLife, else 0.0
+func calculateStepDecay(age, halfLife float64) float64 {
+	if age < halfLife {
+		return 1.0
+	}
+	return 0.0
+}
+
+// Ebbinghaus: e^(-age/S) where S (stability) grows logarithmically with reinforcements
+// S = halfLife * (1.0 + ln(1 + accessCount))
+func calculateEbbinghausDecay(age, halfLife float64, accessCount int) float64 {
+	// Stability grows logarithmically with reinforcements
+	stability := halfLife * (1.0 + math.Log1p(float64(accessCount)))
+	if stability <= 0 {
+		stability = halfLife // fallback
+	}
+
+	// Retention R = e^(-t/S)
+	return math.Exp(-age / stability)
+}

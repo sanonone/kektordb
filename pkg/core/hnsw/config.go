@@ -39,6 +39,30 @@ func (d Duration) MarshalJSON() ([]byte, error) {
 	return json.Marshal(time.Duration(d).String())
 }
 
+// DecayModel represents the time decay algorithm for memory relevance scoring.
+type DecayModel string
+
+const (
+	// DecayExponential is the classic half-life decay: 2^(-age/halfLife)
+	DecayExponential DecayModel = "exponential"
+	// DecayLinear is linear decay: 1.0 - age/halfLife, clamped at 0.0
+	DecayLinear DecayModel = "linear"
+	// DecayStep is on/off decay: 1.0 if age < halfLife, else 0.0
+	DecayStep DecayModel = "step"
+	// DecayEbbinghaus is the Ebbinghaus forgetting curve: e^(-age/S)
+	// where S (stability) increases logarithmically with reinforcements
+	DecayEbbinghaus DecayModel = "ebbinghaus"
+)
+
+// ValidateDecayModel checks if the model is supported.
+func ValidateDecayModel(model DecayModel) bool {
+	switch model {
+	case DecayExponential, DecayLinear, DecayStep, DecayEbbinghaus:
+		return true
+	}
+	return false
+}
+
 // AutoMaintenanceConfig defines the behavior of background tasks per index.
 type AutoMaintenanceConfig struct {
 	// Vacuum (Cleanup) Settings
@@ -154,6 +178,10 @@ type MemoryConfig struct {
 	// Enabled activates time-decay logic via VSearch.
 	Enabled bool `json:"enabled"`
 
+	// DecayModel selects the algorithm for time decay.
+	// Supported: "exponential" (default), "linear", "step", "ebbinghaus".
+	DecayModel DecayModel `json:"decay_model"`
+
 	// DecayHalfLife is the global time duration after which a memory's relevance score is halved.
 	// Example: "168h" (7 days). If 0, defaults to a standard value (e.g. 7 days).
 	// Deprecated: Use Layers for per-layer decay configuration.
@@ -171,6 +199,7 @@ type MemoryConfig struct {
 func DefaultMemoryConfig() MemoryConfig {
 	return MemoryConfig{
 		Enabled:       true,
+		DecayModel:    DecayExponential,          // Default: classic half-life decay
 		DecayHalfLife: Duration(168 * time.Hour), // 7 days legacy default
 		Layers: map[string]LayerConfig{
 			"episodic": {

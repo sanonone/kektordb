@@ -20,6 +20,7 @@ type CognitiveConfigFile struct {
 
 // MemoryLayerConfigYAML holds per-layer configuration.
 type MemoryLayerConfigYAML struct {
+	DecayModel      string `yaml:"decay_model"` // exponential, linear, step, ebbinghaus
 	DecayHalfLife   string `yaml:"decay_half_life"`
 	PinnedByDefault bool   `yaml:"pinned_by_default"`
 	AutoSummarize   bool   `yaml:"auto_summarize"`
@@ -103,35 +104,43 @@ func parseDuration(s string, defaultVal time.Duration) time.Duration {
 func buildMemoryConfig(yamlCfg MemoryLayersConfigYAML) hnsw.MemoryConfig {
 	memCfg := hnsw.DefaultMemoryConfig()
 
+	// Set default decay model if provided
+	if yamlCfg.Episodic.DecayModel != "" {
+		memCfg.DecayModel = hnsw.DecayModel(yamlCfg.Episodic.DecayModel)
+	}
+
 	// Override with YAML values if provided
-	if yamlCfg.Episodic.DecayHalfLife != "" {
+	if yamlCfg.Episodic.DecayHalfLife != "" || yamlCfg.Episodic.DecayModel != "" {
 		d := parseDuration(yamlCfg.Episodic.DecayHalfLife, 72*time.Hour)
-		memCfg.Layers["episodic"] = hnsw.LayerConfig{
+		layerCfg := hnsw.LayerConfig{
 			DecayHalfLife:   hnsw.Duration(d),
 			PinnedByDefault: yamlCfg.Episodic.PinnedByDefault,
 			AutoSummarize:   yamlCfg.Episodic.AutoSummarize,
 			Description:     yamlCfg.Episodic.Description,
 		}
+		memCfg.Layers["episodic"] = layerCfg
 	}
 
-	if yamlCfg.Semantic.DecayHalfLife != "" {
+	if yamlCfg.Semantic.DecayHalfLife != "" || yamlCfg.Semantic.DecayModel != "" {
 		d := parseDuration(yamlCfg.Semantic.DecayHalfLife, 720*time.Hour)
-		memCfg.Layers["semantic"] = hnsw.LayerConfig{
+		layerCfg := hnsw.LayerConfig{
 			DecayHalfLife:   hnsw.Duration(d),
 			PinnedByDefault: yamlCfg.Semantic.PinnedByDefault,
 			AutoSummarize:   yamlCfg.Semantic.AutoSummarize,
 			Description:     yamlCfg.Semantic.Description,
 		}
+		memCfg.Layers["semantic"] = layerCfg
 	}
 
-	if yamlCfg.Procedural.DecayHalfLife != "" || yamlCfg.Procedural.PinnedByDefault {
+	if yamlCfg.Procedural.DecayHalfLife != "" || yamlCfg.Procedural.PinnedByDefault || yamlCfg.Procedural.DecayModel != "" {
 		d := parseDuration(yamlCfg.Procedural.DecayHalfLife, 0)
-		memCfg.Layers["procedural"] = hnsw.LayerConfig{
+		layerCfg := hnsw.LayerConfig{
 			DecayHalfLife:   hnsw.Duration(d),
 			PinnedByDefault: yamlCfg.Procedural.PinnedByDefault,
 			AutoSummarize:   yamlCfg.Procedural.AutoSummarize,
 			Description:     yamlCfg.Procedural.Description,
 		}
+		memCfg.Layers["procedural"] = layerCfg
 	}
 
 	// Consolidation config

@@ -912,6 +912,12 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 
 	// --- TIME DECAY APPLICATION (Common for both cases) ---
 	if useDecay {
+		// Get default decay model from config
+		defaultDecayModel := string(memCfg.DecayModel)
+		if defaultDecayModel == "" {
+			defaultDecayModel = "exponential"
+		}
+
 		for docID, score := range fusedScores {
 			// Retrieve metadata using the internal ID
 			meta := e.DB.GetMetadataForNode(indexName, docID)
@@ -974,7 +980,20 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 					}
 				}
 
-				factor := calculateTimeDecay(referenceTime, layerHalfLife)
+				// Get decay model: default from config, override from metadata
+				decayModel := defaultDecayModel
+				if modelOverride, ok := meta["_decay_model"].(string); ok && modelOverride != "" {
+					decayModel = modelOverride
+				}
+
+				// Get access count for Ebbinghaus model
+				accessCount := 0
+				if ac, ok := meta["_access_count"].(float64); ok {
+					accessCount = int(ac)
+				}
+
+				// Calculate decay with selected model
+				factor := calculateTimeDecayModel(referenceTime, layerHalfLife, decayModel, accessCount)
 				fusedScores[docID] = score * factor
 			}
 		}
@@ -1084,6 +1103,12 @@ func (e *Engine) VSearchWithScores(indexName string, query []float32, k int) ([]
 			globalHalfLife = 604800 // 7 days default
 		}
 
+		// Get default decay model from config
+		defaultDecayModel := string(memCfg.DecayModel)
+		if defaultDecayModel == "" {
+			defaultDecayModel = "exponential"
+		}
+
 		e.DB.RLock()
 		for i := range internalResults {
 			meta := e.DB.GetMetadataForNodeUnlocked(indexName, internalResults[i].DocID)
@@ -1120,7 +1145,20 @@ func (e *Engine) VSearchWithScores(indexName string, query []float32, k int) ([]
 				}
 
 				if created > 0 {
-					factor := calculateTimeDecay(created, layerHalfLife)
+					// Get decay model: default from config, override from metadata
+					decayModel := defaultDecayModel
+					if modelOverride, ok := meta["_decay_model"].(string); ok && modelOverride != "" {
+						decayModel = modelOverride
+					}
+
+					// Get access count for Ebbinghaus model
+					accessCount := 0
+					if ac, ok := meta["_access_count"].(float64); ok {
+						accessCount = int(ac)
+					}
+
+					// Calculate decay with selected model
+					factor := calculateTimeDecayModel(created, layerHalfLife, decayModel, accessCount)
 					internalResults[i].Score *= factor
 				}
 			}
