@@ -491,9 +491,72 @@ func (p *Pipeline) Retrieve(text string, k int) ([]string, error) {
 	return results, nil
 }
 
+// RetrievedChunk represents a retrieved chunk with full metadata for source attribution
+type RetrievedChunk struct {
+	ID       string
+	Content  string
+	Metadata map[string]interface{}
+	Score    float64
+}
+
+// RetrieveWithSources performs semantic search and returns chunks with full metadata
+// for source attribution and provenance tracking
+func (p *Pipeline) RetrieveWithSources(text string, k int) ([]RetrievedChunk, error) {
+	// 1. Embed
+	queryVec, err := p.embedder.Embed(text)
+	if err != nil {
+		return nil, fmt.Errorf("embedding failed: %w", err)
+	}
+
+	// 2. Search IDs
+	ids, err := p.store.Search(p.cfg.IndexName, queryVec, k)
+	if err != nil {
+		return nil, fmt.Errorf("search failed: %w", err)
+	}
+
+	if len(ids) == 0 {
+		return []RetrievedChunk{}, nil
+	}
+
+	// 3. Hydrate with full metadata
+	items, err := p.store.GetMany(p.cfg.IndexName, ids)
+	if err != nil {
+		return nil, fmt.Errorf("fetch data failed: %w", err)
+	}
+
+	// 4. Build results with scores
+	results := make([]RetrievedChunk, 0, len(items))
+	for i, item := range items {
+		content := ""
+		if val, ok := item.Metadata["content"]; ok {
+			content = fmt.Sprintf("%v", val)
+		}
+
+		// Calculate relevance score (decaying by position)
+		score := 1.0 - (float64(i) * 0.1)
+		if score < 0.1 {
+			score = 0.1
+		}
+
+		results = append(results, RetrievedChunk{
+			ID:       item.ID,
+			Content:  content,
+			Metadata: item.Metadata,
+			Score:    score,
+		})
+	}
+
+	return results, nil
+}
+
 // GetEmbedder returns the embedder instance used by this pipeline.
 func (p *Pipeline) GetEmbedder() embeddings.Embedder {
 	return p.embedder
+}
+
+// GetIndexName returns the index name used by this pipeline
+func (p *Pipeline) GetIndexName() string {
+	return p.cfg.IndexName
 }
 
 // NEW FUNCTION: Extracts entities and creates nodes/links

@@ -1342,14 +1342,77 @@ func (s *Server) handleRagRetrieve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Find the correct pipeline in the VectorizerService
-	// (We need to expose a method to get a pipeline by name)
 	pipeline := s.vectorizerService.GetPipeline(req.PipelineName)
 	if pipeline == nil {
 		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("pipeline '%s' not found", req.PipelineName))
 		return
 	}
 
-	// Execute Retrieval
+	// NEW: If provenance requested, use RetrieveWithSources
+	if req.IncludeProvenance {
+		chunks, err := pipeline.RetrieveWithSources(req.Query, req.K)
+		if err != nil {
+			s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("retrieval failed: %w", err))
+			return
+		}
+
+		// Build source attributions
+		sources := make([]SourceAttribution, 0, len(chunks))
+		var provService *ProvenanceService
+		if s.Engine != nil {
+			provService = NewProvenanceService(s.Engine, pipeline.GetIndexName())
+		}
+
+		for _, chunk := range chunks {
+			source := SourceAttribution{
+				ChunkID:    chunk.ID,
+				Content:    chunk.Content,
+				Relevance:  chunk.Score,
+				GraphDepth: 0,
+			}
+
+			// Extract metadata
+			source.SourceFile, source.Filename, source.ChunkIndex, source.PageNumber =
+				ExtractSourceMetadata(chunk.Metadata)
+
+			if parentID, ok := chunk.Metadata["parent_id"].(string); ok {
+				source.DocumentID = parentID
+			}
+
+			// Calculate provenance path if service available
+			if provService != nil && source.DocumentID != "" {
+				if path, verified := provService.BuildGraphPath(chunk.ID, source.DocumentID); path != nil {
+					source.GraphPath = *path
+					source.Verified = verified
+				}
+			}
+
+			sources = append(sources, source)
+		}
+
+		// Calculate confidence
+		confidence := CalculateConfidence(sources)
+
+		// Build response text
+		var parts []string
+		for _, s := range sources {
+			parts = append(parts, s.Content)
+		}
+
+		response := RagRetrieveResponse{
+			Results:     parts, // Legacy compatibility
+			Response:    strings.Join(parts, "\n\n---\n\n"),
+			Sources:     sources,
+			Confidence:  confidence,
+			TotalTokens: EstimateTokens(parts, 4.0),
+			Provenance:  true,
+		}
+
+		s.writeHTTPResponse(w, http.StatusOK, response)
+		return
+	}
+
+	// Execute standard retrieval (legacy behavior)
 	texts, err := pipeline.Retrieve(req.Query, req.K)
 	if err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("error while retrieving"))
@@ -1418,12 +1481,59 @@ func (s *Server) handleAdaptiveRagRetrieve(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// NEW: Build source attributions if provenance requested
+	var sources []SourceAttribution
+	if req.IncludeProvenance {
+		var provService *ProvenanceService
+		if s.Engine != nil {
+			provService = NewProvenanceService(s.Engine, pipeline.GetIndexName())
+		}
+
+		sources = make([]SourceAttribution, 0, len(window.Chunks))
+		for _, chunk := range window.Chunks {
+			source := SourceAttribution{
+				ChunkID:    chunk.ID,
+				GraphDepth: 0, // Will be set from metadata if available
+			}
+
+			// Extract content
+			if val, ok := chunk.Metadata["content"]; ok {
+				source.Content = fmt.Sprintf("%v", val)
+			}
+
+			// Extract metadata
+			source.SourceFile, source.Filename, source.ChunkIndex, source.PageNumber =
+				ExtractSourceMetadata(chunk.Metadata)
+
+			if parentID, ok := chunk.Metadata["parent_id"].(string); ok {
+				source.DocumentID = parentID
+			}
+
+			// Try to get depth from metadata (set by adaptive retriever)
+			if depth, ok := chunk.Metadata["_depth"].(float64); ok {
+				source.GraphDepth = int(depth)
+			}
+
+			// Calculate provenance path if service available
+			if provService != nil && source.DocumentID != "" {
+				if path, verified := provService.BuildGraphPath(chunk.ID, source.DocumentID); path != nil {
+					source.GraphPath = *path
+					source.Verified = verified
+				}
+			}
+
+			sources = append(sources, source)
+		}
+	}
+
 	// Format response
 	response := RagAdaptiveRetrieveResponse{
 		ContextText:   window.ContextText,
 		ChunksUsed:    window.TotalChunks,
 		TotalTokens:   window.TotalTokens,
 		DocumentsUsed: window.DocumentsUsed,
+		Sources:       sources,
+		Provenance:    req.IncludeProvenance,
 		ExpansionStats: struct {
 			SeedChunks     int `json:"seed_chunks"`
 			ExpandedChunks int `json:"expanded_chunks"`

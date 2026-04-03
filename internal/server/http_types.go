@@ -84,9 +84,10 @@ type TriggerMaintenanceRequest struct {
 }
 
 type RagRetrieveRequest struct {
-	PipelineName string `json:"pipeline_name"`
-	Query        string `json:"query"`
-	K            int    `json:"k"` // Default 10
+	PipelineName      string `json:"pipeline_name"`
+	Query             string `json:"query"`
+	K                 int    `json:"k"`                            // Default 10
+	IncludeProvenance bool   `json:"include_provenance,omitempty"` // NEW: include source attribution
 }
 
 type GraphLinkRequest struct {
@@ -249,31 +250,84 @@ type GetReflectionsResponse struct {
 	Reflections []ReflectionItem `json:"reflections"`
 }
 
+// --- Source Attribution & Provenance ---
+
+// GraphPathNode represents a node in the provenance path
+type GraphPathNode struct {
+	ID    string `json:"id"`    // Node ID
+	Type  string `json:"type"`  // "chunk", "document", "entity"
+	Label string `json:"label"` // Human-readable label
+}
+
+// GraphPathEdge represents an edge in the provenance path
+type GraphPathEdge struct {
+	Source   string `json:"source"`   // Source node ID
+	Target   string `json:"target"`   // Target node ID
+	Relation string `json:"relation"` // Relation type
+}
+
+// GraphPath represents the complete path structure
+type GraphPath struct {
+	Nodes     []GraphPathNode `json:"nodes"`     // Traversed nodes
+	Edges     []GraphPathEdge `json:"edges"`     // Traversed edges
+	Formatted string          `json:"formatted"` // String version "a → b → c"
+}
+
+// SourceAttribution represents a source with full provenance
+type SourceAttribution struct {
+	ChunkID    string    `json:"chunk_id"`              // Chunk ID
+	DocumentID string    `json:"document_id"`           // Parent document ID
+	SourceFile string    `json:"source_file"`           // Full file path
+	Filename   string    `json:"filename"`              // Just filename
+	ChunkIndex int       `json:"chunk_index"`           // Position in document
+	PageNumber int       `json:"page_number,omitempty"` // PDF page (if available)
+	Content    string    `json:"content"`               // Chunk text
+	Relevance  float64   `json:"relevance"`             // Relevance score
+	GraphDepth int       `json:"graph_depth"`           // Depth in graph
+	GraphPath  GraphPath `json:"graph_path,omitempty"`  // Path structure
+	Verified   bool      `json:"verified"`              // Path verified
+}
+
 // --- Adaptive Context Retrieval ---
 
 // RagAdaptiveRetrieveRequest represents a request for adaptive RAG retrieval with graph-aware context expansion.
 type RagAdaptiveRetrieveRequest struct {
-	PipelineName   string  `json:"pipeline_name"`
-	Query          string  `json:"query"`
-	K              int     `json:"k,omitempty"`
-	MaxTokens      int     `json:"max_tokens,omitempty"`
-	Strategy       string  `json:"strategy,omitempty"` // "greedy", "density", "graph"
-	ExpansionDepth int     `json:"expansion_depth,omitempty"`
-	SemanticWeight float64 `json:"semantic_weight,omitempty"`
-	GraphWeight    float64 `json:"graph_weight,omitempty"`
-	DensityWeight  float64 `json:"density_weight,omitempty"`
-	CharsPerToken  float64 `json:"chars_per_token,omitempty"`
+	PipelineName      string  `json:"pipeline_name"`
+	Query             string  `json:"query"`
+	K                 int     `json:"k,omitempty"`
+	MaxTokens         int     `json:"max_tokens,omitempty"`
+	Strategy          string  `json:"strategy,omitempty"` // "greedy", "density", "graph"
+	ExpansionDepth    int     `json:"expansion_depth,omitempty"`
+	SemanticWeight    float64 `json:"semantic_weight,omitempty"`
+	GraphWeight       float64 `json:"graph_weight,omitempty"`
+	DensityWeight     float64 `json:"density_weight,omitempty"`
+	CharsPerToken     float64 `json:"chars_per_token,omitempty"`
+	IncludeProvenance bool    `json:"include_provenance,omitempty"` // NEW: include source attribution
 }
 
 // RagAdaptiveRetrieveResponse represents the response from adaptive RAG retrieval.
 type RagAdaptiveRetrieveResponse struct {
-	ContextText    string `json:"context_text"`
-	ChunksUsed     int    `json:"chunks_used"`
-	TotalTokens    int    `json:"total_tokens"`
-	DocumentsUsed  int    `json:"documents_used"`
+	ContextText    string              `json:"context_text"`
+	ChunksUsed     int                 `json:"chunks_used"`
+	TotalTokens    int                 `json:"total_tokens"`
+	DocumentsUsed  int                 `json:"documents_used"`
+	Sources        []SourceAttribution `json:"sources,omitempty"` // NEW: source attribution
+	Provenance     bool                `json:"provenance"`        // NEW: provenance calculated?
 	ExpansionStats struct {
 		SeedChunks     int `json:"seed_chunks"`
 		ExpandedChunks int `json:"expanded_chunks"`
 		TotalEvaluated int `json:"total_evaluated"`
 	} `json:"expansion_stats"`
+}
+
+// --- Enhanced RAG Response ---
+
+// RagRetrieveResponse extended with source attribution
+type RagRetrieveResponse struct {
+	Results     []string            `json:"results,omitempty"` // Legacy compatibility
+	Response    string              `json:"response"`          // Assembled text
+	Sources     []SourceAttribution `json:"sources"`           // Sources with provenance
+	Confidence  float64             `json:"confidence"`        // Average confidence
+	TotalTokens int                 `json:"total_tokens"`      // Total tokens
+	Provenance  bool                `json:"provenance"`        // Provenance calculated?
 }
