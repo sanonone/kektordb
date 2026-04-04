@@ -184,6 +184,134 @@ const task = await client.aofRewrite();
 await task.wait();
 ```
 
+## 🧠 Session Management & Conversational Memory
+
+KektorDB supports conversational sessions for building chatbots and AI agents with context:
+
+```typescript
+import { KektorDBClient, SessionManager, withSession } from "kektordb-client";
+
+const client = new KektorDBClient({ host: "localhost", port: 9091 });
+
+// Direct session management
+const result = await client.startSession({
+  userId: "user_123",
+  metadata: { context: "customer_support" }
+});
+const sessionId = result.session_id;
+
+// End session
+await client.endSession(sessionId);
+```
+
+### Using SessionManager
+
+```typescript
+import { SessionManager } from "kektordb-client";
+
+const manager = new SessionManager(client);
+
+// Create and start a session
+const session = await manager.createSession({
+  userId: "user_123",
+  metadata: { context: "support" }
+});
+
+// Add conversation context
+session.addMessage("user", "How do I reset my password?");
+session.addMessage("assistant", "You can reset your password by...");
+
+// Get full conversation history
+const history = session.getContext();
+
+// Clean up
+await manager.endSession(session.id);
+```
+
+### Using withSession (Automatic Cleanup)
+
+```typescript
+import { withSession } from "kektordb-client";
+
+await withSession(
+  client,
+  { userId: "user_123", metadata: { context: "support" } },
+  async (session) => {
+    // Session automatically started
+    session.addMessage("user", "Hello!");
+    
+    // Session automatically ended after function completes
+  }
+);
+```
+
+## 📚 Adaptive Retrieval with Source Attribution
+
+For RAG applications, use adaptive retrieval to get context-aware results with full provenance:
+
+```typescript
+// Retrieve with graph-aware context expansion
+const result = await client.adaptiveRetrieve({
+  pipelineName: "my_rag_pipeline",
+  query: "What are the key features?",
+  k: 5,
+  strategy: "graph",  // "greedy", "density", or "graph"
+  expansionDepth: 2,
+  includeProvenance: true
+});
+
+console.log(`Context: ${result.context_text}`);
+console.log(`Chunks used: ${result.chunks_used}`);
+console.log(`Total tokens: ${result.total_tokens}`);
+
+// Access source attribution
+for (const source of result.sources || []) {
+  console.log(`Source: ${source.filename}`);
+  console.log(`Relevance: ${source.relevance}`);
+  console.log(`Graph path: ${source.graph_path?.formatted}`);
+  console.log(`Content: ${source.content?.substring(0, 200)}...`);
+}
+```
+
+### Source Attribution Utilities
+
+```typescript
+import { KektorDBClient } from "kektordb-client";
+
+// Format sources for display
+const formatted = KektorDBClient.formatSources(result.sources);
+console.log(formatted);
+
+// Filter sources by relevance
+const filtered = KektorDBClient.filterSources(result.sources, {
+  minRelevance: 0.8,
+  verifiedOnly: true
+});
+
+// Group sources by document
+const grouped = KektorDBClient.groupSourcesByDocument(result.sources);
+// grouped["doc_123"] = [source1, source2, ...]
+```
+
+## 👤 User Profiles
+
+Access user personality profiles for personalized interactions:
+
+```typescript
+// List all user profiles
+const profiles = await client.listUserProfiles();
+for (const profile of profiles.profiles) {
+  console.log(`User: ${profile.user_id}`);
+  console.log(`Style: ${profile.communication_style}`);
+  console.log(`Confidence: ${profile.confidence}`);
+}
+
+// Get specific user profile
+const profile = await client.getUserProfile("user_123");
+console.log(`Expertise: ${profile.expertise_areas?.join(", ")}`);
+console.log(`Language: ${profile.language}`);
+```
+
 ## Error Handling
 
 ```typescript

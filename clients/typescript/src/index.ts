@@ -1,5 +1,10 @@
 export { KektorDBClient, Task } from "./client";
 export { KektorDBError, APIError, ConnectionError, TimeoutError } from "./errors";
+export {
+  CognitiveSession,
+  SessionManager,
+  withSession,
+} from "./cognitive";
 export type {
   KektorDBClientOptions,
   CreateIndexParams,
@@ -17,4 +22,21 @@ export type {
   Reflection,
   TaskStatus,
   ApiKeyPolicy,
+  // New types for sessions and provenance
+  StartSessionParams,
+  StartSessionResult,
+  EndSessionParams,
+  EndSessionResult,
+  UserProfile,
+  UserProfileItem,
+  UserProfileList,
+  GraphPathNode,
+  GraphPathEdge,
+  GraphPath,
+  SourceAttribution,
+  AdaptiveRetrieveParams,
+  AdaptiveRetrieveResult,
+  RagRetrieveParams,
+  RagRetrieveResult,
+  CognitiveSessionOptions,
 } from "./types";

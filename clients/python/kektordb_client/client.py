@@ -852,11 +852,154 @@ class KektorDBClient:
     # --- RAG ---
 
     def rag_retrieve(
-        self, pipeline_name: str, query: str, k: int = 5
+        self,
+        pipeline_name: str,
+        query: str,
+        k: int = 5,
+        include_provenance: bool = False,
     ) -> Dict[str, Any]:
-        """Retrieves text chunks via a configured RAG pipeline."""
-        payload = {"pipeline_name": pipeline_name, "query": query, "k": k}
+        """
+        Retrieves text chunks via a configured RAG pipeline.
+
+        Args:
+            pipeline_name: Name of the RAG pipeline to use.
+            query: The search query.
+            k: Number of chunks to retrieve.
+            include_provenance: If True, includes source attribution with graph paths.
+
+        Returns:
+            If include_provenance=False (default): {"results": [...]}
+            If include_provenance=True: Full RagRetrieveResponse with sources, confidence, etc.
+        """
+        payload = {
+            "pipeline_name": pipeline_name,
+            "query": query,
+            "k": k,
+            "include_provenance": include_provenance,
+        }
         return self._request("POST", "/rag/retrieve", json=payload)
+
+    def adaptive_retrieve(
+        self,
+        pipeline_name: str,
+        query: str,
+        k: int = 5,
+        max_tokens: int = 4096,
+        strategy: str = "graph",
+        expansion_depth: int = 2,
+        include_provenance: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Performs adaptive context retrieval using graph-aware expansion.
+
+        This method retrieves seed chunks via semantic search, expands following
+        graph relations, and assembles a context window respecting the token budget.
+
+        Args:
+            pipeline_name: Name of the RAG pipeline to use.
+            query: The search query.
+            k: Number of seed chunks to retrieve.
+            max_tokens: Maximum token budget for the context window.
+            strategy: Expansion strategy - "greedy", "density", or "graph".
+            expansion_depth: How many hops to expand in the graph.
+            include_provenance: If True, includes source attribution.
+
+        Returns:
+            AdaptiveRetrieveResponse with context_text, sources, expansion_stats, etc.
+        """
+        payload = {
+            "pipeline_name": pipeline_name,
+            "query": query,
+            "k": k,
+            "max_tokens": max_tokens,
+            "strategy": strategy,
+            "expansion_depth": expansion_depth,
+            "include_provenance": include_provenance,
+        }
+        return self._request("POST", "/rag/retrieve-adaptive", json=payload)
+
+    # --- Session Management ---
+
+    def start_session(
+        self,
+        index_name: str,
+        context: str = "",
+        agent_id: str = "",
+        user_id: str = "",
+        session_id: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Starts a new conversational session.
+
+        Sessions allow tracking related memories and automatically generate
+        summaries when ended.
+
+        Args:
+            index_name: The index to store session in.
+            context: Optional context description (e.g., "Debugging Auth Module").
+            agent_id: ID of the agent/AI starting the session.
+            user_id: ID of the user being interacted with.
+            session_id: Optional custom session ID (auto-generated if empty).
+
+        Returns:
+            Dict with session_id, status, and message.
+        """
+        payload = {"index_name": index_name}
+        if context:
+            payload["context"] = context
+        if agent_id:
+            payload["agent_id"] = agent_id
+        if user_id:
+            payload["user_id"] = user_id
+        if session_id:
+            payload["session_id"] = session_id
+        return self._request("POST", "/sessions", json=payload)
+
+    def end_session(self, session_id: str, index_name: str) -> Dict[str, Any]:
+        """
+        Ends a session and triggers automatic summarization.
+
+        The Gardener will create a semantic summary of all session memories
+        and archive the episodic ones.
+
+        Args:
+            session_id: The session ID to end.
+            index_name: Required index name where the session is stored.
+
+        Returns:
+            Dict with session_id, status, and message.
+        """
+        payload = {"index_name": index_name}
+        return self._request("POST", f"/sessions/{session_id}/end", json=payload)
+
+    # --- User Profiles ---
+
+    def get_user_profile(self, user_id: str, index_name: str) -> Dict[str, Any]:
+        """
+        Retrieves a user's personality profile from the specified index.
+
+        Args:
+            user_id: The user ID to retrieve profile for.
+            index_name: The index to search for user profiles.
+
+        Returns:
+            User profile with communication_style, expertise_areas, etc.
+        """
+        params = {"index_name": index_name}
+        return self._request("GET", f"/users/{user_id}/profile", params=params)
+
+    def list_user_profiles(self, index_name: str) -> Dict[str, Any]:
+        """
+        Lists all user profiles in the specified index.
+
+        Args:
+            index_name: The index to search for user profiles.
+
+        Returns:
+            Dict with profiles array and count.
+        """
+        params = {"index_name": index_name}
+        return self._request("GET", "/users", params=params)
 
     # --- Auth ---
 

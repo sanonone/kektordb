@@ -987,6 +987,134 @@ func (c *Client) GetMetrics() (string, error) {
 	return string(body), nil
 }
 
+// --- Session Types ---
+
+type Session struct {
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	CreatedAt int64  `json:"created_at"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+type StartSessionRequest struct {
+	UserID       string                 `json:"user_id,omitempty"`
+	IndexName    string                 `json:"index_name,omitempty"`
+	Metadata     map[string]interface{} `json:"metadata,omitempty"`
+	Conversation []ConversationMessage  `json:"conversation,omitempty"`
+}
+
+type StartSessionResponse struct {
+	SessionID    string                `json:"session_id"`
+	Conversation []ConversationMessage `json:"conversation,omitempty"`
+}
+
+type ConversationMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type EndSessionRequest struct {
+	SessionID string `json:"session_id"`
+}
+
+type EndSessionResponse struct {
+	Success bool `json:"success"`
+}
+
+// --- User Profile Types ---
+
+type UserProfile struct {
+	UserID             string   `json:"user_id"`
+	CommunicationStyle string   `json:"communication_style,omitempty"`
+	Language           string   `json:"language,omitempty"`
+	ExpertiseAreas     []string `json:"expertise_areas,omitempty"`
+	Dislikes           []string `json:"dislikes,omitempty"`
+	ResponseLength     string   `json:"response_length,omitempty"`
+	Confidence         float64  `json:"confidence"`
+	LastUpdated        int64    `json:"last_updated"`
+	ProfileData        string   `json:"profile_data,omitempty"`
+}
+
+type UserProfileItem struct {
+	UserID             string  `json:"user_id"`
+	CommunicationStyle string  `json:"communication_style,omitempty"`
+	Confidence         float64 `json:"confidence"`
+	LastUpdated        int64   `json:"last_updated"`
+}
+
+// --- Source Attribution Types ---
+
+type GraphPathNode struct {
+	ID    string `json:"id"`
+	Type  string `json:"type"`
+	Label string `json:"label"`
+}
+
+type GraphPathEdge struct {
+	Source   string `json:"source"`
+	Target   string `json:"target"`
+	Relation string `json:"relation"`
+}
+
+type GraphPath struct {
+	Nodes     []GraphPathNode `json:"nodes"`
+	Edges     []GraphPathEdge `json:"edges"`
+	Formatted string          `json:"formatted"`
+}
+
+type SourceAttribution struct {
+	ChunkID    string    `json:"chunk_id"`
+	DocumentID string    `json:"document_id"`
+	SourceFile string    `json:"source_file"`
+	Filename   string    `json:"filename"`
+	ChunkIndex int       `json:"chunk_index"`
+	PageNumber int       `json:"page_number,omitempty"`
+	Content    string    `json:"content"`
+	Relevance  float64   `json:"relevance"`
+	GraphDepth int       `json:"graph_depth"`
+	GraphPath  GraphPath `json:"graph_path,omitempty"`
+	Verified   bool      `json:"verified"`
+}
+
+// --- Adaptive Retrieval Types ---
+
+type AdaptiveRetrieveRequest struct {
+	PipelineName      string  `json:"pipeline_name"`
+	Query             string  `json:"query"`
+	K                 int     `json:"k,omitempty"`
+	MaxTokens         int     `json:"max_tokens,omitempty"`
+	Strategy          string  `json:"strategy,omitempty"` // "greedy", "density", "graph"
+	ExpansionDepth    int     `json:"expansion_depth,omitempty"`
+	SemanticWeight    float64 `json:"semantic_weight,omitempty"`
+	GraphWeight       float64 `json:"graph_weight,omitempty"`
+	DensityWeight     float64 `json:"density_weight,omitempty"`
+	CharsPerToken     float64 `json:"chars_per_token,omitempty"`
+	IncludeProvenance bool    `json:"include_provenance,omitempty"`
+}
+
+type AdaptiveRetrieveResponse struct {
+	ContextText    string              `json:"context_text"`
+	ChunksUsed     int                 `json:"chunks_used"`
+	TotalTokens    int                 `json:"total_tokens"`
+	DocumentsUsed  int                 `json:"documents_used"`
+	Sources        []SourceAttribution `json:"sources,omitempty"`
+	Provenance     bool                `json:"provenance"`
+	ExpansionStats struct {
+		SeedChunks     int `json:"seed_chunks"`
+		ExpandedChunks int `json:"expanded_chunks"`
+		TotalEvaluated int `json:"total_evaluated"`
+	} `json:"expansion_stats"`
+}
+
+type RagRetrieveResponse struct {
+	Results     []string            `json:"results,omitempty"`
+	Response    string              `json:"response"`
+	Sources     []SourceAttribution `json:"sources"`
+	Confidence  float64             `json:"confidence"`
+	TotalTokens int                 `json:"total_tokens"`
+	Provenance  bool                `json:"provenance"`
+}
+
 // --- New Request/Response Structs ---
 
 type graphFindPathRequest struct {
@@ -1031,7 +1159,7 @@ type apiKeyRequest struct {
 }
 
 type apiKeyResponse struct {
-	Key string `json:"key"`
+	Token string `json:"token"`
 }
 
 type exportResponse struct {
@@ -1217,7 +1345,7 @@ func (c *Client) CreateApiKey(role, namespace string) (string, error) {
 	if err := json.Unmarshal(respBody, &resp); err != nil {
 		return "", fmt.Errorf("invalid JSON: %w", err)
 	}
-	return resp.Key, nil
+	return resp.Token, nil
 }
 
 // ListApiKeys lists all API key policies.
@@ -1237,4 +1365,93 @@ func (c *Client) ListApiKeys() ([]map[string]interface{}, error) {
 func (c *Client) RevokeApiKey(keyID string) error {
 	_, err := c.jsonRequest(http.MethodDelete, "/auth/keys/"+keyID, nil)
 	return err
+}
+
+// --- Session Management ---
+
+// StartSession creates a new conversational session.
+func (c *Client) StartSession(req StartSessionRequest) (*StartSessionResponse, error) {
+	respBody, err := c.jsonRequest(http.MethodPost, "/sessions", req)
+	if err != nil {
+		return nil, err
+	}
+	var resp StartSessionResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for StartSession: %w", err)
+	}
+	return &resp, nil
+}
+
+// EndSession terminates a conversational session.
+func (c *Client) EndSession(sessionID string) error {
+	req := EndSessionRequest{SessionID: sessionID}
+	_, err := c.jsonRequest(http.MethodPost, "/sessions/"+sessionID+"/end", req)
+	return err
+}
+
+// --- Adaptive Retrieval ---
+
+// AdaptiveRetrieve performs graph-aware context retrieval.
+func (c *Client) AdaptiveRetrieve(req AdaptiveRetrieveRequest) (*AdaptiveRetrieveResponse, error) {
+	respBody, err := c.jsonRequest(http.MethodPost, "/rag/retrieve-adaptive", req)
+	if err != nil {
+		return nil, err
+	}
+	var resp AdaptiveRetrieveResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for AdaptiveRetrieve: %w", err)
+	}
+	return &resp, nil
+}
+
+// RagRetrieveWithProvenance retrieves text chunks with source attribution.
+func (c *Client) RagRetrieveWithProvenance(pipelineName, query string, k int, includeProvenance bool) (*RagRetrieveResponse, error) {
+	req := map[string]interface{}{
+		"pipeline_name":      pipelineName,
+		"query":              query,
+		"k":                  k,
+		"include_provenance": includeProvenance,
+	}
+	respBody, err := c.jsonRequest(http.MethodPost, "/rag/retrieve", req)
+	if err != nil {
+		return nil, err
+	}
+	var resp RagRetrieveResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for RagRetrieveWithProvenance: %w", err)
+	}
+	return &resp, nil
+}
+
+// --- User Profiles ---
+
+// GetUserProfile retrieves a user's personality profile from the specified index.
+func (c *Client) GetUserProfile(userID, indexName string) (*UserProfile, error) {
+	url := fmt.Sprintf("/users/%s/profile?index_name=%s", userID, indexName)
+	respBody, err := c.jsonRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp UserProfile
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for GetUserProfile: %w", err)
+	}
+	return &resp, nil
+}
+
+// ListUserProfiles lists all user profiles from the specified index.
+func (c *Client) ListUserProfiles(indexName string) ([]UserProfileItem, error) {
+	url := fmt.Sprintf("/users?index_name=%s", indexName)
+	respBody, err := c.jsonRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Profiles []UserProfileItem `json:"profiles"`
+		Count    int               `json:"count"`
+	}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for ListUserProfiles: %w", err)
+	}
+	return resp.Profiles, nil
 }

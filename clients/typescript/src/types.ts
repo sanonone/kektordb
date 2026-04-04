@@ -139,3 +139,143 @@ export interface ApiKeyPolicy {
   namespace: string;
   created_at: string;
 }
+
+// --- Session Management ---
+
+export interface StartSessionParams {
+  indexName: string;
+  context?: string;
+  agentId?: string;
+  userId?: string;
+  sessionId?: string;
+}
+
+export interface StartSessionResult {
+  session_id: string;
+  status: string;
+  message: string;
+}
+
+export interface EndSessionParams {
+  indexName?: string;
+}
+
+export interface EndSessionResult {
+  session_id: string;
+  status: string;
+  message: string;
+}
+
+// --- User Profiles ---
+
+export interface UserProfile {
+  user_id: string;
+  communication_style?: string;
+  language?: string;
+  expertise_areas?: string[];
+  dislikes?: string[];
+  response_length?: string;
+  confidence: number;
+  last_updated: number;
+  profile_data?: string;
+}
+
+export interface UserProfileList {
+  profiles: UserProfileItem[];
+  count: number;
+}
+
+export interface UserProfileItem {
+  user_id: string;
+  communication_style?: string;
+  confidence: number;
+  last_updated: number;
+}
+
+// --- Provenance / Source Attribution ---
+
+export interface GraphPathNode {
+  id: string;
+  type: 'chunk' | 'document' | 'entity';
+  label: string;
+}
+
+export interface GraphPathEdge {
+  source: string;
+  target: string;
+  relation: string;
+}
+
+export interface GraphPath {
+  nodes: GraphPathNode[];
+  edges: GraphPathEdge[];
+  formatted: string;
+}
+
+export interface SourceAttribution {
+  chunk_id: string;
+  document_id: string;
+  source_file: string;
+  filename: string;
+  chunk_index: number;
+  page_number?: number;
+  content: string;
+  relevance: number;
+  graph_depth: number;
+  graph_path?: GraphPath;
+  verified: boolean;
+}
+
+// --- Adaptive Retrieval ---
+
+export interface AdaptiveRetrieveParams {
+  pipelineName: string;
+  query: string;
+  k?: number;
+  maxTokens?: number;
+  strategy?: 'greedy' | 'density' | 'graph';
+  expansionDepth?: number;
+  includeProvenance?: boolean;
+}
+
+export interface AdaptiveRetrieveResult {
+  context_text: string;
+  chunks_used: number;
+  total_tokens: number;
+  documents_used: number;
+  sources?: SourceAttribution[];
+  provenance: boolean;
+  expansion_stats: {
+    seed_chunks: number;
+    expanded_chunks: number;
+    total_evaluated: number;
+  };
+}
+
+// --- Enhanced RAG ---
+
+export interface RagRetrieveParams {
+  pipelineName: string;
+  query: string;
+  k?: number;
+  includeProvenance?: boolean;
+}
+
+export interface RagRetrieveResult {
+  results?: string[];  // Legacy compatibility
+  response: string;
+  sources: SourceAttribution[];
+  confidence: number;
+  total_tokens: number;
+  provenance: boolean;
+}
+
+// --- Cognitive Session ---
+
+export interface CognitiveSessionOptions {
+  userId?: string;
+  metadata?: Record<string, any>;
+  initialContext?: Array<{ role: string; content: string }>;
+  autoEnd?: boolean;
+  ttl?: number;  // milliseconds
+}

@@ -133,6 +133,10 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /auth/keys", s.handleCreateAPIKey)
 	mux.HandleFunc("GET /auth/keys", s.handleListAPIKeys)
 	mux.HandleFunc("DELETE /auth/keys/{id}", s.handleRevokeAPIKey)
+
+	// User Profile endpoints
+	mux.HandleFunc("GET /users/{id}/profile", s.handleGetUserProfile)
+	mux.HandleFunc("GET /users", s.handleListUserProfiles)
 }
 
 // handleTransferMemory handles memory transfer between indexes
@@ -1218,7 +1222,8 @@ func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
 
 	idx := req.IndexName
 	if idx == "" {
-		idx = "mcp_memory"
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name is required"))
+		return
 	}
 
 	// Ensure index exists
@@ -1275,13 +1280,14 @@ func (s *Server) handleEndSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		// Body is optional, continue with defaults
+		// Body is optional, but index_name will be checked below
 		req.IndexName = ""
 	}
 
 	idx := req.IndexName
 	if idx == "" {
-		idx = "mcp_memory"
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name is required in request body"))
+		return
 	}
 
 	// Verify session exists
@@ -1543,6 +1549,107 @@ func (s *Server) handleAdaptiveRagRetrieve(w http.ResponseWriter, r *http.Reques
 			ExpandedChunks: window.Stats.ExpandedChunks,
 			TotalEvaluated: window.Stats.TotalEvaluated,
 		},
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, response)
+}
+
+// handleGetUserProfile returns a user's personality profile
+func (s *Server) handleGetUserProfile(w http.ResponseWriter, r *http.Request) {
+	userID := r.PathValue("id")
+	if userID == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("user id is required"))
+		return
+	}
+
+	// Get index_name from query parameter (required)
+	idx := r.URL.Query().Get("index_name")
+	if idx == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name query parameter is required"))
+		return
+	}
+
+	// If index doesn't exist, return 404 for the profile (not 500)
+	if !s.Engine.IndexExists(idx) {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("profile not found for user %s", userID))
+		return
+	}
+
+	profileID := fmt.Sprintf("_profile::%s", userID)
+	data, err := s.Engine.VGet(idx, profileID)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("profile not found for user %s", userID))
+		return
+	}
+
+	// Parse expertise areas and dislikes from comma-separated strings
+	var expertiseAreas, dislikes []string
+	if areas, ok := data.Metadata["expertise_areas"].(string); ok && areas != "" {
+		expertiseAreas = strings.Split(areas, ",")
+	}
+	if d, ok := data.Metadata["dislikes"].(string); ok && d != "" {
+		dislikes = strings.Split(d, ",")
+	}
+
+	response := UserProfileResponse{
+		UserID:             userID,
+		CommunicationStyle: getString(data.Metadata, "communication_style"),
+		Language:           getString(data.Metadata, "language"),
+		ExpertiseAreas:     expertiseAreas,
+		Dislikes:           dislikes,
+		ResponseLength:     getString(data.Metadata, "response_length"),
+		Confidence:         getFloat(data.Metadata, "confidence"),
+		LastUpdated:        int64(getFloat(data.Metadata, "last_updated")),
+		ProfileData:        getString(data.Metadata, "profile_data"),
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, response)
+}
+
+// handleListUserProfiles lists all user profiles in the database
+func (s *Server) handleListUserProfiles(w http.ResponseWriter, r *http.Request) {
+	// Get index_name from query parameter (required)
+	idx := r.URL.Query().Get("index_name")
+	if idx == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name query parameter is required"))
+		return
+	}
+
+	// If index doesn't exist, return empty list (not 500)
+	if !s.Engine.IndexExists(idx) {
+		s.writeHTTPResponse(w, http.StatusOK, UserProfileListResponse{
+			Profiles: []UserProfileItem{},
+			Count:    0,
+		})
+		return
+	}
+
+	// Filter for user_profile type
+	ids, err := s.Engine.VFilter(idx, "type='user_profile'", 100)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("failed to list profiles: %w", err))
+		return
+	}
+
+	profiles := make([]UserProfileItem, 0, len(ids))
+	for _, id := range ids {
+		data, err := s.Engine.VGet(idx, id)
+		if err != nil || data.ID == "" {
+			continue
+		}
+
+		userID := strings.TrimPrefix(id, "_profile::")
+		profiles = append(profiles, UserProfileItem{
+			UserID:             userID,
+			CommunicationStyle: getString(data.Metadata, "communication_style"),
+			Confidence:         getFloat(data.Metadata, "confidence"),
+			LastUpdated:        int64(getFloat(data.Metadata, "last_updated")),
+		})
+	}
+
+	response := UserProfileListResponse{
+		Profiles: profiles,
+		Count:    len(profiles),
 	}
 
 	s.writeHTTPResponse(w, http.StatusOK, response)
@@ -2054,4 +2161,22 @@ func (s *Server) handleExportVectors(w http.ResponseWriter, r *http.Request) {
 		NextOffset: offset + count,
 		TotalCount: offset + count,
 	})
+}
+
+// --- HELPER FUNCTIONS ---
+
+// getString safely extracts a string value from metadata
+func getString(m map[string]any, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// getFloat safely extracts a float64 value from metadata
+func getFloat(m map[string]any, key string) float64 {
+	if v, ok := m[key].(float64); ok {
+		return v
+	}
+	return 0
 }

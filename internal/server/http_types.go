@@ -331,3 +331,32 @@ type RagRetrieveResponse struct {
 	TotalTokens int                 `json:"total_tokens"`      // Total tokens
 	Provenance  bool                `json:"provenance"`        // Provenance calculated?
 }
+
+// --- User Profile Types ---
+
+// UserProfileResponse represents a user's personality profile
+type UserProfileResponse struct {
+	UserID             string   `json:"user_id"`
+	CommunicationStyle string   `json:"communication_style,omitempty"`
+	Language           string   `json:"language,omitempty"`
+	ExpertiseAreas     []string `json:"expertise_areas,omitempty"`
+	Dislikes           []string `json:"dislikes,omitempty"`
+	ResponseLength     string   `json:"response_length,omitempty"`
+	Confidence         float64  `json:"confidence"`
+	LastUpdated        int64    `json:"last_updated"`
+	ProfileData        string   `json:"profile_data,omitempty"`
+}
+
+// UserProfileListResponse represents a list of user profiles
+type UserProfileListResponse struct {
+	Profiles []UserProfileItem `json:"profiles"`
+	Count    int               `json:"count"`
+}
+
+// UserProfileItem is a lightweight profile item for listing
+type UserProfileItem struct {
+	UserID             string  `json:"user_id"`
+	CommunicationStyle string  `json:"communication_style,omitempty"`
+	Confidence         float64 `json:"confidence"`
+	LastUpdated        int64   `json:"last_updated"`
+}

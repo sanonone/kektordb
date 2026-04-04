@@ -261,6 +261,98 @@ This example demonstrates a complete workflow: creating an index, batch-insertin
 
 ---
 
+### 🧠 Session Management & Conversational Memory
+
+KektorDB supports conversational sessions for building chatbots and AI agents with context:
+
+```python
+from kektordb_client import KektorDBClient
+from kektordb_client.cognitive import CognitiveSession, CognitiveOrchestrator
+
+client = KektorDBClient(port=9091)
+
+# Start a session
+session_result = client.start_session(
+    user_id="user_123",
+    metadata={"context": "customer_support"}
+)
+session_id = session_result["session_id"]
+
+# End session
+client.end_session(session_id)
+```
+
+#### Using CognitiveSession (Context Manager)
+
+```python
+from kektordb_client.cognitive import CognitiveSession
+
+# Automatic session lifecycle management
+with CognitiveSession(client, user_id="user_123") as session:
+    # Session is automatically started
+    print(f"Session ID: {session.session_id}")
+    
+    # Add messages to context
+    session.add_context("user", "How do I reset my password?")
+    session.add_context("assistant", "You can reset your password by...")
+    
+    # Access full conversation history
+    history = session.get_context()
+    
+# Session is automatically ended on exit
+```
+
+---
+
+### 📚 Adaptive Retrieval with Source Attribution
+
+For RAG applications, use adaptive retrieval to get context-aware results with full provenance:
+
+```python
+# Retrieve with graph-aware context expansion
+result = client.adaptive_retrieve(
+    pipeline_name="my_rag_pipeline",
+    query="What are the key features?",
+    k=5,
+    strategy="graph",  # "greedy", "density", or "graph"
+    expansion_depth=2,
+    include_provenance=True
+)
+
+print(f"Context: {result['context_text']}")
+print(f"Chunks used: {result['chunks_used']}")
+print(f"Total tokens: {result['total_tokens']}")
+
+# Access source attribution
+for source in result.get("sources", []):
+    print(f"Source: {source['filename']}")
+    print(f"Relevance: {source['relevance']}")
+    print(f"Graph path: {source['graph_path']['formatted']}")
+    print(f"Content: {source['content'][:200]}...")
+```
+
+---
+
+### 👤 User Profiles
+
+Access user personality profiles for personalized interactions:
+
+```python
+# List all user profiles
+profiles = client.list_user_profiles()
+for profile in profiles:
+    print(f"User: {profile['user_id']}")
+    print(f"Style: {profile.get('communication_style')}")
+    print(f"Confidence: {profile['confidence']}")
+
+# Get specific user profile
+profile = client.get_user_profile("user_123")
+print(f"Expertise: {profile.get('expertise_areas', [])}")
+print(f"Language: {profile.get('language')}")
+```
+
+---
+
 ### 🦜 Integration with LangChain
 
 KektorDB includes a built-in wrapper for **LangChain Python**, allowing you to plug it directly into your existing AI pipelines.

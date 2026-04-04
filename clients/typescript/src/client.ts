@@ -5,17 +5,28 @@ import {
   TimeoutError,
 } from "./errors";
 import type {
+  AdaptiveRetrieveParams,
+  AdaptiveRetrieveResult,
   ApiKeyPolicy,
   CreateIndexParams,
+  EndSessionParams,
+  EndSessionResult,
   GraphFilter,
   IndexInfo,
   KektorDBClientOptions,
   LinkParams,
+  RagRetrieveParams,
+  RagRetrieveResult,
   Reflection,
   SearchResult,
   SearchParams,
+  StartSessionParams,
+  StartSessionResult,
   SubgraphResult,
   TaskStatus,
+  UserProfile,
+  UserProfileItem,
+  UserProfileList,
   VectorData,
 } from "./types";
 
@@ -552,13 +563,64 @@ export class KektorDBClient {
   async ragRetrieve(
     pipelineName: string,
     query: string,
-    k = 5
-  ): Promise<any> {
-    return this.request("POST", "/rag/retrieve", {
+    k = 5,
+    includeProvenance = false
+  ): Promise<RagRetrieveResult | any> {
+    const payload = {
       pipeline_name: pipelineName,
       query,
       k,
-    });
+      include_provenance: includeProvenance,
+    };
+    return this.request("POST", "/rag/retrieve", payload);
+  }
+
+  async adaptiveRetrieve(
+    params: AdaptiveRetrieveParams
+  ): Promise<AdaptiveRetrieveResult> {
+    const payload = {
+      pipeline_name: params.pipelineName,
+      query: params.query,
+      k: params.k ?? 5,
+      max_tokens: params.maxTokens ?? 4096,
+      strategy: params.strategy ?? "graph",
+      expansion_depth: params.expansionDepth ?? 2,
+      include_provenance: params.includeProvenance ?? false,
+    };
+    return this.request("POST", "/rag/retrieve-adaptive", payload);
+  }
+
+  // --- Session Management ---
+
+  async startSession(params: StartSessionParams): Promise<StartSessionResult> {
+    const payload: Record<string, any> = {
+      index_name: params.indexName,
+    };
+    if (params.context) payload.context = params.context;
+    if (params.agentId) payload.agent_id = params.agentId;
+    if (params.userId) payload.user_id = params.userId;
+    if (params.sessionId) payload.session_id = params.sessionId;
+    return this.request("POST", "/sessions", payload);
+  }
+
+  async endSession(
+    sessionId: string,
+    params: EndSessionParams
+  ): Promise<EndSessionResult> {
+    const payload: Record<string, any> = {
+      index_name: params.indexName,
+    };
+    return this.request("POST", `/sessions/${sessionId}/end`, payload);
+  }
+
+  // --- User Profiles ---
+
+  async getUserProfile(userId: string, indexName: string): Promise<UserProfile> {
+    return this.request("GET", `/users/${userId}/profile?index_name=${indexName}`);
+  }
+
+  async listUserProfiles(indexName: string): Promise<UserProfileList> {
+    return this.request("GET", `/users?index_name=${indexName}`);
   }
 
   // --- System ---
@@ -578,7 +640,7 @@ export class KektorDBClient {
 
   // --- Auth ---
 
-  async createApiKey(role: string, namespace?: string): Promise<{ key: string }> {
+  async createApiKey(role: string, namespace?: string): Promise<{ token: string }> {
     const payload: Record<string, any> = { role };
     if (namespace) payload.namespace = namespace;
     return this.request("POST", "/auth/keys", payload);
@@ -590,5 +652,65 @@ export class KektorDBClient {
 
   async revokeApiKey(keyId: string): Promise<void> {
     await this.request("DELETE", `/auth/keys/${keyId}`);
+  }
+
+  // --- Static Utility Methods ---
+
+  /**
+   * Formats source attributions for display.
+   */
+  static formatSources(sources: any[]): string {
+    if (!sources || sources.length === 0) {
+      return "No sources available";
+    }
+
+    return sources
+      .map((src, i) => {
+        const parts: string[] = [];
+        parts.push(`[${i + 1}] ${src.filename || "unknown"} (relevance: ${src.relevance?.toFixed(2) ?? "N/A"})`);
+        if (src.graph_path?.formatted) {
+          parts.push(`    Path: ${src.graph_path.formatted}`);
+        }
+        const content = src.content || "";
+        parts.push(`    Content: ${content.length > 100 ? content.slice(0, 100) + "..." : content}`);
+        return parts.join("\n");
+      })
+      .join("\n");
+  }
+
+  /**
+   * Filters sources based on criteria.
+   */
+  static filterSources(
+    sources: any[],
+    options: { minRelevance?: number; maxDepth?: number; verifiedOnly?: boolean } = {}
+  ): any[] {
+    return sources.filter((src) => {
+      if (options.minRelevance !== undefined && src.relevance < options.minRelevance) {
+        return false;
+      }
+      if (options.maxDepth !== undefined && src.graph_depth > options.maxDepth) {
+        return false;
+      }
+      if (options.verifiedOnly && !src.verified) {
+        return false;
+      }
+      return true;
+    });
+  }
+
+  /**
+   * Groups sources by their parent document.
+   */
+  static groupSourcesByDocument(sources: any[]): Record<string, any[]> {
+    const groups: Record<string, any[]> = {};
+    for (const src of sources) {
+      const docId = src.document_id || "unknown";
+      if (!groups[docId]) {
+        groups[docId] = [];
+      }
+      groups[docId].push(src);
+    }
+    return groups;
   }
 }
