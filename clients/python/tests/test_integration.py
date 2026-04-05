@@ -11,6 +11,7 @@ These tests verify end-to-end functionality by:
 """
 
 import time
+import uuid
 import pytest
 
 from kektordb_client import KektorDBClient, CognitiveSession
@@ -21,10 +22,12 @@ class TestBasicOperations:
 
     def test_create_index(self, client: KektorDBClient, test_index_name: str):
         """Test index creation."""
-        result = client.vcreate(
+        client.vcreate(
             index_name=test_index_name, metric="cosine", m=16, ef_construction=200
         )
-        assert result.get("status") == "created"
+        # Verify it was created
+        info = client.get_index_info(test_index_name)
+        assert info["name"] == test_index_name
 
     def test_add_and_search(self, client: KektorDBClient, test_index_name: str):
         """Test adding vectors and searching."""
@@ -34,7 +37,7 @@ class TestBasicOperations:
         # Add a vector
         client.vadd(
             index_name=test_index_name,
-            id="test_1",
+            item_id="test_1",
             vector=[0.1, 0.2, 0.3, 0.4],
             metadata={"content": "Test memory about Python programming"},
         )
@@ -53,6 +56,8 @@ class TestSessionManagement:
         """Test basic session start/end."""
         # Create index first
         client.vcreate(test_index_name, metric="cosine", m=16, ef_construction=200)
+        # Add seed vector so index dimension is known
+        client.vadd(test_index_name, "seed", [0.1, 0.2, 0.3, 0.4])
 
         # Start session
         session_result = client.start_session(
@@ -76,6 +81,8 @@ class TestSessionManagement:
         """Test CognitiveSession as context manager."""
         # Create index
         client.vcreate(test_index_name, metric="cosine", m=16, ef_construction=200)
+        # Add seed vector
+        client.vadd(test_index_name, "seed", [0.1, 0.2, 0.3, 0.4])
 
         with CognitiveSession(
             client=client,
@@ -149,22 +156,23 @@ class TestAdaptiveRetrieval:
 class TestUserProfiles:
     """Test user profile operations."""
 
-    def test_list_user_profiles(self, client: KektorDBClient):
+    def test_list_user_profiles(self, client: KektorDBClient, test_index_name: str):
         """Test listing user profiles."""
-        result = client.list_user_profiles()
+        client.vcreate(test_index_name, metric="cosine", m=16, ef_construction=200)
+        result = client.list_user_profiles(test_index_name)
         assert "profiles" in result
         assert "count" in result
         assert isinstance(result["profiles"], list)
 
-    def test_get_user_profile_not_found(self, client: KektorDBClient):
+    def test_get_user_profile_not_found(
+        self, client: KektorDBClient, test_index_name: str
+    ):
         """Test getting non-existent user profile."""
-        # This should return 404 or empty result
+        client.vcreate(test_index_name, metric="cosine", m=16, ef_construction=200)
         try:
-            result = client.get_user_profile("nonexistent_user_12345")
-            # If no exception, profile shouldn't exist
+            result = client.get_user_profile("nonexistent_user_12345", test_index_name)
             assert result.get("user_id") == "nonexistent_user_12345"
         except Exception as e:
-            # Expected - profile doesn't exist
             assert "not found" in str(e).lower() or "404" in str(e)
 
 
@@ -180,8 +188,8 @@ class TestCognitiveEngine:
         for i in range(5):
             client.vadd(
                 test_index_name,
-                id=f"mem_{i}",
-                vector=[0.1 * i, 0.2 * i, 0.3 * i, 0.4 * i],
+                f"mem_{i}",
+                [0.1 * i, 0.2 * i, 0.3 * i, 0.4 * i],
                 metadata={"content": f"Memory {i} about testing", "type": "memory"},
             )
 
@@ -206,6 +214,8 @@ class TestFullWorkflow:
         """
         # 1. Create index
         client.vcreate(test_index_name, metric="cosine", m=16, ef_construction=200)
+        # Add seed vector so index dimension is known for sessions
+        client.vadd(test_index_name, "seed", [0.1, 0.2, 0.3, 0.4])
 
         # 2. Start session
         session_result = client.start_session(
@@ -223,10 +233,11 @@ class TestFullWorkflow:
                 "Suggested password reset",
                 "Customer confirmed issue resolved",
             ]
-            for mem in memories:
+            for i, mem in enumerate(memories):
                 client.vadd(
                     test_index_name,
-                    vector=[],  # Auto-embed
+                    f"mem_{i}_{uuid.uuid4().hex[:4]}",
+                    [0.1, 0.2, 0.3, 0.4],
                     metadata={
                         "content": mem,
                         "type": "memory",
@@ -238,9 +249,9 @@ class TestFullWorkflow:
             # 4. Search within session
             search_results = client.vsearch(
                 test_index_name,
-                query_vector=[],  # Will be embedded
+                query_vector=[0.1, 0.2, 0.3, 0.4],
                 k=10,
-                filter=f"session_id='{session_id}'",
+                filter_str=f"session_id='{session_id}'",
             )
             assert len(search_results) >= 3
 

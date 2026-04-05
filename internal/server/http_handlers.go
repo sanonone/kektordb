@@ -853,22 +853,54 @@ func (s *Server) handleGraphSetProperties(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// "Set Properties" is semantically an Upsert with no vector change.
-	// We first fetch the existing vector to prevent overwriting it with zeros.
-	var vec []float32
-	if data, er := s.Engine.VGet(req.IndexName, req.NodeID); er == nil {
-		vec = data.Vector
-	}
-
-	err := s.Engine.VAdd(req.IndexName, req.NodeID, vec, req.Properties)
+	// Check if node exists
+	data, err := s.Engine.VGet(req.IndexName, req.NodeID)
 	if err != nil {
-		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		// If error is NOT "not found", return error
+		if !strings.Contains(err.Error(), "not found") {
+			s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("failed to get node: %w", err))
+			return
+		}
+		// Node doesn't exist - create it with a zero-vector
+		var vec []float32
+		if idx, ok := s.Engine.DB.GetVectorIndex(req.IndexName); ok {
+			if hnswIdx, ok := idx.(*hnsw.Index); ok {
+				dim := hnswIdx.GetDimension()
+				if dim > 0 {
+					vec = make([]float32, dim)
+				}
+			}
+		}
+
+		err = s.Engine.VAdd(req.IndexName, req.NodeID, vec, req.Properties)
+		if err != nil {
+			s.writeHTTPError(w, http.StatusInternalServerError, err)
+			return
+		}
+
+		s.writeHTTPResponse(w, http.StatusOK, map[string]any{
+			"node_id":    req.NodeID,
+			"properties": req.Properties,
+			"status":     "created",
+		})
 		return
 	}
 
+	// Node exists - update metadata
+	merged := make(map[string]any)
+	for k, v := range data.Metadata {
+		merged[k] = v
+	}
+	for k, v := range req.Properties {
+		merged[k] = v
+	}
+	if err := s.Engine.VSetMetadata(req.IndexName, req.NodeID, merged); err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		return
+	}
 	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
 		"node_id":    req.NodeID,
-		"properties": req.Properties,
+		"properties": merged,
 		"status":     "updated",
 	})
 }
@@ -1254,8 +1286,15 @@ func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
 		meta["context"] = req.Context
 	}
 
-	// Try zero-vector insert
+	// Try zero-vector insert. VAdd will auto-create a zero-vector matching
+	// the index dimension. If the index is empty (dimension unknown), return
+	// a clear error instead of 500.
 	if err := s.Engine.VAdd(idx, sessionID, nil, meta); err != nil {
+		if err.Error() == "cannot add entity without vector to an empty index (dimension unknown)" {
+			s.writeHTTPError(w, http.StatusBadRequest,
+				fmt.Errorf("cannot create session on an empty index: add at least one vector first to establish dimension"))
+			return
+		}
 		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("failed to create session: %w", err))
 		return
 	}

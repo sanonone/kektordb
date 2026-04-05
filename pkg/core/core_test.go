@@ -198,3 +198,65 @@ func TestDBSnapshotWithDeletedNodes(t *testing.T) {
 
 	t.Log("Snapshot with deleted nodes completed successfully")
 }
+
+func TestSnapshotWithComplexMetadata(t *testing.T) {
+	tmpDir := t.TempDir()
+	db := NewDB()
+	defer db.Close()
+
+	indexName := "test_complex_metadata"
+	arenaDir := filepath.Join(tmpDir, "arenas", indexName)
+
+	// Create index
+	err := db.CreateVectorIndex(indexName, distance.Cosine, 16, 100, distance.Float32, "", arenaDir)
+	if err != nil {
+		t.Fatalf("Failed to create index: %v", err)
+	}
+
+	idx, _ := db.GetVectorIndex(indexName)
+
+	// Add node with complex metadata (arrays and nested objects)
+	vec := []float32{0.1, 0.2, 0.3, 0.4}
+	internalID, _ := idx.Add("vec1", vec)
+
+	// This is the problematic metadata that causes gob errors
+	err = db.AddMetadata(indexName, internalID, map[string]any{
+		"tags":     []string{"important", "urgent"},
+		"nested":   map[string]any{"key": "value", "count": 42},
+		"scores":   []float64{1.5, 2.5, 3.5},
+		"metadata": map[string]any{"array": []int{1, 2, 3}},
+	})
+	if err != nil {
+		t.Fatalf("Failed to add metadata: %v", err)
+	}
+
+	// Create snapshot
+	var buf bytes.Buffer
+	err = db.Snapshot(&buf)
+	if err != nil {
+		t.Fatalf("Snapshot failed with complex metadata: %v", err)
+	}
+
+	// Reload from snapshot
+	newDB := NewDB()
+	defer newDB.Close()
+
+	err = newDB.LoadFromSnapshot(&buf, tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to load snapshot: %v", err)
+	}
+
+	// Verify metadata integrity
+	meta := newDB.GetMetadataForNode(indexName, internalID)
+	if meta == nil {
+		t.Fatal("Metadata not found after reload")
+	}
+
+	// Verify array preservation
+	tags, ok := meta["tags"].([]interface{})
+	if !ok || len(tags) != 2 {
+		t.Fatalf("Tags not preserved correctly: %v", meta["tags"])
+	}
+
+	t.Log("Snapshot with complex metadata completed successfully")
+}

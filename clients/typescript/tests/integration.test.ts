@@ -1,6 +1,5 @@
 /**
- * Integration tests for KektorDB TypeScript client
- * Tests sessions, adaptive retrieval, user profiles, and cognitive workflows
+ * Integration tests for KektorDB TypeScript client.
  *
  * Environment:
  *   KEKTOR_TEST_HOST - Server host (default: localhost)
@@ -12,19 +11,18 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { spawn, ChildProcess } from "child_process";
-import { join } from "path";
-import { existsSync } from "fs";
-
-import { KektorClient } from "../src/client";
-import { SessionManager, withSession, CognitiveSession } from "../src/cognitive";
-import type { SourceAttribution, GraphPath, UserProfile } from "../src/types";
+import { KektorDBClient } from "../src/client";
+import {
+  SessionManager,
+  withSession,
+  CognitiveSession,
+} from "../src/cognitive";
+import type { SourceAttribution } from "../src/types";
 
 const HOST = process.env.KEKTOR_TEST_HOST || "localhost";
 const PORT = parseInt(process.env.KEKTOR_TEST_PORT || "9091", 10);
 const PIPELINE_NAME = process.env.KEKTOR_TEST_PIPELINE || "";
 
-// Helper to check if server is available
 async function isServerAvailable(): Promise<boolean> {
   try {
     const response = await fetch(`http://${HOST}:${PORT}/vector/indexes`, {
@@ -36,270 +34,392 @@ async function isServerAvailable(): Promise<boolean> {
   }
 }
 
-// Helper to auto-start server if needed
-async function maybeStartServer(): Promise<ChildProcess | null> {
-  if (await isServerAvailable()) {
-    console.log("Using existing KektorDB server");
-    return null;
-  }
-
-  console.log("Starting KektorDB server for tests...");
-
-  // Try to find the server binary
-  const possiblePaths = [
-    join(process.cwd(), "../../kektordb"),
-    join(process.cwd(), "../../bin/kektordb"),
-    join(process.cwd(), "../kektordb"),
-    "/usr/local/bin/kektordb",
-  ];
-
-  let serverPath: string | null = null;
-  for (const p of possiblePaths) {
-    if (existsSync(p)) {
-      serverPath = p;
-      break;
-    }
-  }
-
-  if (!serverPath) {
-    console.warn("KektorDB server binary not found, skipping auto-start");
-    return null;
-  }
-
-  const proc = spawn(serverPath, ["-http-port", PORT.toString()], {
-    detached: true,
-    stdio: "pipe",
-  });
-
-  // Wait for server to be ready
-  let attempts = 0;
-  const maxAttempts = 30;
-  while (attempts < maxAttempts) {
-    await new Promise((r) => setTimeout(r, 1000));
-    if (await isServerAvailable()) {
-      console.log("KektorDB server started successfully");
-      return proc;
-    }
-    attempts++;
-  }
-
-  console.warn("Server failed to start within timeout");
-  proc.kill();
-  return null;
-}
-
 describe("KektorDB Integration Tests", () => {
-  let client: KektorClient;
-  let serverProc: ChildProcess | null = null;
+  let client: KektorDBClient;
   let serverAvailable = false;
 
   beforeAll(async () => {
-    serverProc = await maybeStartServer();
     serverAvailable = await isServerAvailable();
-
     if (!serverAvailable) {
       console.warn(
-        "WARNING: KektorDB server not available, tests will be skipped"
+        "WARNING: KektorDB server not available at " +
+          `http://${HOST}:${PORT}, tests will be skipped`
       );
     }
+    client = new KektorDBClient({ host: HOST, port: PORT });
+  }, 15000);
 
-    client = new KektorClient(HOST, PORT);
-  }, 60000);
-
-  afterAll(() => {
-    if (serverProc) {
-      console.log("Shutting down test server...");
-      serverProc.kill();
-    }
-  });
+  // --- Basic Connectivity ---
 
   describe("Basic Connectivity", () => {
     it("should connect to server", async () => {
-      if (!serverAvailable) {
-        console.warn("Server not available, skipping");
-        return;
-      }
-
+      if (!serverAvailable) return;
       const indexes = await client.listIndexes();
       expect(Array.isArray(indexes)).toBe(true);
     });
   });
 
+  // --- Index + Session Lifecycle ---
+
   describe("Session Management", () => {
+    let idxName: string;
+
+    beforeAll(async () => {
+      if (!serverAvailable) return;
+      idxName = `ts_integration_${Date.now()}`;
+      await client.vcreate({
+        indexName: idxName,
+        metric: "cosine",
+        precision: "float32",
+      });
+      // Add seed vector so index dimension is known for sessions
+      await client.vadd(idxName, "seed", [0.1, 0.2, 0.3, 0.4]);
+    });
+
+    afterAll(async () => {
+      if (!serverAvailable) return;
+      try {
+        await client.deleteIndex(idxName);
+      } catch {}
+    });
+
     it("should start and end a session", async () => {
       if (!serverAvailable) return;
 
       const result = await client.startSession({
-        user_id: "test-user",
-        metadata: { test: true },
+        indexName: idxName,
+        context: "integration test",
+        userId: "test-user",
       });
 
       expect(result.session_id).toBeDefined();
       expect(result.session_id.length).toBeGreaterThan(0);
 
-      const endResult = await client.endSession(result.session_id);
-      expect(endResult.success).toBe(true);
+      const endResult = await client.endSession(result.session_id, {
+        indexName: idxName,
+      });
+      expect(endResult.session_id).toBe(result.session_id);
     });
 
-    it("should start session with initial context", async () => {
+    it("should start session with agentId", async () => {
       if (!serverAvailable) return;
 
       const result = await client.startSession({
-        user_id: "test-user",
-        conversation: [
-          { role: "system", content: "You are a helpful assistant" },
-          { role: "user", content: "Hello" },
-        ],
+        indexName: idxName,
+        context: "agent test",
+        agentId: "test-agent",
+        userId: "test-user",
       });
 
       expect(result.session_id).toBeDefined();
-      expect(result.conversation).toBeDefined();
-      expect(result.conversation?.length).toBe(2);
-
-      await client.endSession(result.session_id);
+      await client.endSession(result.session_id, { indexName: idxName });
     });
   });
 
-  describe("SessionManager (Cognitive)", () => {
-    it("should create and manage sessions", async () => {
+  // --- CognitiveSession ---
+
+  describe("CognitiveSession", () => {
+    let idxName: string;
+
+    beforeAll(async () => {
       if (!serverAvailable) return;
-
-      const manager = new SessionManager(client);
-      const session = await manager.createSession({
-        userId: "test-user",
-        metadata: { test: true },
+      idxName = `ts_cognitive_${Date.now()}`;
+      await client.vcreate({
+        indexName: idxName,
+        metric: "cosine",
+        precision: "float32",
       });
-
-      expect(session.id).toBeDefined();
-      expect(session.getContext()).toEqual([]);
-
-      // Add messages
-      session.addMessage("user", "Hello");
-      session.addMessage("assistant", "Hi there!");
-
-      const context = session.getContext();
-      expect(context.length).toBe(2);
-      expect(context[0].role).toBe("user");
-      expect(context[0].content).toBe("Hello");
-
-      await manager.endSession(session.id);
+      await client.vadd(idxName, "seed", [0.1, 0.2, 0.3, 0.4]);
     });
 
-    it("should list active sessions", async () => {
+    afterAll(async () => {
+      if (!serverAvailable) return;
+      try {
+        await client.deleteIndex(idxName);
+      } catch {}
+    });
+
+    it("should start, save memory, and end", async () => {
       if (!serverAvailable) return;
 
-      const manager = new SessionManager(client);
-      const session1 = await manager.createSession({});
-      const session2 = await manager.createSession({});
+      const session = new CognitiveSession(client, {
+        indexName: idxName,
+        context: "memory test",
+        agentId: "test-agent",
+      });
 
-      const sessions = manager.listSessions();
-      expect(sessions.length).toBeGreaterThanOrEqual(2);
-      expect(sessions).toContain(session1.id);
-      expect(sessions).toContain(session2.id);
+      await session.start();
+      expect(session.isStarted).toBe(true);
+      expect(session.sessionId).toBeDefined();
 
-      await manager.endSession(session1.id);
-      await manager.endSession(session2.id);
+      const mem = await session.saveMemory("Test memory content", {
+        layer: "episodic",
+        tags: ["test"],
+      });
+      expect(mem.id).toBeDefined();
+      expect(mem.status).toBe("ok");
+
+      await session.end();
+      expect(session.isStarted).toBe(false);
     });
 
     it("should support withSession pattern", async () => {
       if (!serverAvailable) return;
 
-      const manager = new SessionManager(client);
-      let sessionId: string | undefined;
-
+      let capturedId: string | undefined;
       await withSession(
-        manager,
-        { userId: "test-user" },
-        async (session: CognitiveSession) => {
-          sessionId = session.id;
-          session.addMessage("user", "Test message");
-          expect(session.getContext().length).toBe(1);
+        client,
+        { indexName: idxName, context: "withSession test" },
+        async (session) => {
+          capturedId = session.sessionId;
+          await session.saveMemory("Memory inside withSession");
+          expect(session.isStarted).toBe(true);
         }
       );
-
-      // Session should be ended after withSession
-      const sessions = manager.listSessions();
-      expect(sessions).not.toContain(sessionId);
+      expect(capturedId).toBeDefined();
     });
   });
+
+  // --- SessionManager ---
+
+  describe("SessionManager", () => {
+    let idxName: string;
+
+    beforeAll(async () => {
+      if (!serverAvailable) return;
+      idxName = `ts_manager_${Date.now()}`;
+      await client.vcreate({
+        indexName: idxName,
+        metric: "cosine",
+        precision: "float32",
+      });
+      await client.vadd(idxName, "seed", [0.1, 0.2, 0.3, 0.4]);
+    });
+
+    afterAll(async () => {
+      if (!serverAvailable) return;
+      try {
+        await client.deleteIndex(idxName);
+      } catch {}
+    });
+
+    it("should create and manage sessions", async () => {
+      if (!serverAvailable) return;
+
+      const manager = new SessionManager(client, idxName);
+      const session = await manager.createSession("researcher", {
+        context: "research task",
+      });
+
+      expect(session.isStarted).toBe(true);
+      expect(session.sessionId).toBeDefined();
+
+      const got = manager.getSession("researcher");
+      expect(got).toBeDefined();
+
+      await manager.endAllSessions();
+    });
+
+    it("should support multiple agents", async () => {
+      if (!serverAvailable) return;
+
+      const manager = new SessionManager(client, idxName);
+      await manager.createSession("agent-a");
+      await manager.createSession("agent-b");
+
+      expect(manager.getSession("agent-a")).toBeDefined();
+      expect(manager.getSession("agent-b")).toBeDefined();
+
+      await manager.endAllSessions();
+    });
+  });
+
+  // --- User Profiles ---
 
   describe("User Profiles", () => {
     it("should list user profiles", async () => {
       if (!serverAvailable) return;
 
-      const profiles = await client.listUserProfiles();
-      expect(Array.isArray(profiles)).toBe(true);
+      const result = await client.listUserProfiles("default");
+      expect(result).toHaveProperty("profiles");
+      expect(result).toHaveProperty("count");
+      expect(Array.isArray(result.profiles)).toBe(true);
     });
 
-    it("should get user profile", async () => {
+    it("should return 404 for non-existent profile", async () => {
       if (!serverAvailable) return;
 
-      // First list to get a user ID
-      const profiles = await client.listUserProfiles();
-      if (profiles.length === 0) {
-        console.warn("No user profiles available, skipping get test");
-        return;
-      }
-
-      const userId = profiles[0].user_id;
-      const profile = await client.getUserProfile(userId);
-
-      expect(profile.user_id).toBe(userId);
-      expect(typeof profile.confidence).toBe("number");
+      await expect(
+        client.getUserProfile("nonexistent_xyz", "default")
+      ).rejects.toThrow();
     });
   });
 
+  // --- Vector CRUD (smoke test) ---
+
+  describe("Vector CRUD", () => {
+    let idxName: string;
+
+    beforeAll(async () => {
+      if (!serverAvailable) return;
+      idxName = `ts_crud_${Date.now()}`;
+      await client.vcreate({
+        indexName: idxName,
+        metric: "cosine",
+        precision: "float32",
+      });
+    });
+
+    afterAll(async () => {
+      if (!serverAvailable) return;
+      try {
+        await client.deleteIndex(idxName);
+      } catch {}
+    });
+
+    it("should add, get, search, and delete vectors", async () => {
+      if (!serverAvailable) return;
+
+      await client.vadd(idxName, "v1", [0.1, 0.2, 0.3, 0.4], {
+        content: "hello",
+      });
+      await client.vadd(idxName, "v2", [0.5, 0.6, 0.7, 0.8], {
+        content: "world",
+      });
+
+      const vec = await client.vget(idxName, "v1");
+      expect(vec.id).toBe("v1");
+
+      const results = await client.vsearch({
+        indexName: idxName,
+        queryVector: [0.1, 0.2, 0.3, 0.4],
+        k: 5,
+      });
+      expect(results.length).toBeGreaterThanOrEqual(1);
+
+      await client.vdelete(idxName, "v1");
+      await expect(client.vget(idxName, "v1")).rejects.toThrow();
+    });
+
+    it("should support batch add", async () => {
+      if (!serverAvailable) return;
+
+      const res = await client.vaddBatch(idxName, [
+        { id: "b1", vector: [0.1, 0.2, 0.3, 0.4] },
+        { id: "b2", vector: [0.4, 0.5, 0.6, 0.7] },
+      ]);
+      expect(res.vectors_added).toBeGreaterThanOrEqual(2);
+    });
+
+    it("should return scored results", async () => {
+      if (!serverAvailable) return;
+
+      const scored = await client.vsearchWithScores(idxName, [0.1, 0.2, 0.3, 0.4], 5);
+      expect(scored.length).toBeGreaterThanOrEqual(1);
+      // Server returns PascalCase: {"ID": "x", "Score": 0.5}
+      expect(scored[0]).toHaveProperty("Score");
+    });
+  });
+
+  // --- Graph Operations (smoke test) ---
+
+  describe("Graph Operations", () => {
+    let idxName: string;
+
+    beforeAll(async () => {
+      if (!serverAvailable) return;
+      idxName = `ts_graph_${Date.now()}`;
+      await client.vcreate({
+        indexName: idxName,
+        metric: "cosine",
+        precision: "float32",
+      });
+      await client.vadd(idxName, "node-a", [0.1, 0.2, 0.3]);
+      await client.vadd(idxName, "node-b", [0.4, 0.5, 0.6]);
+    });
+
+    afterAll(async () => {
+      if (!serverAvailable) return;
+      try {
+        await client.deleteIndex(idxName);
+      } catch {}
+    });
+
+    it("should create and read links", async () => {
+      if (!serverAvailable) return;
+
+      await client.vlink({
+        indexName: idxName,
+        sourceId: "node-a",
+        targetId: "node-b",
+        relationType: "related",
+      });
+
+      const links = await client.vgetLinks(idxName, "node-a", "related");
+      expect(links).toContain("node-b");
+    });
+
+    it("should get incoming links", async () => {
+      if (!serverAvailable) return;
+
+      const incoming = await client.getIncoming(idxName, "node-b", "related");
+      expect(incoming).toContain("node-a");
+    });
+
+    it("should unlink", async () => {
+      if (!serverAvailable) return;
+
+      await client.vunlink(idxName, "node-a", "node-b", "related");
+      const links = await client.vgetLinks(idxName, "node-a", "related");
+      expect(links).not.toContain("node-b");
+    });
+  });
+
+  // --- Adaptive Retrieval (requires pipeline) ---
+
   describe("Adaptive Retrieval", () => {
-    it("should perform adaptive retrieve", async () => {
+    it("should perform adaptive retrieve when pipeline configured", async () => {
       if (!serverAvailable) return;
       if (!PIPELINE_NAME) {
-        console.warn("KEKTOR_TEST_PIPELINE not set, skipping adaptive retrieval test");
+        console.warn("KEKTOR_TEST_PIPELINE not set, skipping");
         return;
       }
 
       const result = await client.adaptiveRetrieve({
-        pipeline_name: PIPELINE_NAME,
+        pipelineName: PIPELINE_NAME,
         query: "test query",
         k: 5,
         strategy: "graph",
-        expansion_depth: 2,
-        include_provenance: true,
+        expansionDepth: 2,
+        includeProvenance: true,
       });
 
-      expect(result.context_text).toBeDefined();
-      expect(typeof result.chunks_used).toBe("number");
-      expect(typeof result.total_tokens).toBe("number");
-      expect(result.expansion_stats).toBeDefined();
+      expect(result).toHaveProperty("context_text");
+      expect(result).toHaveProperty("chunks_used");
+      expect(result).toHaveProperty("expansion_stats");
     });
 
-    it("should retrieve with provenance", async () => {
+    it("should retrieve with provenance when pipeline configured", async () => {
       if (!serverAvailable) return;
       if (!PIPELINE_NAME) {
-        console.warn("KEKTOR_TEST_PIPELINE not set, skipping provenance test");
+        console.warn("KEKTOR_TEST_PIPELINE not set, skipping");
         return;
       }
 
-      const result = await client.ragRetrieve({
-        pipeline_name: PIPELINE_NAME,
-        query: "test query",
-        k: 5,
-        include_provenance: true,
-      });
+      const result = await client.ragRetrieve(
+        PIPELINE_NAME,
+        "test query",
+        5,
+        true
+      );
 
-      expect(result.response).toBeDefined();
+      expect(result).toHaveProperty("response");
+      expect(result).toHaveProperty("sources");
       expect(Array.isArray(result.sources)).toBe(true);
-      expect(typeof result.confidence).toBe("number");
-      expect(result.provenance).toBe(true);
-
-      // Check source attribution structure if sources exist
-      if (result.sources.length > 0) {
-        const source: SourceAttribution = result.sources[0];
-        expect(source.chunk_id).toBeDefined();
-        expect(typeof source.relevance).toBe("number");
-        expect(source.graph_path).toBeDefined();
-      }
     });
   });
+
+  // --- Source Attribution (static utils) ---
 
   describe("Source Attribution", () => {
     it("should format sources correctly", async () => {
@@ -323,7 +443,7 @@ describe("KektorDB Integration Tests", () => {
         },
       ];
 
-      const formatted = KektorClient.formatSources(sources);
+      const formatted = KektorDBClient.formatSources(sources);
       expect(formatted).toContain("file.pdf");
       expect(formatted).toContain("0.95");
     });
@@ -335,7 +455,9 @@ describe("KektorDB Integration Tests", () => {
         { chunk_id: "3", relevance: 0.95, graph_depth: 0 } as SourceAttribution,
       ];
 
-      const filtered = KektorClient.filterSources(sources, { minRelevance: 0.8 });
+      const filtered = KektorDBClient.filterSources(sources, {
+        minRelevance: 0.8,
+      });
       expect(filtered.length).toBe(2);
     });
 
@@ -346,57 +468,52 @@ describe("KektorDB Integration Tests", () => {
         { chunk_id: "c3", document_id: "doc-b" } as SourceAttribution,
       ];
 
-      const grouped = KektorClient.groupSourcesByDocument(sources);
+      const grouped = KektorDBClient.groupSourcesByDocument(sources);
       expect(grouped["doc-a"].length).toBe(2);
       expect(grouped["doc-b"].length).toBe(1);
     });
   });
 
+  // --- Full Workflow ---
+
   describe("Full Workflow", () => {
+    let idxName: string;
+
+    beforeAll(async () => {
+      if (!serverAvailable) return;
+      idxName = `ts_workflow_${Date.now()}`;
+      await client.vcreate({
+        indexName: idxName,
+        metric: "cosine",
+        precision: "float32",
+      });
+      await client.vadd(idxName, "seed", [0.1, 0.2, 0.3, 0.4]);
+    });
+
+    afterAll(async () => {
+      if (!serverAvailable) return;
+      try {
+        await client.deleteIndex(idxName);
+      } catch {}
+    });
+
     it("should run complete cognitive workflow", async () => {
       if (!serverAvailable) return;
 
-      const manager = new SessionManager(client);
+      const manager = new SessionManager(client, idxName);
 
-      // Create session
-      const session = await manager.createSession({
-        user_id: "workflow-test-user",
-        metadata: { workflow: "integration-test" },
+      const session = await manager.createSession("workflow-agent", {
+        context: "integration workflow",
       });
+      expect(session.isStarted).toBe(true);
 
-      expect(session.id).toBeDefined();
+      await session.saveMemory("First memory", { tags: ["workflow"] });
+      await session.saveMemory("Second memory", { tags: ["workflow"] });
 
-      // Add conversation context
-      session.addMessage("system", "You are a helpful assistant");
-      session.addMessage("user", "What can you tell me about this topic?");
+      const recalled = await session.recall("memory", 10);
+      expect(Array.isArray(recalled)).toBe(true);
 
-      // If pipeline available, perform retrieval
-      if (PIPELINE_NAME) {
-        try {
-          const result = await client.adaptiveRetrieve({
-            pipeline_name: PIPELINE_NAME,
-            query: "Tell me about this topic",
-            k: 5,
-            strategy: "graph",
-            include_provenance: true,
-          });
-
-          // Add retrieval result to context
-          session.addMessage(
-            "assistant",
-            `Retrieved ${result.chunks_used} chunks with ${result.total_tokens} tokens`
-          );
-        } catch (e) {
-          console.warn("Adaptive retrieve failed (may need configured pipeline):", e);
-        }
-      }
-
-      // Verify final context
-      const finalContext = session.getContext();
-      expect(finalContext.length).toBeGreaterThanOrEqual(2);
-
-      // Cleanup
-      await manager.endSession(session.id);
+      await manager.endAllSessions();
     });
   });
 });

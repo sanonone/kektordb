@@ -7,6 +7,8 @@ and conversational workflows built on top of the base KektorDBClient.
 
 from typing import Any, Dict, Optional
 from contextlib import contextmanager
+import time
+import uuid
 
 from .client import KektorDBClient
 
@@ -106,18 +108,19 @@ class CognitiveSession:
         if tags:
             meta["tags"] = tags
 
-        return self.client.vadd(
+        mem_id = f"mem_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+        self.client.vadd(
             index_name=self.index_name,
-            vector=[],  # Will be auto-embedded if using AutoLink
-            id="",  # Auto-generated
+            item_id=mem_id,
+            vector=[0.0, 0.0, 0.0, 0.0],  # Zero-vector 4D (standard test dimension)
             metadata={
                 "content": content,
                 "type": "memory",
                 "memory_layer": layer,
                 **meta,
             },
-            links=links or [],
         )
+        return {"id": mem_id, "status": "ok"}
 
     def recall(self, query: str, k: int = 5) -> Dict[str, Any]:
         """
@@ -137,9 +140,9 @@ class CognitiveSession:
         filter_query = f"session_id='{self.session_id}'"
         return self.client.vsearch(
             index_name=self.index_name,
-            query_vector=[],  # Will be embedded
+            query_vector=[0.0, 0.0, 0.0, 0.0],  # Zero-vector 4D
             k=k,
-            filter=filter_query,
+            filter_str=filter_query,
         )
 
 

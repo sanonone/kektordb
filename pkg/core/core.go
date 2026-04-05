@@ -7,7 +7,9 @@
 package core
 
 import (
+	"bytes"
 	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -111,6 +113,56 @@ type NodeSnapshot struct {
 	// VectorF32 []float32 `json:"vector_f32,omitempty"`
 	// VectorF16 []uint16  `json:"vector_f16,omitempty"`
 	// VectorI8  []int8    `json:"vector_i8,omitempty"`
+}
+
+// GobEncode implements custom gob encoding to handle interface{} metadata.
+// Converts metadata to JSON to avoid gob serialization issues with []interface{}.
+func (ns NodeSnapshot) GobEncode() ([]byte, error) {
+	// Serialize metadata to JSON (stable, portable format)
+	metaJSON, err := json.Marshal(ns.Metadata)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+
+	// Auxiliary struct with concrete types known to gob
+	aux := struct {
+		NodeData *hnsw.Node
+		MetaJSON []byte // JSON bytes - concrete []byte type
+	}{
+		NodeData: ns.NodeData,
+		MetaJSON: metaJSON,
+	}
+
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(aux); err != nil {
+		return nil, fmt.Errorf("failed to encode node snapshot: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// GobDecode implements custom gob decoding to restore metadata from JSON.
+func (ns *NodeSnapshot) GobDecode(data []byte) error {
+	var aux struct {
+		NodeData *hnsw.Node
+		MetaJSON []byte
+	}
+
+	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&aux); err != nil {
+		return fmt.Errorf("failed to decode node snapshot: %w", err)
+	}
+
+	ns.NodeData = aux.NodeData
+
+	// Deserialize metadata from JSON
+	if len(aux.MetaJSON) > 0 {
+		if err := json.Unmarshal(aux.MetaJSON, &ns.Metadata); err != nil {
+			return fmt.Errorf("failed to unmarshal metadata: %w", err)
+		}
+	} else {
+		ns.Metadata = make(map[string]interface{})
+	}
+
+	return nil
 }
 
 // IndexConfig holds the configuration parameters for a vector index.
@@ -925,8 +977,23 @@ func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) err
 	metric, m, efConst := oldHNSWIndex.GetParameters()
 
 	textLang := oldHNSWIndex.TextLanguage()
+	oldArenaDir := oldHNSWIndex.GetArenaDir()
 
-	newIndex, err := hnsw.New(m, efConst, metric, newPrecision, textLang, "")
+	// Rename old arena directory to prevent precision mismatch on restart.
+	// The new compressed index will create its own arena with the correct precision.
+	if oldArenaDir != "" {
+		oldArenaBackup := oldArenaDir + ".old_compress"
+		if err := os.Rename(oldArenaDir, oldArenaBackup); err != nil {
+			slog.Warn("Failed to rename old arena directory during compression", "dir", oldArenaDir, "error", err)
+		} else {
+			// Clean up backup asynchronously to not block
+			go func() {
+				_ = os.RemoveAll(oldArenaBackup)
+			}()
+		}
+	}
+
+	newIndex, err := hnsw.New(m, efConst, metric, newPrecision, textLang, oldArenaDir)
 	if err != nil {
 		return fmt.Errorf("failed to create new compressed index: %w", err)
 	}

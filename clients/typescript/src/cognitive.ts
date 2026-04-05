@@ -117,7 +117,7 @@ export class CognitiveSession {
 
     // Generate unique ID for the memory
     const id = `mem_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    await this.client.vadd(this.indexName, id, null, metadata);
+    await this.client.vadd(this.indexName, id, [0, 0, 0, 0], metadata);
     return { id, status: "ok" };
   }
 

@@ -60,11 +60,11 @@
       "name": "add_vector_entity",
       "method": "POST",
       "path": "/vector/actions/add",
-      "depends_on": ["create_index"],
+      "depends_on": ["add_vector"],
       "request": {
         "index_name": "CONTRACT_TEST_IDX",
         "id": "entity_1",
-        "vector": [],
+        "vector": [0, 0, 0, 0],
         "metadata": {"name": "Python", "type": "entity"}
       },
       "expected_status": 200

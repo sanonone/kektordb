@@ -1015,6 +1015,7 @@ type ConversationMessage struct {
 
 type EndSessionRequest struct {
 	SessionID string `json:"session_id"`
+	IndexName string `json:"index_name"`
 }
 
 type EndSessionResponse struct {
@@ -1383,8 +1384,8 @@ func (c *Client) StartSession(req StartSessionRequest) (*StartSessionResponse, e
 }
 
 // EndSession terminates a conversational session.
-func (c *Client) EndSession(sessionID string) error {
-	req := EndSessionRequest{SessionID: sessionID}
+func (c *Client) EndSession(sessionID string, indexName string) error {
+	req := EndSessionRequest{SessionID: sessionID, IndexName: indexName}
 	_, err := c.jsonRequest(http.MethodPost, "/sessions/"+sessionID+"/end", req)
 	return err
 }

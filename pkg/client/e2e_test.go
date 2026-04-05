@@ -859,13 +859,13 @@ func TestVectorOperations(t *testing.T) {
 		idxName := generateTestID()
 		c.VCreate(idxName, "cosine", "float32", 16, 200, nil)
 
-		// Use empty vector for entity (zero-vector entities)
-		err := c.VAdd(idxName, "entity1", []float32{}, map[string]interface{}{
+		// Use zero-vector for entity (all zeros)
+		err := c.VAdd(idxName, "entity1", []float32{0, 0, 0, 0}, map[string]interface{}{
 			"name": "Python",
 			"type": "entity",
 		})
 		if err != nil {
-			t.Fatalf("VAdd with empty vector failed: %v", err)
+			t.Fatalf("VAdd with zero vector failed: %v", err)
 		}
 
 		vec, _ := c.VGet(idxName, "entity1")
@@ -1083,6 +1083,9 @@ func TestSessions(t *testing.T) {
 		c.VCreate(idxName, "cosine", "float32", 16, 200, nil)
 		defer c.DeleteIndex(idxName)
 
+		// Add a seed vector so the index dimension is known (required for zero-vector session entity)
+		c.VAdd(idxName, "seed", []float32{0.1, 0.2, 0.3, 0.4}, nil)
+
 		result, err := c.StartSession(StartSessionRequest{
 			UserID:    "test_user",
 			IndexName: idxName, // Required: index_name must be specified
@@ -1098,7 +1101,7 @@ func TestSessions(t *testing.T) {
 		}
 
 		// EndSession also requires index_name in request body
-		err = c.EndSession(result.SessionID)
+		err = c.EndSession(result.SessionID, idxName)
 		if err != nil {
 			t.Fatalf("EndSession failed: %v", err)
 		}
@@ -1109,6 +1112,9 @@ func TestSessions(t *testing.T) {
 		idxName := generateTestID()
 		c.VCreate(idxName, "cosine", "float32", 16, 200, nil)
 		defer c.DeleteIndex(idxName)
+
+		// Add a seed vector so the index dimension is known
+		c.VAdd(idxName, "seed", []float32{0.1, 0.2, 0.3, 0.4}, nil)
 
 		result, err := c.StartSession(StartSessionRequest{
 			UserID:    "test_user",
@@ -1122,7 +1128,7 @@ func TestSessions(t *testing.T) {
 			t.Fatalf("StartSession with conversation failed: %v", err)
 		}
 
-		c.EndSession(result.SessionID)
+		c.EndSession(result.SessionID, idxName)
 	})
 }
 

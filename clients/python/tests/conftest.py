@@ -46,9 +46,12 @@ def kektor_server() -> Generator[str, None, None]:
     # Try to start server automatically
     # Look for binary in common locations
     possible_paths = [
+        os.path.join(os.path.dirname(__file__), "../../../kektordb-test"),
         os.path.join(os.path.dirname(__file__), "../../../kektordb"),
+        os.path.join(os.path.dirname(__file__), "../../kektordb-test"),
         os.path.join(os.path.dirname(__file__), "../../kektordb"),
         "/usr/local/bin/kektordb",
+        "./kektordb-test",
         "./kektordb",
     ]
 
@@ -68,7 +71,7 @@ def kektor_server() -> Generator[str, None, None]:
     # Start server
     print(f"\nStarting KektorDB server from {binary}...")
     proc = subprocess.Popen(
-        [binary, "--http", f"{host}:{port}"],
+        [binary, "--http-addr", f":{port}", "--log-level", "error"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )

@@ -298,7 +298,7 @@ class KektorDBClient:
         if vector is not None:
             payload["vector"] = vector
         else:
-            payload["vector"] = []  # Send empty list to signal "Entity" behavior
+            payload["vector"] = [0.0]  # Send minimal zero-vector for entities
 
         if metadata:
             payload["metadata"] = metadata

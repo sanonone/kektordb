@@ -52,6 +52,7 @@ type AgentResult struct {
 // MultiAgentCoordinator orchestrates multiple agents for complex tasks.
 type MultiAgentCoordinator struct {
 	client      *client.Client
+	indexName   string
 	agents      map[string]*Agent
 	agentOrder  []string
 	sessionMgr  *SessionManager
@@ -61,12 +62,13 @@ type MultiAgentCoordinator struct {
 }
 
 // NewMultiAgentCoordinator creates a new coordinator.
-func NewMultiAgentCoordinator(c *client.Client) *MultiAgentCoordinator {
+func NewMultiAgentCoordinator(c *client.Client, indexName string) *MultiAgentCoordinator {
 	return &MultiAgentCoordinator{
 		client:      c,
+		indexName:   indexName,
 		agents:      make(map[string]*Agent),
 		agentOrder:  []string{},
-		sessionMgr:  NewSessionManager(c),
+		sessionMgr:  NewSessionManager(c, indexName),
 		sharedState: make(map[string]interface{}),
 	}
 }
@@ -266,8 +268,8 @@ func (a *Agent) AddKnowledge(role, content string) {
 }
 
 // WithCoordinator creates a coordinator, executes a function, and cleans up.
-func WithCoordinator(c *client.Client, fn func(*MultiAgentCoordinator) error) error {
-	coordinator := NewMultiAgentCoordinator(c)
+func WithCoordinator(c *client.Client, indexName string, fn func(*MultiAgentCoordinator) error) error {
+	coordinator := NewMultiAgentCoordinator(c, indexName)
 	defer coordinator.Cleanup()
 	return fn(coordinator)
 }

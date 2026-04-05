@@ -15,6 +15,7 @@ import (
 type Session struct {
 	ID        string
 	client    *client.Client
+	indexName string
 	Context   []client.ConversationMessage
 	mu        sync.RWMutex
 	createdAt time.Time
@@ -24,10 +25,22 @@ type Session struct {
 // SessionManager provides high-level session lifecycle management.
 type SessionManager struct {
 	client     *client.Client
+	indexName  string
 	sessions   map[string]*Session
 	mu         sync.RWMutex
 	autoEnd    bool
 	defaultTTL time.Duration
+}
+
+// NewSessionManager creates a new session manager.
+func NewSessionManager(c *client.Client, indexName string) *SessionManager {
+	return &SessionManager{
+		client:     c,
+		indexName:  indexName,
+		sessions:   make(map[string]*Session),
+		autoEnd:    true,
+		defaultTTL: 30 * time.Minute,
+	}
 }
 
 // SessionOptions configures session creation behavior.
@@ -37,16 +50,6 @@ type SessionOptions struct {
 	InitialContext []client.ConversationMessage
 	AutoEnd        bool
 	TTL            time.Duration
-}
-
-// NewSessionManager creates a new session manager.
-func NewSessionManager(c *client.Client) *SessionManager {
-	return &SessionManager{
-		client:     c,
-		sessions:   make(map[string]*Session),
-		autoEnd:    true,
-		defaultTTL: 30 * time.Minute,
-	}
 }
 
 // CreateSession starts a new session and returns a managed Session object.
@@ -65,6 +68,7 @@ func (sm *SessionManager) CreateSession(opts SessionOptions) (*Session, error) {
 	session := &Session{
 		ID:        resp.SessionID,
 		client:    sm.client,
+		indexName: sm.indexName,
 		Context:   resp.Conversation,
 		createdAt: time.Now(),
 		updatedAt: time.Now(),
@@ -103,7 +107,7 @@ func (sm *SessionManager) EndSession(sessionID string) error {
 		return fmt.Errorf("session %s not found", sessionID)
 	}
 
-	return sm.client.EndSession(sessionID)
+	return sm.client.EndSession(sessionID, sm.indexName)
 }
 
 // ListSessions returns all active session IDs.
@@ -165,7 +169,7 @@ func (s *Session) GetUpdatedAt() time.Time {
 
 // End terminates the session on the server.
 func (s *Session) End() error {
-	return s.client.EndSession(s.ID)
+	return s.client.EndSession(s.ID, s.indexName)
 }
 
 // ManagedSession provides automatic cleanup via context pattern.

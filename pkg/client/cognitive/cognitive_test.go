@@ -38,7 +38,7 @@ func getTestClient(t *testing.T) *client.Client {
 
 func TestSessionManager_CreateSession(t *testing.T) {
 	c := getTestClient(t)
-	sm := NewSessionManager(c)
+	sm := NewSessionManager(c, "default")
 
 	opts := SessionOptions{
 		UserID: "test-user",
@@ -64,7 +64,7 @@ func TestSessionManager_CreateSession(t *testing.T) {
 
 func TestSessionManager_GetSession(t *testing.T) {
 	c := getTestClient(t)
-	sm := NewSessionManager(c)
+	sm := NewSessionManager(c, "default")
 
 	session, err := sm.CreateSession(SessionOptions{})
 	if err != nil {
@@ -86,7 +86,7 @@ func TestSessionManager_GetSession(t *testing.T) {
 
 func TestSessionManager_ListSessions(t *testing.T) {
 	c := getTestClient(t)
-	sm := NewSessionManager(c)
+	sm := NewSessionManager(c, "default")
 
 	initialCount := len(sm.ListSessions())
 
@@ -105,7 +105,7 @@ func TestSessionManager_ListSessions(t *testing.T) {
 
 func TestSession_AddMessage(t *testing.T) {
 	c := getTestClient(t)
-	sm := NewSessionManager(c)
+	sm := NewSessionManager(c, "default")
 
 	session, err := sm.CreateSession(SessionOptions{})
 	if err != nil {
@@ -128,7 +128,7 @@ func TestSession_AddMessage(t *testing.T) {
 
 func TestWithSession(t *testing.T) {
 	c := getTestClient(t)
-	sm := NewSessionManager(c)
+	sm := NewSessionManager(c, "default")
 
 	var sessionID string
 	err := WithSession(sm, SessionOptions{UserID: "test"}, func(session *ManagedSession) error {
@@ -150,7 +150,7 @@ func TestWithSession(t *testing.T) {
 
 func TestWithSessionContext(t *testing.T) {
 	c := getTestClient(t)
-	sm := NewSessionManager(c)
+	sm := NewSessionManager(c, "default")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -188,7 +188,7 @@ func TestContextAssembler_Retrieve(t *testing.T) {
 
 func TestContextAssembler_RetrieveWithContext(t *testing.T) {
 	c := getTestClient(t)
-	sm := NewSessionManager(c)
+	sm := NewSessionManager(c, "default")
 
 	pipelineName := os.Getenv("KEKTOR_TEST_PIPELINE")
 	if pipelineName == "" {
@@ -288,7 +288,7 @@ func TestGroupSourcesByDocument(t *testing.T) {
 
 func TestMultiAgentCoordinator_RegisterAgent(t *testing.T) {
 	c := getTestClient(t)
-	coordinator := NewMultiAgentCoordinator(c)
+	coordinator := NewMultiAgentCoordinator(c, "default")
 	defer coordinator.Cleanup()
 
 	agent, err := coordinator.RegisterAgent(AgentConfig{
@@ -313,7 +313,7 @@ func TestMultiAgentCoordinator_RegisterAgent(t *testing.T) {
 
 func TestMultiAgentCoordinator_ExecuteAgent(t *testing.T) {
 	c := getTestClient(t)
-	coordinator := NewMultiAgentCoordinator(c)
+	coordinator := NewMultiAgentCoordinator(c, "default")
 	defer coordinator.Cleanup()
 
 	agent, err := coordinator.RegisterAgent(AgentConfig{
@@ -342,7 +342,7 @@ func TestMultiAgentCoordinator_ExecuteAgent(t *testing.T) {
 
 func TestMultiAgentCoordinator_ParallelExecution(t *testing.T) {
 	c := getTestClient(t)
-	coordinator := NewMultiAgentCoordinator(c)
+	coordinator := NewMultiAgentCoordinator(c, "default")
 	defer coordinator.Cleanup()
 
 	// Register multiple agents
@@ -371,7 +371,7 @@ func TestMultiAgentCoordinator_ParallelExecution(t *testing.T) {
 
 func TestMultiAgentCoordinator_SharedState(t *testing.T) {
 	c := getTestClient(t)
-	coordinator := NewMultiAgentCoordinator(c)
+	coordinator := NewMultiAgentCoordinator(c, "default")
 	defer coordinator.Cleanup()
 
 	coordinator.SetSharedState("key1", "value1")
@@ -394,7 +394,7 @@ func TestMultiAgentCoordinator_SharedState(t *testing.T) {
 func TestWithCoordinator(t *testing.T) {
 	c := getTestClient(t)
 
-	err := WithCoordinator(c, func(coordinator *MultiAgentCoordinator) error {
+	err := WithCoordinator(c, "default", func(coordinator *MultiAgentCoordinator) error {
 		_, err := coordinator.RegisterAgent(AgentConfig{
 			ID:   "temp-agent",
 			Name: "Temporary Agent",

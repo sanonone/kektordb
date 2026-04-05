@@ -168,8 +168,24 @@ export class KektorDBClient {
     if (params.m) payload.m = params.m;
     if (params.efConstruction) payload.ef_construction = params.efConstruction;
     if (params.textLanguage) payload.text_language = params.textLanguage;
-    if (params.maintenance) payload.maintenance = params.maintenance;
-    if (params.autoLinks) payload.auto_links = params.autoLinks;
+    if (params.maintenance) {
+      const m = params.maintenance;
+      payload.maintenance = {
+        vacuum_interval: m.vacuumInterval,
+        delete_threshold: m.deleteThreshold,
+        refine_enabled: m.refineEnabled,
+        refine_interval: m.refineInterval,
+        refine_batch_size: m.refineBatchSize,
+        refine_ef_construction: m.refineEfConstruction,
+      };
+    }
+    if (params.autoLinks) {
+      payload.auto_links = params.autoLinks.map((a: any) => ({
+        metadata_field: a.metadataField,
+        relation_type: a.relationType,
+        create_node: a.createNode,
+      }));
+    }
     if (params.memoryConfig) payload.memory_config = params.memoryConfig;
     await this.request("POST", "/vector/actions/create", payload);
   }
@@ -511,8 +527,13 @@ export class KektorDBClient {
     indexName: string,
     rules: Record<string, any>[]
   ): Promise<void> {
+    const snakeRules = rules.map((r: any) => ({
+      metadata_field: r.metadataField ?? r.metadata_field,
+      relation_type: r.relationType ?? r.relation_type,
+      create_node: r.createNode ?? r.create_node,
+    }));
     await this.request("PUT", `/vector/indexes/${indexName}/auto-links`, {
-      rules,
+      rules: snakeRules,
     });
   }
 
