@@ -45,12 +45,20 @@ graph TD
         API[HTTP Server]
         Proxy[AI Gateway / Firewall]
         RAG[RAG Vectorizer Service]
+        MCP[MCP Service]
     end
 
     subgraph "pkg/engine (Orchestrator)"
         Engine[Engine Controller]
+        EventBus[EventBus Pub/Sub]
         Engine --> Persist[Persistence AOF/Snap]
         Engine --> Maintenance[Vacuum & Refine]
+        Engine --> EventBus
+    end
+
+    subgraph "pkg/cognitive (Cognitive Engine)"
+        Gardener[Gardener Daemon]
+        Gardener --> LLM[LLM Detectors]
     end
 
     subgraph "pkg/core (In-Memory Data)"
@@ -69,6 +77,9 @@ graph TD
     API --> Engine
     Proxy --> Engine
     RAG --> Engine
+    MCP --> Engine
+    Gardener --> Engine
+    Engine --> EventBus
 ```
 
 ### Components Breakdown
@@ -80,14 +91,18 @@ graph TD
 
 2.  **Engine (`pkg/engine`):**
     *   **Transaction Coordinator:** Ensures updates are atomic compliant with the AOF persistence.
+    *   **EventBus:** A Pub/Sub system for real-time reactivity to graph and node changes.
     *   **Background Tasks:** Manages `Vacuum` (garbage collection) and `Refine` (graph optimization).
     *   **Locking Strategy:** Implements a global lock with parallelized batch commits to maximize throughput while ensuring safety.
     *   **Lazy AOF Writer:** Batches operations and flushes them periodically (every 100ms or 1000 entries) rather than on every write, providing 10-100x throughput improvement while maintaining durability through periodic fsync (every 1 second).
 
-3.  **Server (`internal/server`):**
+3.  **Server (`internal/server` & `internal/mcp`):**
     *   **HTTP Router:** Standard Go `ServeMux`.
     *   **Task Manager:** Handles long-running asynchronous tasks (Imports, Maintenance).
-    *   **Modules:** Hosts the *Vectorizer Service* (file watching) and *Proxy* (middleware).
+    *   **Modules:** Hosts the *Vectorizer Service* (file watching), *Proxy* (middleware), and *MCP Service* for agentic interactions.
+
+4.  **Cognitive Engine (`pkg/cognitive`):**
+    *   **Gardener Daemon:** A background process with different operating modes (basic, advanced, meta) that performs cross-detector confidence validation. It analyzes the graph for contradictions, user profiles, knowledge evolution, and resolves conflicts using LLMs.
 
 ---
 
@@ -391,12 +406,13 @@ Starting from v0.4.1, KektorDB supports **First-Class Graph Entities**. You can 
 *   **Use Case:** Represents people, categories, or concepts that you want to link strictly via relationships (e.g. `Author:John`) but don't need to search via vector similarity alongside documents. 
 *   **Behavior:** These nodes have a zero-vector [0,0...] internally. They can be retrieved via `SearchNodes` (property filter) or Graph Traversal, but will appear at the "bottom" of vector similarity searches unless the query is also [0,0...].
 
-### 4.6 Advanced RAG Pipeline (v0.4.0)
+### 4.6 Advanced RAG Pipeline
 KektorDB implements a sophisticated "Agentic" retrieval pipeline to solve common RAG issues:
 
-1.  **Query Rewriting (CQR):** Uses a fast LLM to rewrite user questions based on chat history. Solves the "Memory Problem" (e.g., User: "How to install it?" -> System: "How to install KektorDB?").
-2.  **Grounded HyDe:** Generates a hypothetical answer to the question using context snippets, then embeds that answer for retrieval. drastically improves recall for vague queries.
-3.  **Safety Net:** If HyDe fails to find relevant context, the system automatically falls back to standard vector search in real-time.
+1.  **Adaptive Retrieval:** Performs graph-aware context expansion. It retrieves seed chunks via semantic search, expands following graph relations (like `next`, `prev`, `parent`), and assembles a context window respecting the maximum token budget dynamically.
+2.  **Query Rewriting (CQR):** Uses a fast LLM to rewrite user questions based on chat history. Solves the "Memory Problem" (e.g., User: "How to install it?" -> System: "How to install KektorDB?").
+3.  **Grounded HyDe:** Generates a hypothetical answer to the question using context snippets, then embeds that answer for retrieval. drastically improves recall for vague queries.
+4.  **Safety Net:** If HyDe fails to find relevant context, the system automatically falls back to standard vector search in real-time.
 
 ### 4.7 Memory Decay & Reinforcement
 KektorDB implements a unified memory model where nodes naturally decay in importance if they aren't accessed.
@@ -846,9 +862,119 @@ Uses a configured *Vectorizer Pipeline* to convert text to vectors -> Search -> 
 }
 ```
 
+#### Adaptive Retrieval
+**`POST /rag/retrieve-adaptive`**
+
+Uses graph-aware context expansion to dynamically build a context window respecting token budgets.
+
+**Body:**
+```json
+{
+  "pipeline_name": "documentation",
+  "query": "How do I configure KektorDB?",
+  "k": 5,
+  "max_tokens": 4096,
+  "strategy": "graph",
+  "expansion_depth": 2,
+  "include_provenance": true
+}
+```
+
 ---
 
-### 5.6 Model Context Protocol (MCP)
+### 5.6 API: Cognitive & Session Engine
+
+The Cognitive Engine and Session management allow agents and applications to maintain long-term state, detect contradictions, and autonomously handle user profiles. 
+
+#### Get User Profile
+**`GET /users/{id}/profile?index_name=mcp_memory`**
+
+Retrieves an autonomously generated user personality profile, including communication style, language, expertise areas, dislikes, and confidence score.
+
+#### List User Profiles
+**`GET /users?index_name=mcp_memory`**
+
+Returns a list of all user profiles present in the specified index.
+
+#### Start Session
+**`POST /sessions`**
+
+Creates a new session entity and tracks it.
+
+**Body:**
+```json
+{
+  "session_id": "session_123",
+  "agent_id": "agent_x",
+  "user_id": "user_y",
+  "context": "Initial setup discussion.",
+  "index_name": "mcp_memory"
+}
+```
+
+#### End Session
+**`POST /sessions/{id}/end`**
+
+Ends an active session and triggers summarization in the background.
+
+**Body:**
+```json
+{
+  "index_name": "mcp_memory"
+}
+```
+
+#### Get Subconscious Reflections
+**`GET /vector/indexes/{name}/reflections`**
+
+Retrieves pending subconscious reflections (e.g., contradictions to resolve, insights) generated by the Gardener.
+
+#### Resolve Reflection
+**`POST /vector/indexes/{name}/cognitive/resolve`**
+
+Resolves a pending reflection.
+
+**Body:**
+```json
+{
+  "reflection_id": "ref_123",
+  "resolution": "discard_old",
+  "discard_id": "mem_456"
+}
+```
+
+#### Think (Ask Meta Question)
+**`POST /vector/indexes/{name}/cognitive/think`**
+
+Queries exclusively the meta-knowledge layer of the database based on agent reflections and evaluations.
+
+**Body:**
+```json
+{
+  "query": "What are the common failure patterns?",
+  "limit": 5
+}
+```
+
+#### Transfer Memory
+**`POST /transfer/memory`**
+
+Transfers memories and their graph topology from a source index to a target index, creating an agent proxy node. Useful for multi-agent setups.
+
+**Body:**
+```json
+{
+  "source_index": "agent_alpha",
+  "target_index": "shared_memory",
+  "query": "deployment instructions",
+  "limit": 100,
+  "with_graph": true
+}
+```
+
+---
+
+### 5.7 Model Context Protocol (MCP)
 
 KektorDB implements the [Model Context Protocol](https://modelcontextprotocol.io/) as a **Memory Server**. This allows LLM agents to perform persistent memory operations.
 
@@ -865,6 +991,15 @@ Run KektorDB with the `--mcp` flag. It will listen for JSON-RPC messages on stan
 | `recall_memory` | Performs a global hybrid search for memories. |
 | `scoped_recall` | Performs a semantic search within a specific sub-graph. |
 | `explore_connections` | Traverses the knowledge graph to find context for a node. |
+| `start_session` | Starts a new session or context to link upcoming memories. |
+| `end_session` | Ends a session, triggering a summary generation by the Gardener. |
+| `transfer_memory` | Moves memories from one agent index to another, preserving graph structures. |
+| `get_user_profile` | Retrieves an automatically generated personality and expertise profile of a user. |
+| `list_user_profiles` | Lists profiles of all individuals KektorDB has learned about. |
+| `check_subconscious` | Queries pending contradictions or insights that the cognitive engine detected. |
+| `resolve_conflict` | Allows the agent to provide a firm resolution to an identified contradiction. |
+| `ask_meta_question` | Asks the cognitive engine a question over the learned evaluations and patterns instead of the raw data. |
+| `adaptive_retrieve` | Uses graph-aware dynamic context expansion to retrieve data up to a specified token limit. |
 
 **Environment Variables:**
 *   `MCP_EMBEDDER_URL`: URL for the embedding service (default: Ollama LOCAL).
@@ -872,7 +1007,12 @@ Run KektorDB with the `--mcp` flag. It will listen for JSON-RPC messages on stan
 
 ---
 
-### 5.7 System & Maintenance
+### 5.8 System & Maintenance
+
+#### Event Stream (SSE)
+**`GET /events/stream`**
+
+Subscribe to real-time server-sent events emitted by the `EventBus` (e.g., node modifications, graph traversal events, or cognitive reflections).
 
 #### Check Task Status
 **`GET /system/tasks/{id}`**

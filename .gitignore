@@ -8,6 +8,7 @@
 *.dll
 *.so
 *.dylib
+release/
 
 # Test binary, built with `go test -c`
 *.test
@@ -36,6 +37,7 @@ build/
 # Dev files
 /tempMcpDocs
 /tempDocs
+/benchmarks
 
 # Ignore data directory
 assets/

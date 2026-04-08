@@ -111,22 +111,24 @@ KektorDB can function as a **smart middleware** between your Chat UI and your LL
 *   **Observability:** Prometheus metrics (`/metrics`), structured logging, and Go pprof profiling endpoints.
 *   **Dual Mode:** Run as a standalone **REST Server** or as a **Go Library**.
 
-### Agentic RAG Pipeline
-*   **Query Rewriting (CQR):** Automatically rewrites user questions based on chat history (e.g., "How to install it?" -> "How to install KektorDB?"). Solves short-term memory issues.
-*   **Grounded HyDe:** Generates hypothetical answers to improve recall on vague queries, using real data fragments to ground the hallucination.
-*   **Safety Net:** Automatically falls back to standard vector search if the advanced pipeline fails to find relevant context.
+### Cognitive & Agentic Capabilities
+*   **Cognitive Engine (Gardener):** A background daemon that performs cross-detector confidence validation. It analyzes the graph for contradictions, tracks user profiles, models knowledge evolution, and resolves conflicts using LLMs.
+*   **Adaptive Retrieval:** A sophisticated RAG pipeline that uses graph-aware dynamically expanded context, retrieving seed chunks and automatically following semantic neighbors up to a budget constraint.
+*   **Query Rewriting (CQR):** Automatically rewrites user questions based on chat history to solve the "Memory Problem".
+*   **Grounded HyDe:** Generates grounded hypothetical answers using real data fragments to improve semantic recall for vague queries.
+*   **EventBus:** Integrated pub/sub system for real-time reactivity to graph and vector operations, with Server-Sent Events (SSE) support.
 
 ### Semantic Graph Engine
-*   **Automated Entity Extraction:** Uses a local LLM to identify concepts (People, Projects, Tech) during ingestion and links related documents together ("Connecting the dots").
+*   **Automated Entity Extraction:** Uses a local LLM to identify concepts (People, Projects, Tech) during ingestion and links related documents together.
 *   **Weighted & Property Graphs:** Supports "Rich Edges" with attributes (weights, arbitrary properties) to enable complex recommendation and ranking algorithms.
-*   **Temporal Graph (Time Travel):** Every relationship is versioned with `CreatedAt` and `DeletedAt` timestamps. Soft delete support allows querying the graph status at any point in the past.
-*   **Memory Decay & Reinforcement:** Short and long-term memory is unified. Nodes decay in relevance over time if not accessed, but are reinforced via retrieving/reinforcing APIs, optimizing Context/RAG to auto-clean noise. Includes support for pinned nodes that bypass decay.
+*   **Temporal Graph (Time Travel):** Every relationship is versioned. Soft delete support allows querying the graph status at any point in the past.
+*   **Memory Decay & Reinforcement:** Unifies short and long-term memory. Nodes naturally decay in relevance if not accessed, and are reinforced upon retrieval. Features pinned nodes capability.
 *   **Bi-directional Navigation:** Automatic management of incoming edges to enable O(1) retrieval of "who points to node X", powering efficient graph traversal.
-*   **Graph Entities:** Support for nodes without vectors (pure metadata nodes) to represent abstract entities like "Users" or "Categories" within the same graph structure.
+*   **Graph Entities:** Support for nodes without vectors to represent abstract entities like "Users", "Sessions", or "Proxy Agents" within the same graph structure.
 *   **Graph Traversal:** Search traverses any relationship type (like `prev`, `next`, `parent`, `mentions`) to provide a holistic context window.
-*   **Graph Filtering:** Combine vector search with graph topology filters (e.g. "search only children of Doc X"), powered by Roaring Bitmaps.
-*   **Path Finding (FindPath):** Discover shortest paths between any two nodes using bidirectional BFS. Supports time travel queries to find paths that existed at a specific point in history.
-*   **Node Search:** Perform pure metadata filtering without vector similarity (useful for finding nodes by property).
+*   **Graph Filtering:** Combine vector search with graph topology filters (e.g., "search only children of Doc X"), powered by Roaring Bitmaps.
+*   **Path Finding (FindPath):** Discover shortest paths between any two nodes using bidirectional BFS. Supports time travel queries.
+*   **Node Search:** Perform pure metadata filtering without vector similarity.
 
 <p align="center">
   <img src="docs/images/kektordb-graph-entities.png" alt="Knowledge Graph Visualization" width="700">
@@ -135,8 +137,8 @@ KektorDB can function as a **smart middleware** between your Chat UI and your LL
 </p>
 
 ### Model Context Protocol (MCP) Support
-KektorDB now functions as an **MCP Memory Server**. This allows LLMs (like Claude via Claude Desktop) to use KektorDB as a long-term memory store directly.
-*   **Tools included:** `save_memory`, `recall_memory`, `create_entity`, `connect_entities`, `scoped_recall`, and `explore_connections`.
+KektorDB functions as a full **Cognitive Memory Server** under the [Model Context Protocol](https://modelcontextprotocol.io/). This allows LLMs (like Claude Desktop) to use KektorDB as a long-term, self-organizing memory store directly.
+*   **Tools included:** `save_memory`, `recall_memory`, `create_entity`, `connect_entities`, `scoped_recall`, `explore_connections`, `start_session`, `end_session`, `transfer_memory`, `get_user_profile`, `list_user_profiles`, `check_subconscious`, `resolve_conflict`, `ask_meta_question`, and `adaptive_retrieve`.
 *   **How to run:**
     ```bash
     ./kektordb --mcp
@@ -375,6 +377,8 @@ KektorDB is a young project under active development.
 
 ### Released in v0.5.0 ✅
 *   [x] **Zero-Copy mmap Arena:** Vector data is now stored using memory-mapped files, breaking the traditional RAM limit. Hot vectors stay in RAM for speed while cold data is managed by the OS page cache. This enables datasets larger than available RAM.
+*   [x] **Cognitive Engine (Gardener):** Background daemon for knowledge graph conflict resolution, user profiling, and subconscious reflection.
+*   [x] **TypeScript Client:** Official Node.js/TypeScript SDK to bridge the AI JS ecosystem with KektorDB.
 
 ### Planned (Short Term)
 Features I intend to build to make KektorDB production-ready and faster.
@@ -385,12 +389,10 @@ Features I intend to build to make KektorDB production-ready and faster.
 *   [ ] **Configurable RAG Relations:** Allow users to define custom graph traversal paths in `proxy.yaml` instead of relying on hardcoded defaults.
 *   [ ] **SIMD/AVX Optimizations:** Extending pure Go Assembly optimizations (currently used for Cosine) to Euclidean distance and Float16 operations to maximize throughput on modern CPUs.
 *   [ ] **RBAC & Security:** Implement Role-Based Access Control (Admin vs Read-Only tokens) and finer granularity for multi-tenant apps.
-*   [ ] **Official TypeScript Client:** To better serve the JS/Node.js AI ecosystem.
 
 ### Future Vision (Long Term)
 Features under research. Their implementation depends on real-world adoption, feedback, and available development time.
 *   **Distributed Replication:** Raft-based consensus for High Availability (Leader-Follower).
-*   **Semantic "Gardener":** A background process that uses LLMs to merge duplicate chunks and resolve conflicting information in the Knowledge Graph automatically.
 
 > **Want to influence the roadmap?** [Open an Issue](https://github.com/sanonone/kektordb/issues) or vote on existing ones!
 

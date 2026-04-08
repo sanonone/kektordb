@@ -111,22 +111,24 @@ KektorDB può funzionare come **middleware intelligente** tra la tua Chat UI e i
 *   **Osservabilità:** Metriche Prometheus (`/metrics`), logging strutturato e endpoint di profiling Go pprof.
 *   **Doppia Modalità:** Esegui come **Server REST** autonomo o come **Libreria Go**.
 
-### Pipeline RAG Agentica
-*   **Riscritta Query (CQR):** Riscrive automaticamente le domande dell'utente basandosi sulla cronologia della chat (es. "Come installarlo?" -> "Come installare KektorDB?"). Risolve problemi di memoria a breve termine.
-*   **Grounded HyDe:** Genera risposte ipotetiche per migliorare il recall su query vaghe, usando frammenti di dati reali per ancorare l'allucinazione.
-*   **Safety Net:** Ritorna automaticamente alla ricerca vettoriale standard se la pipeline avanzata non riesce a trovare contesto rilevante.
+### Funzionalità Cognitive & Agentiche
+*   **Motore Cognitivo (Gardener):** Un demone in background che esegue convalide incrociate di confidenza ("meta" mode). Analizza il grafo per contraddizioni, traccia profili utente, modella l'evoluzione della conoscenza e risolve i conflitti usando LLM.
+*   **Recupero Adattivo (Adaptive RAG):** Una sofisticata pipeline RAG che usa l'espansione del contesto graph-aware, recuperando chunk iniziali e seguendo automaticamente i vicini semantici fino a un limite di token definito dinamicamente.
+*   **Riscritura Query (CQR):** Riscrive automaticamente le domande dell'utente per risolvere il problema della memoria a breve termine.
+*   **Grounded HyDe:** Genera risposte ipotetiche radicate su frammenti reali di dati, per migliorare drasticamente il recall per le query vaghe.
+*   **EventBus:** Un sistema pub/sub integrato per reagire in tempo reale alle operazioni su vettori e grafo, con supporto per i Server-Sent Events (SSE).
 
 ### Motore a Grafo Semantico
-*   **Estrazione Entità Automatizzata:** Usa un LLM locale per identificare concetti (Persone, Progetti, Tecnologie) durante l'ingestione e collega documenti correlati ("Unire i puntini").
+*   **Estrazione Entità Automatizzata:** Usa un LLM locale per identificare concetti (Persone, Progetti, Tecnologie) durante l'ingestione e collega documenti correlati.
 *   **Grafo Pesato e con Proprietà:** Supporta "Archi Ricchi" con attributi (pesi, proprietà arbitrarie) per abilitare algoritmi complessi di raccomandazione e ranking.
-*   **Grafo Temporale (Time Travel):** Ogni relazione è versionata con timestamp `CreatedAt` e `DeletedAt`. Il supporto al soft delete permette di interrogare lo stato del grafo in qualsiasi momento nel passato.
-*   **Memory Decay & Reinforcement:** Unifica la memoria a breve e lungo termine. I nodi non interrogati de-cadono di rank, mentre quelli utili vengono rinforzati (Reinforce API), ottimizzando il RAG tramite autopolizia del rumore storico. Include supporto per nodi pinned che bypassano il decay.
+*   **Grafo Temporale (Time Travel):** Ogni relazione è versionata. Il supporto al soft delete permette di interrogare lo stato del grafo in qualsiasi momento nel passato.
+*   **Memory Decay & Reinforcement:** Unifica la memoria a breve e lungo termine. I nodi non interrogati decadono naturalmente, e vengono rinforzati (Reinforce API) quando si recupera il contesto. Supporta i nodi "pinned" per bypassare il decay.
 *   **Navigazione Bidirezionale:** Gestione automatica degli archi in entrata per consentire il recupero O(1) di "chi punta al nodo X", potenziando l'attraversamento efficiente del grafo.
-*   **Entità di Grafo:** Supporto per nodi senza vettore (solo metadati) per rappresentare entità astratte come "Utenti" o "Categorie" nella stessa struttura a grafo.
+*   **Entità di Grafo:** Supporto per nodi senza vettore per rappresentare entità astratte come "Utenti" o "Sessioni" nella stessa struttura a grafo.
 *   **Attraversamento del Grafo:** La ricerca attraversa qualsiasi tipo di relazione (come `prev`, `next`, `parent`, `mentions`) per fornire una finestra di contesto olistica.
 *   **Filtri sul Grafo:** Combina la ricerca vettoriale con filtri sulla topologia del grafo (es. "cerca solo nei figli del Documento X"), potenziato dai Roaring Bitmaps.
 *   **Path Finding (FindPath):** Scopri il percorso più breve tra due nodi usando BFS bidirezionale. Supporta query time-travel per trovare percorsi esistenti in un momento specifico nel passato.
-*   **Node Search:** Esegue filtri solo su metadati senza similarità vettoriale (utile per trovare nodi per proprietà).
+*   **Node Search:** Esegue filtri solo su metadati senza similarità vettoriale.
 
 <p align="center">
   <img src="docs/images/kektordb-graph-entities.png" alt="Visualizzazione Grafo di Conoscenza" width="700">
@@ -135,8 +137,8 @@ KektorDB può funzionare come **middleware intelligente** tra la tua Chat UI e i
 </p>
 
 ### Supporto Model Context Protocol (MCP)
-KektorDB ora funziona come un **MCP Memory Server**. Questo permette agli LLM (come Claude tramite Claude Desktop) di usare direttamente KektorDB come memoria a lungo termine.
-*   **Strumenti inclusi:** `save_memory`, `recall_memory`, `create_entity`, `connect_entities`, `scoped_recall` e `explore_connections`.
+KektorDB funziona come un **Cognitive Memory Server** completo basato sul protocollo MCP [Model Context Protocol](https://modelcontextprotocol.io/). Questo permette agli agenti LLM (come Claude via Claude Desktop) di utilizzare direttamente KektorDB come memoria a lungo termine auto-organizzativa.
+*   **Strumenti inclusi:** `save_memory`, `recall_memory`, `create_entity`, `connect_entities`, `scoped_recall`, `explore_connections`, `start_session`, `end_session`, `transfer_memory`, `get_user_profile`, `list_user_profiles`, `check_subconscious`, `resolve_conflict`, `ask_meta_question`, e `adaptive_retrieve`.
 *   **Come avviarlo:**
     ```bash
     ./kektordb --mcp
@@ -375,6 +377,8 @@ KektorDB è un progetto giovane in sviluppo attivo.
 
 ### Rilasciato in v0.5.0 ✅
 *   [x] **mmap Arena Zero-Copy:** I dati vettoriali sono ora memorizzati usando file memory-mapped, rompendo il tradizionale limite RAM. I vettori "hot" rimangono in RAM per velocità mentre i dati "cold" sono gestiti dal page cache del sistema operativo. Questo abilita dataset più grandi della RAM disponibile.
+*   [x] **Motore Cognitivo (Gardener):** Demone in background per una risoluzione attiva dei conflitti, profilazione utente automatica e riflessioni "subconsce".
+*   [x] **Client TypeScript:** SDK ufficiale Node.js/TypeScript per collegare l'ecosistema AI di JavaScript a KektorDB.
 
 ### Pianificati (Breve Termine)
 Funzionalità che intendo sviluppare per rendere KektorDB pronto per la produzione e ancora più veloce.
@@ -385,12 +389,10 @@ Funzionalità che intendo sviluppare per rendere KektorDB pronto per la produzio
 *   [ ] **Relazioni RAG Configurabili:** Permettere agli utenti di definire percorsi di attraversamento del grafo personalizzati nel `proxy.yaml` invece di affidarsi ai default hardcodati.
 *   [ ] **Ottimizzazioni SIMD/AVX:** Estendere le ottimizzazioni Assembly Go puro (attualmente usate per il Coseno) alla distanza Euclidea e alle operazioni Float16 per massimizzare il throughput sulle CPU moderne.
 *   [ ] **RBAC & Sicurezza:** Implementare il controllo accessi basato sui ruoli (Admin vs Read-Only) e una granularità più fine per applicazioni multi-tenant.
-*   [ ] **Client TypeScript Ufficiale:** Per supportare meglio l'ecosistema AI JS/Node.js.
 
 ### Visione Futura (Lungo Termine)
 Funzionalità in fase di ricerca. La loro implementazione dipende dall'adozione nel mondo reale, dal feedback e dal tempo di sviluppo disponibile.
 *   **Replicazione Distribuita:** Consenso basato su Raft per l'Alta Disponibilità (Leader-Follower).
-*   **Semantic "Gardener":** Un processo in background che usa gli LLM per unire chunk duplicati e risolvere conflitti nel Knowledge Graph automaticamente.
 
 > **Vuoi influenzare la roadmap?** [Apri una Issue](https://github.com/sanonone/kektordb/issues) o vota quelle esistenti!
 

@@ -43,10 +43,10 @@ gardener:
   # Adaptive scheduling:
   # If this many write operations occur before the next interval,
   # the Gardener wakes up early instead of waiting
-  adaptive_threshold: 50
+  adaptive_threshold: 200
 
   # Minimum time between adaptive wakes (prevents rapid-fire analysis)
-  adaptive_min_interval: "30s"
+  adaptive_min_interval: "90s"
 
 # Auto-resolve: let the Gardener autonomously act on whitelisted reflection types.
 # The LLM already made its decision during detection. The Resolver just executes it.
