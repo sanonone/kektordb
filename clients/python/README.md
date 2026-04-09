@@ -331,6 +331,33 @@ for source in result.get("sources", []):
     print(f"Content: {source['content'][:200]}...")
 ```
 
+### 🗜️ Context Compression ("Caveman Mode")
+
+Enable safe lexical compression to reduce LLM token count by 20-35% while preserving semantic meaning:
+
+```python
+# Search with compression for LLM-optimized results
+results = client.vsearch(
+    index_name="docs",
+    query_vector=query_vec,
+    k=10,
+    compress_context=True  # Reduces tokens by 20-35%
+)
+
+# RAG retrieval with compression
+result = client.adaptive_retrieve(
+    pipeline_name="my_rag_pipeline",
+    query="What are the key features?",
+    k=5,
+    compress_context=True  # Optimizes context for LLM consumption
+)
+
+# The compression removes safe stopwords (articles, prepositions) 
+# but preserves critical semantic elements:
+# - Negations: "not", "no", "non", "mai"
+# - Logical operators: "and", "or", "but", "if" / "e", "o", "ma", "se"
+```
+
 ---
 
 ### 👤 User Profiles

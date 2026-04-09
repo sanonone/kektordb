@@ -38,8 +38,9 @@ type VectorImportCommitRequest struct {
 }
 
 type BatchGetVectorsRequest struct {
-	IndexName string   `json:"index_name"`
-	IDs       []string `json:"ids"`
+	IndexName       string   `json:"index_name"`
+	IDs             []string `json:"ids"`
+	CompressContext bool     `json:"compress_context,omitempty"` // NEW: Enable safe lexical compression
 }
 
 // VectorSearchRequest defines the body for search operations.
@@ -53,6 +54,7 @@ type VectorSearchRequest struct {
 	IncludeRelations []string           `json:"include_relations,omitempty"`
 	HydrateRelations bool               `json:"hydrate_relations,omitempty"`
 	GraphFilter      *engine.GraphQuery `json:"graph_filter,omitempty"`
+	CompressContext  bool               `json:"compress_context,omitempty"` // NEW: Enable safe lexical compression for LLM optimization
 }
 
 // VectorSearchWithScoresRequest defines the body for search with scores operations.
@@ -88,6 +90,7 @@ type RagRetrieveRequest struct {
 	Query             string `json:"query"`
 	K                 int    `json:"k"`                            // Default 10
 	IncludeProvenance bool   `json:"include_provenance,omitempty"` // NEW: include source attribution
+	CompressContext   bool   `json:"compress_context,omitempty"`   // NEW: Enable safe lexical compression for LLM optimization
 }
 
 type GraphLinkRequest struct {
@@ -123,12 +126,13 @@ type GraphGetConnectionsRequest struct {
 
 // GraphGetEdgesRequest is used to fetch rich edges and perform time travel.
 type GraphGetEdgesRequest struct {
-	IndexName    string `json:"index_name"`
-	SourceID     string `json:"source_id"`     // Required for Forward
-	TargetID     string `json:"target_id"`     // Required for Incoming
-	RelationType string `json:"relation_type"` // Required
-	Direction    string `json:"direction"`     // "out" (default) or "in"
-	AtTime       int64  `json:"at_time"`       // Optional: Unix Nano timestamp. 0 = Now.
+	IndexName       string `json:"index_name"`
+	SourceID        string `json:"source_id"`                  // Required for Forward
+	TargetID        string `json:"target_id"`                  // Required for Incoming
+	RelationType    string `json:"relation_type"`              // Required
+	Direction       string `json:"direction"`                  // "out" (default) or "in"
+	AtTime          int64  `json:"at_time"`                    // Optional: Unix Nano timestamp. 0 = Now.
+	CompressContext bool   `json:"compress_context,omitempty"` // NEW: Enable safe lexical compression
 }
 
 // GraphGetEdgesResponse returns the list of rich edges.
@@ -137,9 +141,10 @@ type GraphGetEdgesResponse struct {
 }
 
 type GraphTraverseRequest struct {
-	IndexName string   `json:"index_name"`
-	SourceID  string   `json:"source_id"`
-	Paths     []string `json:"paths"` // e.g. ["parent.child"]
+	IndexName       string   `json:"index_name"`
+	SourceID        string   `json:"source_id"`
+	Paths           []string `json:"paths"`                      // e.g. ["parent.child"]
+	CompressContext bool     `json:"compress_context,omitempty"` // NEW: Enable safe lexical compression
 }
 
 type GraphGetIncomingRequest struct {
@@ -163,6 +168,7 @@ type GraphExtractSubgraphRequest struct {
 	// If GuideVector is provided, the traversal only follows nodes semantically similar to this vector.
 	GuideVector       []float32 `json:"guide_vector,omitempty"`
 	SemanticThreshold float64   `json:"semantic_threshold,omitempty"` // E.g., 0.5 for Cosine distance
+	CompressContext   bool      `json:"compress_context,omitempty"`   // NEW: Enable safe lexical compression
 }
 
 type GraphSetPropertiesRequest struct {
@@ -172,14 +178,16 @@ type GraphSetPropertiesRequest struct {
 }
 
 type GraphGetPropertiesRequest struct {
-	IndexName string `json:"index_name"`
-	NodeID    string `json:"node_id"`
+	IndexName       string `json:"index_name"`
+	NodeID          string `json:"node_id"`
+	CompressContext bool   `json:"compress_context,omitempty"` // NEW: Enable safe lexical compression
 }
 
 type GraphSearchNodesRequest struct {
-	IndexName      string `json:"index_name"`
-	PropertyFilter string `json:"property_filter"` // e.g. "type='person'"
-	Limit          int    `json:"limit"`
+	IndexName       string `json:"index_name"`
+	PropertyFilter  string `json:"property_filter"` // e.g. "type='person'"
+	Limit           int    `json:"limit"`
+	CompressContext bool   `json:"compress_context,omitempty"` // NEW: Enable safe lexical compression
 }
 
 type GraphFindPathRequest struct {
@@ -206,8 +214,9 @@ type GraphGetAllRelationsResponse struct {
 // Response uses engine.SubgraphResult directly
 
 type UIExploreRequest struct {
-	IndexName string `json:"index_name"`
-	Limit     int    `json:"limit"`
+	IndexName       string `json:"index_name"`
+	Limit           int    `json:"limit"`
+	CompressContext bool   `json:"compress_context,omitempty"` // NEW: Enable safe lexical compression
 }
 
 type UpdateAutoLinksRequest struct {
@@ -303,6 +312,7 @@ type RagAdaptiveRetrieveRequest struct {
 	DensityWeight     float64 `json:"density_weight,omitempty"`
 	CharsPerToken     float64 `json:"chars_per_token,omitempty"`
 	IncludeProvenance bool    `json:"include_provenance,omitempty"` // NEW: include source attribution
+	CompressContext   bool    `json:"compress_context,omitempty"`   // NEW: Enable safe lexical compression
 }
 
 // RagAdaptiveRetrieveResponse represents the response from adaptive RAG retrieval.

@@ -113,9 +113,11 @@ KektorDB può funzionare come **middleware intelligente** tra la tua Chat UI e i
 
 ### Funzionalità Cognitive & Agentiche
 *   **Motore Cognitivo (Gardener):** Un demone in background che esegue convalide incrociate di confidenza ("meta" mode). Analizza il grafo per contraddizioni, traccia profili utente, modella l'evoluzione della conoscenza e risolve i conflitti usando LLM.
+*   **Estrazione Fatti Core:** Il Gardener estrae automaticamente fatti immutabili dalle interazioni utente (nome, professione, preferenze) e crea nodi di memoria pinned con `type="core_fact"` per recupero persistente e veloce senza decadimento temporale.
 *   **Recupero Adattivo (Adaptive RAG):** Una sofisticata pipeline RAG che usa l'espansione del contesto graph-aware, recuperando chunk iniziali e seguendo automaticamente i vicini semantici fino a un limite di token definito dinamicamente.
 *   **Riscritura Query (CQR):** Riscrive automaticamente le domande dell'utente per risolvere il problema della memoria a breve termine.
 *   **Grounded HyDe:** Genera risposte ipotetiche radicate su frammenti reali di dati, per migliorare drasticamente il recall per le query vaghe.
+*   **Compressione Contesto ("Caveman Mode"):** Compressione lessicale sicura che riduce il conteggio token del 20-35% per il contesto LLM preservando il significato semantico. Rimuove stopwords sicure (articoli, preposizioni) ma preserva rigorosamente le negazioni e gli operatori logici (non, e, o, ma, se).
 *   **EventBus:** Un sistema pub/sub integrato per reagire in tempo reale alle operazioni su vettori e grafo, con supporto per i Server-Sent Events (SSE).
 
 ### Motore a Grafo Semantico
@@ -350,7 +352,7 @@ KektorDB offre risparmi di memoria significativi attraverso quantizzazione e com
 
 Per una guida completa a tutte le funzionalità e agli endpoint API, consulta la **[Documentazione Completa](DOCUMENTATION.md)**.
 
-*   `POST /vector/actions/search`: Ricerca vettoriale ibrida.
+*   `POST /vector/actions/search`: Ricerca vettoriale ibrida. Imposta `compress_context: true` per risultati ottimizzati per LLM (riduzione token 20-35%).
 *   `POST /vector/actions/search-with-scores`: Ricerca che ritorna risultati con punteggi di similarità.
 *   `POST /vector/actions/import`: Caricamento massivo ad alta velocità.
 *   `POST /vector/actions/add-batch`: Inserimento vettoriale in batch.
@@ -363,7 +365,8 @@ Per una guida completa a tutte le funzionalità e agli endpoint API, consulta la
 *   `POST /graph/actions/find-path`: Trova il percorso più breve tra due nodi.
 *   `POST /graph/actions/search-nodes`: Ricerca solo con filtri (basata su metadati, senza similarità vettoriale).
 *   `POST /graph/actions/set-node-properties`: Aggiungi/aggiorna metadati su nodi senza vettori.
-*   `POST /rag/retrieve`: Ottieni chunk di testo per RAG.
+*   `POST /rag/retrieve`: Ottieni chunk di testo per RAG. Imposta `compress_context: true` per contesto ottimizzato per LLM.
+*   `POST /rag/retrieve-adaptive`: RAG adattivo con espansione grafo. Imposta `compress_context: true` per contesto ottimizzato per LLM.
 *   `GET /system/tasks/{id}`: Monitora task a lunga esecuzione.
 *   `POST /system/save`: Snapshot manuale.
 *   `POST /system/aof-rewrite`: Compatta il file AOF.
@@ -378,6 +381,8 @@ KektorDB è un progetto giovane in sviluppo attivo.
 ### Rilasciato in v0.5.0 ✅
 *   [x] **mmap Arena Zero-Copy:** I dati vettoriali sono ora memorizzati usando file memory-mapped, rompendo il tradizionale limite RAM. I vettori "hot" rimangono in RAM per velocità mentre i dati "cold" sono gestiti dal page cache del sistema operativo. Questo abilita dataset più grandi della RAM disponibile.
 *   [x] **Motore Cognitivo (Gardener):** Demone in background per una risoluzione attiva dei conflitti, profilazione utente automatica e riflessioni "subconsce".
+*   [x] **Estrazione Fatti Core:** Estrazione automatica di fatti utente immutabili (nome, professione, preferenze) con nodi pinned che bypassano il decadimento temporale.
+*   [x] **Compressione Contesto ("Caveman Mode"):** Compressione lessicale sicura che riduce il conteggio token LLM del 20-35% preservando il significato semantico e gli operatori logici.
 *   [x] **Client TypeScript:** SDK ufficiale Node.js/TypeScript per collegare l'ecosistema AI di JavaScript a KektorDB.
 
 ### Pianificati (Breve Termine)
@@ -388,11 +393,7 @@ Funzionalità che intendo sviluppare per rendere KektorDB pronto per la produzio
 *   [ ] **Backup/Restore Nativo:** API semplice per salvare snapshot su S3/MinIO/Locale senza dover fermare il server.
 *   [ ] **Relazioni RAG Configurabili:** Permettere agli utenti di definire percorsi di attraversamento del grafo personalizzati nel `proxy.yaml` invece di affidarsi ai default hardcodati.
 *   [ ] **Ottimizzazioni SIMD/AVX:** Estendere le ottimizzazioni Assembly Go puro (attualmente usate per il Coseno) alla distanza Euclidea e alle operazioni Float16 per massimizzare il throughput sulle CPU moderne.
-*   [ ] **RBAC & Sicurezza:** Implementare il controllo accessi basato sui ruoli (Admin vs Read-Only) e una granularità più fine per applicazioni multi-tenant.
-
-### Visione Futura (Lungo Termine)
-Funzionalità in fase di ricerca. La loro implementazione dipende dall'adozione nel mondo reale, dal feedback e dal tempo di sviluppo disponibile.
-*   **Replicazione Distribuita:** Consenso basato su Raft per l'Alta Disponibilità (Leader-Follower).
+*   [x] **RBAC & Sicurezza:** Implementare il controllo accessi basato sui ruoli (Admin vs Read-Only) e una granularità più fine per applicazioni multi-tenant.
 
 > **Vuoi influenzare la roadmap?** [Apri una Issue](https://github.com/sanonone/kektordb/issues) o vota quelle esistenti!
 
@@ -400,7 +401,6 @@ Funzionalità in fase di ricerca. La loro implementazione dipende dall'adozione 
 
 ## 🛑 Limitazioni attuali (v0.5.0)
 * **Singolo nodo:** KektorDB attualmente non supporta il clustering. Scala verticalmente entro i limiti delle risorse della macchina.
-* **Software beta:** Sebbene stabili per uso personale, le API potrebbero evolversi.
 
 ---
 

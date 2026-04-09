@@ -302,6 +302,7 @@ export class KektorDBClient {
     if (params.alpha !== undefined) payload.alpha = params.alpha;
     if (params.includeRelations) payload.include_relations = params.includeRelations;
     if (params.hydrateRelations) payload.hydrate_relations = true;
+    if (params.compressContext) payload.compress_context = true;
 
     const data = await this.request("POST", "/vector/actions/search", payload);
     return data.results ?? [];
@@ -585,21 +586,23 @@ export class KektorDBClient {
     pipelineName: string,
     query: string,
     k = 5,
-    includeProvenance = false
+    includeProvenance = false,
+    compressContext = false
   ): Promise<RagRetrieveResult | any> {
-    const payload = {
+    const payload: Record<string, any> = {
       pipeline_name: pipelineName,
       query,
       k,
       include_provenance: includeProvenance,
     };
+    if (compressContext) payload.compress_context = true;
     return this.request("POST", "/rag/retrieve", payload);
   }
 
   async adaptiveRetrieve(
     params: AdaptiveRetrieveParams
   ): Promise<AdaptiveRetrieveResult> {
-    const payload = {
+    const payload: Record<string, any> = {
       pipeline_name: params.pipelineName,
       query: params.query,
       k: params.k ?? 5,
@@ -608,6 +611,7 @@ export class KektorDBClient {
       expansion_depth: params.expansionDepth ?? 2,
       include_provenance: params.includeProvenance ?? false,
     };
+    if (params.compressContext) payload.compress_context = true;
     return this.request("POST", "/rag/retrieve-adaptive", payload);
   }
 

@@ -141,9 +141,10 @@ type getConnectionsResponse struct {
 }
 
 type graphTraverseRequest struct {
-	IndexName string   `json:"index_name"`
-	SourceID  string   `json:"source_id"`
-	Paths     []string `json:"paths"`
+	IndexName       string   `json:"index_name"`
+	SourceID        string   `json:"source_id"`
+	Paths           []string `json:"paths"`
+	CompressContext bool     `json:"compress_context,omitempty"`
 }
 
 type traverseResponse struct {
@@ -185,6 +186,7 @@ type extractSubgraphRequest struct {
 	AtTime            int64     `json:"at_time,omitempty"`
 	GuideVector       []float32 `json:"guide_vector,omitempty"`
 	SemanticThreshold float64   `json:"semantic_threshold,omitempty"`
+	CompressContext   bool      `json:"compress_context,omitempty"`
 }
 
 // Graph Entity types
@@ -200,9 +202,10 @@ type graphGetPropertiesRequest struct {
 }
 
 type graphSearchNodesRequest struct {
-	IndexName      string `json:"index_name"`
-	PropertyFilter string `json:"property_filter"`
-	Limit          int    `json:"limit"`
+	IndexName       string `json:"index_name"`
+	PropertyFilter  string `json:"property_filter"`
+	Limit           int    `json:"limit"`
+	CompressContext bool   `json:"compress_context,omitempty"`
 }
 
 type graphSearchNodesResponse struct {
@@ -763,7 +766,9 @@ func (c *Client) VGetConnections(indexName, sourceID, relationType string) ([]Ve
 
 // VSearchGraph performs a search and returns detailed results including scores and graph relations.
 // 'includeRelations' is a list of relation types to fetch (e.g. []string{"parent", "next"}).
-func (c *Client) VSearchGraph(indexName string, queryVector []float32, k int, filter string, efSearch int, alpha float64, includeRelations []string, hydrate bool, graphFilter *GraphQuery) ([]GraphSearchResult, error) {
+// VSearchGraph performs a vector search with optional graph traversal.
+// Set compressContext to true to enable safe lexical compression for LLM optimization (20-35% token reduction).
+func (c *Client) VSearchGraph(indexName string, queryVector []float32, k int, filter string, efSearch int, alpha float64, includeRelations []string, hydrate bool, graphFilter *GraphQuery, compressContext ...bool) ([]GraphSearchResult, error) {
 	payload := map[string]interface{}{
 		"index_name":   indexName,
 		"k":            k,
@@ -791,6 +796,11 @@ func (c *Client) VSearchGraph(indexName string, queryVector []float32, k int, fi
 		payload["graph_filter"] = graphFilter
 	}
 
+	// RFC 001: Context Compression support
+	if len(compressContext) > 0 && compressContext[0] {
+		payload["compress_context"] = true
+	}
+
 	respBody, err := c.jsonRequest(http.MethodPost, "/vector/actions/search", payload)
 	if err != nil {
 		return nil, err
@@ -805,11 +815,15 @@ func (c *Client) VSearchGraph(indexName string, queryVector []float32, k int, fi
 }
 
 // VTraverse explores the graph starting from sourceID following the specified paths.
-func (c *Client) VTraverse(indexName, sourceID string, paths []string) (*GraphNode, error) {
+// Set compressContext to true to enable safe lexical compression for LLM optimization (20-35% token reduction).
+func (c *Client) VTraverse(indexName, sourceID string, paths []string, compressContext ...bool) (*GraphNode, error) {
 	req := graphTraverseRequest{
 		IndexName: indexName,
 		SourceID:  sourceID,
 		Paths:     paths,
+	}
+	if len(compressContext) > 0 {
+		req.CompressContext = compressContext[0]
 	}
 
 	respBody, err := c.jsonRequest(http.MethodPost, "/graph/actions/traverse", req)
@@ -825,7 +839,8 @@ func (c *Client) VTraverse(indexName, sourceID string, paths []string) (*GraphNo
 }
 
 // VExtractSubgraph retrieves a local subgraph (nodes and edges) around a root ID.
-func (c *Client) VExtractSubgraph(indexName, rootID string, relations []string, maxDepth int, atTime int64, guideVector []float32, semanticThreshold float64) (*SubgraphResult, error) {
+// Set compressContext to true to enable safe lexical compression for LLM optimization (20-35% token reduction).
+func (c *Client) VExtractSubgraph(indexName, rootID string, relations []string, maxDepth int, atTime int64, guideVector []float32, semanticThreshold float64, compressContext ...bool) (*SubgraphResult, error) {
 	req := extractSubgraphRequest{
 		IndexName:         indexName,
 		RootID:            rootID,
@@ -834,6 +849,9 @@ func (c *Client) VExtractSubgraph(indexName, rootID string, relations []string, 
 		AtTime:            atTime,
 		GuideVector:       guideVector,
 		SemanticThreshold: semanticThreshold,
+	}
+	if len(compressContext) > 0 {
+		req.CompressContext = compressContext[0]
 	}
 
 	respBody, err := c.jsonRequest(http.MethodPost, "/graph/actions/extract-subgraph", req)
@@ -882,12 +900,17 @@ func (c *Client) GetNodeProperties(indexName, nodeID string) (map[string]interfa
 }
 
 // SearchNodes finds nodes based only on their properties (metadata filter).
-func (c *Client) SearchNodes(indexName, propertyFilter string, limit int) ([]GraphNode, error) {
+// Set compressContext to true to enable safe lexical compression for LLM optimization (20-35% token reduction).
+func (c *Client) SearchNodes(indexName, propertyFilter string, limit int, compressContext ...bool) ([]GraphNode, error) {
 	req := graphSearchNodesRequest{
 		IndexName:      indexName,
 		PropertyFilter: propertyFilter,
 		Limit:          limit,
 	}
+	if len(compressContext) > 0 {
+		req.CompressContext = compressContext[0]
+	}
+
 	respBody, err := c.jsonRequest(http.MethodPost, "/graph/actions/search-nodes", req)
 	if err != nil {
 		return nil, err
@@ -943,8 +966,9 @@ type uiSearchRequest struct {
 	IndexName        string   `json:"index_name"`
 	Query            string   `json:"query"`
 	K                int      `json:"k"`
-	IncludeRelations []string `json:"include_relations,omitempty"`
+	IncludeRelations []string `json:"include_relations"`
 	Hydrate          bool     `json:"hydrate"`
+	CompressContext  bool     `json:"compress_context,omitempty"`
 }
 
 type uiSearchResponse struct {
@@ -953,7 +977,8 @@ type uiSearchResponse struct {
 
 // SearchText performs a search using the server-side embedder (same logic as the UI).
 // This is useful for clients that don't want to run a local embedder model.
-func (c *Client) SearchText(indexName, query string, k int, relations []string) ([]GraphSearchResult, error) {
+// Set compressContext to true to enable safe lexical compression for LLM optimization (20-35% token reduction).
+func (c *Client) SearchText(indexName, query string, k int, relations []string, compressContext ...bool) ([]GraphSearchResult, error) {
 	req := uiSearchRequest{
 		IndexName:        indexName,
 		Query:            query,
@@ -961,6 +986,10 @@ func (c *Client) SearchText(indexName, query string, k int, relations []string) 
 		IncludeRelations: relations,
 		Hydrate:          true,
 	}
+	if len(compressContext) > 0 {
+		req.CompressContext = compressContext[0]
+	}
+
 	respBody, err := c.jsonRequest(http.MethodPost, "/ui/search", req)
 	if err != nil {
 		return nil, err
@@ -1091,6 +1120,7 @@ type AdaptiveRetrieveRequest struct {
 	DensityWeight     float64 `json:"density_weight,omitempty"`
 	CharsPerToken     float64 `json:"chars_per_token,omitempty"`
 	IncludeProvenance bool    `json:"include_provenance,omitempty"`
+	CompressContext   bool    `json:"compress_context,omitempty"` // Enable safe lexical compression (RFC 001)
 }
 
 type AdaptiveRetrieveResponse struct {
@@ -1406,13 +1436,18 @@ func (c *Client) AdaptiveRetrieve(req AdaptiveRetrieveRequest) (*AdaptiveRetriev
 }
 
 // RagRetrieveWithProvenance retrieves text chunks with source attribution.
-func (c *Client) RagRetrieveWithProvenance(pipelineName, query string, k int, includeProvenance bool) (*RagRetrieveResponse, error) {
+// Set compressContext to true to enable safe lexical compression for LLM optimization (20-35% token reduction).
+func (c *Client) RagRetrieveWithProvenance(pipelineName, query string, k int, includeProvenance bool, compressContext ...bool) (*RagRetrieveResponse, error) {
 	req := map[string]interface{}{
 		"pipeline_name":      pipelineName,
 		"query":              query,
 		"k":                  k,
 		"include_provenance": includeProvenance,
 	}
+	if len(compressContext) > 0 {
+		req["compress_context"] = compressContext[0]
+	}
+
 	respBody, err := c.jsonRequest(http.MethodPost, "/rag/retrieve", req)
 	if err != nil {
 		return nil, err

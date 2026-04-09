@@ -77,6 +77,20 @@ func (e *Engine) IndexExists(name string) bool {
 	return found
 }
 
+// GetIndexLanguage returns the text language configured for an index.
+// Returns empty string if index doesn't exist or has no language configured.
+func (e *Engine) GetIndexLanguage(name string) string {
+	idx, found := e.DB.GetVectorIndex(name)
+	if !found {
+		return ""
+	}
+	// Type assert to *hnsw.Index to access TextLanguage method
+	if hnswIdx, ok := idx.(*hnsw.Index); ok {
+		return hnswIdx.TextLanguage()
+	}
+	return ""
+}
+
 // --- Vector Operations ---
 
 // VCreate initializes a new vector index with the specified configuration.

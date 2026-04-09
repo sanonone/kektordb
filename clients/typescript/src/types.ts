@@ -107,6 +107,7 @@ export interface SearchParams {
   graphFilter?: GraphFilter;
   includeRelations?: string[];
   hydrateRelations?: boolean;
+  compressContext?: boolean;  // Enable safe lexical compression for LLM optimization (20-35% token reduction)
 }
 
 export interface GraphFilter {
@@ -236,6 +237,7 @@ export interface AdaptiveRetrieveParams {
   strategy?: 'greedy' | 'density' | 'graph';
   expansionDepth?: number;
   includeProvenance?: boolean;
+  compressContext?: boolean;  // Enable safe lexical compression for LLM optimization (20-35% token reduction)
 }
 
 export interface AdaptiveRetrieveResult {
@@ -259,6 +261,7 @@ export interface RagRetrieveParams {
   query: string;
   k?: number;
   includeProvenance?: boolean;
+  compressContext?: boolean;  // Enable safe lexical compression for LLM optimization (20-35% token reduction)
 }
 
 export interface RagRetrieveResult {

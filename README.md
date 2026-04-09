@@ -113,9 +113,11 @@ KektorDB can function as a **smart middleware** between your Chat UI and your LL
 
 ### Cognitive & Agentic Capabilities
 *   **Cognitive Engine (Gardener):** A background daemon that performs cross-detector confidence validation. It analyzes the graph for contradictions, tracks user profiles, models knowledge evolution, and resolves conflicts using LLMs.
+*   **Core Fact Extraction:** The Gardener automatically extracts immutable facts from user interactions (name, profession, preferences) and creates pinned memory nodes with `type="core_fact"` for persistent, fast retrieval without time-decay.
 *   **Adaptive Retrieval:** A sophisticated RAG pipeline that uses graph-aware dynamically expanded context, retrieving seed chunks and automatically following semantic neighbors up to a budget constraint.
 *   **Query Rewriting (CQR):** Automatically rewrites user questions based on chat history to solve the "Memory Problem".
 *   **Grounded HyDe:** Generates grounded hypothetical answers using real data fragments to improve semantic recall for vague queries.
+*   **Context Compression ("Caveman Mode"):** Safe lexical compression that reduces token count by 20-35% for LLM context while preserving semantic meaning. Removes safe stopwords (articles, prepositions) but strictly preserves negations and logical operators (not, and, or, but, if).
 *   **EventBus:** Integrated pub/sub system for real-time reactivity to graph and vector operations, with Server-Sent Events (SSE) support.
 
 ### Semantic Graph Engine
@@ -350,7 +352,7 @@ KektorDB offers significant memory savings through quantization and compression,
 
 For a complete guide to all features and API endpoints, please see the **[Full Documentation](DOCUMENTATION.md)**.
 
-*   `POST /vector/actions/search`: Hybrid vector search.
+*   `POST /vector/actions/search`: Hybrid vector search. Set `compress_context: true` for LLM-optimized results (20-35% token reduction).
 *   `POST /vector/actions/search-with-scores`: Search returning results with similarity scores.
 *   `POST /vector/actions/import`: High-speed bulk loading.
 *   `POST /vector/actions/add-batch`: Batch vector insertion.
@@ -363,7 +365,8 @@ For a complete guide to all features and API endpoints, please see the **[Full D
 *   `POST /graph/actions/find-path`: Find shortest path between two nodes.
 *   `POST /graph/actions/search-nodes`: Filter-only search (metadata-based, no vector similarity).
 *   `POST /graph/actions/set-node-properties`: Add/update metadata on nodes without vectors.
-*   `POST /rag/retrieve`: Get text chunks for RAG.
+*   `POST /rag/retrieve`: Get text chunks for RAG. Set `compress_context: true` for LLM-optimized context.
+*   `POST /rag/retrieve-adaptive`: Adaptive RAG with graph expansion. Set `compress_context: true` for LLM-optimized context.
 *   `GET /system/tasks/{id}`: Monitor long-running tasks.
 *   `POST /system/save`: Manual snapshot.
 *   `POST /system/aof-rewrite`: Compact the AOF file.
@@ -378,6 +381,8 @@ KektorDB is a young project under active development.
 ### Released in v0.5.0 ✅
 *   [x] **Zero-Copy mmap Arena:** Vector data is now stored using memory-mapped files, breaking the traditional RAM limit. Hot vectors stay in RAM for speed while cold data is managed by the OS page cache. This enables datasets larger than available RAM.
 *   [x] **Cognitive Engine (Gardener):** Background daemon for knowledge graph conflict resolution, user profiling, and subconscious reflection.
+*   [x] **Core Fact Extraction:** Automatic extraction of immutable user facts (name, profession, preferences) with pinned nodes that bypass time-decay.
+*   [x] **Context Compression ("Caveman Mode"):** Safe lexical compression that reduces LLM token count by 20-35% while preserving semantic meaning and logical operators.
 *   [x] **TypeScript Client:** Official Node.js/TypeScript SDK to bridge the AI JS ecosystem with KektorDB.
 
 ### Planned (Short Term)
@@ -388,11 +393,7 @@ Features I intend to build to make KektorDB production-ready and faster.
 *   [ ] **Native Backup/Restore:** Simple API to snapshot data to S3/MinIO/Local without stopping the server.
 *   [ ] **Configurable RAG Relations:** Allow users to define custom graph traversal paths in `proxy.yaml` instead of relying on hardcoded defaults.
 *   [ ] **SIMD/AVX Optimizations:** Extending pure Go Assembly optimizations (currently used for Cosine) to Euclidean distance and Float16 operations to maximize throughput on modern CPUs.
-*   [ ] **RBAC & Security:** Implement Role-Based Access Control (Admin vs Read-Only tokens) and finer granularity for multi-tenant apps.
-
-### Future Vision (Long Term)
-Features under research. Their implementation depends on real-world adoption, feedback, and available development time.
-*   **Distributed Replication:** Raft-based consensus for High Availability (Leader-Follower).
+*   [x] **RBAC & Security:** Implement Role-Based Access Control (Admin vs Read-Only tokens) and finer granularity for multi-tenant apps.
 
 > **Want to influence the roadmap?** [Open an Issue](https://github.com/sanonone/kektordb/issues) or vote on existing ones!
 
@@ -400,7 +401,6 @@ Features under research. Their implementation depends on real-world adoption, fe
 
 ## 🛑 Current Limitations (v0.5.0)
 *   **Single Node:** KektorDB does not currently support clustering. It scales vertically within the limits of the machine's resources.
-*   **Beta Software:** While stable for personal use, APIs might evolve.
 
 ---
 

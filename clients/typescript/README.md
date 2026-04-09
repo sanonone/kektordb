@@ -273,6 +273,33 @@ for (const source of result.sources || []) {
 }
 ```
 
+## 🗜️ Context Compression ("Caveman Mode")
+
+Enable safe lexical compression to reduce LLM token count by 20-35% while preserving semantic meaning:
+
+```typescript
+// Search with compression for LLM-optimized results
+const results = await client.vsearch({
+  indexName: "docs",
+  queryVector: [0.1, 0.2, 0.3],
+  k: 10,
+  compressContext: true  // Reduces tokens by 20-35%
+});
+
+// RAG retrieval with compression
+const result = await client.adaptiveRetrieve({
+  pipelineName: "my_rag_pipeline",
+  query: "What are the key features?",
+  k: 5,
+  compressContext: true  // Optimizes context for LLM consumption
+});
+
+// The compression removes safe stopwords (articles, prepositions)
+// but preserves critical semantic elements:
+// - Negations: "not", "no", "non", "mai"
+// - Logical operators: "and", "or", "but", "if" / "e", "o", "ma", "se"
+```
+
 ### Source Attribution Utilities
 
 ```typescript

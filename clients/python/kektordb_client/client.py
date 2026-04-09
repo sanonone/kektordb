@@ -420,6 +420,7 @@ class KektorDBClient:
         include_relations: List[str] = None,
         hydrate_relations: bool = False,
         timeout: Union[int, float, None] = None,
+        compress_context: bool = False,
     ) -> Union[List[str], List[Dict[str, Any]]]:
         """
         Performs a nearest neighbor search in an index.
@@ -438,6 +439,9 @@ class KektorDBClient:
             include_relations: List of relation types to fetch (e.g. ["parent", "next"]).
                                If provided, returns a list of dictionaries with relations.
                                If None (default), returns list of IDs strings.
+            compress_context: If True, enables safe lexical compression ("Caveman Mode")
+                              for LLM context optimization. Reduces token count by 20-35%
+                              while preserving semantic meaning. Default: False.
 
         Returns:
             A list of item IDs of the nearest neighbors.
@@ -468,6 +472,9 @@ class KektorDBClient:
 
         if hydrate_relations:
             payload["hydrate_relations"] = True
+
+        if compress_context:
+            payload["compress_context"] = True
 
         kwargs = {"timeout": timeout} if timeout is not None else {}
         data = self._request("POST", "/vector/actions/search", json=payload, **kwargs)
@@ -857,6 +864,7 @@ class KektorDBClient:
         query: str,
         k: int = 5,
         include_provenance: bool = False,
+        compress_context: bool = False,
     ) -> Dict[str, Any]:
         """
         Retrieves text chunks via a configured RAG pipeline.
@@ -866,6 +874,9 @@ class KektorDBClient:
             query: The search query.
             k: Number of chunks to retrieve.
             include_provenance: If True, includes source attribution with graph paths.
+            compress_context: If True, enables safe lexical compression ("Caveman Mode")
+                              for LLM context optimization. Reduces token count by 20-35%
+                              while preserving semantic meaning. Default: False.
 
         Returns:
             If include_provenance=False (default): {"results": [...]}
@@ -877,6 +888,8 @@ class KektorDBClient:
             "k": k,
             "include_provenance": include_provenance,
         }
+        if compress_context:
+            payload["compress_context"] = True
         return self._request("POST", "/rag/retrieve", json=payload)
 
     def adaptive_retrieve(
@@ -888,6 +901,7 @@ class KektorDBClient:
         strategy: str = "graph",
         expansion_depth: int = 2,
         include_provenance: bool = False,
+        compress_context: bool = False,
     ) -> Dict[str, Any]:
         """
         Performs adaptive context retrieval using graph-aware expansion.
@@ -903,6 +917,9 @@ class KektorDBClient:
             strategy: Expansion strategy - "greedy", "density", or "graph".
             expansion_depth: How many hops to expand in the graph.
             include_provenance: If True, includes source attribution.
+            compress_context: If True, enables safe lexical compression ("Caveman Mode")
+                              for LLM context optimization. Reduces token count by 20-35%
+                              while preserving semantic meaning. Default: False.
 
         Returns:
             AdaptiveRetrieveResponse with context_text, sources, expansion_stats, etc.
@@ -916,6 +933,8 @@ class KektorDBClient:
             "expansion_depth": expansion_depth,
             "include_provenance": include_provenance,
         }
+        if compress_context:
+            payload["compress_context"] = True
         return self._request("POST", "/rag/retrieve-adaptive", json=payload)
 
     # --- Session Management ---

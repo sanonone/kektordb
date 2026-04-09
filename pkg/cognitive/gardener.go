@@ -26,6 +26,7 @@ const (
 	TypeConsolidation ReflectionType = "consolidation" // Merged redundant memories
 	TypeContradiction ReflectionType = "contradiction" // Detected conflicting facts
 	TypeImportance    ReflectionType = "importance"    // Importance shift
+	TypeCoreFact      ReflectionType = "core_fact"     // Extracted immutable user facts
 )
 
 // Reflection defines the schema for a meta-memory node.
@@ -59,6 +60,10 @@ type Config struct {
 	// User profiling
 	EnableUserProfiling    bool // Enable user personality profiling
 	ProfileUpdateThreshold int  // Number of user_interaction memories before profile update
+
+	// Core Fact Extraction (RFC 001)
+	EnableCoreFactExtraction bool    // Enable automatic extraction of immutable facts
+	CoreFactMinConfidence    float64 // Minimum confidence threshold for extracted facts (default: 0.85)
 }
 
 // Gardener is the autonomous background worker that analyzes the database graph
@@ -176,6 +181,9 @@ func NewGardener(eng *engine.Engine, llmClient llm.Client, cfg Config) *Gardener
 	}
 	if cfg.ProfileUpdateThreshold == 0 {
 		cfg.ProfileUpdateThreshold = 20
+	}
+	if cfg.CoreFactMinConfidence == 0 {
+		cfg.CoreFactMinConfidence = 0.85 // Default confidence threshold for core facts
 	}
 
 	eventCh := eng.EventBus.Subscribe(64)
@@ -375,6 +383,11 @@ func (g *Gardener) think() {
 			g.detectUserPreferences(idx)
 			g.detectRepeatedFailures(idx)
 			g.detectKnowledgeEvolution(idx)
+
+			// RFC 001: Core Fact Extraction
+			if g.cfg.EnableCoreFactExtraction {
+				g.detectCoreFacts(idx)
+			}
 		}
 
 		// Meta-analysis: cross-detector confidence validation (meta mode only).
@@ -2672,4 +2685,216 @@ func (g *Gardener) autoResolveReflections(indexName string) {
 			}
 		}
 	}
+}
+
+// ============================================================================
+// RFC 001: Core Fact Extraction ("The Gardener")
+// ============================================================================
+
+// coreFactExtractionPrompt is the LLM prompt for extracting immutable facts.
+const coreFactExtractionPrompt = `Analyze the following user interactions. Extract ONLY static, long-lasting facts about the user (e.g., name, profession, pets, strict preferences, constraints, skills, languages known, location).
+
+IMPORTANT: Ignore temporary states, feelings, or daily events. Do not infer facts that are not explicitly stated or strongly implied.
+
+Input format: JSON array of interaction objects with "id" and "content" fields.
+Output format: JSON array of extracted facts as strings. Each fact should be self-contained and atomic.
+
+Example:
+Input: [{"id": "1", "content": "Mi chiamo Marco e lavoro come ingegnere"}, {"id": "2", "content": "Ho un cane di nome Fido"}]
+Output: ["User name is Marco", "User profession is engineer", "User has a dog named Fido"]
+
+Rules:
+1. Facts must be immutable or long-lasting (valid for months/years)
+2. Use clear, concise language
+3. Include negations if explicitly stated (e.g., "User does not eat meat")
+4. If uncertain, do not include the fact
+5. Return empty array [] if no facts can be extracted`
+
+// coreFactExtractionResponse is the LLM response structure.
+type coreFactExtractionResponse struct {
+	Facts []string `json:"facts"`
+}
+
+// detectCoreFacts analyzes recent user interactions to extract immutable facts.
+// It creates core_fact nodes that are pinned (no time-decay) and linked to source memories.
+func (g *Gardener) detectCoreFacts(indexName string) {
+	// 1. Fetch recent user_interaction or episodic nodes
+	filter := "(type='user_interaction' OR memory_layer='episodic') AND _archived!=true"
+	candidateIDs, err := g.eng.VFilter(indexName, filter, 50)
+	if err != nil || len(candidateIDs) == 0 {
+		return
+	}
+
+	// 2. Fetch full data
+	candidates, err := g.eng.VGetMany(indexName, candidateIDs)
+	if err != nil || len(candidates) == 0 {
+		return
+	}
+
+	// 3. Filter out those already processed (check for existing extracted_from links)
+	var toProcess []core.VectorData
+	for _, cand := range candidates {
+		// Check if already linked from a core_fact
+		incoming, found := g.eng.VGetIncoming(indexName, cand.ID, "extracted_from")
+		if !found || len(incoming) == 0 {
+			toProcess = append(toProcess, cand)
+		}
+	}
+
+	if len(toProcess) == 0 {
+		return
+	}
+
+	// 4. Group by user_id if available, or process individually
+	userGroups := make(map[string][]core.VectorData)
+	ungrouped := []core.VectorData{}
+
+	for _, item := range toProcess {
+		if userID, ok := item.Metadata["user_id"].(string); ok && userID != "" {
+			userGroups[userID] = append(userGroups[userID], item)
+		} else {
+			ungrouped = append(ungrouped, item)
+		}
+	}
+
+	// 5. Process each group
+	minConfidence := g.cfg.CoreFactMinConfidence
+	if minConfidence == 0 {
+		minConfidence = 0.85
+	}
+
+	for userID, items := range userGroups {
+		g.processCoreFactExtraction(indexName, userID, items, minConfidence)
+	}
+
+	// 6. Process ungrouped items individually
+	for _, item := range ungrouped {
+		g.processCoreFactExtraction(indexName, "", []core.VectorData{item}, minConfidence)
+	}
+}
+
+// processCoreFactExtraction sends items to LLM and creates core_fact nodes.
+func (g *Gardener) processCoreFactExtraction(indexName, userID string, items []core.VectorData, minConfidence float64) {
+	if len(items) == 0 {
+		return
+	}
+
+	// Prepare input for LLM
+	type interactionInput struct {
+		ID      string `json:"id"`
+		Content string `json:"content"`
+	}
+
+	var inputs []interactionInput
+	for _, item := range items {
+		content := ""
+		if c, ok := item.Metadata["content"].(string); ok {
+			content = c
+		}
+		if content == "" {
+			// Try other common text fields
+			for _, field := range []string{"text", "summary", "description"} {
+				if c, ok := item.Metadata[field].(string); ok && c != "" {
+					content = c
+					break
+				}
+			}
+		}
+		if content != "" {
+			inputs = append(inputs, interactionInput{ID: item.ID, Content: content})
+		}
+	}
+
+	if len(inputs) == 0 {
+		return
+	}
+
+	inputJSON, _ := json.Marshal(inputs)
+
+	// Call LLM
+	userPrompt := string(inputJSON)
+	slog.Info("[Cognitive Engine] Extracting core facts", "user", userID, "interactions", len(inputs))
+
+	response, err := g.llm.Chat(coreFactExtractionPrompt, userPrompt)
+	if err != nil || response == "" {
+		slog.Warn("[Cognitive Engine] Core fact extraction failed", "error", err)
+		return
+	}
+
+	// Clean response
+	response = strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(response, "```"), "```"))
+	if strings.HasPrefix(response, "json") {
+		response = strings.TrimPrefix(response, "json")
+		response = strings.TrimSpace(response)
+	}
+
+	// Parse response
+	var extraction coreFactExtractionResponse
+	if err := json.Unmarshal([]byte(response), &extraction); err != nil {
+		// Try parsing as raw string array
+		var rawFacts []string
+		if err := json.Unmarshal([]byte(response), &rawFacts); err != nil {
+			slog.Warn("[Cognitive Engine] Failed to parse core facts", "error", err)
+			return
+		}
+		extraction.Facts = rawFacts
+	}
+
+	if len(extraction.Facts) == 0 {
+		slog.Debug("[Cognitive Engine] No core facts extracted", "user", userID)
+		return
+	}
+
+	// Create core_fact nodes for each extracted fact
+	for _, fact := range extraction.Facts {
+		fact = strings.TrimSpace(fact)
+		if fact == "" {
+			continue
+		}
+
+		// Generate deterministic ID based on content hash
+		factID := fmt.Sprintf("core_fact_%d", time.Now().UnixNano())
+
+		meta := map[string]any{
+			"type":         "core_fact",
+			"content":      fact,
+			"_pinned":      true, // No time-decay
+			"confidence":   minConfidence,
+			"extracted_at": float64(time.Now().Unix()),
+			"_created_at":  float64(time.Now().Unix()),
+		}
+
+		if userID != "" {
+			meta["user_id"] = userID
+		}
+
+		// Use zero vector (will be embedded if needed on first access)
+		var zeroVec []float32
+
+		err := g.eng.VAdd(indexName, factID, zeroVec, meta)
+		if err != nil {
+			slog.Warn("[Cognitive Engine] Failed to create core_fact node", "error", err)
+			continue
+		}
+
+		// Link to source memories
+		for _, item := range items {
+			g.eng.VLink(indexName, factID, item.ID, "extracted_from", "", 1.0, nil)
+		}
+
+		g.newReflections = append(g.newReflections, factID)
+
+		slog.Info("[Cognitive Engine] Core fact extracted",
+			"id", factID,
+			"user", userID,
+			"fact", fact[:min(len(fact), 50)]+"...")
+	}
+}
+
+// min returns the minimum of two integers.
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

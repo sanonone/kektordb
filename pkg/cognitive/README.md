@@ -8,7 +8,7 @@ An autonomous background "reflection engine" (the `Gardener`) that continuously 
 
 **Critical structs:**
 - `Gardener` -- Reflection engine: `eng *engine.Engine`, `llm llm.Client`, `cfg Config`, `stopCh`, `eventCh chan engine.Event` (buffered: 64), `scanCursors map[string]uint32`, `writeCounter int64`, `lastThinkTime time.Time`, `newReflections []string`, `unassimilatedInteractions map[string]int`, `profileMutex sync.RWMutex`.
-- `Config` -- Master config: `Enabled`, `Interval`, `Mode` (basic/advanced/meta), `TargetIndexes`, `AdaptiveThreshold` (default: 50), `AdaptiveMinInterval` (default: 30s), `AutoResolveEnabled`, `MemoryConfig`, `EnableUserProfiling`.
+- `Config` -- Master config: `Enabled`, `Interval`, `Mode` (basic/advanced/meta), `TargetIndexes`, `AdaptiveThreshold` (default: 50), `AdaptiveMinInterval` (default: 30s), `AutoResolveEnabled`, `MemoryConfig`, `EnableUserProfiling`, `EnableCoreFactExtraction`, `CoreFactMinConfidence` (default: 0.85).
 - `SentimentLexicon` -- `{Positive, Negative []string}` per language. English: 8+8 roots; Italian: 8+8 roots.
 
 **Critical paths (hot functions):**
@@ -21,8 +21,16 @@ An autonomous background "reflection engine" (the `Gardener`) that continuously 
 
 **Three operational modes:**
 - **basic** (no LLM required): Knowledge gaps, importance shifts, sentiment shifts, centrality shifts, forgetting patterns, memory consolidation, redundant cluster detection.
-- **advanced** (LLM required): All basic + contradiction detection, user preferences, repeated failures, knowledge evolution (time-travel subgraph snapshots).
+- **advanced** (LLM required): All basic + contradiction detection, user preferences, repeated failures, knowledge evolution (time-travel subgraph snapshots), core fact extraction.
 - **meta** (LLM required): All advanced + cross-detector confidence validation (composite reflections when 2+ detector types flag the same entity).
+
+**Core Fact Extraction:**
+When `EnableCoreFactExtraction` is true, the Gardener analyzes `user_interaction` and `episodic` memories to extract immutable facts about users (name, profession, preferences, constraints). Creates `type="core_fact"` nodes with:
+- `_pinned=true` metadata to bypass time-decay
+- `extracted_from` edges linking to source memories
+- Confidence threshold filtering (default: 0.85)
+
+Extracted facts are automatically linked to the source memories and can be resolved by the existing contradiction detection system when conflicts arise (e.g., user changes profession).
 
 **Think cycle pipeline:** Iterates over all allowed vector indexes, running detectors in a fixed order. Each detector uses cursor-based incremental scanning (500 IDs per call) so large databases are processed across multiple cycles rather than all at once. Every LLM-based analysis marks analyzed pairs/entities with graph edges (`analyzed_against`, `gap_analyzed`, `sentiment_analyzed`, etc.) to prevent re-processing in subsequent cycles.
 
