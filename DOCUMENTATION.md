@@ -351,6 +351,89 @@ KektorDB runs background tasks to keep indexes healthy. You can tune these per-i
 
 ---
 
+### 3.5 Cognitive Engine Configuration
+
+The Gardener is the autonomous background process that analyzes the graph to consolidate memories, detect contradictions, and generate reflections. It requires an LLM endpoint for advanced/meta modes.
+
+**Example Configuration:**
+
+```yaml
+cognitive:
+  enabled: true
+  interval: "10m"           # Think cycle interval
+  mode: "advanced"         # basic | advanced | meta
+  target_indexes: ["*"]    # ["*"] for all indexes, or specific names like ["mcp_memory"]
+
+  # Adaptive Scheduling - trigger early think on high write activity
+  adaptive_threshold: 50         # Number of writes to trigger early think
+  adaptive_min_interval: "30s"    # Minimum interval between forced thinks
+
+  # Auto-Resolution - autonomous actions on detected reflections
+  auto_resolve_enabled: true
+  auto_resolve_links: true        # Auto-create suggested graph links (from knowledge gaps)
+  auto_resolve_links_min: 0.90    # Minimum confidence to auto-create link
+  auto_resolve_contra: true       # Auto-resolve minor contradictions (action_required=false)
+
+  # User Profiling - track and update user personality profiles
+  enable_user_profiling: true
+  profile_update_threshold: 20      # Number of user_interaction memories before profile update
+
+  # Core Fact Extraction (RFC 001) - extract immutable user facts
+  enable_core_fact_extraction: true
+  core_fact_min_confidence: 0.85   # Minimum confidence for extracted facts
+
+  # LLM Configuration (REQUIRED for advanced/meta mode)
+  llm:
+    base_url: "http://localhost:11434/v1"
+    model: "qwen2.5:0.5b"          # Small fast model recommended
+    temperature: 0.0
+```
+
+**Configuration Parameters:**
+
+| Parameter | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `enabled` | bool | false | Enable the cognitive engine |
+| `interval` | Duration | 10m | Interval between automatic think cycles |
+| `mode` | string | "basic" | Operating mode: basic, advanced, or meta |
+| `target_indexes` | []string | [] | Indexes to analyze (["*"] for all) |
+| `adaptive_threshold` | int64 | 50 | Write count to trigger early think |
+| `adaptive_min_interval` | Duration | 30s | Min time between forced thinks |
+| `auto_resolve_enabled` | bool | false | Enable auto-resolution of reflections |
+| `auto_resolve_links` | bool | false | Auto-create suggested graph links |
+| `auto_resolve_links_min` | float64 | 0.90 | Min confidence for auto-linking |
+| `auto_resolve_contra` | bool | false | Auto-resolve minor contradictions |
+| `enable_user_profiling` | bool | false | Enable user personality profiling |
+| `profile_update_threshold` | int | 20 | Memories before profile update |
+| `enable_core_fact_extraction` | bool | false | Extract immutable user facts |
+| `core_fact_min_confidence` | float64 | 0.85 | Min confidence for core facts |
+
+**Operating Modes:**
+
+| Mode | Description | Active Detectors |
+| :--- | :--- | :--- |
+| **basic** | Fast, math & graph only (NO LLM). CPU cost: low. | Knowledge Gaps, Importance Shifts, Sentiment Shifts, Centrality Shifts, Forgetting Patterns, Consolidation |
+| **advanced** | + LLM for complex analysis. CPU cost: medium. | All basic + Contradictions, User Preferences, Repeated Failures, Knowledge Evolution, Core Fact Extraction |
+| **meta** | + cross-detector validation for high-confidence composite reflections. | All advanced + Cross-Validator |
+
+**Detector Descriptions:**
+
+| Detector | Description | Trigger Condition |
+| :--- | :--- | :--- |
+| `Knowledge Gaps` | Finds semantically similar nodes that lack explicit graph connections | 2+ nodes with similarity > 0.85 without edge |
+| `Importance Shifts` | Detects entities with sudden spike in mentions | 2x mentions in last 3 days vs all prior |
+| `Sentiment Shifts` | Detects opinion reversals over 2-week window | Sentiment delta >= 1.5 between periods |
+| `Centrality Shifts` | Detects nodes whose connectivity tripled in 30 days | Degree increased > 3x |
+| `Forgetting Patterns` | Finds historically important entities abandoned > 30 days | 0 mentions in 30 days after being important |
+| `Contradictions` | Uses LLM to detect conflicting facts | LLM confirms contradiction (advanced mode) |
+| `User Preferences` | Extracts structured preferences from interactions | LLM analysis of user_interaction memories (advanced mode) |
+| `Repeated Failures` | Diagnoses repeated agent action failures | 3+ failed actions in 24h (advanced mode) |
+| `Knowledge Evolution` | Analyzes how entity knowledge changed over time | 3 subgraph snapshots comparison (advanced mode) |
+| `Core Facts` | Extracts immutable user facts (name, profession, etc.) | LLM extraction from interactions (advanced mode) |
+| `Cross-Validator` | Composite reflections from multiple detectors | Same entity flagged by 2+ detectors (meta mode) |
+
+---
+
 ## 4. Core Features & Usage
 
 ### 4.1 Zero-Copy mmap Storage

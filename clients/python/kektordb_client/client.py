@@ -521,11 +521,23 @@ class KektorDBClient:
     # --- Graph / Relationship Methods ---
 
     def vlink(
-        self, index_name: str, source_id: str, target_id: str, relation_type: str
+        self,
+        index_name: str,
+        source_id: str,
+        target_id: str,
+        relation_type: str,
+        inverse_relation: str = "",
     ) -> None:
         """
         Creates a directed semantic link between two nodes.
         Example: vlink("my_index", "chunk_5", "doc_manual_v1", "parent")
+
+        Args:
+            index_name: The index containing the nodes.
+            source_id: ID of the source node.
+            target_id: ID of the target node.
+            relation_type: Type of relationship (e.g., "parent", "next", "knows").
+            inverse_relation: Optional inverse relationship type for bidirectional linking.
         """
         payload = {
             "index_name": index_name,
@@ -533,6 +545,8 @@ class KektorDBClient:
             "target_id": target_id,
             "relation_type": relation_type,
         }
+        if inverse_relation:
+            payload["inverse_relation_type"] = inverse_relation
         self._request("POST", "/graph/actions/link", json=payload)
 
     def vunlink(

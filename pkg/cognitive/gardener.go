@@ -1879,7 +1879,11 @@ Guidelines:
 	insightID := fmt.Sprintf("user_profile_%d", time.Now().UnixNano())
 
 	// Use the first source memory's vector as a base (average would be ideal but this is simpler).
-	vec, _ := g.eng.VGet(indexName, relevantIDs[0])
+	vec, err := g.eng.VGet(indexName, relevantIDs[0])
+	if err != nil || len(vec.Vector) == 0 {
+		slog.Warn("[Cognitive Engine] Skipping user preferences: no valid vector for first memory")
+		return
+	}
 	avgVec := make([]float32, len(vec.Vector))
 	for _, id := range relevantIDs {
 		d, err := g.eng.VGet(indexName, id)
