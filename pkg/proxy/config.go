@@ -49,7 +49,21 @@ type Config struct {
 	RAGHybridAlpha        float64 `yaml:"rag_hybrid_alpha"` // 0.5 default alpha
 	RAGUseGraph           bool    `yaml:"rag_use_graph"`    // prev/next
 	RAGUseHyDe            bool    `yaml:"rag_use_hyde"`
+	RAGUseAdaptive        bool    `yaml:"rag_use_adaptive"` // Use AdaptiveRetriever instead of VSearchGraph
 	RAGSystemPrompt       string  `yaml:"rag_system_prompt"`
 	RAGRewriterPrompt     string  `yaml:"rag_rewriter_prompt"`
 	RAGGroundedHyDePrompt string  `yaml:"rag_grounded_hyde_prompt"`
+
+	RAGGraphConfig GraphConfig `yaml:"rag_graph"` // Advanced graph traversal settings
+}
+
+type GraphConfig struct {
+	ExpansionStrategy string             `yaml:"expansion_strategy"` // "greedy" | "density" | "graph"
+	ExpansionDepth    int                `yaml:"expansion_depth"`    // Graph traversal depth
+	MaxTokens         int                `yaml:"max_tokens"`         // Token budget for context
+	Relations         []string           `yaml:"relations"`          // Relations to follow during traversal
+	EdgeWeights       map[string]float64 `yaml:"edge_weights"`       // Custom edge weights
+	SemanticWeight    float64            `yaml:"semantic_weight"`    // Weight for semantic similarity score
+	GraphWeight       float64            `yaml:"graph_weight"`       // Weight for graph distance score
+	DensityWeight     float64            `yaml:"density_weight"`     // Weight for information density score
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/engine"
 	"github.com/sanonone/kektordb/pkg/llm"
+	"github.com/sanonone/kektordb/pkg/rag"
 )
 
 // AIProxy sits between the client and the LLM.
@@ -489,6 +490,82 @@ func extractPrompt(jsonBody []byte) string {
 }
 
 func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, queryText string) ([]byte, []string, error) {
+	if p.cfg.RAGUseAdaptive {
+		return p.performAdaptiveRAGInjection(originalBody, queryVec, queryText)
+	}
+	return p.performStandardRAGInjection(originalBody, queryVec, queryText)
+}
+
+func (p *AIProxy) performAdaptiveRAGInjection(originalBody []byte, queryVec []float32, queryText string) ([]byte, []string, error) {
+	if !p.cfg.RAGEnabled || p.cfg.RAGIndex == "" {
+		return originalBody, nil, nil
+	}
+
+	cfg := p.cfg.RAGGraphConfig
+	adaptiveConfig := rag.AdaptiveContextConfig{
+		MaxTokens:           cfg.MaxTokens,
+		CharsPerToken:       4.0,
+		ExpansionStrategy:   cfg.ExpansionStrategy,
+		GraphExpansionDepth: cfg.ExpansionDepth,
+		MaxExpansionNodes:   200,
+		GraphRelations:      cfg.Relations,
+		EdgeWeights:         cfg.EdgeWeights,
+		DensityMinRatio:     0.5,
+		SemanticWeight:      cfg.SemanticWeight,
+		GraphWeight:         cfg.GraphWeight,
+		DensityWeight:       cfg.DensityWeight,
+	}
+
+	if adaptiveConfig.MaxTokens == 0 {
+		adaptiveConfig.MaxTokens = 4096
+	}
+	if adaptiveConfig.ExpansionStrategy == "" {
+		adaptiveConfig.ExpansionStrategy = "graph"
+	}
+	if adaptiveConfig.GraphExpansionDepth == 0 {
+		adaptiveConfig.GraphExpansionDepth = 2
+	}
+	if len(adaptiveConfig.GraphRelations) == 0 {
+		adaptiveConfig.GraphRelations = []string{"next", "prev", "parent", "child", "mentions"}
+	}
+	if adaptiveConfig.EdgeWeights == nil {
+		adaptiveConfig.EdgeWeights = map[string]float64{
+			"next": 0.95, "prev": 0.95, "parent": 0.80, "child": 0.70, "mentions": 0.50,
+		}
+	}
+	if adaptiveConfig.SemanticWeight == 0 && adaptiveConfig.GraphWeight == 0 && adaptiveConfig.DensityWeight == 0 {
+		adaptiveConfig.SemanticWeight = 0.6
+		adaptiveConfig.GraphWeight = 0.2
+		adaptiveConfig.DensityWeight = 0.2
+	}
+
+	retriever := rag.NewAdaptiveRetriever(p.engine, adaptiveConfig)
+	window, err := retriever.RetrieveWithContext(p.cfg.RAGIndex, queryVec, p.cfg.RAGTopK)
+	if err != nil || window.ContextText == "" {
+		return nil, nil, nil
+	}
+
+	slog.Debug("Adaptive RAG found context", "chunks", window.TotalChunks, "tokens", window.TotalTokens)
+
+	window.ContextText = strings.ReplaceAll(window.ContextText, "](/assets/", "](http://localhost:9091/assets/")
+
+	usedSourceIDs := make([]string, 0, len(window.Chunks))
+	for _, chunk := range window.Chunks {
+		usedSourceIDs = append(usedSourceIDs, chunk.ID)
+	}
+
+	promptTemplate := p.cfg.RAGSystemPrompt
+	if promptTemplate == "" {
+		promptTemplate = "Context:\n{{context}}\nQuestion:\n{{query}}"
+	}
+
+	finalContent := strings.ReplaceAll(promptTemplate, "{{context}}", window.ContextText)
+	finalContent = strings.ReplaceAll(finalContent, "{{query}}", queryText)
+
+	return p.injectContextIntoRequest(originalBody, finalContent, usedSourceIDs)
+}
+
+func (p *AIProxy) performStandardRAGInjection(originalBody []byte, queryVec []float32, queryText string) ([]byte, []string, error) {
 	filter := ""
 	hybridQuery := ""
 	if p.cfg.RAGUseHybrid {
@@ -588,7 +665,6 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 		contextBuilder.WriteString("\n\n")
 		foundRelevant = true
 
-		// Debug
 		if strings.Contains(mainText, "![") {
 			slog.Info("[DEBUG IMAGE] Found image tag in chunk", "content", mainText)
 		}
@@ -606,6 +682,10 @@ func (p *AIProxy) performRAGInjection(originalBody []byte, queryVec []float32, q
 	finalContent := strings.ReplaceAll(promptTemplate, "{{context}}", contextBuilder.String())
 	finalContent = strings.ReplaceAll(finalContent, "{{query}}", queryText)
 
+	return p.injectContextIntoRequest(originalBody, finalContent, usedSourceIDs)
+}
+
+func (p *AIProxy) injectContextIntoRequest(originalBody []byte, finalContent string, usedSourceIDs []string) ([]byte, []string, error) {
 	var requestData map[string]interface{}
 	if err := json.Unmarshal(originalBody, &requestData); err != nil {
 		return nil, nil, err

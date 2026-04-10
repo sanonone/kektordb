@@ -76,9 +76,26 @@ Context Snippets:
 		RAGHybridAlpha:        0.5,
 		RAGUseGraph:           true, // On by default because it's the killer feature
 		RAGUseHyDe:            false,
+		RAGUseAdaptive:        false, // Use standard VSearchGraph by default
 		RAGSystemPrompt:       defaultRAGPrompt,
 		RAGRewriterPrompt:     defaultRewriterPrompt,
 		RAGGroundedHyDePrompt: defaultHyDePrompt,
+		RAGGraphConfig: GraphConfig{
+			ExpansionStrategy: "graph",
+			ExpansionDepth:    2,
+			MaxTokens:         4096,
+			Relations:         []string{"next", "prev", "parent", "child", "mentions"},
+			EdgeWeights: map[string]float64{
+				"next":     0.95,
+				"prev":     0.95,
+				"parent":   0.80,
+				"child":    0.70,
+				"mentions": 0.50,
+			},
+			SemanticWeight: 0.6,
+			GraphWeight:    0.2,
+			DensityWeight:  0.2,
+		},
 	}
 }
 

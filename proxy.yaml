@@ -17,6 +17,30 @@ rag_use_hybrid: true # Cerca anche per parole chiave
 rag_hybrid_alpha: 0.7 # 70% Vettore, 30% Keywords
 rag_use_graph: true # Recupera automaticamente contesto prev/next
 rag_use_hyde: true
+rag_use_adaptive: false # Usa AdaptiveRetriever (graph-aware) invece di VSearchGraph
+
+# Configurazione avanzata graph traversal (attivo solo se rag_use_adaptive: true)
+# Commenta o personalizza i valori secondo le tue esigenze
+# rag_graph:
+#   expansion_strategy: "graph"  # greedy|density|graph - come espandere il contesto
+#   expansion_depth: 2            # Profondità attraversamento grafo
+#   max_tokens: 4096             # Budget token per il contesto
+#   relations:                   # Relazioni da seguire durante il traversal
+#     - "next"
+#     - "prev"
+#     - "parent"
+#     - "child"
+#     - "mentions"
+#   edge_weights:                # Pesi per ogni relazione (più alto = più importante)
+#     next: 0.95
+#     prev: 0.95
+#     parent: 0.80
+#     child: 0.70
+#     mentions: 0.50
+#   semantic_weight: 0.6        # Peso per similarità vettoriale
+#   graph_weight: 0.2           # Peso per distanza nel grafo
+#   density_weight: 0.2        # Peso per densità informativa
+
 # System Prompt Template
 # Usa {{context}} per iniettare i dati trovati e {{query}} per la domanda originale.
 # Il simbolo '|' permette stringhe multilinea in YAML.

@@ -27,6 +27,9 @@ func (l *AutoLoader) Load(path string) (*Document, error) {
 	case ".pdf":
 		return l.pdfLoader.Load(path)
 	case ".docx":
+		// TODO: Implement image extraction for DOCX files.
+		// DOCX files are ZIP archives containing media in "word/media/" folder.
+		// Extract images similar to PDFAdvancedLoader and merge into Document.Images.
 		return l.docxLoader.Load(path)
 	// List of known text extensions
 	case ".txt", ".md", ".markdown", ".json", ".yaml", ".yml", ".go", ".py", ".js", ".ts", ".html", ".css", ".csv":

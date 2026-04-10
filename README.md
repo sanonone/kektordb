@@ -391,7 +391,7 @@ Features I intend to build to make KektorDB production-ready and faster.
 *   [x] **Roaring Bitmaps:** Replace current map-based filtering with Roaring Bitmaps for lightning-fast metadata filtering (e.g. `WHERE user_id = X`).
 *   [x] **Property Graphs:** Support for "Rich Edges" with attributes (weights, timestamps) to enable complex recommendation algorithms.
 *   [ ] **Native Backup/Restore:** Simple API to snapshot data to S3/MinIO/Local without stopping the server.
-*   [ ] **Configurable RAG Relations:** Allow users to define custom graph traversal paths in `proxy.yaml` instead of relying on hardcoded defaults.
+*   [x] **Configurable RAG Relations:** Allow users to define custom graph traversal paths in `proxy.yaml` instead of relying on hardcoded defaults.
 *   [ ] **SIMD/AVX Optimizations:** Extending pure Go Assembly optimizations (currently used for Cosine) to Euclidean distance and Float16 operations to maximize throughput on modern CPUs.
 *   [x] **RBAC & Security:** Implement Role-Based Access Control (Admin vs Read-Only tokens) and finer granularity for multi-tenant apps.
 
