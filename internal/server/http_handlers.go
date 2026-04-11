@@ -1242,6 +1242,15 @@ func (s *Server) handleGraphGetAllIncoming(w http.ResponseWriter, r *http.Reques
 
 // --- COGNITIVE ENGINE HANDLERS ---
 
+// Valid reflection statuses to prevent filter injection attacks
+var validReflectionStatuses = map[string]bool{
+	"unresolved":      true,
+	"insight":         true,
+	"active":          true,
+	"high_confidence": true,
+	"resolved":        true,
+}
+
 func (s *Server) handleGetReflections(w http.ResponseWriter, r *http.Request) {
 	indexName := r.PathValue("name")
 	if indexName == "" {
@@ -1251,6 +1260,12 @@ func (s *Server) handleGetReflections(w http.ResponseWriter, r *http.Request) {
 
 	// Permettiamo di filtrare per status tramite query string (es. ?status=unresolved)
 	status := r.URL.Query().Get("status")
+
+	// Validate status to prevent filter injection attacks
+	if status != "" && !validReflectionStatuses[status] {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid status value: %s", status))
+		return
+	}
 
 	// Sfruttiamo le Roaring Bitmaps e il VFilter!
 	filter := "type='reflection' OR type='user_profile_insight' OR type='failure_pattern' OR type='knowledge_evolution'"
