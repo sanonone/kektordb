@@ -2590,13 +2590,15 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 }
 
 // randomLevel selects a random level for a new node based on an exponentially decaying probability distribution.
+// Implements the HNSW paper formula: level = floor(-ln(rand()) * ml)
+// where ml = 1/ln(m) is the normalization factor.
 func (h *Index) randomLevel() int {
-	// This is based on an exponentially decreasing distribution
-	level := 0
+	// Generate level using the exponentially decreasing distribution from HNSW paper
+	level := int(math.Floor(-math.Log(rand.Float64()) * h.ml))
 
 	currentMax := int(h.maxLevel.Load())
-	for rand.Float64() < 0.5 && level < currentMax+1 { // Let's add a limit for safety
-		level++
+	if level > currentMax+1 {
+		return currentMax + 1
 	}
 	return level
 }
