@@ -114,6 +114,10 @@ type Engine struct {
 	// We use 128 shards to allow high concurrency on different nodes.
 	graphLocks [128]sync.Mutex
 
+	// metadataLocks protects Read-Modify-Write cycles on node metadata.
+	// We use 256 shards to balance concurrency and memory usage.
+	metadataLocks [256]sync.Mutex
+
 	closed    chan struct{}
 	closeOnce sync.Once
 	wg        sync.WaitGroup
@@ -121,6 +125,13 @@ type Engine struct {
 	// EventBus provides pub/sub for engine write operations.
 	// Consumers (Gardener, SSE handler) subscribe to receive events.
 	EventBus *EventBus
+}
+
+// getMetadataLockShard returns the mutex shard for a given node ID.
+// This enables fine-grained locking for metadata operations, reducing contention
+// while preventing read-modify-write races in VReinforce and VSetMetadata.
+func (e *Engine) getMetadataLockShard(nodeID uint32) *sync.Mutex {
+	return &e.metadataLocks[nodeID%256]
 }
 
 // Open initializes a new Engine instance using the provided options.

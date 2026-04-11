@@ -619,8 +619,11 @@ func (e *Engine) VReinforce(indexName string, ids []string) error {
 			continue
 		}
 
-		// 2. Fetch current metadata
-		// We use RLock just for the map read. GetMetadataForNodeUnlocked returns a copy.
+		// 2. Acquire fine-grained lock for this node to prevent read-modify-write races
+		lock := e.getMetadataLockShard(internalID)
+		lock.Lock()
+
+		// 3. Fetch current metadata (under protection of node-level lock)
 		e.DB.RLock()
 		meta := e.DB.GetMetadataForNodeUnlocked(indexName, internalID)
 		e.DB.RUnlock()
@@ -646,8 +649,8 @@ func (e *Engine) VReinforce(indexName string, ids []string) error {
 		//}
 
 		// 4. Save metadata to DB
-		// AddMetadata uses its own internal locks, so it's thread-safe and doesn't block the whole DB for long.
 		if err := e.DB.AddMetadata(indexName, internalID, meta); err != nil {
+			lock.Unlock()
 			slog.Error("Failed to update metadata in VReinforce", "error", err, "id", extID)
 			continue
 		}
@@ -662,6 +665,8 @@ func (e *Engine) VReinforce(indexName string, ids []string) error {
 			cmd := persistence.FormatCommand("VMETA", []byte(indexName), []byte(extID), metaBytes)
 			e.AOF.Write(cmd) // AOF.Write is thread-safe internally
 		}
+
+		lock.Unlock()
 	}
 
 	if updatedCount > 0 {
@@ -690,7 +695,12 @@ func (e *Engine) VSetMetadata(indexName, id string, newProps map[string]any) err
 		return fmt.Errorf("node not found")
 	}
 
-	// 1. Legge i metadati correnti (sotto lock)
+	// 1. Acquire fine-grained lock for this node to prevent read-modify-write races
+	lock := e.getMetadataLockShard(internalID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// 2. Legge i metadati correnti (sotto protezione del node-level lock)
 	e.DB.RLock()
 	meta := e.DB.GetMetadataForNodeUnlocked(indexName, internalID)
 	e.DB.RUnlock()
@@ -699,17 +709,17 @@ func (e *Engine) VSetMetadata(indexName, id string, newProps map[string]any) err
 		meta = make(map[string]any)
 	}
 
-	// 2. Esegue il merge delle nuove proprietà
+	// 3. Esegue il merge delle nuove proprietà
 	for k, v := range newProps {
 		meta[k] = v
 	}
 
-	// 3. Aggiorna in memoria (Aggiorna anche gli indici secondari/Roaring Bitmaps)
+	// 4. Aggiorna in memoria (Aggiorna anche gli indici secondari/Roaring Bitmaps)
 	if err := e.DB.AddMetadata(indexName, internalID, meta); err != nil {
 		return fmt.Errorf("failed to update memory metadata: %w", err)
 	}
 
-	// 4. Persiste nell'AOF
+	// 5. Persiste nell'AOF
 	metaBytes, err := json.Marshal(meta)
 	if err == nil {
 		cmd := persistence.FormatCommand("VMETA", []byte(indexName), []byte(id), metaBytes)
