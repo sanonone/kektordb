@@ -130,8 +130,21 @@ func main() {
 
 	if *modeMCP {
 		// Redirect logs to file to keep Stdio clean for JSON-RPC
-		logFile, _ := os.OpenFile("kektordb_mcp.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
-		slog.SetDefault(slog.New(slog.NewTextHandler(logFile, nil)))
+		logFile, err := os.OpenFile("kektordb_mcp.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+		if err != nil {
+			log.Printf("Warning: failed to open log file: %v", err)
+			// Continue with default logging to stderr
+		} else {
+			slog.SetDefault(slog.New(slog.NewTextHandler(logFile, nil)))
+			defer logFile.Close()
+		}
+
+		// Ensure engine is closed on exit to flush AOF and release resources
+		defer func() {
+			if err := eng.Close(); err != nil {
+				slog.Error("Error closing engine", "err", err)
+			}
+		}()
 
 		// MCP needs an embedder. Use Ollama default or env vars.
 		embedderURL := getEnv("MCP_EMBEDDER_URL", "http://localhost:11434/api/embeddings")

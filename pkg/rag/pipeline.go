@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -35,6 +36,7 @@ type Pipeline struct {
 	// isScanning is 1 if a scan is in progress, 0 otherwise
 	isScanning     int32
 	extractionChan chan extractionJob
+	wg             sync.WaitGroup // Waits for goroutines to finish
 }
 
 // fileState tracks the state of the last file indexing
@@ -64,14 +66,17 @@ func NewPipeline(cfg Config, store Store, embedder embeddings.Embedder, llmClien
 // Start launches the background watcher in a goroutine.
 func (p *Pipeline) Start() {
 	slog.Info("[RAG] Starting pipeline", "name", p.cfg.Name, "path", p.cfg.SourcePath)
+	p.wg.Add(1)
 	go p.loop()
 
 	if p.cfg.GraphEntityExtraction {
+		p.wg.Add(1)
 		go p.extractionWorker()
 	}
 }
 
 func (p *Pipeline) extractionWorker() {
+	defer p.wg.Done()
 	for job := range p.extractionChan {
 		// Calls the extraction function (idempotent logic).
 		if err := p.extractAndLinkEntities(job.ChunkID, job.Text); err != nil {
@@ -84,9 +89,18 @@ func (p *Pipeline) extractionWorker() {
 // Stop halts the background watcher.
 func (p *Pipeline) Stop() {
 	close(p.stopCh)
+
+	// Close extractionChan to unblock extractionWorker
+	// This must be done after stopCh is closed to ensure no new jobs are queued
+	if p.cfg.GraphEntityExtraction {
+		close(p.extractionChan)
+		// Wait for extractionWorker to finish
+		p.wg.Wait()
+	}
 }
 
 func (p *Pipeline) loop() {
+	defer p.wg.Done()
 	ticker := time.NewTicker(p.cfg.PollingInterval)
 	defer ticker.Stop()
 

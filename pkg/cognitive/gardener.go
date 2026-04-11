@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sanonone/kektordb/pkg/core"
@@ -75,9 +76,10 @@ type Gardener struct {
 	stopCh         chan struct{}
 	eventCh        chan engine.Event // Subscribed to engine event bus
 	scanCursors    map[string]uint32
-	writeCounter   int64     // Write events since last think
-	lastThinkTime  time.Time // When the last think() completed
-	newReflections []string  // Reflection IDs created in current think() cycle
+	writeCounter   atomic.Int64 // Write events since last think (atomic for thread-safe access)
+	lastThinkTime  time.Time    // When the last think() completed
+	newReflections []string     // Reflection IDs created in current think() cycle
+	reflectionsMu  sync.Mutex   // Protects newReflections from concurrent access
 
 	// User profiling
 	unassimilatedInteractions map[string]int // user_id -> count of new interactions
@@ -234,7 +236,7 @@ func (g *Gardener) loop() {
 			}
 			g.onEvent(event)
 		case <-ticker.C:
-			g.writeCounter = 0
+			g.writeCounter.Store(0)
 			g.think()
 			g.lastThinkTime = time.Now()
 		}
@@ -243,12 +245,12 @@ func (g *Gardener) loop() {
 
 // onEvent processes engine write events for adaptive scheduling and user profiling.
 func (g *Gardener) onEvent(event engine.Event) {
-	g.writeCounter++
+	g.writeCounter.Add(1)
 
 	// Adaptive trigger: wake up early if write rate exceeds threshold
-	if g.writeCounter >= g.cfg.AdaptiveThreshold {
+	if g.writeCounter.Load() >= g.cfg.AdaptiveThreshold {
 		if time.Since(g.lastThinkTime) > g.cfg.AdaptiveMinInterval {
-			g.writeCounter = 0
+			g.writeCounter.Store(0)
 			go func() {
 				g.think()
 				g.lastThinkTime = time.Now()
@@ -327,7 +329,9 @@ func (c *Config) isIndexAllowed(indexName string) bool {
 func (g *Gardener) think() {
 	slog.Info("[Cognitive Engine] Gardener is waking up... scanning all active namespaces.")
 
+	g.reflectionsMu.Lock()
 	g.newReflections = nil // Reset tracking for this cycle
+	g.reflectionsMu.Unlock()
 
 	indexInfos, err := g.eng.DB.GetVectorIndexInfoAPI()
 	if err != nil || len(indexInfos) == 0 {
@@ -391,7 +395,10 @@ func (g *Gardener) think() {
 		}
 
 		// Meta-analysis: cross-detector confidence validation (meta mode only).
-		if g.cfg.Mode == "meta" && len(g.newReflections) > 1 {
+		g.reflectionsMu.Lock()
+		newReflectionsCount := len(g.newReflections)
+		g.reflectionsMu.Unlock()
+		if g.cfg.Mode == "meta" && newReflectionsCount > 1 {
 			g.detectCrossValidator(idx)
 		}
 
@@ -1027,7 +1034,9 @@ Guidelines for suggested_resolution:
 					slog.Info("[Cognitive Engine] ⚠️ Contradiction Detected!", "reason", aiAnalysis.Reason)
 
 					reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
+					g.reflectionsMu.Lock()
 					g.newReflections = append(g.newReflections, reflectionID)
+					g.reflectionsMu.Unlock()
 
 					// Zero-cost embedding: average of the two conflicting vectors.
 					dim := len(node.Vector)
@@ -1106,7 +1115,9 @@ func (g *Gardener) detectImportanceShifts(indexName string) {
 
 			if !alreadyFlagged {
 				reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
+				g.reflectionsMu.Lock()
 				g.newReflections = append(g.newReflections, reflectionID)
+				g.reflectionsMu.Unlock()
 
 				nodeData, _ := g.eng.VGet(indexName, id)
 
@@ -1144,7 +1155,9 @@ func (g *Gardener) ForceThink(indexName string) {
 
 	slog.Info("[Cognitive Engine] Manual reflection cycle triggered.", "index", indexName, "mode", g.cfg.Mode)
 
+	g.reflectionsMu.Lock()
 	g.newReflections = nil
+	g.reflectionsMu.Unlock()
 
 	// Look up the index language for sentiment analysis.
 	var indexLang string
@@ -1752,7 +1765,9 @@ func (g *Gardener) detectKnowledgeGaps(indexName string) {
 					}
 
 					reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
+					g.reflectionsMu.Lock()
 					g.newReflections = append(g.newReflections, reflectionID)
+					g.reflectionsMu.Unlock()
 
 					dim := len(node.Vector)
 					avgVec := make([]float32, dim)
@@ -2015,7 +2030,9 @@ func (g *Gardener) detectSentimentShifts(indexName string, lang string) {
 
 				nodeData, _ := g.eng.VGet(indexName, id)
 				reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
+				g.reflectionsMu.Lock()
 				g.newReflections = append(g.newReflections, reflectionID)
+				g.reflectionsMu.Unlock()
 				evidenceRatio := math.Min(1.0, float64(pastCount+recentCount)/8.0)
 				confidence := math.Min(1.0, (math.Abs(delta)/3.0)*evidenceRatio)
 				meta := map[string]any{
@@ -2092,7 +2109,9 @@ func (g *Gardener) detectCentralityShifts(indexName string) {
 
 			nodeData, _ := g.eng.VGet(indexName, id)
 			reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
+			g.reflectionsMu.Lock()
 			g.newReflections = append(g.newReflections, reflectionID)
+			g.reflectionsMu.Unlock()
 			confidence := math.Min(1.0, float64(degreeNow)/float64(degreePast)/5.0)
 			meta := map[string]any{
 				"type":        "reflection",
@@ -2151,7 +2170,9 @@ func (g *Gardener) detectForgettingPatterns(indexName string) {
 
 			nodeData, _ := g.eng.VGet(indexName, id)
 			reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
+			g.reflectionsMu.Lock()
 			g.newReflections = append(g.newReflections, reflectionID)
+			g.reflectionsMu.Unlock()
 			confidence := math.Min(1.0, float64(len(edges))/10.0)
 			meta := map[string]any{
 				"type":        "reflection",
@@ -2498,9 +2519,15 @@ Guidelines:
 // detectCrossValidator checks if the same entity was flagged by multiple detector types
 // in the current cycle and creates a high-confidence composite reflection.
 func (g *Gardener) detectCrossValidator(indexName string) {
+	g.reflectionsMu.Lock()
 	if len(g.newReflections) == 0 {
+		g.reflectionsMu.Unlock()
 		return
 	}
+	// Make a copy of reflections to work with outside the lock
+	reflectionsCopy := make([]string, len(g.newReflections))
+	copy(reflectionsCopy, g.newReflections)
+	g.reflectionsMu.Unlock()
 
 	detectorEdgeMap := map[string]string{
 		"focus_shifted":   "importance",
@@ -2514,7 +2541,7 @@ func (g *Gardener) detectCrossValidator(indexName string) {
 	// Build entity -> detector type -> reflection IDs
 	entityDetectors := make(map[string]map[string][]string)
 
-	for _, reflID := range g.newReflections {
+	for _, reflID := range reflectionsCopy {
 		for edgeType, detectorName := range detectorEdgeMap {
 			targets, found := g.eng.VGetLinks(indexName, reflID, edgeType)
 			if !found {
@@ -2886,7 +2913,9 @@ func (g *Gardener) processCoreFactExtraction(indexName, userID string, items []c
 			g.eng.VLink(indexName, factID, item.ID, "extracted_from", "", 1.0, nil)
 		}
 
+		g.reflectionsMu.Lock()
 		g.newReflections = append(g.newReflections, factID)
+		g.reflectionsMu.Unlock()
 
 		slog.Info("[Cognitive Engine] Core fact extracted",
 			"id", factID,
