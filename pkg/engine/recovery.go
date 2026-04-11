@@ -387,7 +387,7 @@ func (e *Engine) saveSnapshotLocked() error {
 	}
 
 	atomic.StoreInt64(&e.dirtyCounter, 0)
-	e.lastSaveTime = time.Now()
+	e.lastSaveTime.Store(time.Now().UnixNano())
 	return nil
 }
 

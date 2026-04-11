@@ -102,7 +102,7 @@ type Engine struct {
 
 	// DirtyCounter tracks the number of write operations since the last save.
 	dirtyCounter int64
-	lastSaveTime time.Time
+	lastSaveTime atomic.Int64 // Unix timestamp in nanoseconds, atomic for thread-safe access
 
 	isRewriting atomic.Bool
 
@@ -141,14 +141,14 @@ func Open(opts Options) (*Engine, error) {
 	snapPath := strings.TrimSuffix(aofPath, filepath.Ext(aofPath)) + ".kdb"
 
 	e := &Engine{
-		DB:           core.NewDB(),
-		opts:         opts,
-		aofPath:      aofPath,
-		snapPath:     snapPath,
-		lastSaveTime: time.Now(),
-		closed:       make(chan struct{}),
-		EventBus:     NewEventBus(),
+		DB:       core.NewDB(),
+		opts:     opts,
+		aofPath:  aofPath,
+		snapPath: snapPath,
+		closed:   make(chan struct{}),
+		EventBus: NewEventBus(),
 	}
+	e.lastSaveTime.Store(time.Now().UnixNano())
 
 	// 1. Load Snapshot if exists
 	if _, err := os.Stat(snapPath); err == nil {
@@ -279,7 +279,8 @@ func (e *Engine) checkMaintenance() {
 
 	// Auto-Save Policy
 	if e.opts.AutoSaveThreshold > 0 && e.opts.AutoSaveInterval > 0 {
-		if dirty >= e.opts.AutoSaveThreshold && time.Since(e.lastSaveTime) >= e.opts.AutoSaveInterval {
+		lastSave := time.Unix(0, e.lastSaveTime.Load())
+		if dirty >= e.opts.AutoSaveThreshold && time.Since(lastSave) >= e.opts.AutoSaveInterval {
 			if err := e.SaveSnapshot(); err != nil {
 				// Log error but continue (background task)
 				// Log error but continue (background task)
