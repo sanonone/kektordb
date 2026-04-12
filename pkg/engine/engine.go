@@ -15,6 +15,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"hash/fnv"
 	"log/slog"
@@ -118,9 +119,13 @@ type Engine struct {
 	// We use 256 shards to balance concurrency and memory usage.
 	metadataLocks [256]sync.Mutex
 
+	// Context and cancellation for graceful shutdown of background goroutines
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+
 	closed    chan struct{}
 	closeOnce sync.Once
-	wg        sync.WaitGroup
 
 	// EventBus provides pub/sub for engine write operations.
 	// Consumers (Gardener, SSE handler) subscribe to receive events.
@@ -159,6 +164,7 @@ func Open(opts Options) (*Engine, error) {
 		closed:   make(chan struct{}),
 		EventBus: NewEventBus(),
 	}
+	e.ctx, e.cancel = context.WithCancel(context.Background())
 	e.lastSaveTime.Store(time.Now().UnixNano())
 
 	// 1. Load Snapshot if exists
@@ -213,6 +219,12 @@ func (e *Engine) Close() error {
 	// Executes the block only once, even if called 100 times
 	e.closeOnce.Do(func() {
 		close(e.closed)
+
+		// Cancel context to signal all background goroutines to stop
+		if e.cancel != nil {
+			e.cancel()
+		}
+
 		e.wg.Wait() // Wait for background tasks
 
 		// Close the event bus (stops all subscribers)

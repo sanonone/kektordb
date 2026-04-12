@@ -394,11 +394,28 @@ func (e *Engine) VDelete(indexName, id string) error {
 	// --- 3. CASCADE DELETE (GRAPH INTEGRITY) ---
 	// Run in the background so as not to block the API response.
 	// Now use the new RAM graph API (O(1)).
+	e.wg.Add(1)
 	go func(deadNodeID string) {
+		defer e.wg.Done()
+
+		// Check if engine is shutting down
+		select {
+		case <-e.ctx.Done():
+			return
+		default:
+		}
+
 		incomingRels := e.DB.GetAllRelations(buildGraphID(indexName, deadNodeID), "in")
 
 		for relType, sources := range incomingRels {
 			for _, sourceIDInternal := range sources {
+				// Check context again before each operation
+				select {
+				case <-e.ctx.Done():
+					return
+				default:
+				}
+
 				// Detach the source node from us (Soft Delete)
 				// VUnlink is thread-safe and will update both RAM and the AOF
 				cleanSourceID := extractNodeID(sourceIDInternal)
@@ -1093,7 +1110,17 @@ func (e *Engine) VGetConnections(indexName, sourceID, relationType string) ([]co
 				// This ID was in links but not in DB. It is dead.
 				// Launch background cleanup to avoid slowing down current read.
 				tid := targetID // Capture loop variable to avoid race condition
+				e.wg.Add(1)
 				go func() {
+					defer e.wg.Done()
+
+					// Check if engine is shutting down
+					select {
+					case <-e.ctx.Done():
+						return
+					default:
+					}
+
 					// VUnlink is thread-safe and handles lock and AOF
 					if err := e.VUnlink(indexName, sourceID, tid, relationType, "", false); err != nil {
 						slog.Error("Self-repair unlink failed",
