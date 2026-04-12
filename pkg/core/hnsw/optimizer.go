@@ -359,10 +359,10 @@ func (o *GraphOptimizer) Refine() bool {
 
 			localResults := make([]refineResult, 0, len(nodeSlice))
 
-			// RLock to read the graph during search
-			o.index.metaMu.RLock()
-			defer o.index.metaMu.RUnlock()
-
+			// No global lock needed here:
+			// - getNodes() is lock-free (atomic.Value)
+			// - searchLayerUnlocked() uses per-node shard locking (RLockNode)
+			// - node vector data is immutable after creation
 			for _, node := range nodeSlice {
 				newConns := o.computeNewConnections(node, entryPoint, ef, maxID, nil)
 				if newConns != nil {
