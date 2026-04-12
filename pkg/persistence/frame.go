@@ -3,6 +3,7 @@ package persistence
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"io"
 )
@@ -19,6 +20,11 @@ const (
 
 	// OpCodeCommand represents a standard database command (e.g., SET, VADD).
 	OpCodeCommand = 0x01
+
+	// MaxPayloadSize is the maximum allowed payload size (1GB).
+	// This prevents OOM attacks from corrupted length fields (e.g., 0xFFFFFFFF).
+	// 1GB is sufficient for large batch operations while protecting system stability.
+	MaxPayloadSize = 1024 * 1024 * 1024 // 1 GB
 )
 
 var (
@@ -102,6 +108,11 @@ func ReadFrame(r io.Reader) ([]byte, int, error) {
 	// 3. Parse Length and Expected CRC
 	length := binary.LittleEndian.Uint32(header[2:6])
 	expectedCRC := binary.LittleEndian.Uint32(header[6:10])
+
+	// Validate payload size to prevent OOM from corrupted length fields
+	if length > MaxPayloadSize {
+		return nil, HeaderSize, fmt.Errorf("payload size %d exceeds maximum %d", length, MaxPayloadSize)
+	}
 
 	// 4. Read Payload
 	payload := make([]byte, length)
