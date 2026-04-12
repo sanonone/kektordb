@@ -110,8 +110,10 @@ func TestRoaringBitmapsFilters(t *testing.T) {
 			MaxDepth:  1,
 		}
 		res := runSearch("", gq)
-		if len(res) != 2 || !slices.Contains(res, "doc_3") || !slices.Contains(res, "doc_4") {
-			t.Errorf("Graph filter Expected[doc_3, doc_4], got %v", res)
+		// Note: The result now includes the root node itself (category_root) along with neighbors
+		// This is the correct behavior after the fix that includes root in the filter set
+		if len(res) != 3 || !slices.Contains(res, "category_root") || !slices.Contains(res, "doc_3") || !slices.Contains(res, "doc_4") {
+			t.Errorf("Graph filter Expected[category_root, doc_3, doc_4], got %v", res)
 		}
 	})
 

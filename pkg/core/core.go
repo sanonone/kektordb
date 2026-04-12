@@ -740,6 +740,126 @@ func (s *DB) GetMetadataForNodeUnlocked(indexName string, nodeID uint32) map[str
 	return s.getMetadataForNodeUnlocked(indexName, nodeID)
 }
 
+// DeleteMetadata removes all metadata and index entries associated with a node.
+// This should be called when a node is deleted to prevent memory leaks.
+func (s *DB) DeleteMetadata(indexName string, nodeID uint32) error {
+	s.mu.RLock()
+	idxMu, exists := s.indexLocks[indexName]
+	if !exists {
+		s.mu.RUnlock()
+		return fmt.Errorf("index not found")
+	}
+	idxMu.Lock()
+	defer idxMu.Unlock()
+	defer s.mu.RUnlock()
+
+	// Get the current metadata before deletion for index cleanup
+	currentMeta := s.getMetadataForNodeUnlocked(indexName, nodeID)
+
+	// 1. Remove from metadataMap
+	if idxMap, ok := s.metadataMap[indexName]; ok {
+		delete(idxMap, nodeID)
+	}
+
+	// 2. Remove from invertedIndex (string metadata)
+	if invIdx, ok := s.invertedIndex[indexName]; ok {
+		for key, valueMap := range invIdx {
+			for value, bitmap := range valueMap {
+				bitmap.Remove(nodeID)
+				// Clean up empty bitmaps
+				if bitmap.IsEmpty() {
+					delete(valueMap, value)
+				}
+			}
+			// Clean up empty key maps
+			if len(valueMap) == 0 {
+				delete(invIdx, key)
+			}
+		}
+	}
+
+	// 3. Remove from bTreeIndex (numerical metadata)
+	// Need to find and delete items by scanning since we don't know the exact values
+	if btreeMap, ok := s.bTreeIndex[indexName]; ok {
+		for key, btree := range btreeMap {
+			// Check if this node has a value for this key
+			if val, hasKey := currentMeta[key]; hasKey {
+				if numVal, isNum := toFloat64Ok(val); isNum {
+					btree.Delete(BTreeItem{Value: numVal, NodeID: nodeID})
+				}
+			}
+			// Note: We don't delete empty btrees as they may be reused
+		}
+	}
+
+	// 4. Remove from textIndex (full-text search)
+	if txtIdx, ok := s.textIndex[indexName]; ok {
+		for key, tokenMap := range txtIdx {
+			for token, postings := range tokenMap {
+				// Remove this nodeID from the posting list
+				newPostings := make(PostingList, 0, len(postings))
+				for _, entry := range postings {
+					if entry.DocID != nodeID {
+						newPostings = append(newPostings, entry)
+					}
+				}
+				if len(newPostings) == 0 {
+					delete(tokenMap, token)
+				} else {
+					tokenMap[token] = newPostings
+				}
+			}
+			if len(tokenMap) == 0 {
+				delete(txtIdx, key)
+			}
+		}
+	}
+
+	// 5. Update text index stats
+	if statsMap, ok := s.textIndexStats[indexName]; ok {
+		for _, stats := range statsMap {
+			delete(stats.DocLengths, nodeID)
+			// Recalculate total docs and avg length
+			stats.TotalDocs--
+			if stats.TotalDocs > 0 {
+				totalLen := 0
+				for _, length := range stats.DocLengths {
+					totalLen += length
+				}
+				stats.AvgFieldLength = float64(totalLen) / float64(stats.TotalDocs)
+			} else {
+				stats.AvgFieldLength = 0
+			}
+		}
+	}
+
+	return nil
+}
+
+// toFloat64Ok safely converts a value to float64
+func toFloat64Ok(v any) (float64, bool) {
+	switch val := v.(type) {
+	case float64:
+		return val, true
+	case float32:
+		return float64(val), true
+	case int:
+		return float64(val), true
+	case int32:
+		return float64(val), true
+	case int64:
+		return float64(val), true
+	case uint:
+		return float64(val), true
+	case uint32:
+		return float64(val), true
+	case uint64:
+		return float64(val), true
+	default:
+		return 0, false
+	}
+}
+
 // BTreeItem is a struct used by the B-Tree to associate a numerical metadata value with a node ID.
 type BTreeItem struct {
 	Value  float64

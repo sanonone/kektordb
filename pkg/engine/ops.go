@@ -361,8 +361,25 @@ func (e *Engine) VDelete(indexName, id string) error {
 		return fmt.Errorf("index not found")
 	}
 
+	// Get internal ID before deletion (needed for metadata cleanup)
+	var internalID uint32
+	if hnswIdx, isHNSW := idx.(*hnsw.Index); isHNSW {
+		var found bool
+		internalID, found = hnswIdx.GetInternalID(id)
+		if !found {
+			return fmt.Errorf("node not found")
+		}
+	}
+
 	// Memory
 	idx.Delete(id)
+
+	// Clean up metadata to prevent memory leaks
+	if internalID != 0 {
+		if err := e.DB.DeleteMetadata(indexName, internalID); err != nil {
+			slog.Warn("Failed to delete metadata", "error", err, "id", id)
+		}
+	}
 
 	// Disk
 	cmd := persistence.FormatCommand("VDEL", []byte(indexName), []byte(id))

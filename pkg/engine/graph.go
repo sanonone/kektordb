@@ -187,6 +187,11 @@ func (e *Engine) resolveGraphFilter(indexName string, q GraphQuery) (*roaring.Bi
 	allowedSet := roaring.New()
 	visited := make(map[string]struct{})
 
+	// Include the root node itself in the allowed set
+	if rootInternalID, found := hnswIdx.GetInternalID(q.RootID); found {
+		allowedSet.Add(rootInternalID)
+	}
+
 	type queueItem struct {
 		id    string
 		depth int
