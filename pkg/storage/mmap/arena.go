@@ -61,6 +61,12 @@ type VectorArena struct {
 
 	// closed flag to prevent operations after Close()
 	closed atomic.Bool
+
+	// droppedChunks holds chunks that were logically removed from the arena but
+	// whose mmap regions are kept mapped until Close(). This prevents use-after-free
+	// segfaults: any stale pointer still referencing a dropped chunk will read zero
+	// pages (via MADV_DONTNEED) instead of triggering SIGSEGV.
+	droppedChunks []*Chunk
 }
 
 // Precision constants (mapped from distance types for storage)
@@ -439,6 +445,34 @@ func (va *VectorArena) GetBytes(internalID uint32) ([]byte, error) {
 	return data, nil
 }
 
+// DeferDropChunk removes a chunk from the active set and prepares it for deferred cleanup.
+// It advises the kernel to release physical pages (MADV_DONTNEED) so stale pointers read zeros
+// instead of triggering SIGSEGV, closes the file descriptor, and removes the file from disk.
+// The mmap mapping is kept alive until Close() to prevent use-after-free crashes.
+// Caller must hold va.mu and va.slotMu.
+func (va *VectorArena) DeferDropChunk(chunk *Chunk) {
+	if chunk == nil || chunk.Data == nil {
+		return
+	}
+
+	if err := madviseDontNeed(chunk.Data); err != nil {
+		slog.Warn("[Arena] MADV_DONTNEED failed on dropped chunk", "chunk", chunk.ID, "error", err)
+	}
+
+	if err := chunk.File.Close(); err != nil {
+		slog.Warn("[Arena] Failed to close dropped chunk file", "chunk", chunk.ID, "error", err)
+	}
+
+	filePath := chunk.File.Name()
+	if err := os.Remove(filePath); err != nil {
+		slog.Warn("[Arena] Failed to delete dropped chunk file", "chunk", chunk.ID, "path", filePath, "error", err)
+	} else {
+		slog.Info("[Arena] Physically deleted dropped chunk file", "chunk", chunk.ID, "path", filePath)
+	}
+
+	va.droppedChunks = append(va.droppedChunks, chunk)
+}
+
 func (va *VectorArena) Close() error {
 	// Set closed flag first to prevent new operations
 	va.closed.Store(true)
@@ -455,6 +489,13 @@ func (va *VectorArena) Close() error {
 			firstErr = err
 		}
 	}
+	for _, chunk := range va.droppedChunks {
+		if err := munmapFile(chunk.Data); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		// File already closed in DeferDropChunk, just unmap
+	}
+	va.droppedChunks = nil
 	return firstErr
 }
 
@@ -478,8 +519,17 @@ func (va *VectorArena) ForceClose() error {
 			firstErr = err
 		}
 	}
+	for _, chunk := range va.droppedChunks {
+		if chunk == nil || chunk.Data == nil {
+			continue
+		}
+		if err := munmapFile(chunk.Data); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	// Clear chunks to prevent further access
 	va.chunks = nil
+	va.droppedChunks = nil
 	return firstErr
 }
 

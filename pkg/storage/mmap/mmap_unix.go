@@ -19,3 +19,14 @@ func mmapFile(fd uintptr, size int) ([]byte, error) {
 func munmapFile(data []byte) error {
 	return unix.Munmap(data)
 }
+
+// madviseDontNeed advises the kernel that the mapped pages are no longer needed.
+// The mapping remains valid (reads return zero pages), but physical memory is released.
+// This prevents use-after-free segfaults: stale pointers to this region will read zeros
+// instead of triggering SIGSEGV.
+func madviseDontNeed(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	return unix.Madvise(data, unix.MADV_DONTNEED)
+}

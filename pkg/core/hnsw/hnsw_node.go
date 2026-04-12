@@ -1,9 +1,3 @@
-// Package hnsw provides the implementation of the Hierarchical Navigable Small World
-// graph algorithm for efficient approximate nearest neighbor search.
-//
-// This file defines the Node struct, which is the fundamental building block of the
-// HNSW graph. Each node represents a vector and its connections to other nodes
-// across multiple layers.
 package hnsw
 
 import (
@@ -12,6 +6,16 @@ import (
 	"sync/atomic"
 )
 
+// vecData holds the vector data pointing to mmap memory.
+// Only one field is populated based on precision; the others remain nil.
+// Stored via atomic.Pointer[vecData] on Node to prevent data races between
+// the compactor's UpdateNodePointer (writer) and concurrent search reads.
+type vecData struct {
+	F32 []float32
+	F16 []uint16
+	I8  []int8
+}
+
 // Node represents a single node within the HNSW graph. It contains the vector data,
 // its connections at various layers, and metadata for identification and state.
 type Node struct {
@@ -19,16 +23,9 @@ type Node struct {
 	Id string
 	// InternalID is a unique, memory-efficient identifier used for graph traversal.
 	InternalID uint32
-	// VectorF32 stores float32 vectors.
-	// NOTE: Once published, this should be treated as immutable.
-	VectorF32 []float32
-	// VectorF16 stores float16 vectors (as uint16).
-	// NOTE: Once published, this should be treated as immutable.
-	VectorF16 []uint16
-	// VectorI8 stores int8 vectors.
-	// NOTE: Once published, this should be treated as immutable.
-	VectorI8 []int8
-
+	// vec holds the vector data (pointing into mmap memory) atomically.
+	// Use SetVector/GetVectorF32/GetVectorF16/GetVectorI8 for thread-safe access.
+	vec atomic.Pointer[vecData]
 	// Connections is a slice of slices, where the outer index represents the graph layer,
 	// and the inner slice contains the list of neighbors at that layer.
 	// Connections[0] holds the neighbors at the base layer (layer 0).
@@ -36,82 +33,57 @@ type Node struct {
 	// Protected by fine-grained shard locks (shardsMu).
 	Connections [][]uint32
 	// Deleted is a flag used for soft deletes, marking the node as removed
-	// without physically deleting it from the graph.
+	// from the graph without physically deleting it.
 	// Uses atomic.Bool for thread-safe access.
 	Deleted atomic.Bool
+}
+
+// SetVector stores the vector data atomically.
+func (n *Node) SetVector(v *vecData) {
+	n.vec.Store(v)
+}
+
+// GetVectorF32 returns the float32 vector slice, or nil if not set.
+func (n *Node) GetVectorF32() []float32 {
+	if vd := n.vec.Load(); vd != nil {
+		return vd.F32
+	}
+	return nil
+}
+
+// GetVectorF16 returns the uint16 (float16) vector slice, or nil if not set.
+func (n *Node) GetVectorF16() []uint16 {
+	if vd := n.vec.Load(); vd != nil {
+		return vd.F16
+	}
+	return nil
+}
+
+// GetVectorI8 returns the int8 vector slice, or nil if not set.
+func (n *Node) GetVectorI8() []int8 {
+	if vd := n.vec.Load(); vd != nil {
+		return vd.I8
+	}
+	return nil
 }
 
 // nodeGob is a serializable representation of Node for gob encoding.
 type nodeGob struct {
 	Id          string
 	InternalID  uint32
-	VectorF32   []float32
-	VectorF16   []uint16
-	VectorI8    []int8
 	Connections [][]uint32
 	Deleted     bool
 }
-
-/*
-// GobEncode implements gob.GobEncoder for Node.
-func (n *Node) GobEncode() ([]byte, error) {
-	gn := nodeGob{
-		Id:          n.Id,
-		InternalID:  n.InternalID,
-		VectorF32:   n.VectorF32,
-		VectorF16:   n.VectorF16,
-		VectorI8:    n.VectorI8,
-		Connections: n.Connections,
-		Deleted:     n.Deleted.Load(),
-	}
-
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
-	if err := enc.Encode(gn); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
-// GobDecode implements gob.GobDecoder for Node.
-func (n *Node) GobDecode(data []byte) error {
-	var gn nodeGob
-
-	buf := bytes.NewBuffer(data)
-	dec := gob.NewDecoder(buf)
-	if err := dec.Decode(&gn); err != nil {
-		return err
-	}
-
-	n.Id = gn.Id
-	n.InternalID = gn.InternalID
-	n.VectorF32 = gn.VectorF32
-	n.VectorF16 = gn.VectorF16
-	n.VectorI8 = gn.VectorI8
-	n.Connections = gn.Connections
-	n.Deleted.Store(gn.Deleted)
-
-	return nil
-}
-*/
 
 // GobEncode implements the gob.GobEncoder interface.
 // It explicitly IGNORES vector slices to prevent Snapshot bloat (Zero-Copy Mmap)
 // and correctly extracts the value from the atomic.Bool.
 func (n *Node) GobEncode() ([]byte, error) {
-	// Creiamo un alias con solo i campi strutturali (niente vettori)
-	type NodeAlias struct {
-		Id          string
-		InternalID  uint32
-		Connections [][]uint32
-		Deleted     bool // Estraiamo l'atomico in un bool normale
-	}
-
-	alias := NodeAlias{
+	alias := nodeGob{
 		Id:          n.Id,
 		InternalID:  n.InternalID,
 		Connections: n.Connections,
-		Deleted:     n.Deleted.Load(), // Estrazione sicura
+		Deleted:     n.Deleted.Load(),
 	}
 
 	var buf bytes.Buffer
@@ -123,14 +95,7 @@ func (n *Node) GobEncode() ([]byte, error) {
 
 // GobDecode implements the gob.GobDecoder interface.
 func (n *Node) GobDecode(data []byte) error {
-	type NodeAlias struct {
-		Id          string
-		InternalID  uint32
-		Connections [][]uint32
-		Deleted     bool
-	}
-
-	var alias NodeAlias
+	var alias nodeGob
 	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(&alias); err != nil {
 		return err
 	}
@@ -138,9 +103,9 @@ func (n *Node) GobDecode(data []byte) error {
 	n.Id = alias.Id
 	n.InternalID = alias.InternalID
 	n.Connections = alias.Connections
-	n.Deleted.Store(alias.Deleted) // Ripristino sicuro nell'atomico
+	n.Deleted.Store(alias.Deleted)
 
-	// VectorF32, VectorF16, VectorI8 rimangono nil!
-	// Saranno "riallacciati" fisicamente ai file .bin dalla funzione LoadSnapshotData
+	// vec remains nil (not stored in gob).
+	// It will be re-linked to mmap memory by LoadSnapshotData.
 	return nil
 }

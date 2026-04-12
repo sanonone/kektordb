@@ -283,20 +283,20 @@ func (h *Index) distanceBetweenNodes(n1, n2 *Node) (float64, error) {
 	}
 	switch h.precision {
 	case distance.Float32:
-		if n1.VectorF32 == nil || n2.VectorF32 == nil {
+		if n1.GetVectorF32() == nil || n2.GetVectorF32() == nil {
 			return 0, fmt.Errorf("vector is nil (arena closed)")
 		}
-		return h.distFuncF32(n1.VectorF32, n2.VectorF32)
+		return h.distFuncF32(n1.GetVectorF32(), n2.GetVectorF32())
 	case distance.Float16:
-		if n1.VectorF16 == nil || n2.VectorF16 == nil {
+		if n1.GetVectorF16() == nil || n2.GetVectorF16() == nil {
 			return 0, fmt.Errorf("vector is nil (arena closed)")
 		}
-		return h.distFuncF16(n1.VectorF16, n2.VectorF16)
+		return h.distFuncF16(n1.GetVectorF16(), n2.GetVectorF16())
 	case distance.Int8:
-		if n1.VectorI8 == nil || n2.VectorI8 == nil {
+		if n1.GetVectorI8() == nil || n2.GetVectorI8() == nil {
 			return 0, fmt.Errorf("vector is nil (arena closed)")
 		}
-		dot, err := h.distFuncI8(n1.VectorI8, n2.VectorI8)
+		dot, err := h.distFuncI8(n1.GetVectorI8(), n2.GetVectorI8())
 		// Scaling logic
 		norm1 := h.getNorms()[n1.InternalID]
 		norm2 := h.getNorms()[n2.InternalID]
@@ -594,27 +594,27 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 			src := storedVector.([]float32)
 			dst := mmap.BytesToFloat32Slice(vecBytes, h.vectorDim)
 			copy(dst, src)
-			node.VectorF32 = dst // Node points to Mmap!
+			node.SetVector(&vecData{F32: dst}) // Node points to Mmap!
 		case distance.Float16:
 			src := storedVector.([]uint16)
 			dst := mmap.BytesToUint16Slice(vecBytes, h.vectorDim)
 			copy(dst, src)
-			node.VectorF16 = dst
+			node.SetVector(&vecData{F16: dst})
 		case distance.Int8:
 			src := storedVector.([]int8)
 			dst := mmap.BytesToInt8Slice(vecBytes, h.vectorDim)
 			copy(dst, src)
-			node.VectorI8 = dst
+			node.SetVector(&vecData{I8: dst})
 		}
 	} else {
 		// Fallback (RAM-only, used during some tests where arenaDir == "")
 		switch h.precision {
 		case distance.Float32:
-			node.VectorF32 = storedVector.([]float32)
+			node.SetVector(&vecData{F32: storedVector.([]float32)})
 		case distance.Float16:
-			node.VectorF16 = storedVector.([]uint16)
+			node.SetVector(&vecData{F16: storedVector.([]uint16)})
 		case distance.Int8:
-			node.VectorI8 = storedVector.([]int8)
+			node.SetVector(&vecData{I8: storedVector.([]int8)})
 		}
 	}
 
@@ -841,11 +841,11 @@ func (h *Index) AddOld(id string, vector []float32) (uint32, error) {
 	node := &Node{Id: id, InternalID: internalID}
 	switch h.precision {
 	case distance.Float32:
-		node.VectorF32 = storedVector.([]float32)
+		node.SetVector(&vecData{F32: storedVector.([]float32)})
 	case distance.Float16:
-		node.VectorF16 = storedVector.([]uint16)
+		node.SetVector(&vecData{F16: storedVector.([]uint16)})
 	case distance.Int8:
-		node.VectorI8 = storedVector.([]int8)
+		node.SetVector(&vecData{I8: storedVector.([]int8)})
 	}
 	h.getNodes()[internalID] = node
 	h.externalToInternalID[id] = internalID
@@ -1076,11 +1076,11 @@ func (h *Index) AddBatchOldOK(objects []types.BatchObject) error {
 		node := &Node{Id: obj.Id, InternalID: internalID}
 		switch h.precision {
 		case distance.Float32:
-			node.VectorF32 = storedVector.([]float32)
+			node.SetVector(&vecData{F32: storedVector.([]float32)})
 		case distance.Float16:
-			node.VectorF16 = storedVector.([]uint16)
+			node.SetVector(&vecData{F16: storedVector.([]uint16)})
 		case distance.Int8:
-			node.VectorI8 = storedVector.([]int8)
+			node.SetVector(&vecData{I8: storedVector.([]int8)})
 		}
 
 		// Random level assignment
@@ -1151,11 +1151,11 @@ func (h *Index) AddBatchOldOK(objects []types.BatchObject) error {
 				var queryObj any
 				switch h.precision {
 				case distance.Float32:
-					queryObj = node.VectorF32
+					queryObj = node.GetVectorF32()
 				case distance.Float16:
-					queryObj = node.VectorF16
+					queryObj = node.GetVectorF16()
 				case distance.Int8:
-					queryObj = node.VectorI8
+					queryObj = node.GetVectorI8()
 				}
 
 				nodeLevel := len(node.Connections) - 1
@@ -1686,31 +1686,31 @@ func (h *Index) addBatchInternal(objects []types.BatchObject, efConst int) error
 						if len(src) > 0 {
 							copy(dst, src)
 						}
-						node.VectorF32 = dst
+						node.SetVector(&vecData{F32: dst})
 					case distance.Float16:
 						src := storedVector.([]uint16)
 						dst := mmap.BytesToUint16Slice(vecBytes, h.vectorDim)
 						if len(src) > 0 {
 							copy(dst, src)
 						}
-						node.VectorF16 = dst
+						node.SetVector(&vecData{F16: dst})
 					case distance.Int8:
 						src := storedVector.([]int8)
 						dst := mmap.BytesToInt8Slice(vecBytes, h.vectorDim)
 						if len(src) > 0 {
 							copy(dst, src)
 						}
-						node.VectorI8 = dst
+						node.SetVector(&vecData{I8: dst})
 					}
 				} else {
 					// Fallback RAM-only
 					switch h.precision {
 					case distance.Float32:
-						node.VectorF32 = storedVector.([]float32)
+						node.SetVector(&vecData{F32: storedVector.([]float32)})
 					case distance.Float16:
-						node.VectorF16 = storedVector.([]uint16)
+						node.SetVector(&vecData{F16: storedVector.([]uint16)})
 					case distance.Int8:
-						node.VectorI8 = storedVector.([]int8)
+						node.SetVector(&vecData{I8: storedVector.([]int8)})
 					}
 				}
 
@@ -1784,11 +1784,11 @@ func (h *Index) addBatchInternal(objects []types.BatchObject, efConst int) error
 				var queryObj any
 				switch h.precision {
 				case distance.Float32:
-					queryObj = node.VectorF32
+					queryObj = node.GetVectorF32()
 				case distance.Float16:
-					queryObj = node.VectorF16
+					queryObj = node.GetVectorF16()
 				case distance.Int8:
-					queryObj = node.VectorI8
+					queryObj = node.GetVectorI8()
 				}
 
 				h.RLockNode(node.InternalID)
@@ -2370,7 +2370,7 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 		fn := h.distFuncF32    // Direct pointer to function (e.g., AVX)
 
 		distFn = func(node *Node) (float64, error) {
-			v := node.VectorF32
+			v := node.GetVectorF32()
 			return fn(q, v)
 		}
 
@@ -2378,7 +2378,7 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 		q := query.([]uint16)
 		fn := h.distFuncF16
 		distFn = func(node *Node) (float64, error) {
-			v := node.VectorF16
+			v := node.GetVectorF16()
 			return fn(q, v)
 		}
 
@@ -2397,7 +2397,7 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 		}
 
 		distFn = func(node *Node) (float64, error) {
-			stored := node.VectorI8
+			stored := node.GetVectorI8()
 
 			dot, err := fn(q, stored)
 			if err != nil {
@@ -2765,11 +2765,12 @@ func (h *Index) Iterate(callback func(id string, vector []float32)) {
 			// Check the type of the stored vector
 			switch h.precision {
 			case distance.Float32:
-				vectorF32 = node.VectorF32
+				vectorF32 = node.GetVectorF32()
 			case distance.Float16:
 				// If it's float16, we need to unpack it into float32
-				vectorF32 = make([]float32, len(node.VectorF16))
-				for i, v := range node.VectorF16 {
+				f16 := node.GetVectorF16()
+				vectorF32 = make([]float32, len(f16))
+				for i, v := range f16 {
 					vectorF32[i] = float16.Frombits(v).Float32()
 				}
 			case distance.Int8:
@@ -2778,7 +2779,7 @@ func (h *Index) Iterate(callback func(id string, vector []float32)) {
 					log.Printf("WARNING: int8 index missing quantizer for node %s", node.Id)
 					continue
 				}
-				vectorF32 = h.quantizer.Dequantize(node.VectorI8)
+				vectorF32 = h.quantizer.Dequantize(node.GetVectorI8())
 			default:
 				// Unknown type, let's skip this node to be safe
 				log.Printf("WARNING: Unknown vector type during iteration for node %s", node.Id)
@@ -2805,11 +2806,11 @@ func (h *Index) IterateRaw(callback func(id string, vector interface{})) {
 		if !node.Deleted.Load() {
 			switch h.precision {
 			case distance.Float32:
-				callback(node.Id, node.VectorF32)
+				callback(node.Id, node.GetVectorF32())
 			case distance.Float16:
-				callback(node.Id, node.VectorF16)
+				callback(node.Id, node.GetVectorF16())
 			case distance.Int8:
-				callback(node.Id, node.VectorI8)
+				callback(node.Id, node.GetVectorI8())
 			}
 		}
 	}
@@ -2893,17 +2894,18 @@ func (h *Index) GetNodeData(externalID string) (types.NodeData, bool) {
 	var vectorF32 []float32
 	switch h.precision {
 	case distance.Float32:
-		vectorF32 = node.VectorF32
+		vectorF32 = node.GetVectorF32()
 	case distance.Float16:
-		vectorF32 = make([]float32, len(node.VectorF16))
-		for i, v := range node.VectorF16 {
+		f16 := node.GetVectorF16()
+		vectorF32 = make([]float32, len(f16))
+		for i, v := range f16 {
 			vectorF32[i] = float16.Frombits(v).Float32()
 		}
 	case distance.Int8:
 		if h.quantizer == nil {
 			return types.NodeData{}, false // Inconsistent state
 		}
-		vectorF32 = h.quantizer.Dequantize(node.VectorI8)
+		vectorF32 = h.quantizer.Dequantize(node.GetVectorI8())
 	default:
 		return types.NodeData{}, false // Type unknown
 	}
@@ -3092,22 +3094,22 @@ func (h *Index) LoadSnapshotData(
 				switch h.precision {
 				case distance.Float32:
 					dst := mmap.BytesToFloat32Slice(vecBytes, h.vectorDim)
-					if len(node.VectorF32) > 0 {
-						copy(dst, node.VectorF32)
+					if old := node.GetVectorF32(); len(old) > 0 {
+						copy(dst, old)
 					}
-					node.VectorF32 = dst
+					node.SetVector(&vecData{F32: dst})
 				case distance.Float16:
 					dst := mmap.BytesToUint16Slice(vecBytes, h.vectorDim)
-					if len(node.VectorF16) > 0 {
-						copy(dst, node.VectorF16)
+					if old := node.GetVectorF16(); len(old) > 0 {
+						copy(dst, old)
 					}
-					node.VectorF16 = dst
+					node.SetVector(&vecData{F16: dst})
 				case distance.Int8:
 					dst := mmap.BytesToInt8Slice(vecBytes, h.vectorDim)
-					if len(node.VectorI8) > 0 {
-						copy(dst, node.VectorI8)
+					if old := node.GetVectorI8(); len(old) > 0 {
+						copy(dst, old)
 					}
-					node.VectorI8 = dst
+					node.SetVector(&vecData{I8: dst})
 				}
 			}
 		}
@@ -3326,12 +3328,12 @@ func (h *Index) ComputeDistanceToVector(nodeID string, query []float32) (float64
 
 	switch h.precision {
 	case distance.Float32:
-		return h.distFuncF32(qObj.([]float32), node.VectorF32)
+		return h.distFuncF32(qObj.([]float32), node.GetVectorF32())
 	case distance.Float16:
-		return h.distFuncF16(qObj.([]uint16), node.VectorF16)
+		return h.distFuncF16(qObj.([]uint16), node.GetVectorF16())
 	case distance.Int8:
 		// Manual Norm logic for Int8 reuse
-		dot, err := h.distFuncI8(qObj.([]int8), node.VectorI8)
+		dot, err := h.distFuncI8(qObj.([]int8), node.GetVectorI8())
 		if err != nil {
 			return 0, err
 		}
@@ -3395,16 +3397,16 @@ func (h *Index) GetDimension() int {
 		if node != nil && !node.Deleted.Load() {
 			switch h.precision {
 			case distance.Float32:
-				if len(node.VectorF32) > 0 {
-					return len(node.VectorF32)
+				if v := node.GetVectorF32(); len(v) > 0 {
+					return len(v)
 				}
 			case distance.Float16:
-				if len(node.VectorF16) > 0 {
-					return len(node.VectorF16)
+				if v := node.GetVectorF16(); len(v) > 0 {
+					return len(v)
 				}
 			case distance.Int8:
-				if len(node.VectorI8) > 0 {
-					return len(node.VectorI8)
+				if v := node.GetVectorI8(); len(v) > 0 {
+					return len(v)
 				}
 			}
 		}
@@ -3562,15 +3564,15 @@ func (h *Index) UpdateNodePointer(internalID uint32, newVectorBytes []byte) {
 	}
 
 	// Now update the pointer to the new memory location
-	// The node's VectorF32/VectorF16/VectorI8 is a slice pointing to mmap memory
+	// The node's vector data is stored atomically via SetVector
 	switch h.precision {
 	case distance.Float32:
 		// Create a new slice pointing to the new bytes
-		node.VectorF32 = mmap.BytesToFloat32Slice(newVectorBytes, h.vectorDim)
+		node.SetVector(&vecData{F32: mmap.BytesToFloat32Slice(newVectorBytes, h.vectorDim)})
 	case distance.Float16:
-		node.VectorF16 = mmap.BytesToUint16Slice(newVectorBytes, h.vectorDim)
+		node.SetVector(&vecData{F16: mmap.BytesToUint16Slice(newVectorBytes, h.vectorDim)})
 	case distance.Int8:
-		node.VectorI8 = mmap.BytesToInt8Slice(newVectorBytes, h.vectorDim)
+		node.SetVector(&vecData{I8: mmap.BytesToInt8Slice(newVectorBytes, h.vectorDim)})
 	}
 }
 

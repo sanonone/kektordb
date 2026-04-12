@@ -15,12 +15,12 @@ func TestNodeGobSerialization(t *testing.T) {
 	node := &Node{
 		Id:         "test-node-1",
 		InternalID: 42,
-		VectorF32:  []float32{0.1, 0.2, 0.3, 0.4}, // Questo non deve essere salvato!
 		Connections: [][]uint32{
 			{1, 2, 3},
 			{4, 5},
 		},
 	}
+	node.SetVector(&vecData{F32: []float32{0.1, 0.2, 0.3, 0.4}}) // Questo non deve essere salvato!
 	node.Deleted.Store(true)
 
 	var buf bytes.Buffer
@@ -42,8 +42,8 @@ func TestNodeGobSerialization(t *testing.T) {
 		t.Errorf("Deleted flag mismatch")
 	}
 	// LA VERA PROVA: Il vettore F32 DEVE essere nullo dopo il decode!
-	if len(decodedNode.VectorF32) != 0 {
-		t.Errorf("VectorF32 dovvrebbe essere vuoto (ignorato da gob), ma ha len %d", len(decodedNode.VectorF32))
+	if len(decodedNode.GetVectorF32()) != 0 {
+		t.Errorf("VectorF32 dovvrebbe essere vuoto (ignorato da gob), ma ha len %d", len(decodedNode.GetVectorF32()))
 	}
 }
 
@@ -77,9 +77,7 @@ func TestSnapshotAndReload(t *testing.T) {
 	// cercando di copiare da questi vecchi puntatori.
 	for _, n := range nodes {
 		if n != nil {
-			n.VectorF32 = nil
-			n.VectorF16 = nil
-			n.VectorI8 = nil
+			n.SetVector(nil)
 		}
 	}
 
@@ -130,9 +128,7 @@ func TestDeletedNodeSnapshot(t *testing.T) {
 
 	for _, n := range nodes {
 		if n != nil {
-			n.VectorF32 = nil
-			n.VectorF16 = nil
-			n.VectorI8 = nil
+			n.SetVector(nil)
 		}
 	}
 

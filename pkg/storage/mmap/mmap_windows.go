@@ -48,3 +48,19 @@ func munmapFile(data []byte) error {
 	// UnmapViewOfFile requires the pointer to the start of the memory region
 	return windows.UnmapViewOfFile(uintptr(unsafe.Pointer(&data[0])))
 }
+
+// madviseDontNeed discards the physical pages backing the mapped region.
+// On Windows, we use VirtualUnlock as a best-effort hint; the mapping remains valid
+// (reads return zero pages after decommit). If VirtualUnlock fails (common on non-locked
+// pages), we simply ignore the error — the mapping is still safe to access.
+func madviseDontNeed(data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+	addr := uintptr(unsafe.Pointer(&data[0]))
+	// VirtualUnlock with a non-zero size on memory that wasn't locked acts as a
+	// discard hint on some Windows versions. We ignore the error since this is
+	// a best-effort optimization — correctness is guaranteed by keeping the mapping.
+	windows.VirtualUnlock(addr, uintptr(len(data)))
+	return nil
+}

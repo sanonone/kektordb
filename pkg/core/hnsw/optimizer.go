@@ -440,11 +440,11 @@ func (o *GraphOptimizer) computeNewConnections(node *Node, entryPoint uint32, ef
 	var queryObj any
 	switch o.index.precision {
 	case distance.Float32:
-		queryObj = node.VectorF32
+		queryObj = node.GetVectorF32()
 	case distance.Float16:
-		queryObj = node.VectorF16
+		queryObj = node.GetVectorF16()
 	case distance.Int8:
-		queryObj = node.VectorI8
+		queryObj = node.GetVectorI8()
 	}
 
 	numLayers := len(node.Connections)
@@ -535,11 +535,11 @@ func (o *GraphOptimizer) reconnectNode(node *Node, ignoreSet map[uint32]struct{}
 	var queryObj any
 	switch o.index.precision {
 	case distance.Float32:
-		queryObj = node.VectorF32
+		queryObj = node.GetVectorF32()
 	case distance.Float16:
-		queryObj = node.VectorF16
+		queryObj = node.GetVectorF16()
 	case distance.Int8:
-		queryObj = node.VectorI8
+		queryObj = node.GetVectorI8()
 	}
 
 	ef := o.config.RefineEfConstruction

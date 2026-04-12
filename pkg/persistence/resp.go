@@ -32,6 +32,9 @@ func ParseCommand(reader *bufio.Reader) (*Command, error) {
 	}
 
 	line = strings.TrimSpace(line)
+	if len(line) == 0 {
+		return nil, fmt.Errorf("empty command")
+	}
 	if line[0] != '*' {
 		return nil, fmt.Errorf("invalid command format, expected '*'")
 	}
@@ -49,6 +52,9 @@ func ParseCommand(reader *bufio.Reader) (*Command, error) {
 			return nil, err
 		}
 		line = strings.TrimSpace(line)
+		if len(line) == 0 {
+			return nil, fmt.Errorf("empty argument")
+		}
 		if line[0] != '$' {
 			return nil, fmt.Errorf("invalid argument format, expected '$'")
 		}

@@ -2,7 +2,6 @@ package mmap
 
 import (
 	"log/slog"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -521,20 +520,10 @@ func (ac *AsyncCompactor) tryDropEmptyChunks() {
 
 		droppedCount++
 
-		if err := munmapFile(chunk.Data); err != nil {
-			slog.Warn("[ArenaCompactor] Failed to unmap chunk", "chunk", lastChunkIdx, "error", err)
-		}
-
-		if err := chunk.File.Close(); err != nil {
-			slog.Warn("[ArenaCompactor] Failed to close chunk file", "chunk", lastChunkIdx, "error", err)
-		}
-
-		filePath := chunk.File.Name()
-		if err := os.Remove(filePath); err != nil {
-			slog.Warn("[ArenaCompactor] Failed to delete chunk file", "chunk", lastChunkIdx, "error", err)
-		} else {
-			slog.Info("[ArenaCompactor] Physically deleted chunk file", "chunk", lastChunkIdx, "path", filePath)
-		}
+		// Use DeferDropChunk: MADV_DONTNEED + close file + remove file,
+		// but keep mmap mapping alive to prevent use-after-free segfaults.
+		// The actual munmap is deferred to arena.Close().
+		ac.arena.DeferDropChunk(chunk)
 
 		ac.arena.chunks = ac.arena.chunks[:lastChunkIdx]
 	}
@@ -542,7 +531,8 @@ func (ac *AsyncCompactor) tryDropEmptyChunks() {
 	if droppedCount > 0 {
 		slog.Info("[ArenaCompactor] Dropped empty chunks",
 			"dropped", droppedCount,
-			"chunks_remaining", len(ac.arena.chunks))
+			"chunks_remaining", len(ac.arena.chunks),
+			"deferred_unmaps", len(ac.arena.droppedChunks))
 	}
 }
 
