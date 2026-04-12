@@ -30,6 +30,7 @@ type AIProxy struct {
 	llmClient        llm.Client       // Smart Brain
 	fastLLMClient    llm.Client       // Fast Brain
 	firewallPatterns []*regexp.Regexp // Compiled regex cache
+	assetURLPrefix   string           // Pre-computed "]({AssetBaseURL}/assets/"
 }
 
 // Structures for manipulating Chat request JSON
@@ -50,10 +51,20 @@ func NewAIProxy(cfg Config, dbEngine *engine.Engine) (*AIProxy, error) {
 		return nil, fmt.Errorf("invalid target URL: %w", err)
 	}
 
+	// Resolve AssetBaseURL: derive from port if not configured
+	if cfg.AssetBaseURL == "" {
+		cfg.AssetBaseURL = "http://localhost" + cfg.Port
+		slog.Warn("[Proxy] asset_base_url not configured, using default",
+			"asset_base_url", cfg.AssetBaseURL)
+	}
+	// Normalize: remove trailing slash
+	cfg.AssetBaseURL = strings.TrimRight(cfg.AssetBaseURL, "/")
+
 	p := &AIProxy{
-		cfg:          cfg,
-		engine:       dbEngine,
-		reverseProxy: httputil.NewSingleHostReverseProxy(target),
+		cfg:            cfg,
+		engine:         dbEngine,
+		reverseProxy:   httputil.NewSingleHostReverseProxy(target),
+		assetURLPrefix: fmt.Sprintf("](%s/assets/", cfg.AssetBaseURL),
 	}
 
 	// Init Regex
@@ -547,7 +558,7 @@ func (p *AIProxy) performAdaptiveRAGInjection(originalBody []byte, queryVec []fl
 
 	slog.Debug("Adaptive RAG found context", "chunks", window.TotalChunks, "tokens", window.TotalTokens)
 
-	window.ContextText = strings.ReplaceAll(window.ContextText, "](/assets/", "](http://localhost:9091/assets/")
+	window.ContextText = strings.ReplaceAll(window.ContextText, "](/assets/", p.assetURLPrefix)
 
 	usedSourceIDs := make([]string, 0, len(window.Chunks))
 	for _, chunk := range window.Chunks {
@@ -613,7 +624,7 @@ func (p *AIProxy) performStandardRAGInjection(originalBody []byte, queryVec []fl
 			continue
 		}
 
-		mainText = strings.ReplaceAll(mainText, "](/assets/", "](http://localhost:9091/assets/")
+		mainText = strings.ReplaceAll(mainText, "](/assets/", p.assetURLPrefix)
 
 		prevText := ""
 		if prevNodes, ok := res.Node.Connections["prev"]; ok && len(prevNodes) > 0 {

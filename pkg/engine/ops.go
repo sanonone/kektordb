@@ -27,6 +27,16 @@ import (
 	"github.com/sanonone/kektordb/pkg/persistence"
 )
 
+// getHNSWIndex extracts the concrete *hnsw.Index from a VectorIndex interface.
+// Returns an error if the index is not an HNSW implementation.
+func getHNSWIndex(idx core.VectorIndex) (*hnsw.Index, error) {
+	hnswIdx, ok := idx.(*hnsw.Index)
+	if !ok {
+		return nil, fmt.Errorf("not hnsw")
+	}
+	return hnswIdx, nil
+}
+
 // --- KV Operations ---
 
 // KVSet stores a key-value pair in the database.
@@ -638,9 +648,9 @@ func (e *Engine) VReinforce(indexName string, ids []string) error {
 	if !ok {
 		return fmt.Errorf("index not found")
 	}
-	hnswIdx, ok := idx.(*hnsw.Index)
-	if !ok {
-		return fmt.Errorf("not hnsw")
+	hnswIdx, err := getHNSWIndex(idx)
+	if err != nil {
+		return err
 	}
 
 	now := float64(time.Now().Unix())
@@ -719,9 +729,9 @@ func (e *Engine) VSetMetadata(indexName, id string, newProps map[string]any) err
 	if !ok {
 		return fmt.Errorf("index not found")
 	}
-	hnswIdx, ok := idx.(*hnsw.Index)
-	if !ok {
-		return fmt.Errorf("not hnsw")
+	hnswIdx, err := getHNSWIndex(idx)
+	if err != nil {
+		return err
 	}
 
 	internalID, found := hnswIdx.GetInternalID(id)
@@ -771,9 +781,9 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 	if !ok {
 		return nil, fmt.Errorf("index '%s' not found", indexName)
 	}
-	hnswIndex, ok := idx.(*hnsw.Index)
-	if !ok {
-		return nil, fmt.Errorf("index is not HNSW")
+	hnswIndex, getErr := getHNSWIndex(idx)
+	if getErr != nil {
+		return nil, getErr
 	}
 
 	// Parsing Filters
@@ -1151,9 +1161,9 @@ func (e *Engine) VSearchWithScores(indexName string, query []float32, k int) ([]
 		return nil, fmt.Errorf("index not found")
 	}
 
-	hnswIdx, ok := idx.(*hnsw.Index)
-	if !ok {
-		return nil, fmt.Errorf("not hnsw")
+	hnswIdx, err := getHNSWIndex(idx)
+	if err != nil {
+		return nil, err
 	}
 
 	internalResults := hnswIdx.SearchWithScores(query, k, nil, 0)
@@ -1235,13 +1245,9 @@ func (e *Engine) VSearchWithScores(indexName string, query []float32, k int) ([]
 	}
 
 	// Sort by score (highest first)
-	for i := 0; i < len(internalResults)-1; i++ {
-		for j := i + 1; j < len(internalResults); j++ {
-			if internalResults[j].Score > internalResults[i].Score {
-				internalResults[i], internalResults[j] = internalResults[j], internalResults[i]
-			}
-		}
-	}
+	sort.Slice(internalResults, func(i, j int) bool {
+		return internalResults[i].Score > internalResults[j].Score
+	})
 
 	results := make([]SearchResult, len(internalResults))
 	for i, r := range internalResults {
@@ -1263,9 +1269,9 @@ func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 		return fmt.Errorf("index not found")
 	}
 
-	hnswIdx, ok := idx.(*hnsw.Index)
-	if !ok {
-		return fmt.Errorf("not hnsw")
+	hnswIdx, err := getHNSWIndex(idx)
+	if err != nil {
+		return err
 	}
 
 	// --- MEMORY TIMESTAMPING ---
@@ -1381,9 +1387,9 @@ func (e *Engine) VImport(indexName string, items []types.BatchObject) error {
 	if !ok {
 		return fmt.Errorf("index not found")
 	}
-	hnswIdx, ok := idx.(*hnsw.Index)
-	if !ok {
-		return fmt.Errorf("not hnsw")
+	hnswIdx, err := getHNSWIndex(idx)
+	if err != nil {
+		return err
 	}
 
 	// 1. Dichiara l'indice "Sporco" (Questo attiverà l'Auto-Compensazione in lettura!)
@@ -1455,9 +1461,9 @@ func (e *Engine) VImportCommit(indexName string) error {
 	if !ok {
 		return fmt.Errorf("index not found")
 	}
-	hnswIdx, ok := idx.(*hnsw.Index)
-	if !ok {
-		return fmt.Errorf("not hnsw")
+	hnswIdx, err := getHNSWIndex(idx)
+	if err != nil {
+		return err
 	}
 
 	// 1. Forza il salvataggio globale (Snapshot su .kdb e pulizia AOF)
@@ -1489,9 +1495,9 @@ func (e *Engine) VUpdateIndexConfig(indexName string, config hnsw.AutoMaintenanc
 		return fmt.Errorf("index not found")
 	}
 
-	hnswIdx, ok := idx.(*hnsw.Index)
-	if !ok {
-		return fmt.Errorf("index is not HNSW")
+	hnswIdx, err := getHNSWIndex(idx)
+	if err != nil {
+		return err
 	}
 
 	// 1. Update Memory
@@ -1524,9 +1530,9 @@ func (e *Engine) VTriggerMaintenance(indexName string, taskType string) error {
 	if !ok {
 		return fmt.Errorf("index not found")
 	}
-	hnswIdx, ok := idx.(*hnsw.Index)
-	if !ok {
-		return fmt.Errorf("index is not HNSW")
+	hnswIdx, err := getHNSWIndex(idx)
+	if err != nil {
+		return err
 	}
 
 	hnswIdx.MaintenanceRun(taskType) // forceType = "vacuum" or "refine"
@@ -1617,9 +1623,9 @@ func (e *Engine) computeDistance(indexName, nodeID string, queryVec []float32) (
 	if !ok {
 		return 0, fmt.Errorf("index not found")
 	}
-	hnswIdx, ok := idx.(*hnsw.Index)
-	if !ok {
-		return 0, fmt.Errorf("index not HNSW")
+	hnswIdx, err := getHNSWIndex(idx)
+	if err != nil {
+		return 0, err
 	}
 
 	// 1. Get Node Data (Vector)
@@ -1669,9 +1675,9 @@ func (e *Engine) VFilter(indexName string, filter string, limit int) ([]string, 
 		return nil, fmt.Errorf("index not found")
 	}
 
-	hnswIdx, ok := idx.(*hnsw.Index)
-	if !ok {
-		return nil, fmt.Errorf("not an hnsw index")
+	hnswIdx, err := getHNSWIndex(idx)
+	if err != nil {
+		return nil, err
 	}
 
 	var extIDs []string
@@ -1692,9 +1698,9 @@ func (e *Engine) VUpdateAutoLinks(indexName string, rules []hnsw.AutoLinkRule) e
 		return fmt.Errorf("index not found: %s", indexName)
 	}
 
-	hnswIdx, ok := idx.(*hnsw.Index)
-	if !ok {
-		return fmt.Errorf("not an hnsw index")
+	hnswIdx, err := getHNSWIndex(idx)
+	if err != nil {
+		return err
 	}
 
 	hnswIdx.SetAutoLinks(rules)
@@ -1725,9 +1731,9 @@ func (e *Engine) VGetAutoLinks(indexName string) ([]hnsw.AutoLinkRule, error) {
 		return nil, fmt.Errorf("index not found: %s", indexName)
 	}
 
-	hnswIdx, ok := idx.(*hnsw.Index)
-	if !ok {
-		return nil, fmt.Errorf("not an hnsw index")
+	hnswIdx, err := getHNSWIndex(idx)
+	if err != nil {
+		return nil, err
 	}
 
 	return hnswIdx.GetAutoLinks(), nil
@@ -1739,9 +1745,9 @@ func (e *Engine) VGetIDsByCursor(indexName string, cursor uint32, limit int) ([]
 	if !ok {
 		return nil, 0, fmt.Errorf("index not found")
 	}
-	hnswIdx, ok := idx.(*hnsw.Index)
-	if !ok {
-		return nil, 0, fmt.Errorf("not hnsw")
+	hnswIdx, err := getHNSWIndex(idx)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	ids, nextCursor := hnswIdx.GetIDsByCursor(cursor, limit)

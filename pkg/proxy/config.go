@@ -12,6 +12,13 @@ type Config struct {
 	Port      string `yaml:"port"`       // ":9092"
 	TargetURL string `yaml:"target_url"` // "http://localhost:11434"
 
+	// Asset URL Settings
+	// Base URL for RAG asset rewriting (images from PDFs etc).
+	// If empty, defaults to http://localhost:{Port}.
+	// In production, set this to your public URL, e.g. "https://api.example.com".
+	// Assets are served at {AssetBaseURL}/assets/
+	AssetBaseURL string `yaml:"asset_base_url"`
+
 	// Embedder Settings (Specific for Proxy)
 	EmbedderType    string              `yaml:"embedder_type"` // "ollama_api" (future: "openai")
 	EmbedderURL     string              `yaml:"embedder_url"`
