@@ -20,6 +20,10 @@ import (
 //
 // This trade-off is suitable for high-throughput scenarios where slight durability delay
 // is acceptable in exchange for significantly improved write performance (10-100x throughput improvement).
+//
+// SNAPSHOT MODE: The writer supports a special "snapshot mode" to prevent AOF data loss during
+// snapshot operations. When snapshot mode is active, new writes are buffered separately and
+// can be flushed to the AOF after truncation, ensuring no in-flight writes are lost.
 type LazyAOFWriter struct {
 	// underlying is the actual AOF writer that performs the disk operations
 	underlying *AOFWriter
@@ -46,6 +50,13 @@ type LazyAOFWriter struct {
 	flushInterval     time.Duration // How often to flush buffer to OS
 	forceSyncInterval time.Duration // How often to force fsync to disk
 	maxBufferSize     int           // Maximum buffer size before forced flush
+
+	// Snapshot mode fields - prevent AOF data loss during snapshot+truncate
+	// When inSnapshotMode is true, new writes go to snapshotBuffer instead of buffer.
+	// This allows the AOF to be truncated without losing writes that occur between
+	// the snapshot and the truncate operation.
+	inSnapshotMode bool
+	snapshotBuffer []string
 }
 
 // Default configuration constants for LazyAOFWriter.
@@ -121,12 +132,22 @@ func NewLazyAOFWriterWithConfig(
 // This method is non-blocking and returns immediately after adding data to the buffer.
 // The actual disk write happens asynchronously in the background.
 // If the buffer reaches maxBufferSize, an immediate flush is triggered.
+//
+// When snapshot mode is active (see BeginSnapshotMode), writes are redirected to a
+// separate snapshot buffer to prevent data loss during AOF truncation.
 func (lw *LazyAOFWriter) Write(data string) error {
 	lw.mu.Lock()
 	defer lw.mu.Unlock()
 
 	if lw.stopped {
 		return fmt.Errorf("cannot write to closed LazyAOFWriter")
+	}
+
+	// During snapshot mode, redirect writes to snapshot buffer
+	// This prevents losing writes that occur between snapshot and truncate
+	if lw.inSnapshotMode {
+		lw.snapshotBuffer = append(lw.snapshotBuffer, data)
+		return nil
 	}
 
 	// Add data to buffer
@@ -255,6 +276,77 @@ func (lw *LazyAOFWriter) ReplaceWith(newFilePath string) error {
 	}
 
 	return lw.underlying.ReplaceWith(newFilePath)
+}
+
+// BeginSnapshotMode activates snapshot mode.
+// When snapshot mode is active:
+//   - New writes via Write() are stored in a separate snapshot buffer
+//   - The normal buffer continues to be flushed normally
+//   - Background flush/sync routines continue operating on the normal buffer
+//
+// This allows the AOF to be truncated after a snapshot without losing writes
+// that occur between the snapshot creation and the truncate operation.
+//
+// The caller MUST call EndSnapshotMode after the truncate is complete to
+// retrieve the accumulated writes and write them to the truncated AOF.
+//
+// This method is safe for concurrent use with Write().
+func (lw *LazyAOFWriter) BeginSnapshotMode() error {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+
+	if lw.stopped {
+		return fmt.Errorf("cannot begin snapshot mode on closed LazyAOFWriter")
+	}
+
+	if lw.inSnapshotMode {
+		return fmt.Errorf("snapshot mode already active")
+	}
+
+	// First flush any pending writes to ensure all previous data is persisted
+	if err := lw.flushUnlocked(); err != nil {
+		return fmt.Errorf("failed to flush before snapshot mode: %w", err)
+	}
+
+	// Initialize snapshot buffer with reasonable capacity
+	lw.snapshotBuffer = make([]string, 0, lw.maxBufferSize)
+	lw.inSnapshotMode = true
+
+	slog.Debug("LazyAOFWriter entered snapshot mode")
+	return nil
+}
+
+// EndSnapshotMode deactivates snapshot mode and returns the accumulated snapshot writes.
+// The caller is responsible for writing these entries to the AOF after truncation.
+//
+// Returns:
+//   - snapshotWrites: all writes that occurred during snapshot mode
+//   - err: any error that occurred
+//
+// This method is safe for concurrent use with Write().
+func (lw *LazyAOFWriter) EndSnapshotMode() ([]string, error) {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+
+	if !lw.inSnapshotMode {
+		return nil, fmt.Errorf("snapshot mode not active")
+	}
+
+	// Capture the snapshot buffer
+	snapshotWrites := lw.snapshotBuffer
+	lw.snapshotBuffer = nil
+	lw.inSnapshotMode = false
+
+	slog.Debug("LazyAOFWriter exited snapshot mode", "buffered_writes", len(snapshotWrites))
+	return snapshotWrites, nil
+}
+
+// IsSnapshotModeActive returns true if snapshot mode is currently active.
+// This is useful for debugging and testing.
+func (lw *LazyAOFWriter) IsSnapshotModeActive() bool {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	return lw.inSnapshotMode
 }
 
 // flushRoutine runs in a background goroutine and periodically flushes the buffer.

@@ -365,29 +365,97 @@ func (e *Engine) SaveSnapshot() error {
 }
 
 // saveSnapshotLocked performs the actual snapshotting logic.
+//
+// This implementation uses a Copy-on-Write approach to prevent AOF data loss:
+// 1. Begin snapshot mode: new writes are buffered separately (shadow buffer)
+// 2. Create database snapshot (may take seconds for large datasets)
+// 3. Atomically rename snapshot file
+// 4. Truncate AOF
+// 5. Flush shadow buffer to truncated AOF
+// 6. End snapshot mode
+//
+// This ensures that writes occurring between step 2 and step 4 are not lost.
 func (e *Engine) saveSnapshotLocked() error {
+	// STEP 1: Begin snapshot mode - redirect new writes to shadow buffer
+	// This prevents losing writes that occur during the snapshot operation
+	if err := e.AOF.BeginSnapshotMode(); err != nil {
+		return fmt.Errorf("failed to begin snapshot mode: %w", err)
+	}
+
+	// Track if snapshot completed successfully to avoid calling EndSnapshotMode twice
+	snapshotCompleted := false
+	defer func() {
+		// Cleanup: if snapshot failed before completion, exit snapshot mode
+		// We ignore the error and writes since we're in an error path
+		if !snapshotCompleted {
+			if _, err := e.AOF.EndSnapshotMode(); err != nil {
+				slog.Debug("Failed to end snapshot mode during cleanup", "error", err)
+			}
+		}
+	}()
+
+	// STEP 2: Create temporary snapshot file
 	tempSnap := e.snapPath + ".tmp"
 	f, err := os.Create(tempSnap)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create temp snapshot file: %w", err)
 	}
 
+	// STEP 3: Write database snapshot (this may take a while for large datasets)
+	// During this time, new writes are being accumulated in the shadow buffer
 	if err := e.DB.Snapshot(f); err != nil {
 		f.Close()
-		return err
+		os.Remove(tempSnap) // Clean up temp file on error
+		return fmt.Errorf("failed to create snapshot: %w", err)
 	}
 	f.Close()
 
+	// STEP 4: Atomically rename snapshot file (atomic operation on POSIX)
 	if err := os.Rename(tempSnap, e.snapPath); err != nil {
-		return err
+		os.Remove(tempSnap) // Clean up temp file on error
+		return fmt.Errorf("failed to rename snapshot file: %w", err)
 	}
 
+	// STEP 5: Truncate AOF
+	// Any writes that occurred during snapshot are still in the shadow buffer
 	if err := e.AOF.Truncate(); err != nil {
-		return err
+		return fmt.Errorf("failed to truncate AOF: %w", err)
 	}
 
+	// STEP 6: End snapshot mode and get accumulated writes
+	snapshotWrites, err := e.AOF.EndSnapshotMode()
+	if err != nil {
+		return fmt.Errorf("failed to end snapshot mode: %w", err)
+	}
+	// Mark as completed so defer won't try to clean up
+	snapshotCompleted = true
+
+	// STEP 7: Write accumulated shadow buffer to truncated AOF
+	// These are the writes that occurred during the snapshot operation
+	if len(snapshotWrites) > 0 {
+		slog.Debug("Flushing shadow buffer to AOF after truncate",
+			"writes", len(snapshotWrites))
+
+		for _, write := range snapshotWrites {
+			if err := e.AOF.Write(write); err != nil {
+				return fmt.Errorf("failed to write shadow buffer entry to AOF: %w", err)
+			}
+		}
+
+		// Ensure the shadow buffer writes are flushed to disk
+		if err := e.AOF.Flush(); err != nil {
+			return fmt.Errorf("failed to flush shadow buffer to AOF: %w", err)
+		}
+	}
+
+	// Update metadata
 	atomic.StoreInt64(&e.dirtyCounter, 0)
 	e.lastSaveTime.Store(time.Now().UnixNano())
+
+	slog.Info("Snapshot created successfully",
+		"snapshot_path", e.snapPath,
+		"shadow_writes", len(snapshotWrites))
+
 	return nil
 }
 
