@@ -7,7 +7,7 @@ An autonomous background "reflection engine" (the `Gardener`) that continuously 
 ## Key Types & Critical Paths
 
 **Critical structs:**
-- `Gardener` -- Reflection engine: `eng *engine.Engine`, `llm llm.Client`, `cfg Config`, `stopCh`, `eventCh chan engine.Event` (buffered: 64), `scanCursors map[string]uint32`, `writeCounter int64`, `lastThinkTime time.Time`, `newReflections []string`, `unassimilatedInteractions map[string]int`, `profileMutex sync.RWMutex`.
+- `Gardener` -- Reflection engine: `eng *engine.Engine`, `llm llm.Client`, `cfg Config`, `stopCh`, `eventCh chan engine.Event` (buffered: 64), `scanCursors map[string]uint32` (protected by `cursorsMu`), `writeCounter atomic.Int64`, `lastThinkTime time.Time` (protected by `lastThinkMu`), `newReflections []string` (protected by `reflectionsMu`), `unassimilatedInteractions map[string]int` (protected by `profileMutex`).
 - `Config` -- Master config: `Enabled`, `Interval`, `Mode` (basic/advanced/meta), `TargetIndexes`, `AdaptiveThreshold` (default: 50), `AdaptiveMinInterval` (default: 30s), `AutoResolveEnabled`, `MemoryConfig`, `EnableUserProfiling`, `EnableCoreFactExtraction`, `CoreFactMinConfidence` (default: 0.85).
 - `SentimentLexicon` -- `{Positive, Negative []string}` per language. English: 8+8 roots; Italian: 8+8 roots.
 
@@ -62,12 +62,15 @@ Extracted facts are automatically linked to the source memories and can be resol
 
 **User interaction tracking:** Protected by `sync.RWMutex` (`profileMutex`) around the `unassimilatedInteractions` map. User profile updates launch in separate goroutines (`go g.UpdateUserProfile(...)`) when threshold is reached.
 
-**KNOWN RACE CONDITION:** `scanCursors`, `writeCounter`, `lastThinkTime`, and `newReflections` are accessed from multiple goroutines without mutexes. If an adaptive `think()` and a ticker `think()` run concurrently, they could corrupt cursor state. This is a known design trade-off favoring simplicity over strict serialization.
+**Thread-safe state access:** All shared mutable state is now protected:
+- `scanCursors` -- Protected by `cursorsMu sync.RWMutex`. Use `getCursor()` and `setCursor()` helpers.
+- `lastThinkTime` -- Protected by `lastThinkMu sync.RWMutex`. Use `getLastThinkTime()` and `setLastThinkTime()` helpers.
+- `writeCounter` -- Uses `atomic.Int64` for lock-free increments.
+- `newReflections` -- Protected by `reflectionsMu sync.Mutex`.
 
 ## Known Pitfalls / Gotchas
 
-- **Concurrent `think()` calls corrupt cursor state** -- The `scanCursors` map is read/written without synchronization. If an adaptive think and a ticker think run concurrently, cursors can be overwritten, causing detectors to skip nodes or re-process already-analyzed nodes. Mitigated by dedup edges but still wasteful.
-- **`newReflections` is reset at start of `think()`** -- If two `think()` calls overlap, the second one resets the slice, losing reflections created by the first. This breaks cross-detector validation in meta mode.
+- **Concurrent `think()` calls can process overlapping data** -- While cursor state is now protected by mutexes, concurrent thinks may still process overlapping node ranges if they start at similar times. This is harmless (just slightly wasteful) since dedup edges prevent duplicate analysis.
 - **LLM calls have no rate limiting** -- Each contradiction pair, failure group, and evolution entity triggers a separate `llm.Chat()` call with no inter-call delay. For large databases with many flagged entities, this can overwhelm the LLM API.
 - **Lexicon substring matching produces false positives** -- `"good"` matches `"goodbye"`, `"ottim"` matches `"ottimizzare"` (which means "to optimize", not "excellent"). No negation handling ("not great" scores as positive).
 - **Hardcoded thresholds everywhere** -- 0.90 similarity, 5 min cluster size, 1.5 sentiment delta, 3x centrality growth, 30-day windows, 14-day sentiment split. None are runtime configurable.
@@ -78,7 +81,7 @@ Extracted facts are automatically linked to the source memories and can be resol
 
 | Trade-off | Decision | Rationale |
 |---|---|---|
-| **No concurrency protection on shared state** | `scanCursors`, `writeCounter`, etc. accessed without mutexes | Simplicity; concurrent `think()` calls are rare in practice and produce eventually consistent results |
+| **Fine-grained locking for shared state** | `scanCursors` (RWMutex), `lastThinkTime` (RWMutex), `writeCounter` (atomic), `newReflections` (Mutex) | Correctness over simplicity; minimal overhead since operations are rare (10min intervals) |
 | **Cursor-based incremental scanning** | 500 IDs per detector per cycle | Large databases are processed incrementally across cycles rather than blocking for minutes |
 | **Graph-as-memory for reflections** | Reflections are first-class nodes in the vector+graph | Makes reflections searchable, linkable, and embeddable; enables cross-detector validation |
 | **Deterministic fallback for every LLM feature** | Works without an LLM | Graceful degradation; the system is functional even with `mode: "basic"` |

@@ -76,14 +76,44 @@ type Gardener struct {
 	stopCh         chan struct{}
 	eventCh        chan engine.Event // Subscribed to engine event bus
 	scanCursors    map[string]uint32
+	cursorsMu      sync.RWMutex // Protects scanCursors from concurrent access
 	writeCounter   atomic.Int64 // Write events since last think (atomic for thread-safe access)
 	lastThinkTime  time.Time    // When the last think() completed
+	lastThinkMu    sync.RWMutex // Protects lastThinkTime from concurrent access
 	newReflections []string     // Reflection IDs created in current think() cycle
 	reflectionsMu  sync.Mutex   // Protects newReflections from concurrent access
 
 	// User profiling
 	unassimilatedInteractions map[string]int // user_id -> count of new interactions
 	profileMutex              sync.RWMutex
+}
+
+// getCursor returns the current cursor for the given index with read lock.
+func (g *Gardener) getCursor(indexName string) uint32 {
+	g.cursorsMu.RLock()
+	defer g.cursorsMu.RUnlock()
+	return g.scanCursors[indexName]
+}
+
+// setCursor updates the cursor for the given index with write lock.
+func (g *Gardener) setCursor(indexName string, cursor uint32) {
+	g.cursorsMu.Lock()
+	defer g.cursorsMu.Unlock()
+	g.scanCursors[indexName] = cursor
+}
+
+// getLastThinkTime returns the last think time with read lock.
+func (g *Gardener) getLastThinkTime() time.Time {
+	g.lastThinkMu.RLock()
+	defer g.lastThinkMu.RUnlock()
+	return g.lastThinkTime
+}
+
+// setLastThinkTime updates the last think time with write lock.
+func (g *Gardener) setLastThinkTime(t time.Time) {
+	g.lastThinkMu.Lock()
+	defer g.lastThinkMu.Unlock()
+	g.lastThinkTime = t
 }
 
 // filterNodesByLayer filters a list of node IDs to include only those with the specified memory layer.
@@ -238,7 +268,7 @@ func (g *Gardener) loop() {
 		case <-ticker.C:
 			g.writeCounter.Store(0)
 			g.think()
-			g.lastThinkTime = time.Now()
+			g.setLastThinkTime(time.Now())
 		}
 	}
 }
@@ -249,11 +279,11 @@ func (g *Gardener) onEvent(event engine.Event) {
 
 	// Adaptive trigger: wake up early if write rate exceeds threshold
 	if g.writeCounter.Load() >= g.cfg.AdaptiveThreshold {
-		if time.Since(g.lastThinkTime) > g.cfg.AdaptiveMinInterval {
+		if time.Since(g.getLastThinkTime()) > g.cfg.AdaptiveMinInterval {
 			g.writeCounter.Store(0)
 			go func() {
 				g.think()
-				g.lastThinkTime = time.Now()
+				g.setLastThinkTime(time.Now())
 			}()
 		}
 	}
@@ -419,13 +449,13 @@ type MemoryCluster struct {
 }
 
 func (g *Gardener) findRedundantClusters(indexName string, similarityThreshold float64, minClusterSize int) []MemoryCluster {
-	currentCursor := g.scanCursors[indexName]
+	currentCursor := g.getCursor(indexName)
 
 	ids, nextCursor, err := g.eng.VGetIDsByCursor(indexName, currentCursor, 500)
 	if err != nil || len(ids) == 0 {
 		return nil
 	}
-	g.scanCursors[indexName] = nextCursor
+	g.setCursor(indexName, nextCursor)
 
 	vectorDataList, err := g.eng.VGetMany(indexName, ids)
 	if err != nil {
@@ -936,12 +966,12 @@ func (g *Gardener) pickCentralContent(indexName string, items []core.VectorData)
 // detectContradictions finds memories about the same topic that make conflicting claims.
 func (g *Gardener) detectContradictions(indexName string) {
 	// Small batch (50) because each pair triggers an LLM call.
-	currentCursor := g.scanCursors[indexName+"_contradictions"]
+	currentCursor := g.getCursor(indexName + "_contradictions")
 	ids, nextCursor, err := g.eng.VGetIDsByCursor(indexName, currentCursor, 50)
 	if err != nil || len(ids) == 0 {
 		return
 	}
-	g.scanCursors[indexName+"_contradictions"] = nextCursor
+	g.setCursor(indexName+"_contradictions", nextCursor)
 
 	nodes, _ := g.eng.VGetMany(indexName, ids)
 
@@ -1073,12 +1103,12 @@ Guidelines for suggested_resolution:
 // detectImportanceShifts detects entities that have suddenly become popular
 // by comparing edge timestamps over the last 3 days.
 func (g *Gardener) detectImportanceShifts(indexName string) {
-	currentCursor := g.scanCursors[indexName+"_shifts"]
+	currentCursor := g.getCursor(indexName + "_shifts")
 	ids, nextCursor, err := g.eng.VGetIDsByCursor(indexName, currentCursor, 200)
 	if err != nil || len(ids) == 0 {
 		return
 	}
-	g.scanCursors[indexName+"_shifts"] = nextCursor
+	g.setCursor(indexName+"_shifts", nextCursor)
 
 	now := time.Now().UnixNano()
 	threeDaysAgo := now - (3 * 24 * int64(time.Hour))
@@ -1674,12 +1704,12 @@ func (g *Gardener) generateDeterministicSessionSummary(contents []string) (summa
 // detectKnowledgeGaps finds concepts that are semantically very close but
 // lack an explicit topological relationship in the graph.
 func (g *Gardener) detectKnowledgeGaps(indexName string) {
-	currentCursor := g.scanCursors[indexName+"_gaps"]
+	currentCursor := g.getCursor(indexName + "_gaps")
 	ids, nextCursor, err := g.eng.VGetIDsByCursor(indexName, currentCursor, 100)
 	if err != nil || len(ids) == 0 {
 		return
 	}
-	g.scanCursors[indexName+"_gaps"] = nextCursor
+	g.setCursor(indexName+"_gaps", nextCursor)
 
 	nodes, _ := g.eng.VGetMany(indexName, ids)
 
@@ -1808,12 +1838,12 @@ func (g *Gardener) detectKnowledgeGaps(indexName string) {
 // detectUserPreferences scans recent memories tagged as user interactions
 // and uses the LLM to extract structured user preferences.
 func (g *Gardener) detectUserPreferences(indexName string) {
-	currentCursor := g.scanCursors[indexName+"_preferences"]
+	currentCursor := g.getCursor(indexName + "_preferences")
 	ids, nextCursor, err := g.eng.VGetIDsByCursor(indexName, currentCursor, 200)
 	if err != nil || len(ids) == 0 {
 		return
 	}
-	g.scanCursors[indexName+"_preferences"] = nextCursor
+	g.setCursor(indexName+"_preferences", nextCursor)
 
 	nodes, _ := g.eng.VGetMany(indexName, ids)
 
@@ -1951,12 +1981,12 @@ func (g *Gardener) detectSentimentShifts(indexName string, lang string) {
 		return // Unsupported language — skip sentiment analysis.
 	}
 
-	currentCursor := g.scanCursors[indexName+"_sentiment"]
+	currentCursor := g.getCursor(indexName + "_sentiment")
 	ids, nextCursor, err := g.eng.VGetIDsByCursor(indexName, currentCursor, 100)
 	if err != nil || len(ids) == 0 {
 		return
 	}
-	g.scanCursors[indexName+"_sentiment"] = nextCursor
+	g.setCursor(indexName+"_sentiment", nextCursor)
 
 	now := time.Now().UnixNano()
 	twoWeeksAgo := now - (14 * 24 * int64(time.Hour))
@@ -2054,12 +2084,12 @@ func (g *Gardener) detectSentimentShifts(indexName string, lang string) {
 // detectCentralityShifts detects nodes whose degree centrality has tripled
 // in the last 30 days using time-travel graph queries.
 func (g *Gardener) detectCentralityShifts(indexName string) {
-	currentCursor := g.scanCursors[indexName+"_centrality"]
+	currentCursor := g.getCursor(indexName + "_centrality")
 	ids, nextCursor, err := g.eng.VGetIDsByCursor(indexName, currentCursor, 100)
 	if err != nil || len(ids) == 0 {
 		return
 	}
-	g.scanCursors[indexName+"_centrality"] = nextCursor
+	g.setCursor(indexName+"_centrality", nextCursor)
 
 	now := time.Now().UnixNano()
 	oneMonthAgo := now - (30 * 24 * int64(time.Hour))
@@ -2131,12 +2161,12 @@ func (g *Gardener) detectCentralityShifts(indexName string) {
 // detectForgettingPatterns finds historically important entities that have been
 // abandoned for over 30 days.
 func (g *Gardener) detectForgettingPatterns(indexName string) {
-	currentCursor := g.scanCursors[indexName+"_forgetting"]
+	currentCursor := g.getCursor(indexName + "_forgetting")
 	ids, nextCursor, err := g.eng.VGetIDsByCursor(indexName, currentCursor, 200)
 	if err != nil || len(ids) == 0 {
 		return
 	}
-	g.scanCursors[indexName+"_forgetting"] = nextCursor
+	g.setCursor(indexName+"_forgetting", nextCursor)
 
 	now := time.Now().UnixNano()
 	oneMonthAgo := now - (30 * 24 * int64(time.Hour))
@@ -2351,12 +2381,12 @@ Guidelines:
 // detectKnowledgeEvolution analyzes how an entity's knowledge neighborhood has evolved
 // over time using VExtractSubgraph time-travel snapshots at 3 points in time.
 func (g *Gardener) detectKnowledgeEvolution(indexName string) {
-	currentCursor := g.scanCursors[indexName+"_evolution"]
+	currentCursor := g.getCursor(indexName + "_evolution")
 	ids, nextCursor, err := g.eng.VGetIDsByCursor(indexName, currentCursor, 100)
 	if err != nil || len(ids) == 0 {
 		return
 	}
-	g.scanCursors[indexName+"_evolution"] = nextCursor
+	g.setCursor(indexName+"_evolution", nextCursor)
 
 	now := time.Now()
 	oneDayAgo := now.Add(-24 * time.Hour).UnixNano()
