@@ -62,6 +62,33 @@ The high-level orchestration layer that unifies vector CRUD, property graph oper
 
 **Close-once pattern:** `closeOnce sync.Once` ensures `Close()` is idempotent. `sync.WaitGroup` + `closed` channel for clean shutdown of all background tasks.
 
+## Common Patterns for Contributors
+
+**HNSW Index Type Assertion:** Use the `getHNSWIndex()` helper instead of manual type assertions:
+
+```go
+// Good - centralized helper
+hnswIdx, err := getHNSWIndex(idx)
+if err != nil {
+    return nil, err
+}
+
+// Avoid - duplicate pattern
+hnswIdx, ok := idx.(*hnsw.Index)
+if !ok {
+    return nil, fmt.Errorf("not hnsw")
+}
+```
+
+**Sorting Results:** Always use `sort.Slice()` from the standard library, never manual O(n²) sorts:
+
+```go
+// Good - O(n log n)
+sort.Slice(results, func(i, j int) bool {
+    return results[i].Score > results[j].Score  // descending
+})
+```
+
 ## Known Pitfalls / Gotchas
 
 - **NEVER hold `adminMu` while calling core methods that acquire `metaMu`** -- This was the v1 deadlock. The v2 fix copies data under brief `RLock`, releases it, then processes. If you add a new admin operation, follow this pattern.

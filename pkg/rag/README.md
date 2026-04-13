@@ -56,6 +56,26 @@ The Retrieval-Augmented Generation pipeline that provides end-to-end document in
 
 **Fallback behavior:** If the store does not implement `AdaptiveStore`, `RetrieveAdaptive` falls back to standard `Retrieve()` and wraps results in a `ContextWindow`. Adaptive retrieval is an opt-in enhancement, not a hard requirement.
 
+## Goroutine Lifecycle Management
+
+The `Pipeline` uses a structured approach to goroutine management for clean shutdown:
+
+```go
+type Pipeline struct {
+    stopCh chan struct{}     // Signal for goroutines to stop
+    wg     sync.WaitGroup    // Track active goroutines
+    // ...
+}
+```
+
+**Pattern for background workers:**
+1. Increment `WaitGroup` before starting goroutine
+2. Select on `stopCh` in worker loop for responsive shutdown
+3. Decrement `WaitGroup` on exit via `defer`
+4. `Close()` waits on `wg` before returning
+
+This ensures no goroutine leaks and prevents panics from sending on closed channels during shutdown.
+
 ## Known Pitfalls / Gotchas
 
 - **`Trigger()` goroutines are untracked** -- There is no `sync.WaitGroup` or channel to wait for scan completion. If you call `Trigger()` multiple times rapidly, only the first one runs (atomic CAS dedup). Subsequent calls are silently dropped.

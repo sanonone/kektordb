@@ -7,9 +7,9 @@ An AI reverse proxy (`AIProxy`) that sits between LLM clients (like Open WebUI) 
 ## Key Types & Critical Paths
 
 **Critical structs:**
-- `AIProxy` -- Main proxy: `cfg *Config`, `engine *engine.Engine`, `proxy *httputil.ReverseProxy`, `firewallPatterns []*regexp.Regexp`, `fastLLMClient`, `llmClient`.
+- `AIProxy` -- Main proxy: `cfg *Config`, `engine *engine.Engine`, `proxy *httputil.ReverseProxy`, `firewallPatterns []*regexp.Regexp`, `fastLLMClient`, `llmClient`, `assetURLPrefix string`.
 - `responseCapturer` -- Response tee: embeds `http.ResponseWriter`, `body *bytes.Buffer`, `statusCode int`. Implements `Flush()` for SSE compatibility.
-- `Config` -- Five logical groups: Proxy Server, Embedder, LLM, Firewall, Cache, RAG.
+- `Config` -- Six logical groups: Proxy Server, Asset URL, Embedder, LLM, Firewall, Cache, RAG.
 
 **Critical paths (hot functions):**
 - `ServeHTTP()` -- Sequential 4-stage pipeline: rewrite -> HyDe -> dual-vector -> inject. Each request is handled in the `http.Server` goroutine.
@@ -18,6 +18,14 @@ An AI reverse proxy (`AIProxy`) that sits between LLM clients (like Open WebUI) 
 - `checkStaticFirewall()` -- Pre-compiled regex patterns with `(?i)` prefix. Fastest filter, runs before any embedding work.
 
 ## Architecture & Data Flow
+
+**Asset URL Rewriting:**
+
+RAG contexts from PDF documents contain relative asset references (`](/assets/image.png)`). The proxy rewrites these to absolute URLs so LLMs can fetch images. Configure via:
+
+```yaml
+asset_base_url: "https://api.example.com"  # Default: http://localhost:{port}
+```
 
 **Sequential 4-stage RAG pipeline per request:**
 

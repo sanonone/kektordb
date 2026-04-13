@@ -61,6 +61,21 @@ The on-disk durability layer for KektorDB, implementing a framed binary Append-O
 - **No `msync` after flush** -- `Flush()` flushes the `bufio.Writer` to the OS page cache but does not call `fsync`. Only `Sync()` does. The 1-second `forceSyncInterval` means up to 1 second of data is vulnerable to power loss.
 - **RESP parser is not zero-copy** -- `ReadString('\n')` allocates a new string for each line. For high-throughput workloads with many small commands, this creates GC pressure. The overhead is negligible compared to disk I/O, but worth noting.
 
+## AOF Snapshot Mode (Copy-on-Write)
+
+To prevent data loss during snapshot+truncate operations, `LazyAOFWriter` implements a snapshot mode using a shadow buffer:
+
+**Problem:** Writes occurring between `Snapshot()` and `Truncate()` would be lost.
+
+**Solution:** 
+1. `BeginSnapshotMode()` redirects new writes to a separate `snapshotBuffer`
+2. Database snapshot is created (may take seconds for large datasets)
+3. AOF is truncated
+4. Shadow buffer writes are flushed to the new AOF
+5. `EndSnapshotMode()` returns to normal operation
+
+This ensures no in-flight writes are lost even during long snapshot operations.
+
 ## Design Trade-offs
 
 | Trade-off | Decision | Rationale |
@@ -69,5 +84,6 @@ The on-disk durability layer for KektorDB, implementing a framed binary Append-O
 | **Custom TLVC framing over raw RESP** | 10-byte header with magic + CRC32 | Detects partial writes, bit rot, and file corruption during recovery |
 | **Atomic file replacement** | `os.Rename()` on POSIX | Crash-safe; no partial file states visible to readers |
 | **Snapshot-then-Release in RewriteAOF** | Copy data, release locks, then write | Eliminates the `s.mu -> h.metaMu` deadlock; acceptable since rewrite is background compaction |
+| **Snapshot shadow buffer** | Copy-on-Write pattern for snapshot+truncate | Prevents data loss from in-flight writes without blocking writers |
 | **No test files in persistence package** | Tests exist at engine level (`rewrite_deadlock_test.go`) | Integration-level testing captures cross-layer interactions better than unit tests |
 | **RESP parser uses `bufio.Reader`** | Not zero-copy | Simple and correct for line-oriented protocol; the overhead is negligible compared to disk I/O |
