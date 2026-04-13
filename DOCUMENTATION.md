@@ -1,5 +1,5 @@
 
-# KektorDB Technical Documentation (v0.5.0)
+# KektorDB Technical Documentation (v0.5.1)
 
 ## Table of Contents
 
@@ -253,6 +253,10 @@ This file configures the Middleware that sits between your App/UI and the LLM.
 port: ":9092"
 target_url: "http://localhost:11434" # Where requests are forwarded
 
+# Asset URL for RAG image rewriting (PDF assets, etc.)
+# If not set, defaults to http://localhost:{port}
+asset_base_url: "https://api.example.com"
+
 # Fast LLM: Used for Query Rewriting (Memory)
 fast_llm:
   base_url: "http://localhost:11434/v1"
@@ -303,6 +307,7 @@ rag_grounded_hyde_prompt: "Write a hypothetical answer based on these snippets..
 | :--- | :--- | :--- | :--- |
 | `port` | string | `:9092` | Listening port for Proxy. |
 | `target_url` | string | - | Downstream LLM URL to forward requests to. |
+| `asset_base_url` | string | `http://localhost:{port}` | Base URL for rewriting RAG asset references (e.g., images from PDFs). |
 | `fast_llm` | object | - | Fast LLM config for Query Rewriting (CQR). |
 | `llm` | object | - | Smart LLM config for HyDe reasoning. |
 | `embedder_type` | string | `ollama_api` | Embedder type: `ollama_api`, `openai`. |

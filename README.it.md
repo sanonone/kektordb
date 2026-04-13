@@ -399,7 +399,7 @@ Funzionalità che intendo sviluppare per rendere KektorDB pronto per la produzio
 
 ---
 
-## 🛑 Limitazioni attuali (v0.5.0)
+## 🛑 Limitazioni attuali (v0.5.1)
 * **Singolo nodo:** KektorDB attualmente non supporta il clustering. Scala verticalmente entro i limiti delle risorse della macchina.
 
 ---

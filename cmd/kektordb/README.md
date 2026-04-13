@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The sole entry point for the KektorDB server application (v0.4.7). Orchestrates the entire startup lifecycle, configures all subsystems, supports dual-mode operation (HTTP server or MCP stdio server), and handles graceful shutdown with ordered teardown of proxy, API server, and engine.
+The sole entry point for the KektorDB server application (v0.5.1). Orchestrates the entire startup lifecycle, configures all subsystems, supports dual-mode operation (HTTP server or MCP stdio server), and handles graceful shutdown with ordered teardown of proxy, API server, and engine.
 
 ## Key Types & Critical Paths
 
