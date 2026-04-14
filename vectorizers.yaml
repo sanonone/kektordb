@@ -36,7 +36,7 @@ vectorizers:
     graph_entity_extraction: true
     llm:
       base_url: "http://localhost:11434/v1"
-      model: "gemma3:4b" # O llama3, mistral, gpt-4o-mini...
+      model: "gemma4:latest" # O llama3, mistral, gpt-4o-mini...
       temperature: 0.0 # Meglio deterministico per estrarre dati
 
     # Esempio HuggingFace (Serverless Inference):
@@ -50,6 +50,6 @@ vectorizers:
       base_url: "http://localhost:11434/v1"
       # IMPORTANTE: Devi aver scaricato questo modello su Ollama!
       # Consigliato: llama3.2-vision (piccolo e potente) o llava
-      model: "gemma3:4b"
+      model: "gemma4:latest"
       temperature: 0.0
       max_tokens: 300 # Limitiamo la descrizione per non intasare l'embedding

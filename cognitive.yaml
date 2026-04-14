@@ -73,7 +73,7 @@ llm:
   base_url: "http://localhost:11434/v1"
 
   # Model name
-  model: "gemma3:4b"
+  model: "gemma4:latest"
 
   # API key (required for OpenAI, ignored by Ollama)
   api_key: "kektor"

@@ -71,12 +71,12 @@ cache_delete_threshold: 0.0 # 0.0 = Pulisci sempre se c'è anche solo 1 cancella
 # rewriter
 fast_llm:
   base_url: "http://localhost:11434/v1"
-  model: "gemma3:4b"
+  model: "gemma4:latest"
 
 # HyDe
 llm:
   base_url: "http://localhost:11434/v1"
-  model: "gemma3:4b"
+  model: "gemma4:latest"
 
 rag_system_prompt: |
   Sei un assistente tecnico esperto.

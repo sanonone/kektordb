@@ -1,4 +1,6 @@
-# KektorDB 
+# KektorDB
+
+*The cognitive memory layer for AI agents.*
 
 <p align="center">
   <img src="docs/images/logo.png" alt="KektorDB Logo" width="500">
@@ -21,11 +23,9 @@
 > [!TIP]
 > **Docker Support:** Prefer containers? A `Dockerfile` is included in the root for building your own images.
 
-**KektorDB is an embeddable, in-memory Vector + Graph database written in pure Go.**
+KektorDB is an **in-memory memory system for AI applications** that combines high-performance vector search with a temporal knowledge graph. It stores information while understanding it—tracking importance, relationships, and evolution over time. A built-in cognitive engine (Gardener) automatically consolidates memories, detects contradictions, and lets irrelevant information fade away through time-decay.
 
-It fuses a robust **HNSW Engine** with a **lightweight Semantic Graph**, allowing you to combine vector similarity with explicit relationships (like `parent`, `next`, `mentions`) without the complexity and overhead of a full-blown Graph Database.
-
-> *Built with the philosophy of SQLite: Serverless option, zero dependencies, and easy to manage.*
+> *Built for developers building AI agents, RAG systems, and knowledge-intensive applications.*
 
 <p align="center">
   <img src="docs/images/kektordb-demo.gif" alt="KektorDB Graph Demo" width="800">
@@ -33,37 +33,132 @@ It fuses a robust **HNSW Engine** with a **lightweight Semantic Graph**, allowin
 
 ---
 
-## Why KektorDB?
+## What is KektorDB?
 
-KektorDB simplifies the stack by unifying the **Database**, the **Search Engine**, and the **AI Middleware** into a single, dependency-free binary.
+KektorDB is an **AI memory system** that combines two complementary engines:
 
-*   **Database First:** A robust, persistent (AOF+Snapshot) vector store with hybrid search (BM25 + Vector) and metadata filtering.
-*   **Embeddable Architecture:** Designed to run alongside your application process (like SQLite) or as a lightweight microservice, removing network overhead.
-*   **Lightweight Graph Layer:** Unlike flat vector stores, KektorDB understands connections. It provides a streamlined graph engine optimized for **N-Hop traversal** and **Context Retrieval**, bridging the gap between similarity and structure.
+1. **High-performance vector search (HNSW)** for semantic similarity—finds things that *mean* the same, not just exact matches.
+2. **Temporal knowledge graph** for structured relationships—understands *how things connect* and *how knowledge evolves*.
+
+**Traditional databases store data.** They hold facts without understanding their context, importance, or relationships. You query them, and they return what's stored. Simple, but limited.
+
+**KektorDB thinks while it stores.** It tracks what's important versus forgotten, detects contradictions, and helps your AI retrieve the *right* information at the *right* time.
+
+### Built for AI Engineers
+
+If you're building:
+- **AI Agents** that need persistent, self-organizing memory
+- **RAG Systems** that should understand context and importance
+- **Multi-Agent Systems** with shared knowledge
+- **Personal AI Assistants** that learn over time
+
+...then KektorDB is designed for you.
+
+### But Still a Powerful Engine
+
+Under the hood, you get proven database primitives:
+- **HNSW** for high-performance vector similarity search
+- **Hybrid Search** combining vector + BM25 keyword matching
+- **Memory-efficient quantization** (Int8, Float16) to fit more in RAM
+- **Graph traversal** for N-hop context retrieval
+
+These are tools. The product is an AI that *understands* your data.
 
 ---
 
 ## Use Cases
 
-KektorDB is not designed to replace distributed clusters handling billions of vectors. Instead, it shines in specific, high-value scenarios:
+### 1. AI Agent Memory (Primary)
 
-### 1. Embedded Search for Go Applications
-Ideal for developers building monoliths or microservices who need semantic search without the operational overhead of managing a distributed cluster.
-*   **Scenario:** Implementing "Related Products" or "Semantic Search" in a Go backend.
-*   **Solution:** `import "github.com/sanonone/kektordb/pkg/engine"` to run the DB in-process.
-*   **Benefit:** Zero deployment complexity. The DB scales with your app.
+Give your AI agent a persistent, self-organizing memory that understands relevance.
 
-### 2. Local RAG & Knowledge Base
-Perfect for desktop applications, local AI agents, or private documentation search where data privacy is paramount.
-*   **Scenario:** You need to index sensitive PDF/Markdown/Docx files and chat with them using local LLMs (Ollama).
-*   **Solution:** Point KektorDB to your folder. It handles the full ingestion pipeline (OCR, chunking, linking).
-*   **Benefit:** Setup time drops from days to minutes. No data leaves your machine.
+*Scenario:* Building an AI assistant that should remember user preferences, past conversations, and build knowledge over time.
 
-### 3. AI Gateway & Semantic Cache
-Acts as a smart proxy to optimize costs and latency for LLM applications.
-*   **Scenario:** You are building a Chatbot using OpenAI/Anthropic APIs.
-*   **Solution:** Use KektorDB as a middleware. It caches responses semantically (saving API costs) and acts as a firewall to block malicious prompts before they reach the LLM.
-*   **Benefit:** Immediate performance boost and cost reduction with zero code changes in your client.
+*Solution:* Use sessions to track conversations. Let the Gardener extract facts and detect contradictions. Enable memory decay so old irrelevant information fades naturally.
+
+*Benefit:* Users feel like they're talking to someone who actually remembers them.
+
+### 2. Multi-Agent Shared Memory
+
+Enable multiple AI agents to share knowledge and learn from each other.
+
+*Scenario:* Multiple specialized agents (research, coding, writing) that need to share context and transfer learned information.
+
+*Solution:* Use MCP or direct API to share memories between agent indexes. KektorDB tracks knowledge provenance and helps resolve conflicts.
+
+*Benefit:* Agents stop repeating each other's mistakes.
+
+### 3. RAG with Memory
+
+Go beyond "retrieve and inject"—build RAG that actually understands relevance.
+
+*Scenario:* Your RAG system keeps retrieving technically similar but contextually wrong documents.
+
+*Solution:* Enable graph-based retrieval to follow semantic relationships. Use adaptive context expansion. Let the Gardener highlight gaps in knowledge.
+
+*Benefit:* Higher recall, lower hallucination risk.
+
+### 4. Embedded Vector Search (Go)
+
+High-performance vector search embedded in your Go application without operational overhead.
+
+*Scenario:* Implementing "Related Products" or "Semantic Search" in a Go backend.
+
+*Solution:* `import "github.com/sanonone/kektordb/pkg/engine"` to run the DB in-process.
+
+*Benefit:* Zero deployment complexity. The DB scales with your app.
+
+---
+
+## Key Differentiators
+
+### Memory That Manages Itself
+
+The **Gardener** is a background process that continuously analyzes your data:
+
+- **Consolidation**: Merges duplicate information, strengthens frequently-used memories
+- **Contradiction Detection**: Flags when new information conflicts with established facts
+- **Knowledge Gap Analysis**: Identifies what's missing for complete understanding
+- **Forgetting**: Naturally deprioritizes unused information
+
+### Time-Aware Memory
+
+Unlike static databases, KektorDB understands *when* information matters:
+
+- **Decay**: Memories fade naturally if not reinforced
+- **Reinforcement**: Retrieving a memory makes it more prominent
+- **Temporal Graph**: Query the state of knowledge at any point in time
+- **Core Facts**: Pin essential facts to prevent them from ever fading
+
+### User-Aware Responses
+
+KektorDB builds and maintains **user profiles**:
+
+- Communication style and language preferences
+- Expertise areas and known knowledge
+- Stated preferences versus observed behavior
+- Resolution of conflicting self-reported information
+
+### Relationships as First-Class Citizens
+
+The knowledge graph isn't an afterthought—it's core:
+
+- Automatic entity extraction from documents
+- Semantic linking of related concepts
+- N-hop traversal for context discovery
+- Weighted property graphs with timestamps
+
+### Native MCP Support
+
+KektorDB speaks the **Model Context Protocol** natively. Connect Claude Desktop or any MCP client directly.
+
+**Memory Tools:** `save_memory`, `recall_memory`, `scoped_recall`, `adaptive_retrieve`
+
+**Graph Tools:** `create_entity`, `connect_entities`, `explore_connections`, `find_connection`
+
+**Cognitive Tools:** `start_session`, `end_session`, `get_user_profile`, `check_subconscious`, `resolve_conflict`, `ask_meta_question`
+
+**Utility:** `transfer_memory`, `unpin_memory`, `filter_vectors`
 
 ---
 
@@ -97,20 +192,6 @@ KektorDB can function as a **smart middleware** between your Chat UI and your LL
 
 ## ✨ Core Features
 
-### Performance & Engineering
-*   **HNSW Engine:** Custom implementation optimized for high-concurrency reading.
-*   **Hybrid Search:** Combines Vector Similarity + BM25 (Keyword) + Metadata Filtering.
-*   **Memory Efficiency:** Supports **Int8 Quantization** (75% RAM savings) with zero-shot auto-training and **Float16**.
-*   **Maintenance & Optimization:**
-    *   **Vacuum:** A background process that cleans up deleted nodes to reclaim memory and repair graph connections.
-    *   **Refine:** An ongoing optimization that re-evaluates graph connections to improve search quality (recall) over time. 
-*   **AI Gateway & Middleware:** Acts as a smart proxy for OpenAI/Ollama compatible clients. Features **Semantic Caching** to serve instant responses for recurring queries and a **Semantic Firewall** to block malicious prompts based on vector similarity or explicit deny lists.
-*   **Lazy AOF Writer:** Optimized write performance with batched flushing (10-100x throughput improvement) while maintaining durability.
-*   **Vision Support:** Process images and PDFs with OCR capabilities using Vision LLM integration.
-*   **Persistence:** Hybrid **AOF + Snapshot** ensures durability.
-*   **Observability:** Prometheus metrics (`/metrics`), structured logging, and Go pprof profiling endpoints.
-*   **Dual Mode:** Run as a standalone **REST Server** or as a **Go Library**.
-
 ### Cognitive & Agentic Capabilities
 *   **Cognitive Engine (Gardener):** A background daemon that performs cross-detector confidence validation. It analyzes the graph for contradictions, tracks user profiles, models knowledge evolution, and resolves conflicts using LLMs.
 *   **Core Fact Extraction:** The Gardener automatically extracts immutable facts from user interactions (name, profession, preferences) and creates pinned memory nodes with `type="core_fact"` for persistent, fast retrieval without time-decay.
@@ -119,6 +200,20 @@ KektorDB can function as a **smart middleware** between your Chat UI and your LL
 *   **Grounded HyDe:** Generates grounded hypothetical answers using real data fragments to improve semantic recall for vague queries.
 *   **Context Compression ("Caveman Mode"):** Safe lexical compression that reduces token count by 20-35% for LLM context while preserving semantic meaning. Removes safe stopwords (articles, prepositions) but strictly preserves negations and logical operators (not, and, or, but, if).
 *   **EventBus:** Integrated pub/sub system for real-time reactivity to graph and vector operations, with Server-Sent Events (SSE) support.
+
+### Performance & Engineering
+*   **HNSW Engine:** Custom implementation optimized for high-concurrency reading.
+*   **Hybrid Search:** Combines Vector Similarity + BM25 (Keyword) + Metadata Filtering.
+*   **Memory Efficiency:** Supports **Int8 Quantization** (75% RAM savings) with zero-shot auto-training and **Float16**.
+*   **Maintenance & Optimization:**
+    *   **Vacuum:** A background process that cleans up deleted nodes to reclaim memory and repair graph connections.
+    *   **Refine:** An ongoing optimization that re-evaluates graph connections to improve search quality (recall) over time.
+*   **AI Gateway & Middleware:** Acts as a smart proxy for OpenAI/Ollama compatible clients. Features **Semantic Caching** to serve instant responses for recurring queries and a **Semantic Firewall** to block malicious prompts based on vector similarity or explicit deny lists.
+*   **Lazy AOF Writer:** Optimized write performance with batched flushing (10-100x throughput improvement) while maintaining durability.
+*   **Vision Support:** Process images and PDFs with OCR capabilities using Vision LLM integration.
+*   **Persistence:** Hybrid **AOF + Snapshot** ensures durability.
+*   **Observability:** Prometheus metrics (`/metrics`), structured logging, and Go pprof profiling endpoints.
+*   **Dual Mode:** Run as a standalone **REST Server** or as a **Go Library**.
 
 ### Semantic Graph Engine
 *   **Automated Entity Extraction:** Uses a local LLM to identify concepts (People, Projects, Tech) during ingestion and links related documents together.
@@ -140,7 +235,7 @@ KektorDB can function as a **smart middleware** between your Chat UI and your LL
 
 ### Model Context Protocol (MCP) Support
 KektorDB functions as a full **Cognitive Memory Server** under the [Model Context Protocol](https://modelcontextprotocol.io/). This allows LLMs (like Claude Desktop) to use KektorDB as a long-term, self-organizing memory store directly.
-*   **Tools included:** `save_memory`, `recall_memory`, `create_entity`, `connect_entities`, `scoped_recall`, `explore_connections`, `start_session`, `end_session`, `transfer_memory`, `get_user_profile`, `list_user_profiles`, `check_subconscious`, `resolve_conflict`, `ask_meta_question`, and `adaptive_retrieve`.
+
 *   **How to run:**
     ```bash
     ./kektordb --mcp
@@ -190,49 +285,11 @@ Download the pre-compiled binary from the [Releases page](https://github.com/san
 
 ---
 
-## Using as an Embedded Go Library
+## 🚀 Quick Start (Python)
 
-KektorDB can be imported directly into your Go application, removing the need for external services or containers.
+This example demonstrates building an **AI Agent with Memory** using sessions and cognitive features.
 
-```bash
-go get github.com/sanonone/kektordb
-```
-
-```go
-package main
-
-import (
-	"fmt"
-	"github.com/sanonone/kektordb/pkg/core/distance"
-	"github.com/sanonone/kektordb/pkg/engine"
-)
-
-func main() {
-	// 1. Initialize the Engine (handles persistence automatically)
-	opts := engine.DefaultOptions("./kektor_data")
-	db, err := engine.Open(opts)
-	if err != nil { panic(err) }
-	defer db.Close()
-
-	// 2. Create Index
-	db.VCreate("products", distance.Cosine, 16, 200, distance.Float32, "english", nil)
-
-	// 3. Add Data
-	db.VAdd("products", "p1", []float32{0.1, 0.2}, map[string]any{"category": "electronics"})
-
-	// 4. Search
-	results, _ := db.VSearch("products", []float32{0.1, 0.2}, 10, "category=electronics", 100, 0.5, nil)
-	fmt.Println("Found IDs:", results)
-}
-```
-
----
-
-### 🚀 Quick Start (Python)
-
-This example demonstrates a complete workflow: creating an index, batch-inserting data with metadata, and performing a Hybrid Search (Vector + Keyword).
-
-1.  **Install Client & Utilities:**
+1.  **Install Client:**
     ```bash
     pip install kektordb-client sentence-transformers
     ```
@@ -241,50 +298,53 @@ This example demonstrates a complete workflow: creating an index, batch-insertin
 
     ```python
     from kektordb_client import KektorDBClient
-    from sentence_transformers import SentenceTransformer
+    from kektordb_client.cognitive import CognitiveSession
 
     # 1. Initialize
     client = KektorDBClient(port=9091)
-    model = SentenceTransformer('all-MiniLM-L6-v2') 
-    index = "quickstart"
+    index = "agent_memory"
 
-    # 2. Create Index (Hybrid enabled)
-    try: client.delete_index(index)
-    except: pass
+    # 2. Create index with memory enabled (30 day half-life)
+    try:
+        client.delete_index(index)
+    except:
+        pass
     client.vcreate(index, metric="cosine", text_language="english")
 
-    # 3. Add Data (Batch)
-    docs = [
-        {"text": "Go is efficient for backend systems.", "type": "code"},
-        {"text": "Rust guarantees memory safety.", "type": "code"},
-        {"text": "Pizza margherita is classic Italian food.", "type": "food"},
-    ]
-    
-    batch = []
-    for i, doc in enumerate(docs):
-        batch.append({
-            "id": f"doc_{i}",
-            "vector": model.encode(doc["text"]).tolist(),
-            "metadata": {"content": doc["text"], "category": doc["type"]}
-        })
-    
-    client.vadd_batch(index, batch)
-    print(f"Indexed {len(batch)} documents.")
+    # 3. Start a session (e.g., user conversation)
+    with CognitiveSession(client, index, user_id="user_123") as session:
+        # Save memories linked to this conversation
+        session.save_memory(
+            "User's name is Marco and he prefers concise answers",
+            layer="episodic",
+            tags=["user_preference"]
+        )
+        session.save_memory(
+            "Marco is working on a Go project called KektorDB",
+            layer="semantic",
+            tags=["project", "go"]
+        )
+        session.save_memory(
+            "Marco asked how to implement RAG. Explained vector search + graph traversal.",
+            layer="episodic"
+        )
 
-    # 4. Search (Hybrid: Vector + Metadata Filter)
-    # Finding "fast programming languages" BUT only in 'code' category
-    query_vec = model.encode("fast programming languages").tolist()
-    
+    # 4. Later: Retrieve user profile
+    profile = client.get_user_profile("user_123", index)
+    print(f"Communication style: {profile.get('communication_style', 'N/A')}")
+    print(f"Expertise areas: {profile.get('expertise_areas', [])}")
+
+    # 5. Search memories
     results = client.vsearch(
         index,
-        query_vector=query_vec,
-        k=2,
-        filter_str="category='code'", # Metadata Filter
-        alpha=0.7 # 70% Vector sim, 30% Keyword rank
+        query_vector=[0.1, 0.2, 0.3, 0.4],  # Embed your query
+        k=3,
+        filter_str="tags ? 'project'"
     )
-
-    print(f"Top Result ID: {results[0]}")
+    print(f"Found {len(results)} relevant memories")
     ```
+
+👉 **[Read the Full Documentation](DOCUMENTATION.md)** for all available endpoints and features.
 
 ---
 
@@ -298,102 +358,37 @@ from kektordb_client.langchain import KektorVectorStore
 
 ---
 
-## Preliminary Benchmarks
+## Benchmarks
 
 Benchmarks were performed on a local Linux machine (Consumer Hardware, Intel i5-12500). The comparison runs against **Qdrant** and **ChromaDB** (via Docker with host networking) to ensure a fair baseline.
 
-> **Disclaimer:** Benchmarking databases is complex. These results reflect a specific scenario (**single-node, read-heavy, Python client**) on my development machine. They are intended to demonstrate KektorDB's capabilities as a high-performance embedded engine, not to claim absolute superiority in distributed production scenarios.
-
-#### 1. NLP Workload (GloVe-100d, Cosine)
-*400k vectors, float32 precision.*
-KektorDB leverages optimized Go Assembly (Gonum) for Cosine similarity. In this specific setup, it shows very high throughput.
-
-| Database | Recall@10 | **QPS (Queries/sec)** | Indexing Time (s) |
+| Database | NLP QPS | Vision QPS | Recall@10 |
 | :--- | :--- | :--- | :--- |
-| **KektorDB** | 0.9664 | **1073** | 102.9s |
-| Qdrant | 0.9695 | 848 | **32.3s** |
-| ChromaDB | 0.9519 | 802 | 51.5s |
+| **KektorDB** | **1073** | **881** | 0.97 |
+| Qdrant | 848 | 845 | 0.97 |
+| ChromaDB | 802 | 735 | 0.96 |
 
-#### 2. Computer Vision Workload (SIFT-1M, Euclidean)
-*1 Million vectors, float32 precision.*
-KektorDB uses a hybrid Go/Rust engine (`-tags rust`) for this test. Despite the CGO overhead for 128d vectors, performance is competitive with native C++/Rust engines.
-
-| Database | Recall@10 | **QPS (Queries/sec)** | Indexing Time (s) |
-| :--- | :--- | :--- | :--- |
-| **KektorDB** | 0.9906 | **881** | 481.4s |
-| Qdrant | 0.998 | 845 | **88.5s** |
-| ChromaDB | 0.9956 | 735 | 211.2s |
-
-> *Note on Indexing Speed:* KektorDB is currently slower at ingestion compared to mature engines. This is partly because it builds the full queryable graph immediately upon insertion, but mostly due to the current single-graph architecture. **Optimizing bulk ingestion speed is the top priority for the next major release.**
-
-> [!TIP]
-> **Performance Optimization: "Ingest Fast, Refine Later"**
->
-> If you need to index large datasets quickly, create the index with a lower `ef_construction` (e.g., 40). This significantly reduces indexing time. 
-> You can then enable the **Refine** process in the background with a higher target quality (e.g., 200). KektorDB will progressively optimize the graph connections in the background while remaining available for queries.
-
-#### Memory Efficiency (Compression & Quantization)
-KektorDB offers significant memory savings through quantization and compression, allowing you to fit larger datasets into RAM with minimal impact on performance or recall.
-
-| Scenario | Config | Memory Impact | QPS | Recall |
-| :--- | :--- | :--- | :--- | :--- |
-| **NLP (GloVe-100d)** | Float32 | 100% (Baseline) | ~1073 | 0.9664 |
-| | **Int8** | **~25%** | ~858 | 0.905 |
-| **Vision (SIFT-1M)** | Float32 | 100% (Baseline) | ~881 | 0.9906 |
-| | **Float16** | **~50%** | ~834 | 0.9770 |
-
-*(The "Smart Dispatch" logic in the Rust-accelerated build automatically selects the best implementation—Go, Gonum, or Rust—for each operation based on vector dimensions. The pure Go `float16` and `int8` versions serve as portable fallbacks.)*
+> *Note: KektorDB is optimized for embedded, single-node scenarios. For billion-scale distributed deployments, consider specialized solutions.*
 
 [Full Benchmark Report](BENCHMARKS.md)
 
 ---
 
-## API Reference (Summary)
-
-For a complete guide to all features and API endpoints, please see the **[Full Documentation](DOCUMENTATION.md)**.
-
-*   `POST /vector/actions/search`: Hybrid vector search. Set `compress_context: true` for LLM-optimized results (20-35% token reduction).
-*   `POST /vector/actions/search-with-scores`: Search returning results with similarity scores.
-*   `POST /vector/actions/import`: High-speed bulk loading.
-*   `POST /vector/actions/add-batch`: Batch vector insertion.
-*   `POST /vector/actions/reinforce`: Boost node relevance in memory-based indexes.
-*   `POST /vector/indexes`: Create and manage indexes.
-*   `POST /graph/actions/link`: Create semantic relationships with weights and properties.
-*   `POST /graph/actions/unlink`: Remove graph relationships.
-*   `POST /graph/actions/traverse`: Deep graph traversal (N-Hop) starting from a specific node ID.
-*   `POST /graph/actions/extract-subgraph`: Extract local neighborhood (BFS) around a root node.
-*   `POST /graph/actions/find-path`: Find shortest path between two nodes.
-*   `POST /graph/actions/search-nodes`: Filter-only search (metadata-based, no vector similarity).
-*   `POST /graph/actions/set-node-properties`: Add/update metadata on nodes without vectors.
-*   `POST /rag/retrieve`: Get text chunks for RAG. Set `compress_context: true` for LLM-optimized context.
-*   `POST /rag/retrieve-adaptive`: Adaptive RAG with graph expansion. Set `compress_context: true` for LLM-optimized context.
-*   `GET /system/tasks/{id}`: Monitor long-running tasks.
-*   `POST /system/save`: Manual snapshot.
-*   `POST /system/aof-rewrite`: Compact the AOF file.
-*   `GET /debug/pprof/`: Go profiling endpoints (pprof).
-
----
-
 ## 🛣️ Roadmap
 
-KektorDB is a young project under active development.
-
 ### Released in v0.5.0 ✅
-*   [x] **Zero-Copy mmap Arena:** Vector data is now stored using memory-mapped files, breaking the traditional RAM limit. Hot vectors stay in RAM for speed while cold data is managed by the OS page cache. This enables datasets larger than available RAM.
-*   [x] **Cognitive Engine (Gardener):** Background daemon for knowledge graph conflict resolution, user profiling, and subconscious reflection.
-*   [x] **Core Fact Extraction:** Automatic extraction of immutable user facts (name, profession, preferences) with pinned nodes that bypass time-decay.
-*   [x] **Context Compression ("Caveman Mode"):** Safe lexical compression that reduces LLM token count by 20-35% while preserving semantic meaning and logical operators.
-*   [x] **TypeScript Client:** Official Node.js/TypeScript SDK to bridge the AI JS ecosystem with KektorDB.
+*   [x] **Zero-Copy mmap Arena:** Vector data stored in memory-mapped files, breaking the RAM limit.
+*   [x] **Cognitive Engine (Gardener):** Background daemon for knowledge graph conflict resolution and user profiling.
+*   [x] **Core Fact Extraction:** Automatic extraction of immutable user facts with pinned nodes.
+*   [x] **Context Compression:** Safe lexical compression reducing LLM tokens by 20-35%.
+*   [x] **TypeScript Client:** Official Node.js/TypeScript SDK.
 
 ### Planned (Short Term)
-Features I intend to build to make KektorDB production-ready and faster.
-*   [x] **Graph Filtering:** Combine vector search with graph topology filters (e.g. "search only children of Doc X"), powered by Roaring Bitmaps.
-*   [x] **Roaring Bitmaps:** Replace current map-based filtering with Roaring Bitmaps for lightning-fast metadata filtering (e.g. `WHERE user_id = X`).
-*   [x] **Property Graphs:** Support for "Rich Edges" with attributes (weights, timestamps) to enable complex recommendation algorithms.
-*   [ ] **Native Backup/Restore:** Simple API to snapshot data to S3/MinIO/Local without stopping the server.
-*   [x] **Configurable RAG Relations:** Allow users to define custom graph traversal paths in `proxy.yaml` instead of relying on hardcoded defaults.
-*   [ ] **SIMD/AVX Optimizations:** Extending pure Go Assembly optimizations (currently used for Cosine) to Euclidean distance and Float16 operations to maximize throughput on modern CPUs.
-*   [x] **RBAC & Security:** Implement Role-Based Access Control (Admin vs Read-Only tokens) and finer granularity for multi-tenant apps.
+*   [x] **Graph Filtering:** Combine vector search with graph topology filters (Roaring Bitmaps).
+*   [x] **Property Graphs:** Support for "Rich Edges" with attributes and timestamps.
+*   [ ] **Native Backup/Restore:** Simple API to snapshot data to S3/MinIO/Local.
+*   [ ] **SIMD/AVX Optimizations:** Extending pure Go Assembly to more distance metrics.
+*   [x] **RBAC & Security:** Role-Based Access Control for multi-tenant apps.
 
 > **Want to influence the roadmap?** [Open an Issue](https://github.com/sanonone/kektordb/issues) or vote on existing ones!
 
@@ -414,10 +409,6 @@ If you like the vision and want to speed up the process, **Pull Requests are hig
 
 ## 🤝 Contributing
 
-**KektorDB is a personal project born from a desire to learn.**
-
-As the sole maintainer, I built this engine to explore CGO, SIMD, and low-level Go optimizations. I am proud of the performance achieved so far, but I know there is always a better way to write code.
-
 If you spot race conditions, missed optimizations, or unidiomatic Go patterns, **please open an Issue or a PR**.
 
 👉 **[Read more](CONTRIBUTING.md)**
@@ -432,7 +423,7 @@ Licensed under the Apache 2.0 License. See the `LICENSE` file for details.
 
 ## ☕ Support the Project
 
-If you find this tool useful for your local RAG setup or your Go applications, please consider supporting the development. 
+If you find this tool useful for your local RAG setup or your Go applications, please consider supporting the development.
 
 Your support helps me dedicate more time to maintenance, new features, and documentation.
 
