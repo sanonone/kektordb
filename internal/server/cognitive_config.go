@@ -54,6 +54,11 @@ type GardenerConfigYAML struct {
 	// User Profiling
 	EnableUserProfiling    bool `yaml:"enable_user_profiling"`    // Enable user personality profiling
 	ProfileUpdateThreshold int  `yaml:"profile_update_threshold"` // Number of interactions before profile update (default: 20)
+
+	// Epistemic Resolution (Fase 3)
+	EpistemicResolutionEnabled   bool    `yaml:"epistemic_resolution_enabled"`   // Enable epistemic auto-resolution
+	EpistemicMaxPerCycle         int     `yaml:"epistemic_max_per_cycle"`        // Max reflections per cycle (default: 3)
+	EpistemicConfidenceThreshold float64 `yaml:"epistemic_confidence_threshold"` // Min confidence to trigger (default: 0.40)
 }
 
 // AutoResolveConfigYAML holds the auto-resolve settings.
@@ -184,19 +189,22 @@ func LoadCognitiveConfig(path string) (cognitive.Config, llm.Config, error) {
 
 	// Build Gardener config
 	gardener := cognitive.Config{
-		Enabled:                cfg.Gardener.Enabled,
-		Mode:                   cfg.Gardener.Mode,
-		Interval:               parseDuration(cfg.Gardener.Interval, 30*time.Second),
-		TargetIndexes:          cfg.Gardener.TargetIndexes,
-		AdaptiveThreshold:      cfg.Gardener.AdaptiveThreshold,
-		AdaptiveMinInterval:    parseDuration(cfg.Gardener.AdaptiveMinInterval, 30*time.Second),
-		AutoResolveEnabled:     cfg.AutoResolve.Enabled,
-		AutoResolveLinks:       cfg.AutoResolve.Actions.CreateSuggestedLinks.Enabled,
-		AutoResolveLinksMin:    cfg.AutoResolve.Actions.CreateSuggestedLinks.MinConfidence,
-		AutoResolveContra:      cfg.AutoResolve.Actions.MarkMinorContradictions.Enabled,
-		MemoryConfig:           buildMemoryConfig(cfg.Gardener.MemoryLayers),
-		EnableUserProfiling:    cfg.Gardener.EnableUserProfiling,
-		ProfileUpdateThreshold: cfg.Gardener.ProfileUpdateThreshold,
+		Enabled:                      cfg.Gardener.Enabled,
+		Mode:                         cfg.Gardener.Mode,
+		Interval:                     parseDuration(cfg.Gardener.Interval, 30*time.Second),
+		TargetIndexes:                cfg.Gardener.TargetIndexes,
+		AdaptiveThreshold:            cfg.Gardener.AdaptiveThreshold,
+		AdaptiveMinInterval:          parseDuration(cfg.Gardener.AdaptiveMinInterval, 30*time.Second),
+		AutoResolveEnabled:           cfg.AutoResolve.Enabled,
+		AutoResolveLinks:             cfg.AutoResolve.Actions.CreateSuggestedLinks.Enabled,
+		AutoResolveLinksMin:          cfg.AutoResolve.Actions.CreateSuggestedLinks.MinConfidence,
+		AutoResolveContra:            cfg.AutoResolve.Actions.MarkMinorContradictions.Enabled,
+		MemoryConfig:                 buildMemoryConfig(cfg.Gardener.MemoryLayers),
+		EnableUserProfiling:          cfg.Gardener.EnableUserProfiling,
+		ProfileUpdateThreshold:       cfg.Gardener.ProfileUpdateThreshold,
+		EpistemicResolutionEnabled:   cfg.Gardener.EpistemicResolutionEnabled,
+		EpistemicMaxPerCycle:         cfg.Gardener.EpistemicMaxPerCycle,
+		EpistemicConfidenceThreshold: cfg.Gardener.EpistemicConfidenceThreshold,
 	}
 
 	// Apply defaults for empty/zero values
@@ -211,6 +219,12 @@ func LoadCognitiveConfig(path string) (cognitive.Config, llm.Config, error) {
 	}
 	if gardener.AdaptiveMinInterval == 0 {
 		gardener.AdaptiveMinInterval = 30 * time.Second
+	}
+	if gardener.EpistemicMaxPerCycle == 0 {
+		gardener.EpistemicMaxPerCycle = 3
+	}
+	if gardener.EpistemicConfidenceThreshold == 0 {
+		gardener.EpistemicConfidenceThreshold = 0.40
 	}
 
 	// Build LLM config

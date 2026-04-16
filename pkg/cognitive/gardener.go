@@ -65,6 +65,11 @@ type Config struct {
 	// Core Fact Extraction (RFC 001)
 	EnableCoreFactExtraction bool    // Enable automatic extraction of immutable facts
 	CoreFactMinConfidence    float64 // Minimum confidence threshold for extracted facts (default: 0.85)
+
+	// Epistemic Resolution (Fase 3)
+	EpistemicResolutionEnabled   bool    // Enable epistemic auto-resolution using VBeliefState
+	EpistemicMaxPerCycle         int     // Max reflections to process per cycle (default: 3)
+	EpistemicConfidenceThreshold float64 // Min confidence to trigger resolution (default: 0.40)
 }
 
 // Gardener is the autonomous background worker that analyzes the database graph
@@ -432,9 +437,9 @@ func (g *Gardener) think() {
 			g.detectCrossValidator(idx)
 		}
 
-		// Auto-resolve: act on whitelisted reflection types.
-		if g.cfg.AutoResolveEnabled {
-			g.autoResolveReflections(idx)
+		// Epistemic resolution: resolve volatile beliefs using VBeliefState
+		if g.cfg.EpistemicResolutionEnabled {
+			g.resolveVolatileBeliefs(idx)
 		}
 	}
 
@@ -1218,9 +1223,9 @@ func (g *Gardener) ForceThink(indexName string) {
 		g.detectKnowledgeEvolution(indexName)
 	}
 
-	// Auto-resolve: act on whitelisted reflection types.
-	if g.cfg.AutoResolveEnabled {
-		g.autoResolveReflections(indexName)
+	// Epistemic resolution: resolve volatile beliefs using VBeliefState (Fase 3)
+	if g.cfg.EpistemicResolutionEnabled {
+		g.resolveVolatileBeliefs(indexName)
 	}
 }
 
@@ -2673,78 +2678,387 @@ func (g *Gardener) detectCrossValidator(indexName string) {
 	}
 }
 
-// autoResolveReflections acts on reflection nodes that have been whitelisted
-// for autonomous resolution. This is deterministic — no LLM call needed.
-// The LLM already made its decision during detection (suggested_resolution, action_required).
-func (g *Gardener) autoResolveReflections(indexName string) {
-	// Fetch all unresolved + insight reflections for this index.
-	refs, err := g.eng.VFilter(indexName, "type='reflection'", 200)
+// ============================================================================
+// Epistemic Resolution (Fase 3): resolveVolatileBeliefs
+// ============================================================================
+
+// resolveVolatileBeliefs identifies reflections with low epistemic confidence
+// and uses the LLM to consolidate conflicting memories into a single truth.
+// This replaces the old autoResolveReflections with a mathematically rigorous approach.
+func (g *Gardener) resolveVolatileBeliefs(indexName string) {
+	// Fetch up to MaxPerCycle unresolved reflections (oldest first)
+	maxProcess := g.cfg.EpistemicMaxPerCycle
+	if maxProcess <= 0 {
+		maxProcess = 3 // Default
+	}
+
+	refs, err := g.eng.VFilter(indexName, "type='reflection' AND status='unresolved'", maxProcess)
 	if err != nil || len(refs) == 0 {
 		return
 	}
+
+	// Sort by age (oldest first) - simple bubble sort for small N
+	type refWithAge struct {
+		id  string
+		age float64
+	}
+	var refsWithAge []refWithAge
+	now := float64(time.Now().Unix())
 
 	for _, refID := range refs {
 		refData, err := g.eng.VGet(indexName, refID)
 		if err != nil {
 			continue
 		}
+		createdAt := getMetadataFloat(refData.Metadata, "_created_at")
+		refsWithAge = append(refsWithAge, refWithAge{id: refID, age: now - createdAt})
+	}
 
-		status, _ := refData.Metadata["status"].(string)
-		if status == "resolved" || status == "high_confidence" {
+	// Sort descending by age
+	for i := 0; i < len(refsWithAge); i++ {
+		for j := i + 1; j < len(refsWithAge); j++ {
+			if refsWithAge[j].age > refsWithAge[i].age {
+				refsWithAge[i], refsWithAge[j] = refsWithAge[j], refsWithAge[i]
+			}
+		}
+	}
+
+	// Process top N
+	processCount := maxProcess
+	if len(refsWithAge) < processCount {
+		processCount = len(refsWithAge)
+	}
+
+	for i := 0; i < processCount; i++ {
+		g.processEpistemicReflection(indexName, refsWithAge[i].id)
+	}
+}
+
+// processEpistemicReflection handles a single reflection through the epistemic pipeline.
+func (g *Gardener) processEpistemicReflection(indexName, reflectionID string) {
+	// Verify reflection exists
+	_, err := g.eng.VGet(indexName, reflectionID)
+	if err != nil {
+		return
+	}
+
+	// Get conflicting nodes via contradicts edges
+	edges, found := g.eng.VGetEdges(indexName, reflectionID, "contradicts", 0)
+	if !found || len(edges) < 2 {
+		slog.Debug("[Gardener] Reflection has fewer than 2 conflicting nodes, skipping",
+			"reflection", reflectionID, "nodes", len(edges))
+		return
+	}
+
+	// Collect node data with dimension validation
+	var nodesData []epistemicNodeInternal
+	targetDim := 0
+
+	for _, edge := range edges {
+		nodeData, err := g.eng.VGet(indexName, edge.TargetID)
+		if err != nil || len(nodeData.Vector) == 0 {
 			continue
 		}
 
-		confidence, _ := refData.Metadata["confidence"].(float64)
-
-		// Action 1: Auto-create suggested graph links (from knowledge gaps).
-		if g.cfg.AutoResolveLinks {
-			entities, found := g.eng.VGetLinks(indexName, refID, "suggests_link")
-			if found && len(entities) == 2 && confidence >= g.cfg.AutoResolveLinksMin {
-				// Check if the link already exists (dedup).
-				existingLinks, _ := g.eng.VGetLinks(indexName, entities[0], "related_to")
-				alreadyLinked := false
-				for _, el := range existingLinks {
-					if el == entities[1] {
-						alreadyLinked = true
-						break
-					}
-				}
-				if !alreadyLinked {
-					if err := g.eng.VLink(indexName, entities[0], entities[1],
-						"related_to", "related_to", float32(confidence),
-						map[string]any{"auto_resolved_from": refID}); err != nil {
-						slog.Warn("[Cognitive Engine] Auto-resolve: failed to create link", "error", err)
-						continue
-					}
-					g.eng.VSetMetadata(indexName, refID, map[string]any{
-						"status":        "resolved",
-						"resolution":    fmt.Sprintf("auto-resolved: link created based on semantic similarity %.2f", confidence),
-						"auto_resolved": true,
-						"_updated_at":   float64(time.Now().Unix()),
-					})
-					slog.Info("[Cognitive Engine] Auto-resolved: created suggested link",
-						"from", entities[0], "to", entities[1], "confidence", confidence)
-				}
-			}
+		// Check dimensions match
+		if targetDim == 0 {
+			targetDim = len(nodeData.Vector)
+		} else if len(nodeData.Vector) != targetDim {
+			// Dimension mismatch - escalate to manual
+			g.escalateToManual(indexName, reflectionID, "vector_dimension_mismatch")
+			return
 		}
 
-		// Action 2: Auto-resolve minor contradictions (action_required=false).
-		if g.cfg.AutoResolveContra {
-			actionRequired, _ := refData.Metadata["action_required"].(bool)
-			if !actionRequired {
-				suggestedResolution, _ := refData.Metadata["suggested_resolution"].(string)
-				if suggestedResolution != "" {
-					g.eng.VSetMetadata(indexName, refID, map[string]any{
-						"status":        "resolved",
-						"resolution":    suggestedResolution,
-						"auto_resolved": true,
-						"_updated_at":   float64(time.Now().Unix()),
-					})
-					slog.Info("[Cognitive Engine] Auto-resolved: minor contradiction",
-						"reflection", refID)
-				}
-			}
+		nodesData = append(nodesData, epistemicNodeInternal{
+			id:       edge.TargetID,
+			vector:   nodeData.Vector,
+			metadata: nodeData.Metadata,
+		})
+	}
+
+	if len(nodesData) < 2 {
+		return
+	}
+
+	// Calculate centroid (mean of all vectors)
+	centroid := make([]float32, targetDim)
+	for _, node := range nodesData {
+		for i := 0; i < targetDim; i++ {
+			centroid[i] += node.vector[i]
 		}
+	}
+	for i := 0; i < targetDim; i++ {
+		centroid[i] /= float32(len(nodesData))
+	}
+
+	// Get epistemic config
+	cfg := engine.DefaultEpistemicConfig()
+	if g.cfg.EpistemicConfidenceThreshold > 0 {
+		cfg.Thresholds.Volatile = g.cfg.EpistemicConfidenceThreshold
+	}
+
+	// Call VBeliefState
+	state, err := g.eng.VBeliefState(indexName, centroid, 10, *cfg)
+	if err != nil {
+		slog.Warn("[Gardener] VBeliefState failed", "error", err, "reflection", reflectionID)
+		return
+	}
+
+	// Check if volatile (below threshold)
+	threshold := g.cfg.EpistemicConfidenceThreshold
+	if threshold == 0 {
+		threshold = 0.40
+	}
+
+	if state.Confidence >= threshold {
+		slog.Info("[Gardener] Reflection not volatile, skipping",
+			"reflection", reflectionID,
+			"confidence", state.Confidence,
+			"threshold", threshold)
+		return
+	}
+
+	// It's volatile! Call LLM for resolution
+	resolution, err := g.callEpistemicLLM(nodesData, state.Confidence)
+	if err != nil {
+		g.escalateToManual(indexName, reflectionID, "llm_error: "+err.Error())
+		return
+	}
+
+	if !resolution.Resolvable {
+		// Needs clarification
+		g.eng.VSetMetadata(indexName, reflectionID, map[string]any{
+			"status":                 "needs_clarification",
+			"clarification_question": resolution.ClarificationQuestion,
+			"epistemic_score":        state.Confidence,
+			"_updated_at":            float64(time.Now().Unix()),
+		})
+		slog.Info("[Gardener] Reflection needs clarification",
+			"reflection", reflectionID,
+			"question", resolution.ClarificationQuestion)
+		return
+	}
+
+	// Resolvable! Execute consolidation
+	g.executeConsolidation(indexName, reflectionID, nodesData, resolution, centroid)
+}
+
+// epistemicNodeInternal is used for processing within the Gardener
+type epistemicNodeInternal struct {
+	id       string
+	vector   []float32
+	metadata map[string]any
+}
+
+// epistemicResolution represents the LLM response
+type epistemicResolution struct {
+	Resolvable            bool   `json:"resolvable"`
+	ConsolidatedTruth     string `json:"consolidated_truth"`
+	ClarificationQuestion string `json:"clarification_question"`
+}
+
+// callEpistemicLLM calls the LLM for epistemic resolution.
+func (g *Gardener) callEpistemicLLM(nodes []epistemicNodeInternal, confidence float64) (*epistemicResolution, error) {
+	if g.llm == nil {
+		return nil, fmt.Errorf("LLM not available")
+	}
+
+	// Build prompt
+	sysPrompt := `You are an epistemic resolution engine. Analyze conflicting memory statements and determine the consolidated truth based on temporal evidence and usage patterns.
+
+Input: Array of facts with timestamps and access counts.
+Resolution rules:
+1. Newer facts generally supersede older ones
+2. Higher access_count indicates more relevant information
+3. If facts cannot be reconciled, ask for clarification
+4. Provide a single, concise consolidated truth
+
+Respond ONLY with valid JSON:
+{
+  "resolvable": true/false,
+  "consolidated_truth": "The unified factual statement (1-2 sentences)",
+  "clarification_question": "If not resolvable, what should be asked?"
+}
+
+Guidelines:
+- resolvable=false only if truly contradictory with no temporal pattern
+- consolidated_truth must synthesize all valid information
+- clarification_question must be specific and actionable`
+
+	userPrompt := fmt.Sprintf("Resolve these conflicting facts (epistemic confidence: %.2f/1.0):\n\n", confidence)
+	for i, node := range nodes {
+		content := getMetadataString(node.metadata, "content")
+		createdAt := getMetadataFloat(node.metadata, "_created_at")
+		accessCount := getMetadataInt(node.metadata, "_access_count")
+
+		dateStr := time.Unix(int64(createdAt), 0).Format("2006-01-02")
+		userPrompt += fmt.Sprintf("%d. \"%s\" (created: %s, accessed %d times)\n",
+			i+1, content, dateStr, accessCount)
+	}
+
+	// Call LLM
+	resp, err := g.llm.Chat(sysPrompt, userPrompt)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse JSON
+	return g.parseEpistemicResponse(resp)
+}
+
+// parseEpistemicResponse extracts JSON from LLM response.
+func (g *Gardener) parseEpistemicResponse(resp string) (*epistemicResolution, error) {
+	// Try to find JSON block
+	start := strings.Index(resp, "{")
+	end := strings.LastIndex(resp, "}")
+
+	if start == -1 || end == -1 || end <= start {
+		return nil, fmt.Errorf("no JSON found in response")
+	}
+
+	jsonBlock := resp[start : end+1]
+
+	var res epistemicResolution
+	if err := json.Unmarshal([]byte(jsonBlock), &res); err != nil {
+		return nil, fmt.Errorf("failed to parse JSON: %v", err)
+	}
+
+	return &res, nil
+}
+
+// executeConsolidation creates the master belief and VEvolve conflicting nodes.
+func (g *Gardener) executeConsolidation(
+	indexName, reflectionID string,
+	nodes []epistemicNodeInternal,
+	resolution *epistemicResolution,
+	centroid []float32,
+) {
+	// Create master node
+	masterID := fmt.Sprintf("belief_%d", time.Now().UnixNano())
+
+	masterMeta := map[string]any{
+		"content":            resolution.ConsolidatedTruth,
+		"type":               "consolidated_belief",
+		"_created_at":        float64(time.Now().Unix()),
+		"_access_count":      0,
+		"_consolidated_from": len(nodes),
+		"source_reflection":  reflectionID,
+	}
+
+	if err := g.eng.VAdd(indexName, masterID, centroid, masterMeta); err != nil {
+		g.escalateToManual(indexName, reflectionID, "vadd_master_failed: "+err.Error())
+		return
+	}
+
+	// VEvolve each conflicting node to point to master
+	successCount := 0
+	for _, node := range nodes {
+		// Create evolution metadata preserving original type
+		evolveMeta := map[string]any{
+			"content": node.metadata["content"],
+			"type":    node.metadata["type"],
+		}
+		if evolveMeta["type"] == nil {
+			evolveMeta["type"] = "memory"
+		}
+
+		_, err := g.eng.VEvolve(
+			indexName,
+			node.id,
+			centroid, // Use centroid as the vector for the evolved truth
+			evolveMeta,
+			"Epistemic consolidation: "+resolution.ConsolidatedTruth,
+		)
+		if err != nil {
+			slog.Warn("[Gardener] VEvolve failed", "node", node.id, "error", err)
+			continue
+		}
+		successCount++
+	}
+
+	if successCount == 0 {
+		// All VEvolve failed - master is orphaned
+		g.escalateToManual(indexName, reflectionID, "all_vevolve_failed")
+		return
+	}
+
+	// Update reflection to resolved
+	g.eng.VSetMetadata(indexName, reflectionID, map[string]any{
+		"status":              "resolved",
+		"resolution":          "epistemic_consolidation",
+		"consolidated_belief": masterID,
+		"nodes_consolidated":  successCount,
+		"_updated_at":         float64(time.Now().Unix()),
+	})
+
+	slog.Info("[Gardener] Successfully consolidated belief",
+		"reflection", reflectionID,
+		"master", masterID,
+		"nodes_consolidated", successCount,
+		"truth", resolution.ConsolidatedTruth)
+}
+
+// escalateToManual marks a reflection for human review.
+func (g *Gardener) escalateToManual(indexName, reflectionID, reason string) {
+	g.eng.VSetMetadata(indexName, reflectionID, map[string]any{
+		"status":       "needs_manual_review",
+		"error_reason": reason,
+		"_updated_at":  float64(time.Now().Unix()),
+	})
+	slog.Warn("[Gardener] Escalated to manual review",
+		"reflection", reflectionID,
+		"reason", reason)
+}
+
+// Helper functions
+func getMetadataString(m map[string]any, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func getMetadataFloat(m map[string]any, key string) float64 {
+	if m == nil {
+		return 0
+	}
+	val, ok := m[key]
+	if !ok {
+		return 0
+	}
+	switch v := val.(type) {
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	default:
+		return 0
+	}
+}
+
+func getMetadataInt(m map[string]any, key string) int {
+	if m == nil {
+		return 0
+	}
+	val, ok := m[key]
+	if !ok {
+		return 0
+	}
+	switch v := val.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case float32:
+		return int(v)
+	default:
+		return 0
 	}
 }
 
