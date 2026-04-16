@@ -90,6 +90,10 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /graph/actions/get-all-relations", s.handleGraphGetAllRelations)
 	mux.HandleFunc("POST /graph/actions/get-all-incoming", s.handleGraphGetAllIncoming)
 
+	// Epistemic Engine API
+	mux.HandleFunc("POST /vector/actions/belief-assessment", s.handleBeliefAssessment)
+	mux.HandleFunc("POST /graph/actions/invalidate", s.handleGraphInvalidate)
+
 	// Cognitive Engine API
 	mux.HandleFunc("GET /vector/indexes/{name}/reflections", s.handleGetReflections)
 	mux.HandleFunc("POST /vector/indexes/{name}/reflections/{id}/resolve", s.handleResolveReflection)
@@ -2380,6 +2384,164 @@ func (s *Server) handleExportVectors(w http.ResponseWriter, r *http.Request) {
 		HasMore:    hasMore,
 		NextOffset: offset + count,
 		TotalCount: offset + count,
+	})
+}
+
+// --- EPISTEMIC ENGINE HANDLERS ---
+
+// handleBeliefAssessment performs epistemic analysis of a belief.
+// It evaluates truth and robustness using three pillars: Consensus, Stability, Friction.
+func (s *Server) handleBeliefAssessment(w http.ResponseWriter, r *http.Request) {
+	var req BeliefAssessmentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %v", err))
+		return
+	}
+
+	// Validate required fields
+	if req.IndexName == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name is required"))
+		return
+	}
+
+	// Check if index exists
+	if !s.Engine.IndexExists(req.IndexName) {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("index '%s' not found", req.IndexName))
+		return
+	}
+
+	// Validate and set default limit
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50 // Safety cap
+	}
+
+	// Get query vector (either direct or via embedding)
+	var queryVec []float32
+	if len(req.QueryVec) > 0 {
+		queryVec = req.QueryVec
+	} else if req.Query != "" {
+		// Embed the query text using the vectorizer service
+		var embedder embeddings.Embedder
+		if s.vectorizerService != nil {
+			embedder = s.vectorizerService.GetEmbedderForIndex(req.IndexName)
+		}
+
+		if embedder == nil {
+			s.writeHTTPError(w, http.StatusServiceUnavailable, fmt.Errorf("no embedder available for index '%s'", req.IndexName))
+			return
+		}
+
+		vec, err := embedder.Embed(req.Query)
+		if err != nil {
+			s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("embedding failed: %v", err))
+			return
+		}
+		queryVec = vec
+	} else {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("either query or query_vec is required"))
+		return
+	}
+
+	// Get epistemic config for this index
+	cfg := s.Engine.GetEpistemicConfig(req.IndexName)
+
+	// Call the epistemic engine
+	state, err := s.Engine.VBeliefState(req.IndexName, queryVec, limit, cfg)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("belief assessment failed: %v", err))
+		return
+	}
+
+	// Convert to HTTP response format
+	resp := BeliefAssessmentResponse{
+		Confidence: state.Confidence,
+		State:      state.State,
+		Caveat:     state.Caveat,
+		Evidence: EpistemicEvidenceHTTP{
+			Consensus: ConsensusEvidenceHTTP{
+				Score:          state.Evidence.Consensus.Score,
+				Sources:        state.Evidence.Consensus.Sources,
+				VectorVariance: state.Evidence.Consensus.VectorVariance,
+			},
+			Stability: StabilityEvidenceHTTP{
+				Score:       state.Evidence.Stability.Score,
+				AvgAgeDays:  state.Evidence.Stability.AvgAgeDays,
+				TotalAccess: state.Evidence.Stability.TotalAccess,
+			},
+			Friction: FrictionEvidenceHTTP{
+				Score:          state.Evidence.Friction.Score,
+				Contradictions: state.Evidence.Friction.Contradictions,
+				Invalidations:  state.Evidence.Friction.Invalidations,
+			},
+		},
+		Nodes: make([]EpistemicNodeHTTP, len(state.Nodes)),
+	}
+
+	// Copy nodes
+	for i, node := range state.Nodes {
+		resp.Nodes[i] = EpistemicNodeHTTP{
+			ID:             node.ID,
+			Content:        node.Content,
+			Score:          node.Score,
+			CreatedAt:      node.CreatedAt,
+			AccessCount:    node.AccessCount,
+			IsHistorical:   node.IsHistorical,
+			Contradictions: node.Contradictions,
+			Invalidations:  node.Invalidations,
+		}
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, resp)
+}
+
+// handleGraphInvalidate creates an invalidation relation between nodes.
+// This is used for epistemic friction tracking (marking memories as invalidated).
+func (s *Server) handleGraphInvalidate(w http.ResponseWriter, r *http.Request) {
+	var req GraphInvalidateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %v", err))
+		return
+	}
+
+	// Validate required fields
+	if req.IndexName == "" || req.TargetID == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name and target_id are required"))
+		return
+	}
+
+	// Check if index exists
+	if !s.Engine.IndexExists(req.IndexName) {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("index '%s' not found", req.IndexName))
+		return
+	}
+
+	// If SourceID is empty, use a system identifier or the target itself (self-invalidation marker)
+	sourceID := req.SourceID
+	if sourceID == "" {
+		sourceID = "system" // Special marker for system-initiated invalidation
+	}
+
+	// Create the invalidation relation
+	// Source --[invalidates]--> Target
+	// Target --[invalidated_by]--> Source
+	props := map[string]any{}
+	if req.Reason != "" {
+		props["reason"] = req.Reason
+	}
+	props["timestamp"] = time.Now().Unix()
+
+	if err := s.Engine.VLink(req.IndexName, sourceID, req.TargetID, engine.RelationInvalidates, engine.RelationInvalidatedBy, 1.0, props); err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("failed to create invalidation: %v", err))
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{
+		"status":  "OK",
+		"message": fmt.Sprintf("Node %s has been invalidated", req.TargetID),
 	})
 }
 

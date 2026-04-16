@@ -59,6 +59,10 @@ type Options struct {
 	// MaintenanceInterval defines how often the background graph optimization runs.
 	// Default: 10 seconds.
 	MaintenanceInterval time.Duration
+
+	// EpistemicConfig provides default settings for the epistemic engine (belief assessment).
+	// Can be overridden per-index during VCreate.
+	EpistemicConfig *EpistemicConfig
 }
 
 // DefaultOptions returns a standard configuration suitable for most use cases.

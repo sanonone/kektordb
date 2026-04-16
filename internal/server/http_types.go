@@ -370,3 +370,70 @@ type UserProfileItem struct {
 	Confidence         float64 `json:"confidence"`
 	LastUpdated        int64   `json:"last_updated"`
 }
+
+// BeliefAssessmentRequest defines the body for epistemic belief assessment.
+// It performs an analytical query to evaluate the truth and robustness of memories.
+type BeliefAssessmentRequest struct {
+	IndexName string    `json:"index_name"`
+	Query     string    `json:"query,omitempty"`     // Text to embed (alternative to QueryVec)
+	QueryVec  []float32 `json:"query_vec,omitempty"` // Direct vector (alternative to Query)
+	Limit     int       `json:"limit,omitempty"`     // Number of candidates K (default 10, max 50)
+}
+
+// BeliefAssessmentResponse returns the epistemic state assessment.
+type BeliefAssessmentResponse struct {
+	Confidence float64               `json:"confidence"` // 0.0-1.0 aggregated score
+	State      string                `json:"state"`      // "crystallized", "stable", "volatile", "contested"
+	Evidence   EpistemicEvidenceHTTP `json:"evidence"`
+	Caveat     string                `json:"caveat,omitempty"`
+	Nodes      []EpistemicNodeHTTP   `json:"nodes"`
+}
+
+// EpistemicEvidenceHTTP mirrors engine.EpistemicEvidence for HTTP serialization.
+type EpistemicEvidenceHTTP struct {
+	Consensus ConsensusEvidenceHTTP `json:"consensus"`
+	Stability StabilityEvidenceHTTP `json:"stability"`
+	Friction  FrictionEvidenceHTTP  `json:"friction"`
+}
+
+// ConsensusEvidenceHTTP represents vector density evidence.
+type ConsensusEvidenceHTTP struct {
+	Score          float64 `json:"score"`           // 0.0-1.0
+	Sources        int     `json:"sources"`         // Number of nodes analyzed
+	VectorVariance float64 `json:"vector_variance"` // Raw variance
+}
+
+// StabilityEvidenceHTTP represents temporal robustness evidence.
+type StabilityEvidenceHTTP struct {
+	Score       float64 `json:"score"`        // 0.0-1.0
+	AvgAgeDays  float64 `json:"avg_age_days"` // Average age in days
+	TotalAccess int     `json:"total_access"` // Sum of access counts
+}
+
+// FrictionEvidenceHTTP represents topological contradiction evidence.
+type FrictionEvidenceHTTP struct {
+	Score          float64 `json:"score"`          // 0.0-1.0 (1.0 = no friction)
+	Contradictions int     `json:"contradictions"` // Count of contradicts
+	Invalidations  int     `json:"invalidations"`  // Count of invalidated_by
+}
+
+// EpistemicNodeHTTP represents a single analyzed node in the response.
+type EpistemicNodeHTTP struct {
+	ID             string  `json:"id"`
+	Content        string  `json:"content"`    // From metadata
+	Score          float64 `json:"score"`      // Cosine similarity
+	CreatedAt      int64   `json:"created_at"` // Unix timestamp
+	AccessCount    int     `json:"access_count"`
+	IsHistorical   bool    `json:"is_historical"`
+	Contradictions int     `json:"contradictions"`
+	Invalidations  int     `json:"invalidations"`
+}
+
+// GraphInvalidateRequest defines the body for invalidating a memory node.
+// Creates an invalidated_by relation for epistemic friction tracking.
+type GraphInvalidateRequest struct {
+	IndexName string `json:"index_name"`
+	SourceID  string `json:"source_id,omitempty"` // Node that performs invalidation (optional)
+	TargetID  string `json:"target_id"`           // Node being invalidated (required)
+	Reason    string `json:"reason,omitempty"`    // Explanation for invalidation
+}
