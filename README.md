@@ -195,6 +195,9 @@ KektorDB can function as a **smart middleware** between your Chat UI and your LL
 ### Cognitive & Agentic Capabilities
 *   **Cognitive Engine (Gardener):** A background daemon that performs cross-detector confidence validation. It analyzes the graph for contradictions, tracks user profiles, models knowledge evolution, and resolves conflicts using LLMs.
 *   **Core Fact Extraction:** The Gardener automatically extracts immutable facts from user interactions (name, profession, preferences) and creates pinned memory nodes with `type="core_fact"` for persistent, fast retrieval without time-decay.
+*   **Epistemic Confidence Scoring:** Three-pillar mathematical framework (Consensus 40%, Stability 30%, Friction 30%) that assigns confidence scores (0.0-1.0) to memories, identifying states: crystallized, stable, volatile, or contested.
+*   **Semantic Memory Evolution ("Semantic Git"):** Version control for memories. Evolve memories rather than updating them, preserving full history with `superseded_by`/`evolves_from` edges and `_is_historical` markers.
+*   **Automatic Belief Consolidation:** The Gardener automatically resolves volatile and contested beliefs during reflection cycles, using LLM-based consolidation to merge similar memories or archive outdated information.
 *   **Adaptive Retrieval:** A sophisticated RAG pipeline that uses graph-aware dynamically expanded context, retrieving seed chunks and automatically following semantic neighbors up to a budget constraint.
 *   **Query Rewriting (CQR):** Automatically rewrites user questions based on chat history to solve the "Memory Problem".
 *   **Grounded HyDe:** Generates grounded hypothetical answers using real data fragments to improve semantic recall for vague queries.
@@ -342,6 +345,19 @@ This example demonstrates building an **AI Agent with Memory** using sessions an
         filter_str="tags ? 'project'"
     )
     print(f"Found {len(results)} relevant memories")
+
+    # 6. Check belief confidence of a memory
+    belief = client.vbelief_state(index, query="Marco's project name")
+    print(f"Confidence: {belief['confidence']:.2f}, State: {belief['state']}")
+
+    # 7. Evolve a memory when information changes
+    new_id = client.vevolve(
+        index,
+        old_id="memory_001",
+        reason="User updated their preference",
+        new_content="Marco now prefers detailed explanations with examples"
+    )
+    print(f"Memory evolved to: {new_id['new_id']}")
     ```
 
 👉 **[Read the Full Documentation](DOCUMENTATION.md)** for all available endpoints and features.
@@ -382,13 +398,13 @@ Benchmarks were performed on a local Linux machine (Consumer Hardware, Intel i5-
 *   [x] **Core Fact Extraction:** Automatic extraction of immutable user facts with pinned nodes.
 *   [x] **Context Compression:** Safe lexical compression reducing LLM tokens by 20-35%.
 *   [x] **TypeScript Client:** Official Node.js/TypeScript SDK.
+*   [x] **Semantic Git:** Memory evolution with version control (`VEvolve`, `GetMemoryEvolution`).
+*   [x] **Epistemic Engine:** Belief state assessment with 3-pillar confidence scoring (`VBeliefState`).
+*   [x] **Belief Consolidation:** Automatic resolution of volatile/contested beliefs.
 
 ### Planned (Short Term)
-*   [x] **Graph Filtering:** Combine vector search with graph topology filters (Roaring Bitmaps).
-*   [x] **Property Graphs:** Support for "Rich Edges" with attributes and timestamps.
 *   [ ] **Native Backup/Restore:** Simple API to snapshot data to S3/MinIO/Local.
 *   [ ] **SIMD/AVX Optimizations:** Extending pure Go Assembly to more distance metrics.
-*   [x] **RBAC & Security:** Role-Based Access Control for multi-tenant apps.
 
 > **Want to influence the roadmap?** [Open an Issue](https://github.com/sanonone/kektordb/issues) or vote on existing ones!
 

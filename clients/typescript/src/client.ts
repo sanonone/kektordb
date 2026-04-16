@@ -8,11 +8,16 @@ import type {
   AdaptiveRetrieveParams,
   AdaptiveRetrieveResult,
   ApiKeyPolicy,
+  BeliefAssessmentParams,
+  BeliefAssessmentResult,
   CreateIndexParams,
   EndSessionParams,
   EndSessionResult,
+  GetMemoryEvolutionParams,
+  GetMemoryEvolutionResult,
   GraphFilter,
   IndexInfo,
+  InvalidateMemoryParams,
   KektorDBClientOptions,
   LinkParams,
   RagRetrieveParams,
@@ -28,6 +33,8 @@ import type {
   UserProfileItem,
   UserProfileList,
   VectorData,
+  VEvolveParams,
+  VEvolveResult,
 } from "./types";
 
 /**
@@ -677,6 +684,91 @@ export class KektorDBClient {
 
   async revokeApiKey(keyId: string): Promise<void> {
     await this.request("DELETE", `/auth/keys/${keyId}`);
+  }
+
+  // --- Epistemic Engine Methods ---
+
+  /**
+   * Performs an epistemic assessment of a belief or query.
+   * 
+   * Evaluates the truth and robustness of memories using three pillars:
+   * - Consensus: Vector density (semantic convergence)
+   * - Stability: Temporal robustness (age + reinforcements)
+   * - Friction: Topological contradictions (invalidations/contradictions)
+   * 
+   * @param params - Belief assessment parameters
+   * @returns Belief assessment result with confidence, state, evidence, and caveat
+   */
+  async vbeliefState(params: BeliefAssessmentParams): Promise<BeliefAssessmentResult> {
+    const payload: Record<string, any> = {
+      index_name: params.indexName,
+      limit: params.limit ?? 10,
+    };
+    if (params.query) payload.query = params.query;
+    if (params.queryVec) payload.query_vec = params.queryVec;
+    return this.request("POST", "/vector/actions/belief-assessment", payload);
+  }
+
+  /**
+   * Marks a memory node as invalidated.
+   * 
+   * Creates an invalidation relation for epistemic friction tracking.
+   * This affects the belief state assessment of the target memory.
+   * 
+   * @param params - Invalidation parameters
+   * @returns Status response
+   */
+  async invalidateMemory(params: InvalidateMemoryParams): Promise<{ status: string; message: string }> {
+    const payload: Record<string, any> = {
+      index_name: params.indexName,
+      target_id: params.targetId,
+    };
+    if (params.sourceId) payload.source_id = params.sourceId;
+    if (params.reason) payload.reason = params.reason;
+    return this.request("POST", "/graph/actions/invalidate", payload);
+  }
+
+  // --- Memory Evolution Methods ---
+
+  /**
+   * Performs semantic evolution of a memory node.
+   * 
+   * Creates a new version of the memory with updated content/vector and metadata,
+   * links the old node to the new one via 'superseded_by' relation,
+   * and marks the old node as historical via '_is_historical' metadata.
+   * The old node's incoming edges are copied to the new node.
+   * 
+   * @param params - Evolution parameters
+   * @returns Evolution result with new_id, old_id, status, and message
+   */
+  async vevolve(params: VEvolveParams): Promise<VEvolveResult> {
+    const payload: Record<string, any> = {
+      index_name: params.indexName,
+      old_id: params.oldId,
+      reason: params.reason,
+    };
+    if (params.newContent) payload.new_content = params.newContent;
+    if (params.newVector) payload.new_vector = params.newVector;
+    if (params.newMetadata) payload.new_metadata = params.newMetadata;
+    return this.request("POST", "/vector/actions/evolve", payload);
+  }
+
+  /**
+   * Retrieves the evolution chain of a memory node.
+   * 
+   * Follows superseded_by/evolves_from edges to trace how a memory
+   * changed over time. Can traverse backward (history) or forward (future versions).
+   * 
+   * @param params - Evolution retrieval parameters
+   * @returns Evolution chain with steps and total count
+   */
+  async getMemoryEvolution(params: GetMemoryEvolutionParams): Promise<GetMemoryEvolutionResult> {
+    const payload: Record<string, any> = {
+      index_name: params.indexName,
+      memory_id: params.memoryId,
+      direction: params.direction ?? 'backward',
+    };
+    return this.request("POST", "/vector/actions/get-evolution", payload);
   }
 
   // --- Static Utility Methods ---

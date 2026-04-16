@@ -195,6 +195,9 @@ KektorDB può funzionare come **middleware intelligente** tra la tua Chat UI e i
 ### Funzionalità Cognitive & Agentiche
 *   **Motore Cognitivo (Gardener):** Un demone in background che esegue convalide incrociate di confidenza. Analizza il grafo per contraddizioni, traccia profili utente, modella l'evoluzione della conoscenza e risolve i conflitti usando LLM.
 *   **Estrazione Fatti Core:** Il Gardener estrae automaticamente fatti immutabili dalle interazioni utente (nome, professione, preferenze) e crea nodi di memoria pinned con `type="core_fact"` per recupero persistente e veloce senza decadimento temporale.
+*   **Punteggio Confidenza Epistemica:** Framework matematico a tre pilastri (Consenso 40%, Stabilità 30%, Attrito 30%) che assegna punteggi di confidenza (0.0-1.0) alle memorie, identificando stati: cristallizzato, stabile, volatile o contestato.
+*   **Evoluzione Semantica della Memoria ("Semantic Git"):** Controllo versione per le memorie. Evolvi le memorie anziché aggiornarle, preservando la storia completa con relazioni `superseded_by`/`evolves_from` e marcatori `_is_historical`.
+*   **Consolidamento Automatico delle Credenze:** Il Gardener risolve automaticamente credenze volatili e contestate durante i cicli di riflessione, usando il consolidamento basato su LLM per unire memorie simili o archiviare informazioni obsolete.
 *   **Recupero Adattivo:** Una sofisticata pipeline RAG che usa l'espansione del contesto graph-aware, recuperando chunk iniziali e seguendo automaticamente i vicini semantici fino a un limite di token definito dinamicamente.
 *   **Riscrittura Query (CQR):** Riscrive automaticamente le domande dell'utente per risolvere il problema della memoria a breve termine.
 *   **Grounded HyDe:** Genera risposte ipotetiche radicate su frammenti reali di dati, per migliorare drasticamente il recall per le query vaghe.
@@ -342,6 +345,19 @@ Questo esempio dimostra come costruire un **Agente AI con Memoria** usando sessi
         filter_str="tags ? 'project'"
     )
     print(f"Trovate {len(results)} memorie rilevanti")
+
+    # 6. Verifica confidenza epistemica di una memoria
+    belief = client.vbelief_state(index, query="Nome progetto Marco")
+    print(f"Confidenza: {belief['confidence']:.2f}, Stato: {belief['state']}")
+
+    # 7. Evolvi una memoria quando l'informazione cambia
+    new_id = client.vevolve(
+        index,
+        old_id="memory_001",
+        reason="L'utente ha aggiornato la sua preferenza",
+        new_content="Marco ora preferisce spiegazioni dettagliate con esempi"
+    )
+    print(f"Memoria evoluta in: {new_id['new_id']}")
     ```
 
 👉 **[Leggi la Documentazione Completa](DOCUMENTATION.md)** per tutti gli endpoint e le funzionalità disponibili.
@@ -382,13 +398,13 @@ I benchmark sono stati eseguiti su una macchina Linux locale (Hardware Consumer,
 *   [x] **Estrazione Fatti Core:** Estrazione automatica di fatti utente immutabili con nodi pinned.
 *   [x] **Compressione Contesto:** Compressione lessicale sicura che riduce i token LLM del 20-35%.
 *   [x] **Client TypeScript:** SDK Node.js/TypeScript ufficiale.
+*   [x] **Semantic Git:** Evoluzione della memoria con controllo versione (`VEvolve`, `GetMemoryEvolution`).
+*   [x] **Motore Epistemico:** Valutazione stato credenza con punteggio confidenza a 3 pilastri (`VBeliefState`).
+*   [x] **Consolidamento Credenze:** Risoluzione automatica di credenze volatili/contestate.
 
 ### Pianificati (Breve Termine)
-*   [x] **Filtri sul Grafo:** Combina ricerca vettoriale con filtri sulla topologia del grafo (Roaring Bitmaps).
-*   [x] **Property Graphs:** Supporto per "Rich Edges" con attributi e timestamp.
 *   [ ] **Backup/Restore Nativo:** API semplice per salvare snapshot su S3/MinIO/Locale.
 *   [ ] **Ottimizzazioni SIMD/AVX:** Estensione Assembly Go puro a più metriche di distanza.
-*   [x] **RBAC & Sicurezza:** Controllo Accessi Basato sui Ruoli per applicazioni multi-tenant.
 
 > **Vuoi influenzare la roadmap?** [Apri una Issue](https://github.com/sanonone/kektordb/issues) o vota quelle esistenti!
 

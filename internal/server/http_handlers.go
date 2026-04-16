@@ -94,6 +94,10 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /vector/actions/belief-assessment", s.handleBeliefAssessment)
 	mux.HandleFunc("POST /graph/actions/invalidate", s.handleGraphInvalidate)
 
+	// Semantic Memory Evolution API
+	mux.HandleFunc("POST /vector/actions/evolve", s.handleVEvolve)
+	mux.HandleFunc("POST /vector/actions/get-evolution", s.handleGetMemoryEvolution)
+
 	// Cognitive Engine API
 	mux.HandleFunc("GET /vector/indexes/{name}/reflections", s.handleGetReflections)
 	mux.HandleFunc("POST /vector/indexes/{name}/reflections/{id}/resolve", s.handleResolveReflection)
@@ -2543,6 +2547,172 @@ func (s *Server) handleGraphInvalidate(w http.ResponseWriter, r *http.Request) {
 		"status":  "OK",
 		"message": fmt.Sprintf("Node %s has been invalidated", req.TargetID),
 	})
+}
+
+// handleVEvolve performs semantic evolution of a memory node.
+// It creates a new version of the memory and links the old one as historical.
+func (s *Server) handleVEvolve(w http.ResponseWriter, r *http.Request) {
+	var req VectorEvolveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %v", err))
+		return
+	}
+
+	// Validate required fields
+	if req.IndexName == "" || req.OldID == "" || req.Reason == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name, old_id, and reason are required"))
+		return
+	}
+
+	// Check if index exists
+	if !s.Engine.IndexExists(req.IndexName) {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("index '%s' not found", req.IndexName))
+		return
+	}
+
+	// Get new vector (either direct or via embedding)
+	var newVector []float32
+	if len(req.NewVector) > 0 {
+		newVector = req.NewVector
+	} else if req.NewContent != "" {
+		// Embed the content text using the vectorizer service
+		var embedder embeddings.Embedder
+		if s.vectorizerService != nil {
+			embedder = s.vectorizerService.GetEmbedderForIndex(req.IndexName)
+		}
+
+		if embedder == nil {
+			s.writeHTTPError(w, http.StatusServiceUnavailable, fmt.Errorf("no embedder available for index '%s'", req.IndexName))
+			return
+		}
+
+		vec, err := embedder.Embed(req.NewContent)
+		if err != nil {
+			s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("embedding failed: %v", err))
+			return
+		}
+		newVector = vec
+	} else {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("either new_content or new_vector is required"))
+		return
+	}
+
+	// Merge new metadata with content if provided
+	newMetadata := req.NewMetadata
+	if newMetadata == nil {
+		newMetadata = make(map[string]any)
+	}
+	if req.NewContent != "" && newMetadata["content"] == nil {
+		newMetadata["content"] = req.NewContent
+	}
+
+	// Call the engine's VEvolve
+	newID, err := s.Engine.VEvolve(req.IndexName, req.OldID, newVector, newMetadata, req.Reason)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("evolution failed: %v", err))
+		return
+	}
+
+	resp := VectorEvolveResponse{
+		NewID:   newID,
+		OldID:   req.OldID,
+		Status:  "evolved",
+		Message: fmt.Sprintf("Memory %s evolved into %s", req.OldID, newID),
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, resp)
+}
+
+// handleGetMemoryEvolution retrieves the evolution chain of a memory node.
+// It follows superseded_by/evolves_from edges to trace the history.
+func (s *Server) handleGetMemoryEvolution(w http.ResponseWriter, r *http.Request) {
+	var req GetMemoryEvolutionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %v", err))
+		return
+	}
+
+	// Validate required fields
+	if req.IndexName == "" || req.MemoryID == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name and memory_id are required"))
+		return
+	}
+
+	// Check if index exists
+	if !s.Engine.IndexExists(req.IndexName) {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("index '%s' not found", req.IndexName))
+		return
+	}
+
+	// Set default direction
+	direction := req.Direction
+	if direction == "" {
+		direction = "backward"
+	}
+
+	// Build the evolution chain
+	var chain []MemoryEvolutionStep
+	currentID := req.MemoryID
+	visited := make(map[string]bool)
+
+	for len(chain) < 100 { // Safety limit to prevent infinite loops
+		if visited[currentID] {
+			break
+		}
+		visited[currentID] = true
+
+		// Get the current node
+		data, err := s.Engine.VGet(req.IndexName, currentID)
+		if err != nil {
+			break // Stop if node not found
+		}
+
+		// Build the step
+		step := MemoryEvolutionStep{
+			MemoryID:  currentID,
+			Content:   getString(data.Metadata, "content"),
+			IsCurrent: len(chain) == 0 && direction == "backward",
+		}
+
+		// Extract created_at if available
+		if t, ok := data.Metadata["_created_at"].(int64); ok {
+			step.CreatedAt = t
+		}
+
+		// Get superseded_by edges (forward direction)
+		outEdges, _ := s.Engine.VGetEdges(req.IndexName, currentID, "superseded_by", 0)
+		if len(outEdges) > 0 {
+			step.SupersededBy = outEdges[0].TargetID
+			props := outEdges[0].GetProps()
+			if reason, ok := props["reason"]; ok && reason != nil {
+				step.EvolutionReason = fmt.Sprintf("%v", reason)
+			}
+		}
+
+		// Get evolves_from edges (backward direction)
+		inEdges, _ := s.Engine.VGetEdges(req.IndexName, currentID, "evolves_from", 0)
+		if len(inEdges) > 0 {
+			step.EvolvesFrom = inEdges[0].TargetID
+		}
+
+		chain = append(chain, step)
+
+		// Move to next node in chain
+		if direction == "backward" && step.EvolvesFrom != "" {
+			currentID = step.EvolvesFrom
+		} else if direction == "forward" && step.SupersededBy != "" {
+			currentID = step.SupersededBy
+		} else {
+			break
+		}
+	}
+
+	resp := GetMemoryEvolutionResponse{
+		EvolutionChain: chain,
+		TotalSteps:     len(chain),
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, resp)
 }
 
 // --- HELPER FUNCTIONS ---

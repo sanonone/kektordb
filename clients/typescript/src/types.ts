@@ -282,3 +282,101 @@ export interface CognitiveSessionOptions {
   autoEnd?: boolean;
   ttl?: number;  // milliseconds
 }
+
+// --- Epistemic Engine ---
+
+export interface BeliefAssessmentParams {
+  indexName: string;
+  query?: string;      // Text to embed (alternative to queryVec)
+  queryVec?: number[]; // Direct vector (alternative to query)
+  limit?: number;      // Number of candidates (default 10, max 50)
+}
+
+export interface ConsensusEvidence {
+  score: number;           // 0.0-1.0
+  sources: number;         // Number of nodes analyzed
+  vector_variance: number; // Raw variance metric
+}
+
+export interface StabilityEvidence {
+  score: number;        // 0.0-1.0
+  avg_age_days: number; // Average age in days
+  total_access: number; // Sum of access counts
+}
+
+export interface FrictionEvidence {
+  score: number;          // 0.0-1.0 (1.0 = no friction)
+  contradictions: number; // Count of contradicts relations
+  invalidations: number;  // Count of invalidated_by relations
+}
+
+export interface EpistemicEvidence {
+  consensus: ConsensusEvidence;
+  stability: StabilityEvidence;
+  friction: FrictionEvidence;
+}
+
+export interface EpistemicNode {
+  id: string;
+  content: string;      // From metadata
+  score: number;        // Cosine similarity
+  created_at: number;   // Unix timestamp
+  access_count: number;
+  is_historical: boolean;
+  contradictions: number;
+  invalidations: number;
+}
+
+export interface BeliefAssessmentResult {
+  confidence: number; // 0.0-1.0 aggregated score
+  state: 'crystallized' | 'stable' | 'volatile' | 'contested';
+  evidence: EpistemicEvidence;
+  caveat?: string;    // Human-readable explanation
+  nodes: EpistemicNode[];
+}
+
+export interface InvalidateMemoryParams {
+  indexName: string;
+  targetId: string;    // Node being invalidated (required)
+  sourceId?: string;   // Node performing invalidation (optional)
+  reason?: string;     // Explanation for invalidation
+}
+
+// --- Memory Evolution ---
+
+export interface VEvolveParams {
+  indexName: string;
+  oldId: string;                    // ID of node to evolve (required)
+  reason: string;                   // Reason for evolution (required)
+  newContent?: string;              // New content text (optional)
+  newVector?: number[];             // New vector embedding (optional)
+  newMetadata?: Record<string, any>; // Additional metadata (optional)
+}
+
+export interface VEvolveResult {
+  new_id: string;   // ID of the newly created node
+  old_id: string;   // ID of the original node
+  status: string;   // "evolved"
+  message: string;
+}
+
+export interface MemoryEvolutionStep {
+  memory_id: string;
+  content?: string;
+  created_at: number;
+  evolves_from?: string;
+  superseded_by?: string;
+  evolution_reason?: string;
+  is_current: boolean;
+}
+
+export interface GetMemoryEvolutionParams {
+  indexName: string;
+  memoryId: string;     // Starting memory ID (required)
+  direction?: 'backward' | 'forward'; // "backward" (default) or "forward"
+}
+
+export interface GetMemoryEvolutionResult {
+  evolution_chain: MemoryEvolutionStep[];
+  total_steps: number;
+}

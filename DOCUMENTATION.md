@@ -27,6 +27,9 @@
     *   [RAG Retrieval](#55-rag-retrieval)
     *   [Model Context Protocol (MCP)](#56-model-context-protocol-mcp)
     *   [System & Maintenance](#57-system--maintenance)
+    *   [Epistemic Engine (Belief Assessment)](#58-epistemic-engine-belief-assessment)
+    *   [Memory Evolution (Semantic Git)](#59-memory-evolution-semantic-git)
+    *   [Belief Consolidation](#510-belief-consolidation)
 6.  [Go Library Interface](#6-go-library-interface)
 7.  [Maintenance & Internals](#7-maintenance--internals)
 
@@ -1223,6 +1226,217 @@ Helper endpoint that converts text to vector (using the server-side embedder) an
 **`POST /ui/explore`**
 Returns a sample of the graph structure (Nodes + Edges) for visualization.
 **Body:** `{"index_name": "docs", "limit": 500}`
+
+---
+
+### 5.8 Epistemic Engine (Belief Assessment)
+
+The Epistemic Engine provides confidence scoring for memories using a three-pillar mathematical framework:
+
+1. **Consensus (40%)**: Vector density measuring semantic convergence across similar memories
+2. **Stability (30%)**: Temporal robustness based on age and access patterns using configurable decay models
+3. **Friction (30%)**: Topological contradictions tracking invalidations and contradictions in the graph
+
+#### Belief Assessment
+
+**`POST /vector/actions/belief-assessment`**
+
+Evaluates the epistemic state of a belief or query against the knowledge base.
+
+**Body:**
+```json
+{
+  "index_name": "memories",
+  "query": "User likes Italian food",
+  "limit": 10
+}
+```
+
+**Response:**
+```json
+{
+  "confidence": 0.87,
+  "state": "crystallized",
+  "evidence": {
+    "consensus": {
+      "score": 0.92,
+      "sources": 5,
+      "vector_variance": 0.08
+    },
+    "stability": {
+      "score": 0.85,
+      "avg_age_days": 45.2,
+      "total_access": 12
+    },
+    "friction": {
+      "score": 0.95,
+      "contradictions": 0,
+      "invalidations": 0
+    }
+  },
+  "caveat": "Questo fatto è solidamente stabilito: alta convergenza semantica, storicità confermata e nessuna contraddizione significativa.",
+  "nodes": [
+    {
+      "id": "memory_123",
+      "content": "User prefers Italian cuisine",
+      "score": 0.94,
+      "created_at": 1704067200,
+      "access_count": 5,
+      "is_historical": false,
+      "contradictions": 0,
+      "invalidations": 0
+    }
+  ]
+}
+```
+
+**States:**
+- `crystallized`: High confidence (≥0.85), well-established fact
+- `stable`: Medium-high confidence, generally reliable
+- `volatile`: Low confidence (≤0.40), recent or rarely accessed
+- `contested`: Has contradictions/invalidations and not crystallized
+
+#### Invalidating Memories
+
+**`POST /graph/actions/invalidate`**
+
+Marks a memory as invalidated, creating epistemic friction that affects belief assessment.
+
+**Body:**
+```json
+{
+  "index_name": "memories",
+  "target_id": "memory_123",
+  "source_id": "memory_456",
+  "reason": "User corrected their preference"
+}
+```
+
+---
+
+### 5.9 Memory Evolution (Semantic Git)
+
+Semantic Git provides version control for memories. When information changes, you can evolve a memory rather than simply updating it, preserving the full history and maintaining an audit trail.
+
+#### Evolve Memory
+
+**`POST /vector/actions/evolve`**
+
+Creates a new version of a memory while preserving the old one as historical.
+
+**Body:**
+```json
+{
+  "index_name": "memories",
+  "old_id": "pref_italian",
+  "new_content": "User prefers French cuisine",
+  "reason": "User moved to Paris and developed new preferences"
+}
+```
+
+**Response:**
+```json
+{
+  "new_id": "evolved_pref_italian_1704567890123456789",
+  "old_id": "pref_italian",
+  "status": "evolved",
+  "message": "Memory pref_italian evolved into evolved_pref_italian_1704567890123456789"
+}
+```
+
+**How it works:**
+1. Creates a new node with the updated content/vector
+2. Links old → new via `superseded_by` relation (with reason)
+3. Links new → old via `evolves_from` relation
+4. Copies all incoming edges from old node to new node
+5. Marks old node with `_is_historical: true`
+
+#### Get Memory Evolution
+
+**`POST /vector/actions/get-evolution`**
+
+Retrieves the complete evolution chain for a memory.
+
+**Body:**
+```json
+{
+  "index_name": "memories",
+  "memory_id": "evolved_pref_italian_1704567890123456789",
+  "direction": "backward"
+}
+```
+
+**Response:**
+```json
+{
+  "evolution_chain": [
+    {
+      "memory_id": "evolved_pref_italian_1704567890123456789",
+      "content": "User prefers French cuisine",
+      "created_at": 1704567890,
+      "evolves_from": "pref_italian",
+      "superseded_by": null,
+      "evolution_reason": null,
+      "is_current": true
+    },
+    {
+      "memory_id": "pref_italian",
+      "content": "User prefers Italian cuisine",
+      "created_at": 1704067200,
+      "evolves_from": null,
+      "superseded_by": "evolved_pref_italian_1704567890123456789",
+      "evolution_reason": "User moved to Paris and developed new preferences",
+      "is_current": false
+    }
+  ],
+  "total_steps": 2
+}
+```
+
+**Directions:**
+- `backward`: Follows `evolves_from` edges to see history (default)
+- `forward`: Follows `superseded_by` edges to see future versions
+
+---
+
+### 5.10 Belief Consolidation
+
+The Gardener's automatic belief consolidation resolves volatile and contested beliefs during cognitive reflection cycles.
+
+**How it works:**
+1. During each reflection cycle, the Gardener identifies volatile beliefs (confidence ≤ 0.40)
+2. For contested beliefs, it analyzes contradictions and invalidations
+3. Uses LLM-based consolidation to decide whether to:
+   - Merge similar memories into a consolidated fact
+   - Archive outdated information
+   - Create reflection nodes for human review
+
+**Epistemic Config in Cognitive Engine:**
+
+```yaml
+cognitive:
+  # Epistemic Engine Configuration (NEW)
+  epistemic:
+    enabled: true
+    weights:
+      consensus: 0.40    # Vector density weight
+      stability: 0.30    # Temporal robustness weight
+      friction: 0.30     # Contradiction penalty weight
+    thresholds:
+      crystallized: 0.85  # Above = crystallized state
+      volatile: 0.40      # Below = volatile state
+    decay_model: "ebbinghaus"  # ebbinghaus | exponential | linear
+```
+
+**Decay Models:**
+- `ebbinghaus`: S = halfLife × (1 + ln(1 + accessCount)) - More weight to reinforced memories
+- `exponential`: Standard exponential decay with 30-day half-life
+- `linear`: Linear decay with 30-day half-life
+
+**Client SDK Methods:**
+- Go: `VBeliefState()`, `InvalidateMemory()`, `VEvolve()`, `GetMemoryEvolution()`
+- Python: `vbelief_state()`, `invalidate_memory()`, `vevolve()`, `get_memory_evolution()`
+- TypeScript: `vbelfState()`, `invalidateMemory()`, `vevolve()`, `getMemoryEvolution()`
 
 ---
 

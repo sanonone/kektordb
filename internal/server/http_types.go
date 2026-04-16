@@ -437,3 +437,48 @@ type GraphInvalidateRequest struct {
 	TargetID  string `json:"target_id"`           // Node being invalidated (required)
 	Reason    string `json:"reason,omitempty"`    // Explanation for invalidation
 }
+
+// --- Semantic Memory Evolution Types ---
+
+// VectorEvolveRequest defines the body for evolving (versioning) a memory node.
+// Creates a new node with updated data and links it to the old node.
+type VectorEvolveRequest struct {
+	IndexName   string         `json:"index_name"`
+	OldID       string         `json:"old_id"`                 // ID of the node to evolve
+	NewVector   []float32      `json:"new_vector,omitempty"`   // New vector (optional, if empty will embed NewContent)
+	NewContent  string         `json:"new_content,omitempty"`  // New content text (optional, used if NewVector empty)
+	NewMetadata map[string]any `json:"new_metadata,omitempty"` // Additional metadata for new node
+	Reason      string         `json:"reason"`                 // Reason for evolution
+}
+
+// VectorEvolveResponse returns the result of a memory evolution.
+type VectorEvolveResponse struct {
+	NewID   string `json:"new_id"` // ID of the newly created node
+	OldID   string `json:"old_id"` // ID of the original (now historical) node
+	Status  string `json:"status"` // "evolved"
+	Message string `json:"message"`
+}
+
+// MemoryEvolutionStep represents a single step in the evolution chain.
+type MemoryEvolutionStep struct {
+	MemoryID        string `json:"memory_id"`
+	Content         string `json:"content,omitempty"`
+	CreatedAt       int64  `json:"created_at"`
+	EvolvesFrom     string `json:"evolves_from,omitempty"`
+	SupersededBy    string `json:"superseded_by,omitempty"`
+	EvolutionReason string `json:"evolution_reason,omitempty"`
+	IsCurrent       bool   `json:"is_current"`
+}
+
+// GetMemoryEvolutionRequest defines the body for retrieving evolution chain.
+type GetMemoryEvolutionRequest struct {
+	IndexName string `json:"index_name"`
+	MemoryID  string `json:"memory_id"`           // Starting memory ID
+	Direction string `json:"direction,omitempty"` // "backward" (default) or "forward"
+}
+
+// GetMemoryEvolutionResponse returns the complete evolution chain.
+type GetMemoryEvolutionResponse struct {
+	EvolutionChain []MemoryEvolutionStep `json:"evolution_chain"`
+	TotalSteps     int                   `json:"total_steps"`
+}

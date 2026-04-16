@@ -1056,3 +1056,166 @@ class KektorDBClient:
     def revoke_api_key(self, key_id: str) -> None:
         """Revokes an API key."""
         self._request("DELETE", f"/auth/keys/{key_id}")
+
+    # --- Epistemic Engine Methods ---
+
+    def vbelief_state(
+        self,
+        index_name: str,
+        query: str = "",
+        query_vec: List[float] = None,
+        limit: int = 10,
+    ) -> Dict[str, Any]:
+        """
+        Performs an epistemic assessment of a belief or query.
+
+        Evaluates the truth and robustness of memories using three pillars:
+        - Consensus: Vector density (semantic convergence)
+        - Stability: Temporal robustness (age + reinforcements)
+        - Friction: Topological contradictions (invalidations/contradictions)
+
+        Args:
+            index_name: The index to search in.
+            query: Text query to embed (alternative to query_vec).
+            query_vec: Direct query vector (alternative to query).
+            limit: Number of candidate nodes to analyze (default 10, max 50).
+
+        Returns:
+            Dict with:
+            - confidence: float (0.0-1.0 aggregated score)
+            - state: str ("crystallized", "stable", "volatile", "contested")
+            - evidence: Dict with consensus, stability, friction details
+            - caveat: str (human-readable explanation)
+            - nodes: List of analyzed nodes with their scores and metadata
+
+        Raises:
+            APIError: If the index does not exist or query is invalid.
+            ConnectionError: If a network error occurs.
+        """
+        payload = {"index_name": index_name, "limit": limit}
+        if query:
+            payload["query"] = query
+        if query_vec:
+            payload["query_vec"] = query_vec
+        return self._request("POST", "/vector/actions/belief-assessment", json=payload)
+
+    def invalidate_memory(
+        self,
+        index_name: str,
+        target_id: str,
+        source_id: str = "",
+        reason: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Marks a memory node as invalidated.
+
+        Creates an invalidation relation for epistemic friction tracking.
+        This affects the belief state assessment of the target memory.
+
+        Args:
+            index_name: The index containing the nodes.
+            target_id: The node being invalidated (required).
+            source_id: The node performing invalidation (optional, defaults to "system").
+            reason: Explanation for the invalidation (optional).
+
+        Returns:
+            Dict with status and message.
+
+        Raises:
+            APIError: If the index or target node does not exist.
+            ConnectionError: If a network error occurs.
+        """
+        payload = {"index_name": index_name, "target_id": target_id}
+        if source_id:
+            payload["source_id"] = source_id
+        if reason:
+            payload["reason"] = reason
+        return self._request("POST", "/graph/actions/invalidate", json=payload)
+
+    # --- Memory Evolution Methods ---
+
+    def vevolve(
+        self,
+        index_name: str,
+        old_id: str,
+        reason: str,
+        new_content: str = "",
+        new_vector: List[float] = None,
+        new_metadata: Dict[str, Any] = None,
+    ) -> Dict[str, Any]:
+        """
+        Performs semantic evolution of a memory node.
+
+        Creates a new version of the memory with updated content/vector and metadata,
+        links the old node to the new one via 'superseded_by' relation,
+        and marks the old node as historical via '_is_historical' metadata.
+        The old node's incoming edges are copied to the new node.
+
+        Args:
+            index_name: The index containing the nodes.
+            old_id: ID of the node to evolve (required).
+            reason: Reason for evolution (required).
+            new_content: New content text (optional, if empty must provide new_vector).
+            new_vector: New vector embedding (optional, if empty will embed new_content).
+            new_metadata: Additional metadata for the new node (optional).
+
+        Returns:
+            Dict with:
+            - new_id: ID of the newly created node
+            - old_id: ID of the original node
+            - status: "evolved"
+            - message: Human-readable success message
+
+        Raises:
+            APIError: If the index or old node does not exist, or if neither
+                     new_content nor new_vector is provided.
+            ConnectionError: If a network error occurs.
+        """
+        payload = {
+            "index_name": index_name,
+            "old_id": old_id,
+            "reason": reason,
+        }
+        if new_content:
+            payload["new_content"] = new_content
+        if new_vector:
+            payload["new_vector"] = new_vector
+        if new_metadata:
+            payload["new_metadata"] = new_metadata
+        return self._request("POST", "/vector/actions/evolve", json=payload)
+
+    def get_memory_evolution(
+        self,
+        index_name: str,
+        memory_id: str,
+        direction: str = "backward",
+    ) -> Dict[str, Any]:
+        """
+        Retrieves the evolution chain of a memory node.
+
+        Follows superseded_by/evolves_from edges to trace how a memory
+        changed over time. Can traverse backward (history) or forward (future versions).
+
+        Args:
+            index_name: The index containing the memory.
+            memory_id: The starting memory ID (required).
+            direction: "backward" (follows evolves_from, default) or
+                      "forward" (follows superseded_by).
+
+        Returns:
+            Dict with:
+            - evolution_chain: List of MemoryEvolutionStep dicts
+              Each step contains memory_id, content, created_at,
+              evolves_from, superseded_by, evolution_reason, is_current
+            - total_steps: Number of steps in the chain
+
+        Raises:
+            APIError: If the index or memory does not exist.
+            ConnectionError: If a network error occurs.
+        """
+        payload = {
+            "index_name": index_name,
+            "memory_id": memory_id,
+            "direction": direction,
+        }
+        return self._request("POST", "/vector/actions/get-evolution", json=payload)

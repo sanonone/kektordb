@@ -1199,6 +1199,114 @@ type exportResponse struct {
 	NextOffset int          `json:"next_offset"`
 }
 
+// --- Epistemic Engine Types ---
+
+// BeliefAssessmentResponse represents the epistemic state of a memory.
+type BeliefAssessmentResponse struct {
+	Confidence float64           `json:"confidence"` // 0.0-1.0 aggregated score
+	State      string            `json:"state"`      // "crystallized", "stable", "volatile", "contested"
+	Evidence   EpistemicEvidence `json:"evidence"`
+	Caveat     string            `json:"caveat,omitempty"`
+	Nodes      []EpistemicNode   `json:"nodes"`
+}
+
+// EpistemicEvidence holds the detailed evidence for each pillar.
+type EpistemicEvidence struct {
+	Consensus ConsensusEvidence `json:"consensus"`
+	Stability StabilityEvidence `json:"stability"`
+	Friction  FrictionEvidence  `json:"friction"`
+}
+
+// ConsensusEvidence tracks vector density (semantic convergence).
+type ConsensusEvidence struct {
+	Score          float64 `json:"score"`           // 0.0-1.0
+	Sources        int     `json:"sources"`         // Number of nodes analyzed
+	VectorVariance float64 `json:"vector_variance"` // Raw variance metric
+}
+
+// StabilityEvidence tracks temporal robustness (age + reinforcements).
+type StabilityEvidence struct {
+	Score       float64 `json:"score"`        // 0.0-1.0
+	AvgAgeDays  float64 `json:"avg_age_days"` // Average age in days
+	TotalAccess int     `json:"total_access"` // Sum of access counts
+}
+
+// FrictionEvidence tracks topological contradictions.
+type FrictionEvidence struct {
+	Score          float64 `json:"score"`          // 0.0-1.0 (1.0 = no friction)
+	Contradictions int     `json:"contradictions"` // Count of contradicts relations
+	Invalidations  int     `json:"invalidations"`  // Count of invalidated_by relations
+}
+
+// EpistemicNode represents a single analyzed node in the response.
+type EpistemicNode struct {
+	ID             string  `json:"id"`
+	Content        string  `json:"content"`    // From metadata
+	Score          float64 `json:"score"`      // Cosine similarity
+	CreatedAt      int64   `json:"created_at"` // Unix timestamp
+	AccessCount    int     `json:"access_count"`
+	IsHistorical   bool    `json:"is_historical"`
+	Contradictions int     `json:"contradictions"`
+	Invalidations  int     `json:"invalidations"`
+}
+
+// --- Memory Evolution Types ---
+
+// MemoryEvolutionStep represents a single step in the evolution chain.
+type MemoryEvolutionStep struct {
+	MemoryID        string `json:"memory_id"`
+	Content         string `json:"content,omitempty"`
+	CreatedAt       int64  `json:"created_at"`
+	EvolvesFrom     string `json:"evolves_from,omitempty"`
+	SupersededBy    string `json:"superseded_by,omitempty"`
+	EvolutionReason string `json:"evolution_reason,omitempty"`
+	IsCurrent       bool   `json:"is_current"`
+}
+
+// MemoryEvolutionResponse returns the complete evolution chain.
+type MemoryEvolutionResponse struct {
+	EvolutionChain []MemoryEvolutionStep `json:"evolution_chain"`
+	TotalSteps     int                   `json:"total_steps"`
+}
+
+// --- Request/Response Structs for Epistemic API ---
+
+type beliefAssessmentRequest struct {
+	IndexName string    `json:"index_name"`
+	Query     string    `json:"query,omitempty"`     // Text to embed (alternative to QueryVec)
+	QueryVec  []float32 `json:"query_vec,omitempty"` // Direct vector (alternative to Query)
+	Limit     int       `json:"limit,omitempty"`     // Number of candidates K (default 10, max 50)
+}
+
+type graphInvalidateRequest struct {
+	IndexName string `json:"index_name"`
+	SourceID  string `json:"source_id,omitempty"` // Node that performs invalidation (optional)
+	TargetID  string `json:"target_id"`           // Node being invalidated (required)
+	Reason    string `json:"reason,omitempty"`    // Explanation for invalidation
+}
+
+type vectorEvolveRequest struct {
+	IndexName   string         `json:"index_name"`
+	OldID       string         `json:"old_id"`
+	NewVector   []float32      `json:"new_vector,omitempty"`
+	NewContent  string         `json:"new_content,omitempty"`
+	NewMetadata map[string]any `json:"new_metadata,omitempty"`
+	Reason      string         `json:"reason"`
+}
+
+type vectorEvolveResponse struct {
+	NewID   string `json:"new_id"`
+	OldID   string `json:"old_id"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
+type getMemoryEvolutionRequest struct {
+	IndexName string `json:"index_name"`
+	MemoryID  string `json:"memory_id"`
+	Direction string `json:"direction,omitempty"` // "backward" (default) or "forward"
+}
+
 // --- Graph: Pathfinding & Edges ---
 
 // FindPath finds the shortest path between two nodes in the graph.
@@ -1490,4 +1598,98 @@ func (c *Client) ListUserProfiles(indexName string) ([]UserProfileItem, error) {
 		return nil, fmt.Errorf("invalid JSON response for ListUserProfiles: %w", err)
 	}
 	return resp.Profiles, nil
+}
+
+// --- Epistemic Engine Methods ---
+
+// VBeliefState performs an epistemic assessment of a belief or query.
+// It evaluates the truth and robustness of memories using three pillars:
+// Consensus (vector density), Stability (temporal robustness), and Friction (topological contradictions).
+// Returns confidence score (0.0-1.0), state ("crystallized", "stable", "volatile", "contested"),
+// detailed evidence, and a human-readable caveat.
+func (c *Client) VBeliefState(indexName, query string, queryVec []float32, limit int) (*BeliefAssessmentResponse, error) {
+	req := beliefAssessmentRequest{
+		IndexName: indexName,
+		Query:     query,
+		QueryVec:  queryVec,
+		Limit:     limit,
+	}
+
+	respBody, err := c.jsonRequest(http.MethodPost, "/vector/actions/belief-assessment", req)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp BeliefAssessmentResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for VBeliefState: %w", err)
+	}
+	return &resp, nil
+}
+
+// InvalidateMemory marks a memory node as invalidated.
+// This creates an invalidation relation for epistemic friction tracking.
+// The sourceID (node performing invalidation) is optional - if empty, "system" is used.
+// The reason parameter provides context for the invalidation.
+func (c *Client) InvalidateMemory(indexName, sourceID, targetID, reason string) error {
+	req := graphInvalidateRequest{
+		IndexName: indexName,
+		SourceID:  sourceID,
+		TargetID:  targetID,
+		Reason:    reason,
+	}
+	_, err := c.jsonRequest(http.MethodPost, "/graph/actions/invalidate", req)
+	return err
+}
+
+// --- Memory Evolution Methods ---
+
+// VEvolve performs semantic evolution of a memory node.
+// It creates a new version of the memory with updated content/vector and metadata,
+// links the old node to the new one, and marks the old node as historical.
+// The old node's incoming edges are copied to the new node to preserve graph topology.
+// Returns the ID of the newly created node.
+func (c *Client) VEvolve(indexName, oldID string, newVector []float32, newContent string, newMetadata map[string]any, reason string) (string, error) {
+	req := vectorEvolveRequest{
+		IndexName:   indexName,
+		OldID:       oldID,
+		NewVector:   newVector,
+		NewContent:  newContent,
+		NewMetadata: newMetadata,
+		Reason:      reason,
+	}
+
+	respBody, err := c.jsonRequest(http.MethodPost, "/vector/actions/evolve", req)
+	if err != nil {
+		return "", err
+	}
+
+	var resp vectorEvolveResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return "", fmt.Errorf("invalid JSON response for VEvolve: %w", err)
+	}
+	return resp.NewID, nil
+}
+
+// GetMemoryEvolution retrieves the evolution chain of a memory node.
+// It follows superseded_by/evolves_from edges to trace how a memory changed over time.
+// Direction can be "backward" (follows evolves_from, default) or "forward" (follows superseded_by).
+// Returns the complete chain of evolution steps.
+func (c *Client) GetMemoryEvolution(indexName, memoryID string, direction string) (*MemoryEvolutionResponse, error) {
+	req := getMemoryEvolutionRequest{
+		IndexName: indexName,
+		MemoryID:  memoryID,
+		Direction: direction,
+	}
+
+	respBody, err := c.jsonRequest(http.MethodPost, "/vector/actions/get-evolution", req)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp MemoryEvolutionResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for GetMemoryEvolution: %w", err)
+	}
+	return &resp, nil
 }
