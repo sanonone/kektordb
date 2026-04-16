@@ -297,3 +297,41 @@ type AdaptiveRetrieveResult struct {
 		TotalEvaluated int `json:"total_evaluated"`
 	} `json:"expansion_stats"`
 }
+
+// --- Semantic Evolution Tools ---
+
+type EvolveMemoryArgs struct {
+	IndexName   string    `json:"index_name,omitempty" jsonschema:"Index name (defaults to 'mcp_memory')"`
+	OldMemoryID string    `json:"old_memory_id" jsonschema:"ID of the memory to evolve from,required"`
+	NewContent  string    `json:"new_content" jsonschema:"Updated content for the new memory"`
+	NewVector   []float32 `json:"new_vector,omitempty" jsonschema:"Optional vector (will be generated from content if not provided)"`
+	Layer       string    `json:"layer,omitempty" jsonschema:"Memory layer (episodic/semantic/procedural)"`
+	Reason      string    `json:"reason" jsonschema:"Reason for the evolution (e.g. 'User corrected me'),required"`
+}
+
+type EvolveMemoryResult struct {
+	NewMemoryID string `json:"new_memory_id"`
+	OldMemoryID string `json:"old_memory_id"`
+	Status      string `json:"status"`
+}
+
+type GetMemoryEvolutionArgs struct {
+	IndexName string `json:"index_name,omitempty" jsonschema:"Index name (defaults to 'mcp_memory')"`
+	MemoryID  string `json:"memory_id" jsonschema:"Current memory ID to trace back,required"`
+	Direction string `json:"direction,omitempty" jsonschema:"'backward' (default) to trace origins, 'forward' to see evolutions"`
+}
+
+type MemoryEvolutionStep struct {
+	MemoryID        string `json:"memory_id"`
+	Content         any    `json:"content,omitempty"`
+	CreatedAt       int64  `json:"created_at"`
+	IsCurrent       bool   `json:"is_current"`
+	SupersededBy    string `json:"superseded_by,omitempty"`
+	EvolvesFrom     string `json:"evolves_from,omitempty"`
+	EvolutionReason string `json:"evolution_reason,omitempty"`
+}
+
+type GetMemoryEvolutionResult struct {
+	EvolutionChain []MemoryEvolutionStep `json:"evolution_chain"`
+	TotalSteps     int                   `json:"total_steps"`
+}

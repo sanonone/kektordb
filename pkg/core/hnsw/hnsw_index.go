@@ -2858,6 +2858,26 @@ func (h *Index) GetIDsByCursor(startCursor uint32, limit int) ([]string, uint32)
 	return ids, curr
 }
 
+// GetAllValidNodeIDs returns a roaring bitmap of all non-deleted internal node IDs.
+// Used for filter operations requiring complement sets (e.g., != operator).
+func (h *Index) GetAllValidNodeIDs() (*roaring.Bitmap, error) {
+	h.metaMu.RLock()
+	defer h.metaMu.RUnlock()
+
+	result := roaring.New()
+	nodes := h.getNodes()
+	for i := range nodes {
+		node := h.loadNode(uint32(i))
+		if node == nil {
+			continue
+		}
+		if !node.Deleted.Load() {
+			result.Add(node.InternalID)
+		}
+	}
+	return result, nil
+}
+
 // GetParameters returns the configuration parameters of the index.
 func (h *Index) GetParameters() (distance.DistanceMetric, int, int) {
 	return h.metric, h.m, h.efConstruction

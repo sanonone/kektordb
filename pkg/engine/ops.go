@@ -774,6 +774,55 @@ func (e *Engine) VSetMetadata(indexName, id string, newProps map[string]any) err
 	return nil
 }
 
+// VEvolve performs a semantic evolution of a memory node.
+// It creates a new node with updated data and links it to the old node,
+// preserving the graph topology by copying incoming edges to the new node.
+// The old node is marked as historical.
+func (e *Engine) VEvolve(indexName, oldID string, newVector []float32, newMetadata map[string]any, reason string) (string, error) {
+	oldData, err := e.VGet(indexName, oldID)
+	if err != nil {
+		return "", fmt.Errorf("old node not found: %w", err)
+	}
+
+	newID := fmt.Sprintf("evolved_%s_%d", oldID, time.Now().UnixNano())
+
+	if newMetadata == nil {
+		newMetadata = make(map[string]any)
+	}
+
+	if newMetadata["type"] == nil {
+		newMetadata["type"] = oldData.Metadata["type"]
+	}
+
+	inRels := e.VGetIncomingRelations(indexName, oldID)
+	for relType, sourceIDs := range inRels {
+		for _, sourceID := range sourceIDs {
+			if err := e.VLink(indexName, sourceID, newID, relType, "", 0, nil); err != nil {
+				slog.Warn("failed to copy edge during evolve", "error", err)
+			}
+		}
+	}
+
+	if err := e.VLink(indexName, oldID, newID, "superseded_by", "evolves_from", 0, map[string]any{
+		"reason":    reason,
+		"timestamp": time.Now().UnixNano(),
+	}); err != nil {
+		return "", fmt.Errorf("failed to create evolution link: %w", err)
+	}
+
+	if err := e.VSetMetadata(indexName, oldID, map[string]any{"_is_historical": true}); err != nil {
+		return "", fmt.Errorf("failed to mark old node as historical: %w", err)
+	}
+
+	if err := e.VAdd(indexName, newID, newVector, newMetadata); err != nil {
+		return "", fmt.Errorf("failed to create new node: %w", err)
+	}
+
+	e.EventBus.Emit(Event{Type: EventEvolution, IndexName: indexName, ID: oldID, TargetID: newID, Timestamp: time.Now().UnixNano()})
+
+	return newID, nil
+}
+
 // Contains all Parsing, Filtering, Hybrid Fusion logic
 func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filter string, explicitTextQuery string, efSearch int, alpha float64, graphQuery *GraphQuery) ([]fusedResult, error) {
 	// TODO Future: If performance becomes critical, move CreatedAt and LastAccessed directly into the hnsw.Node struct (as native int64 fields), avoiding the generic metadata map.

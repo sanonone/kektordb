@@ -117,5 +117,15 @@ func NewMCPServer(eng *engine.Engine, embedder embeddings.Embedder) *mcp.Server 
 		Description: "Perform graph-aware adaptive retrieval for RAG. Retrieves seed chunks via semantic search, expands following graph relations (parent, child, next, prev, mentions), and assembles a context window respecting token budget. Uses information density scoring to prioritize high-quality chunks. Strategies: greedy (simple expansion), density (filter by token uniqueness), graph (full BFS with scoring).",
 	}, service.AdaptiveRetrieve)
 
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "evolve_memory",
+		Description: "Evolves a memory when new information supersedes it. Creates a new node with updated data, links old to new via 'superseded_by', copies incoming edges, and marks old as historical.",
+	}, service.EvolveMemory)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "get_memory_evolution",
+		Description: "Traces the evolution chain of a memory node by following superseded_by/evolves_from edges. Returns the history of how a piece of information changed over time.",
+	}, service.GetMemoryEvolution)
+
 	return s
 }

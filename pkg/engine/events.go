@@ -12,6 +12,7 @@ const (
 	EventEdgeDelete   EventType = "edge.delete"
 	EventVectorAccess EventType = "vector.access"
 	EventVectorUpdate EventType = "vector.update"
+	EventEvolution    EventType = "memory.evolution"
 )
 
 // Event represents a single write operation in the engine.

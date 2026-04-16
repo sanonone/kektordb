@@ -1314,8 +1314,24 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 			// Insert the item into the B-Tree
 			indexBTree[key].Set(BTreeItem{Value: v, NodeID: nodeID})
 
+		case bool:
+			strValue := "false"
+			if v {
+				strValue = "true"
+			}
+			indexMetadata, ok := s.invertedIndex[indexName]
+			if !ok {
+				return fmt.Errorf("metadata index for '%s' not found", indexName)
+			}
+			if _, ok := indexMetadata[key]; !ok {
+				indexMetadata[key] = make(map[string]*roaring.Bitmap)
+			}
+			if _, ok := indexMetadata[key][strValue]; !ok {
+				indexMetadata[key][strValue] = roaring.New()
+			}
+			indexMetadata[key][strValue].Add(nodeID)
+
 		default:
-			// For now, we ignore other types (bool, etc.)
 			continue
 		}
 	}
@@ -1542,6 +1558,24 @@ func (s *DB) FindIDsByFilter(indexName string, filter string) (*roaring.Bitmap, 
 	return finalIDSet, nil
 }
 
+// getAllValidNodeIDs returns a bitmap of all non-deleted node internal IDs for an index.
+func (s *DB) getAllValidNodeIDs(indexName string) (*roaring.Bitmap, error) {
+	s.mu.RLock()
+	idx, exists := s.vectorIndexes[indexName]
+	if !exists {
+		s.mu.RUnlock()
+		return nil, fmt.Errorf("index not found")
+	}
+	s.mu.RUnlock()
+
+	hnswIdx, ok := idx.(*hnsw.Index)
+	if !ok {
+		return roaring.New(), nil
+	}
+
+	return hnswIdx.GetAllValidNodeIDs()
+}
+
 // regex to parse the CONTAINS function
 var containsRegex = regexp.MustCompile(`(?i)CONTAINS\s*\(\s*(\w+)\s*,\s*['"](.+?)['"]\s*\)`)
 
@@ -1551,7 +1585,7 @@ func (s *DB) evaluateBooleanFilter(indexName string, filter string) (*roaring.Bi
 
 	var op string
 	opIndex := -1
-	for _, operator := range []string{"<=", ">=", "=", "<", ">"} {
+	for _, operator := range []string{"!=", "<=", ">=", "=", "<", ">"} {
 		if idx := strings.Index(filter, operator); idx != -1 {
 			op = operator
 			opIndex = idx
@@ -1645,6 +1679,42 @@ func (s *DB) evaluateBooleanFilter(indexName string, filter string) (*roaring.Bi
 			})
 		}
 		return idSet, nil
+
+	case "!=":
+		allValidIDs, err := s.getAllValidNodeIDs(indexName)
+		if err != nil {
+			return nil, err
+		}
+
+		matchedSet := roaring.New()
+		// Try BTree first if value is numeric
+		if hasBTree {
+			numValue, err := strconv.ParseFloat(valueStr, 64)
+			if err == nil {
+				if tree, ok := indexBTree[key]; ok {
+					tree.Ascend(BTreeItem{Value: numValue}, func(item BTreeItem) bool {
+						if item.Value == numValue {
+							matchedSet.Add(item.NodeID)
+						}
+						return true
+					})
+				}
+				allValidIDs.AndNot(matchedSet)
+				return allValidIDs, nil
+			}
+		}
+		// For non-numeric or if BTree didn't have the key, try inverted index
+		if hasInv {
+			if keyMetadata, ok := indexInv[key]; ok {
+				if valSet, ok := keyMetadata[valueStr]; ok {
+					matchedSet = valSet.Clone()
+				}
+			}
+		}
+
+		allValidIDs.AndNot(matchedSet)
+		return allValidIDs, nil
+
 	default:
 		return nil, fmt.Errorf("operator '%s' not supported", op)
 	}

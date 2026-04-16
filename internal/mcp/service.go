@@ -26,6 +26,8 @@ type Service struct {
 	sessionsMu sync.RWMutex
 }
 
+const defaultMemoryFilter = "_is_historical != 'true' AND _archived != 'true'"
+
 func NewService(eng *engine.Engine, emb embeddings.Embedder) *Service {
 	return &Service{
 		engine:   eng,
@@ -260,6 +262,13 @@ func (s *Service) Recall(ctx context.Context, req *mcp.CallToolRequest, args Rec
 			parts = append(parts, fmt.Sprintf("memory_layer='%s'", layer))
 		}
 		filter = strings.Join(parts, " OR ")
+	}
+
+	// Append default historical filter to hide archived/historical memories
+	if filter != "" {
+		filter = filter + " AND " + defaultMemoryFilter
+	} else {
+		filter = defaultMemoryFilter
 	}
 
 	// Hybrid Search with optional layer filter
@@ -1417,4 +1426,129 @@ func (s *Service) AdaptiveRetrieve(ctx context.Context, req *mcp.CallToolRequest
 	}
 
 	return nil, result, nil
+}
+
+// --- Semantic Evolution ---
+
+func (s *Service) EvolveMemory(ctx context.Context, req *mcp.CallToolRequest, args EvolveMemoryArgs) (*mcp.CallToolResult, EvolveMemoryResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	s.ensureIndex(idx)
+
+	if args.OldMemoryID == "" {
+		return nil, EvolveMemoryResult{}, fmt.Errorf("old_memory_id is required")
+	}
+	if args.NewContent == "" && len(args.NewVector) == 0 {
+		return nil, EvolveMemoryResult{}, fmt.Errorf("either new_content or new_vector is required")
+	}
+	if args.Reason == "" {
+		return nil, EvolveMemoryResult{}, fmt.Errorf("reason is required")
+	}
+
+	oldData, err := s.engine.VGet(idx, args.OldMemoryID)
+	if err != nil {
+		return nil, EvolveMemoryResult{}, fmt.Errorf("old memory not found: %w", err)
+	}
+
+	newVector := args.NewVector
+	if len(newVector) == 0 {
+		vec, err := s.embedder.Embed(args.NewContent)
+		if err != nil {
+			return nil, EvolveMemoryResult{}, fmt.Errorf("failed to embed content: %w", err)
+		}
+		newVector = vec
+	}
+
+	newMetadata := map[string]any{
+		"content": args.NewContent,
+		"type":    oldData.Metadata["type"],
+	}
+	if args.Layer != "" {
+		newMetadata["memory_layer"] = args.Layer
+	}
+
+	newID, err := s.engine.VEvolve(idx, args.OldMemoryID, newVector, newMetadata, args.Reason)
+	if err != nil {
+		return nil, EvolveMemoryResult{}, fmt.Errorf("evolve failed: %w", err)
+	}
+
+	return nil, EvolveMemoryResult{
+		NewMemoryID: newID,
+		OldMemoryID: args.OldMemoryID,
+		Status:      "evolved",
+	}, nil
+}
+
+func (s *Service) GetMemoryEvolution(ctx context.Context, req *mcp.CallToolRequest, args GetMemoryEvolutionArgs) (*mcp.CallToolResult, GetMemoryEvolutionResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+
+	if args.MemoryID == "" {
+		return nil, GetMemoryEvolutionResult{}, fmt.Errorf("memory_id is required")
+	}
+
+	direction := args.Direction
+	if direction == "" {
+		direction = "backward"
+	}
+
+	var chain []MemoryEvolutionStep
+	currentID := args.MemoryID
+	visited := make(map[string]bool)
+
+	for len(chain) < 100 {
+		if visited[currentID] {
+			break
+		}
+		visited[currentID] = true
+
+		data, err := s.engine.VGet(idx, currentID)
+		if err != nil {
+			break
+		}
+
+		step := MemoryEvolutionStep{
+			MemoryID: currentID,
+			Content:  data.Metadata["content"],
+			CreatedAt: func() int64 {
+				if t, ok := data.Metadata["_created_at"].(int64); ok {
+					return t
+				}
+				return 0
+			}(),
+			IsCurrent: len(chain) == 0 && direction == "backward",
+		}
+
+		outEdges, _ := s.engine.VGetEdges(idx, currentID, "superseded_by", 0)
+		if len(outEdges) > 0 {
+			step.SupersededBy = outEdges[0].TargetID
+			if reason := outEdges[0].GetProps()["reason"]; reason != nil {
+				step.EvolutionReason = fmt.Sprintf("%v", reason)
+			}
+		}
+
+		inEdges, _ := s.engine.VGetEdges(idx, currentID, "evolves_from", 0)
+		if len(inEdges) > 0 {
+			step.EvolvesFrom = inEdges[0].TargetID
+		}
+
+		chain = append(chain, step)
+
+		if direction == "backward" && step.EvolvesFrom != "" {
+			currentID = step.EvolvesFrom
+		} else if direction == "forward" && step.SupersededBy != "" {
+			currentID = step.SupersededBy
+		} else {
+			break
+		}
+	}
+
+	return nil, GetMemoryEvolutionResult{
+		EvolutionChain: chain,
+		TotalSteps:     len(chain),
+	}, nil
 }
