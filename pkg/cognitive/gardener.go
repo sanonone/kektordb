@@ -3106,7 +3106,7 @@ type coreFactExtractionResponse struct {
 // It creates core_fact nodes that are pinned (no time-decay) and linked to source memories.
 func (g *Gardener) detectCoreFacts(indexName string) {
 	// 1. Fetch recent user_interaction or episodic nodes
-	filter := "(type='user_interaction' OR memory_layer='episodic') AND _archived!=true"
+	filter := "(type='user_interaction' OR memory_layer='episodic') AND _archived != 'true'"
 	candidateIDs, err := g.eng.VFilter(indexName, filter, 50)
 	if err != nil || len(candidateIDs) == 0 {
 		return

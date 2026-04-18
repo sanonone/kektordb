@@ -280,11 +280,13 @@ export class KektorDBClient {
     return this.request("GET", `/vector/indexes/${indexName}/vectors/${id}`);
   }
 
-  async vgetMany(indexName: string, ids: string[]): Promise<VectorData[]> {
-    return this.request("POST", "/vector/actions/get-vectors", {
+  async vgetMany(indexName: string, ids: string[], compressContext = false): Promise<VectorData[]> {
+    const payload: Record<string, any> = {
       index_name: indexName,
       ids,
-    });
+    };
+    if (compressContext) payload.compress_context = true;
+    return this.request("POST", "/vector/actions/get-vectors", payload);
   }
 
   async vsearch(params: SearchParams): Promise<SearchResult[]> {
@@ -414,13 +416,16 @@ export class KektorDBClient {
   async traverse(
     indexName: string,
     sourceId: string,
-    paths: string[]
+    paths: string[],
+    compressContext = false
   ): Promise<any> {
-    return this.request("POST", "/graph/actions/traverse", {
+    const payload: Record<string, any> = {
       index_name: indexName,
       source_id: sourceId,
       paths,
-    });
+    };
+    if (compressContext) payload.compress_context = true;
+    return this.request("POST", "/graph/actions/traverse", payload);
   }
 
   async extractSubgraph(
@@ -428,15 +433,22 @@ export class KektorDBClient {
     rootId: string,
     relations: string[],
     maxDepth = 2,
-    atTime = 0
+    atTime = 0,
+    guideVector?: number[],
+    semanticThreshold = 0.5,
+    compressContext = false
   ): Promise<SubgraphResult> {
-    return this.request("POST", "/graph/actions/extract-subgraph", {
+    const payload: Record<string, any> = {
       index_name: indexName,
       root_id: rootId,
       relations,
       max_depth: maxDepth,
       at_time: atTime,
-    });
+    };
+    if (guideVector) payload.guide_vector = guideVector;
+    if (semanticThreshold !== 0.5) payload.semantic_threshold = semanticThreshold;
+    if (compressContext) payload.compress_context = true;
+    return this.request("POST", "/graph/actions/extract-subgraph", payload);
   }
 
   async findPath(
@@ -459,14 +471,17 @@ export class KektorDBClient {
     indexName: string,
     sourceId: string,
     relationType: string,
-    atTime = 0
+    atTime = 0,
+    compressContext = false
   ): Promise<any[]> {
-    const data = await this.request("POST", "/graph/actions/get-edges", {
+    const payload: Record<string, any> = {
       index_name: indexName,
       source_id: sourceId,
       relation_type: relationType,
       at_time: atTime,
-    });
+    };
+    if (compressContext) payload.compress_context = true;
+    const data = await this.request("POST", "/graph/actions/get-edges", payload);
     return data.edges ?? [];
   }
 
@@ -484,25 +499,31 @@ export class KektorDBClient {
 
   async getNodeProperties(
     indexName: string,
-    nodeId: string
+    nodeId: string,
+    compressContext = false
   ): Promise<Record<string, any>> {
-    const data = await this.request("POST", "/graph/actions/get-node-properties", {
+    const payload: Record<string, any> = {
       index_name: indexName,
       node_id: nodeId,
-    });
+    };
+    if (compressContext) payload.compress_context = true;
+    const data = await this.request("POST", "/graph/actions/get-node-properties", payload);
     return data.properties ?? {};
   }
 
   async searchNodes(
     indexName: string,
     propertyFilter: string,
-    limit = 10
+    limit = 10,
+    compressContext = false
   ): Promise<any[]> {
-    const data = await this.request("POST", "/graph/actions/search-nodes", {
+    const payload: Record<string, any> = {
       index_name: indexName,
       property_filter: propertyFilter,
       limit,
-    });
+    };
+    if (compressContext) payload.compress_context = true;
+    const data = await this.request("POST", "/graph/actions/search-nodes", payload);
     return data.nodes ?? [];
   }
 

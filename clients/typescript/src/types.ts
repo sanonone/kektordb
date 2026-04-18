@@ -94,6 +94,45 @@ export interface SubgraphResult {
   edges: SubgraphEdge[];
 }
 
+export interface SubgraphParams {
+  indexName: string;
+  rootId: string;
+  relations: string[];
+  maxDepth?: number;
+  atTime?: number;
+  guideVector?: number[];
+  semanticThreshold?: number;
+  compressContext?: boolean;
+}
+
+export interface EdgeParams {
+  indexName: string;
+  sourceId: string;
+  relationType: string;
+  atTime?: number;
+  compressContext?: boolean;
+}
+
+export interface TraverseParams {
+  indexName: string;
+  sourceId: string;
+  paths: string[];
+  compressContext?: boolean;
+}
+
+export interface NodePropertiesParams {
+  indexName: string;
+  nodeId: string;
+  compressContext?: boolean;
+}
+
+export interface SearchNodesParams {
+  indexName: string;
+  propertyFilter: string;
+  limit?: number;
+  compressContext?: boolean;
+}
+
 // --- Search ---
 
 export interface SearchParams {

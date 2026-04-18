@@ -390,13 +390,19 @@ class KektorDBClient:
         """Retrieves data (vector and metadata) for a single vector by its ID."""
         return self._request("GET", f"/vector/indexes/{index_name}/vectors/{item_id}")
 
-    def vget_many(self, index_name: str, item_ids: List[str]) -> List[Dict[str, Any]]:
+    def vget_many(
+        self,
+        index_name: str,
+        item_ids: List[str],
+        compress_context: bool = False,
+    ) -> List[Dict[str, Any]]:
         """
         Retrieves data for multiple vectors from an index in a single batch request.
 
         Args:
             index_name: The name of the index.
             item_ids: A list of vector IDs to retrieve.
+            compress_context: Enable lexical compression for LLM optimization
 
         Returns:
             A list of dictionaries, where each dictionary represents a found vector.
@@ -406,6 +412,8 @@ class KektorDBClient:
             ConnectionError: If a network error occurs.
         """
         payload = {"index_name": index_name, "ids": item_ids}
+        if compress_context:
+            payload["compress_context"] = True
         return self._request("POST", "/vector/actions/get-vectors", json=payload)
 
     def vsearch(
@@ -657,11 +665,23 @@ class KektorDBClient:
         return resp.get("relations", {})
 
     def extract_subgraph(
-        self, index_name: str, root_id: str, relations: List[str], max_depth: int = 2
+        self,
+        index_name: str,
+        root_id: str,
+        relations: List[str],
+        max_depth: int = 2,
+        guide_vector: List[float] = None,
+        semantic_threshold: float = 0.5,
+        compress_context: bool = False,
     ) -> Dict[str, Any]:
         """
         Extracts the local topology around a Root Node up to a specified depth (BFS).
         Returns a SubgraphResult with Nodes (hydrated) and Edges.
+
+        Args:
+            guide_vector: Optional vector for semantic-guided traversal
+            semantic_threshold: Threshold for semantic similarity (default 0.5)
+            compress_context: Enable lexical compression for LLM optimization
         """
         payload = {
             "index_name": index_name,
@@ -669,6 +689,12 @@ class KektorDBClient:
             "relations": relations,
             "max_depth": max_depth,
         }
+        if guide_vector is not None:
+            payload["guide_vector"] = guide_vector
+        if semantic_threshold != 0.5:
+            payload["semantic_threshold"] = semantic_threshold
+        if compress_context:
+            payload["compress_context"] = True
         return self._request("POST", "/graph/actions/extract-subgraph", json=payload)
 
     def set_node_properties(
@@ -685,26 +711,45 @@ class KektorDBClient:
         }
         self._request("POST", "/graph/actions/set-node-properties", json=payload)
 
-    def get_node_properties(self, index_name: str, node_id: str) -> Dict[str, Any]:
+    def get_node_properties(
+        self,
+        index_name: str,
+        node_id: str,
+        compress_context: bool = False,
+    ) -> Dict[str, Any]:
         """
         Retrieves the properties (metadata) of a node.
+
+        Args:
+            compress_context: Enable lexical compression for LLM optimization
         """
         payload = {"index_name": index_name, "node_id": node_id}
+        if compress_context:
+            payload["compress_context"] = True
         resp = self._request("POST", "/graph/actions/get-node-properties", json=payload)
         return resp.get("properties", {})
 
     def search_nodes(
-        self, index_name: str, property_filter: str, limit: int = 10
+        self,
+        index_name: str,
+        property_filter: str,
+        limit: int = 10,
+        compress_context: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Searches for nodes based ONLY on their properties (metadata).
         Useful for finding entities (e.g. type='person') without a vector query.
+
+        Args:
+            compress_context: Enable lexical compression for LLM optimization
         """
         payload = {
             "index_name": index_name,
             "property_filter": property_filter,
             "limit": limit,
         }
+        if compress_context:
+            payload["compress_context"] = True
         resp = self._request("POST", "/graph/actions/search-nodes", json=payload)
         return resp.get("nodes", [])
 
@@ -842,7 +887,11 @@ class KektorDBClient:
     # --- Graph Traversal & Edges ---
 
     def traverse(
-        self, index_name: str, source_id: str, paths: List[str]
+        self,
+        index_name: str,
+        source_id: str,
+        paths: List[str],
+        compress_context: bool = False,
     ) -> Dict[str, Any]:
         """
         Deep graph traversal from a known node.
@@ -851,15 +900,26 @@ class KektorDBClient:
             index_name: The index.
             source_id: Starting node ID.
             paths: List of relation types to follow.
+            compress_context: Enable lexical compression for LLM optimization
         """
         payload = {"index_name": index_name, "source_id": source_id, "paths": paths}
+        if compress_context:
+            payload["compress_context"] = True
         return self._request("POST", "/graph/actions/traverse", json=payload)
 
     def get_edges(
-        self, index_name: str, source_id: str, relation_type: str, at_time: int = 0
+        self,
+        index_name: str,
+        source_id: str,
+        relation_type: str,
+        at_time: int = 0,
+        compress_context: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Gets edges with properties (supports time travel via at_time).
+
+        Args:
+            compress_context: Enable lexical compression for LLM optimization
         """
         payload = {
             "index_name": index_name,
@@ -867,6 +927,8 @@ class KektorDBClient:
             "relation_type": relation_type,
             "at_time": at_time,
         }
+        if compress_context:
+            payload["compress_context"] = True
         data = self._request("POST", "/graph/actions/get-edges", json=payload)
         return data.get("edges", [])
 
