@@ -213,10 +213,8 @@ func CalculateStability(nodes []EpistemicNode, decayModel string) (score, avgAge
 			nodeStability = math.Pow(2, -age/halfLife)
 		}
 
-		// Bonus for reinforcements (logarithmic scaling)
-		accessBonus := math.Log1p(float64(node.AccessCount)) / 10.0
-		nodeStability = math.Min(1.0, nodeStability+accessBonus)
-
+		// FIX: Removed duplicate access count bonus - it already affects half-life above
+		// The access count is already factored into the decay calculation via half-life extension
 		totalStability += nodeStability
 	}
 

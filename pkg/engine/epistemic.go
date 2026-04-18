@@ -51,7 +51,7 @@ func (e *Engine) VBeliefState(indexName string, queryVec []float32, k int, cfg E
 
 	// Step 2: Materialize nodes with vectors and metadata
 	nodes := make([]EpistemicNode, 0, len(candidateIDs))
-	for i, id := range candidateIDs {
+	for _, id := range candidateIDs {
 		data, err := e.VGet(indexName, id)
 		if err != nil {
 			continue // Skip inaccessible nodes
@@ -91,7 +91,8 @@ func (e *Engine) VBeliefState(indexName string, queryVec []float32, k int, cfg E
 		})
 
 		// Safety check: if we have enough nodes, break
-		if i >= k-1 {
+		// FIX: Changed from i >= k-1 to len(nodes) >= k to process exactly k candidates (off-by-one bug)
+		if len(nodes) >= k {
 			break
 		}
 	}

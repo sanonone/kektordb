@@ -604,8 +604,8 @@ class KektorDBClient:
         if relations:
             payload["relations"] = relations
         else:
-            # Default fallback
-            payload["relations"] = ["related_to", "mentions", "parent", "child"]
+            # Default fallback - FIX: Added "next" and "prev" to match server default
+            payload["relations"] = ["related_to", "mentions", "parent", "child", "next", "prev"]
 
         return self._request("POST", "/graph/actions/find-path", json=payload)
 

@@ -1294,9 +1294,16 @@ type vectorEvolveRequest struct {
 	Reason      string         `json:"reason"`
 }
 
-type vectorEvolveResponse struct {
+// VectorEvolveResponse represents the response from a memory evolution operation.
+type VectorEvolveResponse struct {
 	NewID   string `json:"new_id"`
 	OldID   string `json:"old_id"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
+// InvalidateMemoryResponse represents the response from an invalidation operation.
+type InvalidateMemoryResponse struct {
 	Status  string `json:"status"`
 	Message string `json:"message"`
 }
@@ -1631,15 +1638,24 @@ func (c *Client) VBeliefState(indexName, query string, queryVec []float32, limit
 // This creates an invalidation relation for epistemic friction tracking.
 // The sourceID (node performing invalidation) is optional - if empty, "system" is used.
 // The reason parameter provides context for the invalidation.
-func (c *Client) InvalidateMemory(indexName, sourceID, targetID, reason string) error {
+// FIX: Parameter order changed to match Python client (targetID before sourceID)
+func (c *Client) InvalidateMemory(indexName, targetID, sourceID, reason string) (*InvalidateMemoryResponse, error) {
 	req := graphInvalidateRequest{
 		IndexName: indexName,
 		SourceID:  sourceID,
 		TargetID:  targetID,
 		Reason:    reason,
 	}
-	_, err := c.jsonRequest(http.MethodPost, "/graph/actions/invalidate", req)
-	return err
+	respBody, err := c.jsonRequest(http.MethodPost, "/graph/actions/invalidate", req)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp InvalidateMemoryResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for InvalidateMemory: %w", err)
+	}
+	return &resp, nil
 }
 
 // --- Memory Evolution Methods ---
@@ -1648,8 +1664,8 @@ func (c *Client) InvalidateMemory(indexName, sourceID, targetID, reason string) 
 // It creates a new version of the memory with updated content/vector and metadata,
 // links the old node to the new one, and marks the old node as historical.
 // The old node's incoming edges are copied to the new node to preserve graph topology.
-// Returns the ID of the newly created node.
-func (c *Client) VEvolve(indexName, oldID string, newVector []float32, newContent string, newMetadata map[string]any, reason string) (string, error) {
+// FIX: Returns the full response including new_id, old_id, status, and message.
+func (c *Client) VEvolve(indexName, oldID string, newVector []float32, newContent string, newMetadata map[string]any, reason string) (*VectorEvolveResponse, error) {
 	req := vectorEvolveRequest{
 		IndexName:   indexName,
 		OldID:       oldID,
@@ -1661,14 +1677,14 @@ func (c *Client) VEvolve(indexName, oldID string, newVector []float32, newConten
 
 	respBody, err := c.jsonRequest(http.MethodPost, "/vector/actions/evolve", req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	var resp vectorEvolveResponse
+	var resp VectorEvolveResponse
 	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return "", fmt.Errorf("invalid JSON response for VEvolve: %w", err)
+		return nil, fmt.Errorf("invalid JSON response for VEvolve: %w", err)
 	}
-	return resp.NewID, nil
+	return &resp, nil
 }
 
 // GetMemoryEvolution retrieves the evolution chain of a memory node.

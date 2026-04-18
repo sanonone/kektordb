@@ -2897,7 +2897,13 @@ Guidelines:
 		createdAt := getMetadataFloat(node.metadata, "_created_at")
 		accessCount := getMetadataInt(node.metadata, "_access_count")
 
-		dateStr := time.Unix(int64(createdAt), 0).Format("2006-01-02")
+		// FIX: Handle zero CreatedAt to avoid showing "1970-01-01"
+		var dateStr string
+		if createdAt > 0 {
+			dateStr = time.Unix(int64(createdAt), 0).Format("2006-01-02")
+		} else {
+			dateStr = "unknown"
+		}
 		userPrompt += fmt.Sprintf("%d. \"%s\" (created: %s, accessed %d times)\n",
 			i+1, content, dateStr, accessCount)
 	}
