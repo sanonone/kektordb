@@ -1515,12 +1515,16 @@ func (s *Service) GetMemoryEvolution(ctx context.Context, req *mcp.CallToolReque
 			MemoryID: currentID,
 			Content:  data.Metadata["content"],
 			CreatedAt: func() int64 {
-				if t, ok := data.Metadata["_created_at"].(int64); ok {
+				// FIX: JSON deserializes numbers as float64, not int64
+				if t, ok := data.Metadata["_created_at"].(float64); ok {
+					return int64(t)
+				} else if t, ok := data.Metadata["_created_at"].(int64); ok {
+					// Fallback for non-JSON data (backward compatibility)
 					return t
 				}
 				return 0
 			}(),
-			IsCurrent: len(chain) == 0 && direction == "backward",
+			IsCurrent: false, // Will be set after the loop based on direction
 		}
 
 		outEdges, _ := s.engine.VGetEdges(idx, currentID, "superseded_by", 0)
@@ -1544,6 +1548,17 @@ func (s *Service) GetMemoryEvolution(ctx context.Context, req *mcp.CallToolReque
 			currentID = step.SupersededBy
 		} else {
 			break
+		}
+	}
+
+	// FIX: Mark the appropriate node as current based on direction
+	// In backward: the starting node (first in chain) is current
+	// In forward: the ending node (last in chain) is current
+	if len(chain) > 0 {
+		if direction == "backward" {
+			chain[0].IsCurrent = true
+		} else {
+			chain[len(chain)-1].IsCurrent = true
 		}
 	}
 

@@ -2811,10 +2811,16 @@ func (g *Gardener) processEpistemicReflection(indexName, reflectionID string) {
 	}
 
 	if state.Confidence >= threshold {
-		slog.Info("[Gardener] Reflection not volatile, skipping",
+		slog.Info("[Gardener] Reflection not volatile, marking as stable",
 			"reflection", reflectionID,
 			"confidence", state.Confidence,
 			"threshold", threshold)
+		// FIX: Mark as stable to avoid re-processing in future cycles
+		g.eng.VSetMetadata(indexName, reflectionID, map[string]any{
+			"status":          "stable",
+			"epistemic_score": state.Confidence,
+			"_updated_at":     float64(time.Now().Unix()),
+		})
 		return
 	}
 

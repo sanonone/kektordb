@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"math"
+	"sync"
 )
 
 // VBeliefState performs an epistemic assessment of a belief.
@@ -99,22 +100,35 @@ func (e *Engine) VBeliefState(indexName string, queryVec []float32, k int, cfg E
 		return nil, fmt.Errorf("no valid nodes found after materialization")
 	}
 
+	// FIX: Filter out historical nodes - they shouldn't contribute to belief assessment
+	// Historical nodes are obsolete versions (evolved memories) and would skew the scores
+	var activeNodes []EpistemicNode
+	for _, node := range nodes {
+		if !node.IsHistorical {
+			activeNodes = append(activeNodes, node)
+		}
+	}
+
+	if len(activeNodes) == 0 {
+		return nil, fmt.Errorf("no active (non-historical) nodes found for assessment")
+	}
+
 	// Step 3: Calculate Pilastro 1 - Consensus (Vector Density)
-	consensusScore, variance, _ := CalculateConsensus(nodes)
+	consensusScore, variance, _ := CalculateConsensus(activeNodes)
 
 	// Step 4: Calculate Pilastro 2 - Stability (Temporal)
 	decayModel := cfg.DecayModel
 	if decayModel == "" {
 		decayModel = "ebbinghaus"
 	}
-	stabilityScore, avgAgeDays := CalculateStability(nodes, decayModel)
+	stabilityScore, avgAgeDays := CalculateStability(activeNodes, decayModel)
 
 	// Step 5: Calculate Pilastro 3 - Friction (Topological)
 	// Create a closure to pass to CalculateFriction
 	getIncomingEdges := func(idxName, nodeID, relType string, atTime int64) ([]GraphEdge, bool) {
 		return e.VGetIncomingEdges(idxName, nodeID, relType, atTime)
 	}
-	frictionScore, contradictions, invalidations := CalculateFriction(nodes, indexName, getIncomingEdges)
+	frictionScore, contradictions, invalidations := CalculateFriction(activeNodes, indexName, getIncomingEdges)
 
 	// Step 6: Calculate Final Confidence
 	// Confidence = (Consensus * W_c) + (Stability * W_s) + (Friction * W_f)
@@ -257,12 +271,19 @@ func getMetadataInt(m map[string]any, key string) int {
 
 // epistemicConfigMap is a simple in-memory store for epistemic configs per index.
 // In production, this should be persisted via AOF (VCONFIG command).
-var epistemicConfigMap = make(map[string]EpistemicConfig)
+// FIX: Protected by mutex to prevent race conditions with concurrent HTTP handlers.
+var (
+	epistemicConfigMap = make(map[string]EpistemicConfig)
+	epistemicConfigMu  sync.RWMutex
+)
 
 // GetEpistemicConfig retrieves the config for an index.
 // Returns default config if not explicitly set.
 func (e *Engine) GetEpistemicConfig(indexName string) EpistemicConfig {
-	if cfg, ok := epistemicConfigMap[indexName]; ok {
+	epistemicConfigMu.RLock()
+	cfg, ok := epistemicConfigMap[indexName]
+	epistemicConfigMu.RUnlock()
+	if ok {
 		return cfg
 	}
 	return *DefaultEpistemicConfig()
@@ -270,5 +291,7 @@ func (e *Engine) GetEpistemicConfig(indexName string) EpistemicConfig {
 
 // SetEpistemicConfig sets the epistemic config for an index.
 func (e *Engine) SetEpistemicConfig(indexName string, cfg EpistemicConfig) {
+	epistemicConfigMu.Lock()
 	epistemicConfigMap[indexName] = cfg
+	epistemicConfigMu.Unlock()
 }
