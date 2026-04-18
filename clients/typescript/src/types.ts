@@ -33,8 +33,8 @@ export interface AutoLinkRule {
 
 export interface MemoryConfig {
   enabled: boolean;
-  half_life_days?: number;
-  min_score?: number;
+  /** Decay half-life as a duration string (e.g., "72h", "7d", "1w") */
+  decay_half_life?: string;
 }
 
 export interface IndexInfo {
@@ -113,7 +113,7 @@ export interface SearchParams {
 export interface GraphFilter {
   rootId: string;
   relations: string[];
-  depth: number;
+  maxDepth: number;
 }
 
 // --- Cognitive ---

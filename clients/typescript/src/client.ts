@@ -187,11 +187,8 @@ export class KektorDBClient {
       };
     }
     if (params.autoLinks) {
-      payload.auto_links = params.autoLinks.map((a: any) => ({
-        metadata_field: a.metadataField,
-        relation_type: a.relationType,
-        create_node: a.createNode,
-      }));
+      // FIX: Pass autoLinks directly as they are already in snake_case format per the TypeScript type
+      payload.auto_links = params.autoLinks;
     }
     if (params.memoryConfig) payload.memory_config = params.memoryConfig;
     await this.request("POST", "/vector/actions/create", payload);
@@ -302,7 +299,7 @@ export class KektorDBClient {
       payload.graph_filter = {
         root_id: params.graphFilter.rootId,
         relations: params.graphFilter.relations,
-        depth: params.graphFilter.depth,
+        max_depth: params.graphFilter.maxDepth,
       };
     }
     if (params.efSearch) payload.ef_search = params.efSearch;
