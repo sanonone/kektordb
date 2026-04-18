@@ -1458,8 +1458,27 @@ func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[s
 			// Insert the item into the B-Tree
 			indexBTree[key].Set(BTreeItem{Value: v, NodeID: nodeID})
 
+		case bool:
+			// FIX: Index bool values as "true"/"false" strings to match AddMetadata behavior
+			// This ensures consistency between normal operations and snapshot restore
+			strValue := "false"
+			if v {
+				strValue = "true"
+			}
+			indexMetadata, ok := s.invertedIndex[indexName]
+			if !ok {
+				return fmt.Errorf("metadata index for '%s' not found", indexName)
+			}
+			if _, ok := indexMetadata[key]; !ok {
+				indexMetadata[key] = make(map[string]*roaring.Bitmap)
+			}
+			if _, ok := indexMetadata[key][strValue]; !ok {
+				indexMetadata[key][strValue] = roaring.New()
+			}
+			indexMetadata[key][strValue].Add(nodeID)
+
 		default:
-			// For now, we ignore other types (bool, etc.)
+			// For now, we ignore other types
 			continue
 		}
 	}

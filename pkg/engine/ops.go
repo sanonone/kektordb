@@ -810,12 +810,16 @@ func (e *Engine) VEvolve(indexName, oldID string, newVector []float32, newMetada
 		return "", fmt.Errorf("failed to create evolution link: %w", err)
 	}
 
-	if err := e.VSetMetadata(indexName, oldID, map[string]any{"_is_historical": true}); err != nil {
-		return "", fmt.Errorf("failed to mark old node as historical: %w", err)
-	}
-
+	// FIX: Create new node BEFORE marking old as historical to prevent data loss on failure
+	// If VAdd fails, the old node remains visible and accessible
 	if err := e.VAdd(indexName, newID, newVector, newMetadata); err != nil {
 		return "", fmt.Errorf("failed to create new node: %w", err)
+	}
+
+	if err := e.VSetMetadata(indexName, oldID, map[string]any{"_is_historical": true}); err != nil {
+		// Attempt cleanup of the new node since we can't complete the evolution
+		e.VDelete(indexName, newID)
+		return "", fmt.Errorf("failed to mark old node as historical: %w", err)
 	}
 
 	e.EventBus.Emit(Event{Type: EventEvolution, IndexName: indexName, ID: oldID, TargetID: newID, Timestamp: time.Now().UnixNano()})

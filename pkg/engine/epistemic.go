@@ -181,10 +181,12 @@ func formatEpistemicNodeResults(nodes []EpistemicNode, indexName string, e *Engi
 		contradictions := 0
 		invalidations := 0
 
-		edges, _ := e.VGetIncomingEdges(indexName, node.ID, RelationContradictedBy, 0)
+		// FIX: Look for incoming edges of type "contradicts" and "invalidates"
+		// These are the relations that OTHER nodes have pointing TO this node
+		edges, _ := e.VGetIncomingEdges(indexName, node.ID, RelationContradicts, 0)
 		contradictions = len(edges)
 
-		edges, _ = e.VGetIncomingEdges(indexName, node.ID, RelationInvalidatedBy, 0)
+		edges, _ = e.VGetIncomingEdges(indexName, node.ID, RelationInvalidates, 0)
 		invalidations = len(edges)
 
 		results[i] = EpistemicNodeResult{

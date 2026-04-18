@@ -164,10 +164,14 @@ func CalculateConsensus(nodes []EpistemicNode) (score, variance float64, centroi
 	}
 
 	// Normalize: score = 1 - (variance / max_variance), capped at [0, 1]
-	if maxVar == 0 {
-		score = 1.0 // All vectors are identical
+	// FIX: Use maxVar*maxVar as denominator since variance is in units of distance^2
+	// while maxVar is a linear distance. This ensures proper dimensional consistency.
+	// Also handle floating point errors: if maxVar is very small (near-zero), treat as identical vectors.
+	const epsilon = 1e-10
+	if maxVar < epsilon {
+		score = 1.0 // All vectors are effectively identical
 	} else {
-		score = 1.0 - math.Min(variance/maxVar, 1.0)
+		score = 1.0 - math.Min(variance/(maxVar*maxVar), 1.0)
 	}
 
 	return score, variance, centroid
@@ -232,10 +236,12 @@ func CalculateFriction(nodes []EpistemicNode, indexName string, getIncomingEdges
 	for _, node := range nodes {
 		// O(1) lookup using the provided function
 		if getIncomingEdges != nil {
-			edges, _ := getIncomingEdges(indexName, node.ID, RelationContradictedBy, 0)
+			// FIX: Look for incoming edges of type "contradicts" and "invalidates"
+			// These are the relations that OTHER nodes have pointing TO this node
+			edges, _ := getIncomingEdges(indexName, node.ID, RelationContradicts, 0)
 			contradictions += len(edges)
 
-			edges, _ = getIncomingEdges(indexName, node.ID, RelationInvalidatedBy, 0)
+			edges, _ = getIncomingEdges(indexName, node.ID, RelationInvalidates, 0)
 			invalidations += len(edges)
 		}
 	}
