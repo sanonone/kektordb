@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/hnsw"
 )
 
 func TestCompressParallel(t *testing.T) {
@@ -72,6 +73,85 @@ func TestCompressParallel(t *testing.T) {
 }
 
 // TestDBSnapshotAndReload testa il ciclo completo di snapshot e reload del DB
+func TestCompressResetsSecondaryIndexes(t *testing.T) {
+	tmpDir := t.TempDir()
+	db := NewDB()
+	defer db.Close()
+
+	indexName := "test_compress_reset"
+	arenaDir := filepath.Join(tmpDir, "arenas", indexName)
+
+	// 1. Create index with English text support to enable full-text indexing.
+	err := db.CreateVectorIndex(indexName, distance.Cosine, 16, 100, distance.Float32, "english", arenaDir)
+	if err != nil {
+		t.Fatalf("Failed to create index: %v", err)
+	}
+
+	idx, _ := db.GetVectorIndex(indexName)
+	vec := []float32{0.1, 0.2, 0.3, 0.4}
+	id := "doc-0"
+	oldInternalID, _ := idx.Add(id, vec)
+
+	err = db.AddMetadata(indexName, oldInternalID, map[string]any{
+		"title": "hello world",
+		"score": 42.0,
+	})
+	if err != nil {
+		t.Fatalf("Failed to add metadata: %v", err)
+	}
+
+	// Inject stale data into text indexes (not metadataMap, because metadata is
+	// re-read from metadataMap during compression and would be re-inserted).
+	db.textIndexStats[indexName]["title"].DocLengths[oldInternalID] = 999
+	db.textIndex[indexName]["title"]["__stale_token__"] = PostingList{{DocID: oldInternalID, TermFrequency: 999}}
+
+	// 2. Compress to Int8.
+	err = db.Compress(indexName, distance.Int8)
+	if err != nil {
+		t.Fatalf("Compress failed: %v", err)
+	}
+
+	// 3. Verify stale text-index data is gone (proves textIndex and textIndexStats were reset).
+	if statsMap, ok := db.textIndexStats[indexName]; ok {
+		for field, stats := range statsMap {
+			if length, exists := stats.DocLengths[oldInternalID]; exists && length == 999 {
+				t.Errorf("Post-compression: stale DocLengths still in textIndexStats for field %s", field)
+			}
+		}
+	}
+
+	if idxMap, ok := db.textIndex[indexName]; ok {
+		for field, tokenMap := range idxMap {
+			if _, exists := tokenMap["__stale_token__"]; exists {
+				t.Errorf("Post-compression: stale token still in textIndex for field %s", field)
+			}
+		}
+	}
+
+	// 4. Verify metadataMap was reset and correctly re-populated.
+	newIdx, _ := db.GetVectorIndex(indexName)
+	hnswIdx := newIdx.(*hnsw.Index)
+	newInternalID, _ := hnswIdx.GetInternalID(id)
+	if newInternalID == 0 {
+		t.Fatal("Post-compression: new internal ID not found for doc-0")
+	}
+	newMeta, ok := db.metadataMap[indexName][newInternalID]
+	if !ok {
+		t.Fatal("Post-compression: newInternalID missing from metadataMap")
+	}
+	if len(newMeta) != 2 {
+		t.Fatalf("Post-compression: metadataMap has %d keys, want 2 (title, score)", len(newMeta))
+	}
+	if _, stale := newMeta["__stale__"]; stale {
+		t.Fatal("Post-compression: stale key leaked into metadataMap")
+	}
+	if stats, ok := db.textIndexStats[indexName]["title"]; !ok || stats.TotalDocs != 1 {
+		t.Fatalf("Post-compression: textIndexStats not correctly rebuilt")
+	}
+
+	t.Log("Compression correctly resets metadataMap, textIndex, and textIndexStats.")
+}
+
 func TestDBSnapshotAndReload(t *testing.T) {
 	tmpDir := t.TempDir()
 

@@ -1131,7 +1131,9 @@ func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) err
 	// log.Printf("[DEBUG COMPRESS] Clearing secondary indexes for '%s'", indexName)
 	s.invertedIndex[indexName] = make(map[string]map[string]*roaring.Bitmap)
 	s.bTreeIndex[indexName] = make(map[string]*btree.BTreeG[BTreeItem])
-	//    s.metadataStore[indexName] = make(map[uint32]map[string]interface{})
+	s.metadataMap[indexName] = make(map[uint32]map[string]any)
+	s.textIndex[indexName] = make(map[string]map[string]PostingList)
+	s.textIndexStats[indexName] = make(map[string]*TextIndexStats)
 
 	// Invece di un batch gigante, processiamo a blocchi per non saturare la RAM/GC.
 	const BatchSize = 5000
