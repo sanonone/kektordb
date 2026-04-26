@@ -340,3 +340,158 @@ func TestSnapshotWithComplexMetadata(t *testing.T) {
 
 	t.Log("Snapshot with complex metadata completed successfully")
 }
+
+// TestAddMetadataStaleOnOverwrite verifies that AddMetadata removes old entries
+// from secondary indexes when a metadata key is overwritten.
+func TestAddMetadataStaleOnOverwrite(t *testing.T) {
+	tmpDir := t.TempDir()
+	db := NewDB()
+	defer db.Close()
+
+	indexName := "test_overwrite"
+	arenaDir := filepath.Join(tmpDir, "arenas", indexName)
+
+	// 1. Create index with English text support to test textIndex cleanup too.
+	err := db.CreateVectorIndex(indexName, distance.Cosine, 16, 100, distance.Float32, "english", arenaDir)
+	if err != nil {
+		t.Fatalf("Failed to create index: %v", err)
+	}
+
+	idx, _ := db.GetVectorIndex(indexName)
+	vec := []float32{0.1, 0.2, 0.3, 0.4}
+	nodeID, _ := idx.Add("doc-0", vec)
+
+	// 2. Add initial metadata: string, float, bool, text.
+	err = db.AddMetadata(indexName, nodeID, map[string]any{
+		"status":   "draft",
+		"score":    42.0,
+		"active":   false,
+		"content":  "hello world",
+	})
+	if err != nil {
+		t.Fatalf("Failed to add initial metadata: %v", err)
+	}
+
+	// 3. Verify initial state: old values are indexed.
+	checkBitmap := func(key, val string, expectContains bool) {
+		if bm, ok := db.invertedIndex[indexName][key][val]; ok && bm.Contains(nodeID) != expectContains {
+			t.Errorf("%s=%q: bitmap.Contains=%v, want %v", key, val, bm.Contains(nodeID), expectContains)
+		}
+	}
+	checkBitmap("status", "draft", true)
+	checkBitmap("status", "published", false)
+	checkBitmap("active", "false", true)
+	checkBitmap("active", "true", false)
+
+	// BTree: score=42.0 should exist
+	if btree, ok := db.bTreeIndex[indexName]["score"]; ok {
+		found := false
+		btree.Ascend(BTreeItem{Value: 42.0, NodeID: nodeID}, func(item BTreeItem) bool {
+			if item.NodeID == nodeID && item.Value == 42.0 {
+				found = true
+			}
+			return item.Value == 42.0
+		})
+		if !found {
+			t.Error("Pre-overwrite: BTree should contain BTreeItem{42.0, nodeID}")
+		}
+	}
+
+	// textIndex: "hello" token should exist
+	if tokenMap, ok := db.textIndex[indexName]["content"]; ok {
+		if postings, ok := tokenMap["hello"]; ok {
+			found := false
+			for _, entry := range postings {
+				if entry.DocID == nodeID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Error("Pre-overwrite: textIndex should contain 'hello' for nodeID")
+			}
+		}
+	}
+
+	// 4. Overwrite ALL fields (emulating VSetMetadata merge behavior).
+	err = db.AddMetadata(indexName, nodeID, map[string]any{
+		"status":   "published",
+		"score":    100.0,
+		"active":   true,
+		"content":  "goodbye",
+	})
+	if err != nil {
+		t.Fatalf("Failed to update metadata: %v", err)
+	}
+
+	// 5. Verify OLD values are gone from secondary indexes.
+	checkBitmap("status", "draft", false)
+	checkBitmap("status", "published", true)
+	checkBitmap("active", "false", false)
+	checkBitmap("active", "true", true)
+
+	// BTree: old score should be gone, new score should be present
+	if btree, ok := db.bTreeIndex[indexName]["score"]; ok {
+		foundOld := false
+		foundNew := false
+		btree.Ascend(BTreeItem{Value: 42.0, NodeID: nodeID}, func(item BTreeItem) bool {
+			if item.NodeID == nodeID && item.Value == 42.0 {
+				foundOld = true
+			}
+			return item.Value <= 100.0
+		})
+		btree.Ascend(BTreeItem{Value: 100.0, NodeID: nodeID}, func(item BTreeItem) bool {
+			if item.NodeID == nodeID && item.Value == 100.0 {
+				foundNew = true
+			}
+			return item.Value == 100.0
+		})
+		if foundOld {
+			t.Error("Post-overwrite: BTree should NOT contain old BTreeItem{42.0, nodeID}")
+		}
+		if !foundNew {
+			t.Error("Post-overwrite: BTree should contain new BTreeItem{100.0, nodeID}")
+		}
+	}
+
+	// textIndex: old "hello"/"world" tokens should be gone, "goodbye" should exist
+	if tokenMap, ok := db.textIndex[indexName]["content"]; ok {
+		for _, oldToken := range []string{"hello", "world"} {
+			if postings, ok := tokenMap[oldToken]; ok {
+				for _, entry := range postings {
+					if entry.DocID == nodeID {
+						t.Errorf("Post-overwrite: textIndex should NOT contain token %q for nodeID", oldToken)
+					}
+				}
+			}
+		}
+		if postings, ok := tokenMap["goodby"]; ok {
+			found := false
+			for _, entry := range postings {
+				if entry.DocID == nodeID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Error("Post-overwrite: textIndex should contain token 'goodby' for nodeID")
+			}
+		}
+	} else {
+		t.Error("Post-overwrite: textIndex for 'content' missing")
+	}
+
+	// textIndexStats: DocLengths for content should reflect the new text
+	if statsMap, ok := db.textIndexStats[indexName]; ok {
+		if stats, ok := statsMap["content"]; ok {
+			if length, exists := stats.DocLengths[nodeID]; !exists {
+				t.Error("Post-overwrite: textIndexStats should have DocLengths for nodeID")
+			} else if length == 0 {
+				t.Error("Post-overwrite: DocLengths should be > 0 for 'goodbye'")
+			}
+		}
+	}
+
+	t.Log("AddMetadata overwrite correctly updates secondary indexes.")
+}
+

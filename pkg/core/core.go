@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"reflect"
 	"runtime"
 	"sort"
 	"strconv"
@@ -1187,6 +1188,104 @@ func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) err
 	return nil
 }
 
+// isSameAnyValue returns true if a and b represent the same logical value.
+func isSameAnyValue(a, b any) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if aFloat, aOk := toFloat64Ok(a); aOk {
+		if bFloat, bOk := toFloat64Ok(b); bOk {
+			return aFloat == bFloat
+		}
+	}
+	return reflect.DeepEqual(a, b)
+}
+
+// removeOldIndexEntries removes secondary index entries associated with a metadata key's previous value.
+func (s *DB) removeOldIndexEntries(indexName string, nodeID uint32, key string, oldValue any, analyzer textanalyzer.Analyzer) {
+	if oldValue == nil {
+		return
+	}
+	switch old := oldValue.(type) {
+	case string:
+		if invIdx, ok := s.invertedIndex[indexName]; ok {
+			if keyMap, ok := invIdx[key]; ok {
+				if bitmap, ok := keyMap[old]; ok {
+					bitmap.Remove(nodeID)
+					if bitmap.IsEmpty() {
+						delete(keyMap, old)
+					}
+				}
+				if len(keyMap) == 0 {
+					delete(invIdx, key)
+				}
+			}
+		}
+		if analyzer != nil {
+			tokens := analyzer.Analyze(old)
+			if txtIdx, ok := s.textIndex[indexName]; ok {
+				if tokenMap, ok := txtIdx[key]; ok {
+					for _, token := range tokens {
+						if postings, ok := tokenMap[token]; ok {
+							newList := make(PostingList, 0, len(postings))
+							for _, entry := range postings {
+								if entry.DocID != nodeID {
+									newList = append(newList, entry)
+								}
+							}
+							if len(newList) == 0 {
+								delete(tokenMap, token)
+							} else {
+								tokenMap[token] = newList
+							}
+						}
+					}
+					if len(tokenMap) == 0 {
+						delete(txtIdx, key)
+					}
+				}
+			}
+			if statsMap, ok := s.textIndexStats[indexName]; ok {
+				if stats, ok := statsMap[key]; ok {
+					if _, had := stats.DocLengths[nodeID]; had {
+						delete(stats.DocLengths, nodeID)
+						stats.TotalDocs--
+						if stats.TotalDocs < 0 {
+							stats.TotalDocs = 0
+						}
+					}
+				}
+			}
+		}
+	case bool:
+		strOld := "false"
+		if old {
+			strOld = "true"
+		}
+		if invIdx, ok := s.invertedIndex[indexName]; ok {
+			if keyMap, ok := invIdx[key]; ok {
+				if bitmap, ok := keyMap[strOld]; ok {
+					bitmap.Remove(nodeID)
+					if bitmap.IsEmpty() {
+						delete(keyMap, strOld)
+					}
+				}
+				if len(keyMap) == 0 {
+					delete(invIdx, key)
+				}
+			}
+		}
+	default:
+		if numVal, isNum := toFloat64Ok(oldValue); isNum {
+			if btreeMap, ok := s.bTreeIndex[indexName]; ok {
+				if btree, ok := btreeMap[key]; ok {
+					btree.Delete(BTreeItem{Value: numVal, NodeID: nodeID})
+				}
+			}
+		}
+	}
+}
+
 // AddMetadata associates metadata with a node ID and updates the secondary indexes.
 func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]any) error {
 	// 1. Take Global RLock to prevent index deletion
@@ -1233,7 +1332,13 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 		if _, ok := s.metadataMap[indexName][nodeID]; !ok {
 			s.metadataMap[indexName][nodeID] = make(map[string]any)
 		}
+		oldValue := s.metadataMap[indexName][nodeID][key]
 		s.metadataMap[indexName][nodeID][key] = value
+
+		if isSameAnyValue(oldValue, value) {
+			continue
+		}
+		s.removeOldIndexEntries(indexName, nodeID, key, oldValue, analyzer)
 
 		switch v := value.(type) { // Check the type of the 'any' variable
 		case string:
@@ -1377,7 +1482,13 @@ func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[s
 		if _, ok := s.metadataMap[indexName][nodeID]; !ok {
 			s.metadataMap[indexName][nodeID] = make(map[string]any)
 		}
+		oldValue := s.metadataMap[indexName][nodeID][key]
 		s.metadataMap[indexName][nodeID][key] = value
+
+		if isSameAnyValue(oldValue, value) {
+			continue
+		}
+		s.removeOldIndexEntries(indexName, nodeID, key, oldValue, analyzer)
 
 		switch v := value.(type) { // Check the type of the 'any' variable
 		case string:
