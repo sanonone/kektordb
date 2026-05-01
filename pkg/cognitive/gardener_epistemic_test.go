@@ -205,3 +205,115 @@ func TestMetadataHelpers(t *testing.T) {
 		t.Errorf("Expected 0, got %d", i)
 	}
 }
+
+// TestExecuteConsolidationEvolvedContent verifies that evolved nodes created during
+// epistemic consolidation contain the consolidated truth, not the original contradictory content.
+func TestExecuteConsolidationEvolvedContent(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := engine.DefaultOptions(tmpDir)
+	opts.AutoSaveInterval = 0
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to open engine: %v", err)
+	}
+	defer eng.Close()
+
+	indexName := "consolidation_content_test"
+	err = eng.VCreate(indexName, distance.Euclidean, 16, 200, distance.Float32, "english", nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Failed to create index: %v", err)
+	}
+
+	// 1. Create conflicting nodes
+	vec1 := []float32{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6}
+	vec2 := []float32{0.11, 0.21, 0.31, 0.41, 0.51, 0.61, 0.71, 0.81, 0.91, 1.01, 0.11, 0.21, 0.31, 0.41, 0.51, 0.61}
+
+	now := float64(time.Now().Unix())
+
+	eng.VAdd(indexName, "mem1", vec1, map[string]any{
+		"content":       "Il server è in Europa",
+		"type":          "memory",
+		"_created_at":   now - 30*24*3600,
+		"_access_count": 2,
+	})
+	eng.VAdd(indexName, "mem2", vec2, map[string]any{
+		"content":       "Il server è stato migrato in USA",
+		"type":          "memory",
+		"_created_at":   now - 5*24*3600,
+		"_access_count": 45,
+	})
+
+	// 2. Create reflection node
+	reflectionID := "reflection_consolidation_test"
+	centroid := make([]float32, len(vec1))
+	for i := range vec1 {
+		centroid[i] = (vec1[i] + vec2[i]) / 2.0
+	}
+	eng.VAdd(indexName, reflectionID, centroid, map[string]any{
+		"type":    "reflection",
+		"status":  "unresolved",
+		"content": "Conflict: server location",
+	})
+
+	// 3. Build internal node data
+	consolidatedTruth := "Il server è attualmente negli USA"
+	resolution := &epistemicResolution{
+		Resolvable:        true,
+		ConsolidatedTruth: consolidatedTruth,
+	}
+	nodesData := []epistemicNodeInternal{
+		{id: "mem1", vector: vec1, metadata: map[string]any{"content": "Il server è in Europa", "type": "memory"}},
+		{id: "mem2", vector: vec2, metadata: map[string]any{"content": "Il server è stato migrato in USA", "type": "memory"}},
+	}
+
+	// 4. Create Gardener and call executeConsolidation directly
+	g := &Gardener{
+		eng:        eng,
+		scanCursors: make(map[string]uint32),
+	}
+	g.executeConsolidation(indexName, reflectionID, nodesData, resolution, centroid)
+
+	// 5. Verify old nodes are marked historical
+	oldData1, _ := eng.VGet(indexName, "mem1")
+	if hist, _ := oldData1.Metadata["_is_historical"].(bool); !hist {
+		t.Error("mem1 should be marked _is_historical=true after consolidation")
+	}
+	oldData2, _ := eng.VGet(indexName, "mem2")
+	if hist, _ := oldData2.Metadata["_is_historical"].(bool); !hist {
+		t.Error("mem2 should be marked _is_historical=true after consolidation")
+	}
+
+	// 6. Find evolved nodes via edges
+	for _, nodeID := range []string{"mem1", "mem2"} {
+		edges, found := eng.VGetEdges(indexName, nodeID, "superseded_by", 0)
+		if !found || len(edges) == 0 {
+			t.Errorf("Expected superseded_by edge from %s to evolved node", nodeID)
+			continue
+		}
+		evolvedID := edges[0].TargetID
+		evolvedData, err := eng.VGet(indexName, evolvedID)
+		if err != nil {
+			t.Errorf("Failed to get evolved node %s: %v", evolvedID, err)
+			continue
+		}
+		if evolvedData.Metadata["content"] != consolidatedTruth {
+			t.Errorf("Evolved node %s content = %q, want %q (consolidated truth)",
+				evolvedID, evolvedData.Metadata["content"], consolidatedTruth)
+		}
+		if evolvedData.Metadata["type"] != "evolved_memory" {
+			t.Errorf("Evolved node %s type = %v, want 'evolved_memory'",
+				evolvedID, evolvedData.Metadata["type"])
+		}
+		if evolvedData.Metadata["_consolidated_into"] == nil {
+			t.Errorf("Evolved node %s missing _consolidated_into reference to master", evolvedID)
+		}
+	}
+
+	// 7. Verify master belief exists
+	bp, err := eng.VFilter(indexName, "type='consolidated_belief'", 10)
+	if err != nil || len(bp) == 0 {
+		t.Fatal("Master consolidated_belief not found after consolidation")
+	}
+
+	t.Log("executeConsolidation correctly uses consolidated truth for evolved nodes")
+}

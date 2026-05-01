@@ -2965,13 +2965,11 @@ func (g *Gardener) executeConsolidation(
 	// VEvolve each conflicting node to point to master
 	successCount := 0
 	for _, node := range nodes {
-		// Create evolution metadata preserving original type
+		// Create evolution metadata with consolidated truth as the corrected content
 		evolveMeta := map[string]any{
-			"content": node.metadata["content"],
-			"type":    node.metadata["type"],
-		}
-		if evolveMeta["type"] == nil {
-			evolveMeta["type"] = "memory"
+			"content":            resolution.ConsolidatedTruth,
+			"type":               "evolved_memory",
+			"_consolidated_into": masterID,
 		}
 
 		_, err := g.eng.VEvolve(
