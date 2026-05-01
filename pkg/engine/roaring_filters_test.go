@@ -199,6 +199,29 @@ func TestRoaringBitmapsFilters(t *testing.T) {
 			t.Errorf("mem1 should NOT be returned for content='archived': %v", res)
 		}
 	})
+
+	t.Run("Filtro != con valore numerico su campo non-BTree", func(t *testing.T) {
+		// Regression: != with a numeric-looking value on a field indexed
+		// only in the inverted index must NOT return all nodes.
+		eng.VAdd(indexName, "neq_num_1", zeroVec, map[string]any{"tag": "123"})
+		eng.VAdd(indexName, "neq_num_2", zeroVec, map[string]any{"tag": "456"})
+		eng.VAdd(indexName, "neq_num_3", zeroVec, map[string]any{"tag": "abc"})
+
+		// Use VFilter to avoid k-limit issues from VSearch
+		res, err := eng.VFilter(indexName, "tag!='123'", 100)
+		if err != nil {
+			t.Fatalf("VFilter failed: %v", err)
+		}
+		if slices.Contains(res, "neq_num_1") {
+			t.Errorf("neq_num_1 should be excluded by tag!='123', got %v", res)
+		}
+		if !slices.Contains(res, "neq_num_2") {
+			t.Errorf("neq_num_2 should be included by tag!='123', got %v", res)
+		}
+		if !slices.Contains(res, "neq_num_3") {
+			t.Errorf("neq_num_3 should be included by tag!='123', got %v", res)
+		}
+	})
 }
 
 // TestVEvolve tests the semantic evolution functionality

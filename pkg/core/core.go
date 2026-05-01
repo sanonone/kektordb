@@ -1831,15 +1831,13 @@ func (s *DB) evaluateBooleanFilter(indexName string, filter string) (*roaring.Bi
 						return true
 					})
 				}
-				allValidIDs.AndNot(matchedSet)
-				return allValidIDs, nil
 			}
 		}
-		// For non-numeric or if BTree didn't have the key, try inverted index
+		// Try inverted index for string/bool fields (or union with BTree results)
 		if hasInv {
 			if keyMetadata, ok := indexInv[key]; ok {
 				if valSet, ok := keyMetadata[valueStr]; ok {
-					matchedSet = valSet.Clone()
+					matchedSet.Or(valSet)
 				}
 			}
 		}
