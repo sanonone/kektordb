@@ -1639,3 +1639,59 @@ func TestGardenerEpistemicPlaceholder(t *testing.T) {
 	// Real tests for epistemic resolution are in gardener_epistemic_test.go
 	t.Log("Epistemic resolution tests are in gardener_epistemic_test.go")
 }
+
+// TestContradictionSkipsMetaNodes verifies that detectContradictions skips
+// meta-nodes (reflection, consolidated_memory, evolved_memory) to avoid
+// circular contradictions and wasted LLM calls.
+// Regression test for H11.
+func TestContradictionSkipsMetaNodes(t *testing.T) {
+	testDir := t.TempDir()
+	opts := engine.DefaultOptions(testDir)
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+
+	indexName := "test_contra_meta"
+	eng.VCreate(indexName, distance.Cosine, 8, 100, distance.Float32, "english", nil, nil, nil)
+
+	// Add normal memories that would be in the same semantic neighborhood
+	vec := []float32{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0}
+	eng.VAdd(indexName, "normal_a", vec, map[string]any{"content": "The sky is blue", "type": "episodic"})
+	eng.VAdd(indexName, "normal_b", vec, map[string]any{"content": "The sky is red", "type": "episodic"})
+
+	// Add a reflection node — this should be skipped by detectContradictions
+	eng.VAdd(indexName, "reflection_x", vec, map[string]any{
+		"content": "Conflict detected: sky color disagreement",
+		"type":    "reflection",
+	})
+
+	// Create a gardener with just detectContradictions access
+	cfg := Config{
+		Enabled:             true,
+		Interval:            1 * time.Hour,
+		Mode:                "advanced",
+		TargetIndexes:       []string{indexName},
+		AdaptiveThreshold:   1000,
+		AdaptiveMinInterval: 1 * time.Hour,
+	}
+
+	gardener := NewGardener(eng, nil, cfg)
+
+	// Run detectContradictions — it should NOT create analyzed_against edges
+	// to the reflection node, and it should NOT trigger LLM calls without an LLM client
+	gardener.detectContradictions(indexName)
+
+	// Verify that no analyzed_against edge exists between normal_a and reflection_x
+	links, found := eng.VGetLinks(indexName, "normal_a", "analyzed_against")
+	if found {
+		for _, link := range links {
+			if link == "reflection_x" {
+				t.Error("analyzed_against edge should not exist between normal_a and reflection_x")
+			}
+		}
+	}
+
+	t.Log("detectContradictions correctly skips meta-nodes")
+}

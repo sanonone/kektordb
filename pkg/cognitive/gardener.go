@@ -1007,6 +1007,12 @@ func (g *Gardener) detectContradictions(indexName string) {
 		if !ok || contentA == "" {
 			continue
 		}
+		// Skip meta-nodes (reflections, consolidated memories, evolved memories)
+		// to avoid circular contradictions and wasted LLM calls on non-content nodes.
+		if memType, ok := node.Metadata["type"].(string); ok &&
+			(memType == "reflection" || memType == "consolidated_memory" || memType == "consolidated_belief" || memType == "evolved_memory") {
+			continue
+		}
 
 		// Find semantically similar but non-identical memories (score 0.70–0.95).
 		neighbors, _ := g.eng.VSearchWithScores(indexName, node.Vector, 5)
@@ -1043,6 +1049,11 @@ func (g *Gardener) detectContradictions(indexName string) {
 			}
 			contentB, ok := neighborData.Metadata["content"].(string)
 			if !ok {
+				continue
+			}
+			// Also skip meta-nodes as neighbor candidates (same rationale as above).
+			if memType, ok := neighborData.Metadata["type"].(string); ok &&
+				(memType == "reflection" || memType == "consolidated_memory" || memType == "consolidated_belief" || memType == "evolved_memory") {
 				continue
 			}
 
