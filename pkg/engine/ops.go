@@ -364,7 +364,8 @@ func (e *Engine) VAdd(indexName, id string, vector []float32, metadata map[strin
 
 // VDelete marks a vector as deleted in the specified index.
 // The node remains in the graph but is excluded from search results.
-// It also performs a CASCADE DELETE on the graph: any edge pointing to this node
+// It also performs a CASCADE DELETE on the graph: all edges to and from
+// this node are soft-deleted to prevent ghost nodes and dangling references.
 func (e *Engine) VDelete(indexName, id string) error {
 	idx, ok := e.DB.GetVectorIndex(indexName)
 	if !ok {
@@ -430,6 +431,24 @@ func (e *Engine) VDelete(indexName, id string) error {
 				// VUnlink is thread-safe and will update both RAM and the AOF
 				cleanSourceID := extractNodeID(sourceIDInternal)
 				_ = e.VUnlink(indexName, cleanSourceID, deadNodeID, relType, "", false)
+			}
+		}
+
+		// Also clean up outgoing edges (edges FROM this node TO other nodes).
+		// Without this, VacuumGraph cannot remove the ghost node because
+		// OutEdges remain active, causing a permanent memory leak.
+		graphID := buildGraphID(indexName, deadNodeID)
+		outgoingRels := e.DB.GetAllRelations(graphID, "out")
+		for relType, targets := range outgoingRels {
+			for _, targetIDInternal := range targets {
+				select {
+				case <-e.ctx.Done():
+					return
+				default:
+				}
+
+				cleanTargetID := extractNodeID(targetIDInternal)
+				_ = e.VUnlink(indexName, deadNodeID, cleanTargetID, relType, "", false)
 			}
 		}
 	}(id)

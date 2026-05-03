@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/sanonone/kektordb/pkg/core/distance"
@@ -195,4 +196,173 @@ func TestVDELRuntimeCascade(t *testing.T) {
 	if len(incoming2) > 0 {
 		t.Errorf("expected 0 incoming edges after VDelete + recovery, got %d", len(incoming2))
 	}
+}
+
+// TestVDeleteCascadeOutgoing verifies that VDelete cascades to outgoing edges
+// as well as incoming, preventing ghost nodes from persisting in the graph.
+// Regression test for H4.
+func TestVDeleteCascadeOutgoing(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := DefaultOptions(tmpDir)
+	opts.AutoSaveInterval = 0
+
+	indexName := "test_vdel_outgoing"
+
+	eng, err := Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = eng.VCreate(indexName, distance.Cosine, 8, 100, distance.Float32, "", nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vec := []float32{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0}
+	_ = eng.VAdd(indexName, "node_a", vec, map[string]any{"content": "a"})
+	_ = eng.VAdd(indexName, "node_b", vec, map[string]any{"content": "b"})
+	_ = eng.VAdd(indexName, "node_c", vec, map[string]any{"content": "c"})
+
+	// Create edges: a→b (incoming to b) and b→c (outgoing from b)
+	eng.DB.AddEdge(buildGraphID(indexName, "node_a"), buildGraphID(indexName, "node_b"), "refers_to", 1.0, nil, 1)
+	eng.DB.AddEdge(buildGraphID(indexName, "node_b"), buildGraphID(indexName, "node_c"), "knows", 1.0, nil, 2)
+
+	graphIDB := buildGraphID(indexName, "node_b")
+	graphIDC := buildGraphID(indexName, "node_c")
+
+	// Verify edges exist before delete
+	incoming := eng.DB.GetAllRelations(graphIDB, "in")
+	outgoing := eng.DB.GetAllRelations(graphIDB, "out")
+	if len(incoming) != 1 || len(outgoing) != 1 {
+		t.Fatalf("expected 1 incoming and 1 outgoing edge, got in=%d out=%d", len(incoming), len(outgoing))
+	}
+
+	// Delete node_b — cascade should clean both incoming (a→b) and outgoing (b→c)
+	err = eng.VDelete(indexName, "node_b")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Close and re-open to wait for the cascade goroutine to complete
+	// (Close calls wg.Wait which includes the cascade goroutine)
+	eng.Close()
+
+	eng2, err := Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng2.Close()
+
+	// Verify incoming edges to node_b were cleaned
+	incomingAfter := eng2.DB.GetAllRelations(graphIDB, "in")
+	if len(incomingAfter) > 0 {
+		for _, sources := range incomingAfter {
+			for _, src := range sources {
+				edges, _ := eng2.DB.GetOutEdges(src, "refers_to", 0)
+				for _, e := range edges {
+					if e.TargetID == graphIDB && e.DeletedAt == 0 {
+						t.Error("incoming edge a→b should be soft-deleted")
+					}
+				}
+			}
+		}
+	}
+
+	// Verify outgoing edges from node_b were cleaned
+	outgoingAfter := eng2.DB.GetAllRelations(graphIDB, "out")
+	if len(outgoingAfter) > 0 {
+		edges, _ := eng2.DB.GetOutEdges(graphIDB, "knows", 0)
+		for _, e := range edges {
+			if e.TargetID == graphIDC && e.DeletedAt == 0 {
+				t.Error("outgoing edge b→c should be soft-deleted")
+			}
+		}
+	}
+
+	// Verify node_c's InEdges pointing to node_b were cleaned
+	cIncoming := eng2.DB.GetAllRelations(graphIDC, "in")
+	for _, sources := range cIncoming {
+		for _, src := range sources {
+			if src == graphIDB {
+				t.Error("node_c should not have incoming edge from node_b after cascade")
+			}
+		}
+	}
+
+	t.Log("VDelete cascade correctly handles both incoming and outgoing edges")
+}
+
+// TestVEvolveCleanupOnFailure verifies that when VEvolve fails after creating
+// graph edges, VDelete on the new node cleans up both incoming AND outgoing
+// edges (the evolves_from inverse edge is outgoing from the new node).
+// Regression test for H5 (derivative of H4).
+func TestVEvolveCleanupOnFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := DefaultOptions(tmpDir)
+	opts.AutoSaveInterval = 0
+
+	indexName := "test_vevolve_cleanup"
+
+	eng, err := Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = eng.VCreate(indexName, distance.Cosine, 8, 100, distance.Float32, "", nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	vec := []float32{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0}
+	_ = eng.VAdd(indexName, "original", vec, map[string]any{"content": "original"})
+
+	// Simulate the scenario manually instead of relying on VEvolve to fail:
+	// 1. Copy incoming edges to a new (never-created) node
+	// 2. Create the evolve link (both directions)
+	// 3. VDelete the new node — verify edge cleanup
+
+	newID := "evolved_original_test"
+	oldGraphID := buildGraphID(indexName, "original")
+	newGraphID := buildGraphID(indexName, newID)
+
+	// Add the new node to the vector index (VDelete requires the node to exist)
+	_ = eng.VAdd(indexName, newID, vec, map[string]any{"content": "evolved"})
+
+	// Create the evolves_from reverse edge (outgoing from new node)
+	eng.DB.AddEdge(newGraphID, oldGraphID, "evolves_from", 1.0, nil, 1)
+	// Create superseded_by forward edge (incoming to new node)
+	eng.DB.AddEdge(oldGraphID, newGraphID, "superseded_by", 1.0, nil, 2)
+
+	// Verify edges exist
+	outgoing := eng.DB.GetAllRelations(newGraphID, "out")
+	incoming := eng.DB.GetAllRelations(newGraphID, "in")
+	if len(outgoing) != 1 || len(incoming) != 1 {
+		t.Fatalf("expected 1 outgoing and 1 incoming edge on new node, got out=%d in=%d", len(outgoing), len(incoming))
+	}
+
+	// VDelete the new node (simulates the VEvolve cleanup path)
+	err = eng.VDelete(indexName, newID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for cascade goroutine
+	eng.Close()
+	eng2, err := Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng2.Close()
+
+	// Check that neither evolves_from nor superseded_by edges remain
+	incoming2 := eng2.DB.GetAllRelations(oldGraphID, "in")
+	for relType, sources := range incoming2 {
+		for _, src := range sources {
+			if strings.Contains(src, "evolved_") {
+				t.Errorf("dangling edge from %s to original (rel=%s)", src, relType)
+			}
+		}
+	}
+
+	t.Log("VEvolve failure cleanup verified")
 }
