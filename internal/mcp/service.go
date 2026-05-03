@@ -1462,8 +1462,10 @@ func (s *Service) EvolveMemory(ctx context.Context, req *mcp.CallToolRequest, ar
 	}
 
 	newMetadata := map[string]any{
-		"content": args.NewContent,
-		"type":    oldData.Metadata["type"],
+		"type": oldData.Metadata["type"],
+	}
+	if args.NewContent != "" {
+		newMetadata["content"] = args.NewContent
 	}
 	if args.Layer != "" {
 		newMetadata["memory_layer"] = args.Layer

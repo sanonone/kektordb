@@ -295,3 +295,70 @@ func TestMultipleSessions(t *testing.T) {
 		t.Error("Third session should still be tracked")
 	}
 }
+
+// TestEvolveMemoryEmptyContent verifies that when only NewVector is provided
+// (no NewContent), the evolved node does NOT get an empty "content" metadata field.
+// Regression test for H12: MCP EvolveMemory sets empty content vs HTTP guard.
+func TestEvolveMemoryEmptyContent(t *testing.T) {
+	svc, eng, cleanup := setupTestService(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	// Add a memory with content
+	vec := []float32{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0}
+	eng.VAdd("mcp_memory", "mem_original", vec, map[string]any{
+		"content": "original content",
+		"type":    "episodic",
+	})
+
+	// Evolve with only NewVector (no NewContent)
+	evolvedVec := []float32{2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0}
+	req := &mcp.CallToolRequest{}
+	args := EvolveMemoryArgs{
+		IndexName:   "mcp_memory",
+		OldMemoryID: "mem_original",
+		NewVector:   evolvedVec,
+		Reason:      "testing empty content guard",
+	}
+
+	_, result, err := svc.EvolveMemory(ctx, req, args)
+	if err != nil {
+		t.Fatalf("EvolveMemory failed: %v", err)
+	}
+
+	// Verify the evolved node does not have empty content
+	data, err := eng.VGet("mcp_memory", result.NewMemoryID)
+	if err != nil {
+		t.Fatalf("failed to get evolved node: %v", err)
+	}
+
+	content, exists := data.Metadata["content"]
+	if exists {
+		contentStr, ok := content.(string)
+		if ok && contentStr == "" {
+			t.Error("evolved node should not have empty 'content' field")
+		}
+		t.Logf("Evolved node content: %q", contentStr)
+	} else {
+		t.Log("Evolved node has no 'content' field (correct when NewContent is empty)")
+	}
+
+	// Original node should be marked historical
+	oldData, err := eng.VGet("mcp_memory", "mem_original")
+	if err != nil {
+		t.Fatalf("failed to get original node: %v", err)
+	}
+	if !isHistorical(oldData.Metadata) {
+		t.Error("original node should be marked historical after evolution")
+	}
+}
+
+func isHistorical(meta map[string]any) bool {
+	if v, ok := meta["_is_historical"]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return false
+}

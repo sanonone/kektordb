@@ -100,6 +100,9 @@ func BenchmarkConcurrentInserts(b *testing.B) {
 
 // --- REPLACE the profiling test WITH THIS VERSION ---
 func TestLargeBatchInsertionForProfiling(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping profiling test in short mode (100K vectors)")
+	}
 	// --- Setup: data generation happens HERE, outside of profiling ---
 	const (
 		totalVectors = 100000
