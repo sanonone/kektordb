@@ -310,6 +310,17 @@ func (s *DB) LoadFromSnapshot(reader io.Reader, basePath string) error {
 		return fmt.Errorf("failed to decode snapshot: %w", err)
 	}
 
+	// Acquire all locks before modifying shared state.
+	// Lock order: s.mu → kvStore.mu → graphShards[0..N-1].mu (consistent with Snapshot).
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.kvStore.mu.Lock()
+	defer s.kvStore.mu.Unlock()
+	for i := 0; i < NumGraphShards; i++ {
+		s.graphShards[i].mu.Lock()
+		defer s.graphShards[i].mu.Unlock()
+	}
+
 	// Clear the current state for a clean load
 	s.kvStore.data = snapshot.KVData
 	if s.kvStore.data == nil {
