@@ -219,6 +219,17 @@ func (e *Engine) replayAOF() error {
 				if idx, ok := indexes[idxName]; ok {
 					delete(idx.entries, id)
 				}
+				// Cascade delete: clean up graph edges pointing to the deleted node.
+				// Runtime VDelete does this in a background goroutine and writes GUNLINK
+				// for each edge to AOF. If the process crashed before all GUNLINKs were
+				// flushed, we repair the inconsistency here during recovery.
+				graphID := buildGraphID(idxName, id)
+				incoming := e.DB.GetAllRelations(graphID, "in")
+				for relType, sources := range incoming {
+					for _, sourceID := range sources {
+						e.DB.RemoveEdge(sourceID, graphID, relType, false, time.Now().UnixNano())
+					}
+				}
 			}
 		case "GLINK":
 			if len(cmd.Args) >= 7 {
