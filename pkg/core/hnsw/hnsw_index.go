@@ -44,6 +44,12 @@ type Index struct {
 	metaMu   sync.RWMutex
 	shardsMu []sync.RWMutex
 
+	// activeMu coordinates Close() with in-flight operations that access mmap-backed
+	// vector data (SearchWithScores, Add, AddBatch). Readers hold RLock for the
+	// entire mmap-accessing duration. Close holds Lock before unmapping the arena,
+	// blocking until all readers drain. This prevents SIGSEGV from use-after-unmap.
+	activeMu sync.RWMutex
+
 	// closed flag to prevent operations after Close() is called
 	closed atomic.Bool
 
@@ -322,6 +328,11 @@ func (h *Index) SearchWithScores(query []float32, k int, allowList *roaring.Bitm
 	if h.isClosed() {
 		return []types.SearchResult{}
 	}
+	h.activeMu.RLock()
+	defer h.activeMu.RUnlock()
+	if h.isClosed() {
+		return []types.SearchResult{}
+	}
 
 	// NOTA: Non acquisiamo metaMu qui perché searchInternal gestisce il locking in modo fine-grained
 	// Questo permette ai writer (Add) di acquisire il lock globale senza starvation da parte dei reader
@@ -443,6 +454,11 @@ func (h *Index) searchInternal(query []float32, k int, allowList *roaring.Bitmap
 // Add inserts a new vector into the index.
 // THREAD-SAFE: Uses fine-grained locking to allow concurrent searches during insertion.
 func (h *Index) Add(id string, vector []float32) (uint32, error) {
+	if h.isClosed() {
+		return 0, fmt.Errorf("index is closed")
+	}
+	h.activeMu.RLock()
+	defer h.activeMu.RUnlock()
 	if h.isClosed() {
 		return 0, fmt.Errorf("index is closed")
 	}
@@ -650,11 +666,6 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 
 	// We can unlock global structure now. The node exists, but is disconnected (invisible to search traversal).
 	h.metaMu.Unlock()
-
-	// Check if index was closed while we were holding the lock
-	if h.isClosed() {
-		return 0, fmt.Errorf("index is closed")
-	}
 
 	// --- PHASE 2: SEARCH (No Locks, CPU Bound) ---
 
@@ -1460,6 +1471,11 @@ func (h *Index) addBatchInternal(objects []types.BatchObject, efConst int) error
 	if h.isClosed() {
 		return fmt.Errorf("index is closed")
 	}
+	h.activeMu.RLock()
+	defer h.activeMu.RUnlock()
+	if h.isClosed() {
+		return fmt.Errorf("index is closed")
+	}
 
 	numVectors := len(objects)
 	if numVectors == 0 {
@@ -1611,12 +1627,6 @@ func (h *Index) addBatchInternal(objects []types.BatchObject, efConst int) error
 	}
 
 	h.metaMu.Unlock()
-
-	// CRITICAL: Check closed flag BEFORE starting parallel work
-	// This prevents accessing arena after it's been closed
-	if h.isClosed() {
-		return fmt.Errorf("index is closed")
-	}
 
 	// ← Da qui in poi: nessun global lock per tutto il lavoro pesante.
 	//   Il tempo sotto metaMu è ora O(N) map writes, non O(N * dim) memcpy.
@@ -3451,47 +3461,24 @@ func (h *Index) GetMemoryConfig() MemoryConfig {
 // Close safely unmaps the virtual memory and closes file handles.
 // Uses a timeout to prevent deadlock if compactor cannot stop.
 func (h *Index) Close() error {
-	done := make(chan error, 1)
+	// Step 1: Prevent new operations from starting
+	h.closed.Store(true)
+	slog.Info("[HNSW] Index marked as closed", "arena_dir", h.arenaDir)
 
+	// Step 2: Wait for all in-flight operations to drain.
+	// activeMu.Lock blocks until every Search/Add/AddBatch releases its RLock.
+	// New callers see isClosed()==true and return before acquiring RLock.
+	drainDone := make(chan struct{})
 	go func() {
-		h.metaMu.Lock()
-		defer h.metaMu.Unlock()
-
-		slog.Info("[HNSW] Close goroutine started", "arena_dir", h.arenaDir)
-
-		// CRITICAL: Set closed flag FIRST to prevent new operations
-		h.closed.Store(true)
-		slog.Info("[HNSW] Index marked as closed")
-
-		if h.arena != nil {
-			// Stop compactor after marking as closed
-			slog.Info("[HNSW] Stopping compactor before closing arena")
-			h.arena.StopCompactor()
-
-			// Wait for compactor to be fully stopped using channel (no lock held)
-			slog.Info("[HNSW] Waiting for compactor to stop")
-			h.arena.WaitForStopped()
-
-			slog.Info("[HNSW] Now closing arena")
-			err := h.arena.Close()
-			if err != nil {
-				slog.Error("[HNSW] Error closing arena", "error", err)
-				done <- err
-				return
-			}
-			slog.Info("[HNSW] Arena closed successfully")
-			h.arena = nil
-		}
-		done <- nil
+		h.activeMu.Lock()
+		close(drainDone)
 	}()
 
 	select {
-	case err := <-done:
-		return err
+	case <-drainDone:
+		// In-flight operations have drained, safe to proceed
 	case <-time.After(10 * time.Second):
-		slog.Error("[HNSW] Close timed out after 10 seconds - forcing close", "arena_dir", h.arenaDir)
-		// Force set closed flag to prevent new operations
-		h.closed.Store(true)
+		slog.Error("[HNSW] Close timed out waiting for in-flight operations", "arena_dir", h.arenaDir)
 		// Force close the arena without waiting for compactor
 		if h.arena != nil {
 			if err := h.arena.ForceClose(); err != nil {
@@ -3499,8 +3486,34 @@ func (h *Index) Close() error {
 			}
 			h.arena = nil
 		}
-		return fmt.Errorf("close timed out after 10 seconds - possible deadlock in compactor")
+		return fmt.Errorf("close timed out after 10 seconds - possible deadlock in in-flight operations")
 	}
+
+	// Step 3: Now safe to do cleanup under metaMu.
+	// activeMu.Lock is held, preventing any new mmap access.
+	h.metaMu.Lock()
+	defer h.metaMu.Unlock()
+	defer h.activeMu.Unlock()
+
+	slog.Info("[HNSW] Close goroutine started", "arena_dir", h.arenaDir)
+
+	if h.arena != nil {
+		slog.Info("[HNSW] Stopping compactor before closing arena")
+		h.arena.StopCompactor()
+
+		slog.Info("[HNSW] Waiting for compactor to stop")
+		h.arena.WaitForStopped()
+
+		slog.Info("[HNSW] Now closing arena")
+		err := h.arena.Close()
+		if err != nil {
+			slog.Error("[HNSW] Error closing arena", "error", err)
+			return err
+		}
+		slog.Info("[HNSW] Arena closed successfully")
+		h.arena = nil
+	}
+	return nil
 }
 
 // SetNeedsRefine marks the index as dirty (needing optimization) or clean.

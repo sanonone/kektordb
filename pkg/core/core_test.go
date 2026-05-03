@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"math/rand"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
@@ -493,5 +496,112 @@ func TestAddMetadataStaleOnOverwrite(t *testing.T) {
 	}
 
 	t.Log("AddMetadata overwrite correctly updates secondary indexes.")
+}
+
+// TestGetVectorsConcurrentWithAddMetadata verifies that GetVectors and AddMetadata
+// do not race when accessing metadataMap concurrently. Regression test for H2.
+// Run with: go test -race -run TestGetVectorsConcurrentWithAddMetadata
+func TestGetVectorsConcurrentWithAddMetadata(t *testing.T) {
+	tmpDir := t.TempDir()
+	db := NewDB()
+	defer db.Close()
+
+	indexName := "test_concurrent_meta"
+	arenaDir := filepath.Join(tmpDir, "arenas", indexName)
+
+	err := db.CreateVectorIndex(indexName, distance.Cosine, 16, 100, distance.Float32, "", arenaDir)
+	if err != nil {
+		t.Fatalf("Failed to create index: %v", err)
+	}
+
+	idx, _ := db.GetVectorIndex(indexName)
+
+	const numVectors = 200
+	ids := make([]string, numVectors)
+	for i := 0; i < numVectors; i++ {
+		vec := make([]float32, 32)
+		for j := range vec {
+			vec[j] = rand.Float32()
+		}
+		ids[i] = fmt.Sprintf("doc-%d", i)
+		internalID, err := idx.Add(ids[i], vec)
+		if err != nil {
+			t.Fatalf("Add failed: %v", err)
+		}
+		db.AddMetadata(indexName, internalID, map[string]any{
+			"content": fmt.Sprintf("document number %d", i),
+			"score":   float64(i),
+		})
+	}
+
+	var wg sync.WaitGroup
+	stopCh := make(chan struct{})
+	var panicCount atomic.Int64
+
+	// Reader goroutines: hammer GetVectors
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					panicCount.Add(1)
+					t.Logf("GetVectors panic: %v", r)
+				}
+			}()
+			batch := make([]string, 5)
+			for j := 0; j < 5; j++ {
+				batch[j] = ids[rand.Intn(numVectors)]
+			}
+			for {
+				select {
+				case <-stopCh:
+					return
+				default:
+					_, _ = db.GetVectors(indexName, batch)
+				}
+			}
+		}()
+	}
+
+	// Writer goroutine: hammer AddMetadata
+	idxMu, _ := db.indexLocks[indexName]
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					panicCount.Add(1)
+					t.Logf("AddMetadata panic: %v", r)
+				}
+			}()
+			for {
+				select {
+				case <-stopCh:
+					return
+				default:
+					nodeID := uint32(rand.Intn(numVectors))
+					idxMu.Lock()
+					if _, ok := db.metadataMap[indexName]; !ok {
+						db.metadataMap[indexName] = make(map[uint32]map[string]any)
+					}
+					if _, ok := db.metadataMap[indexName][nodeID]; !ok {
+						db.metadataMap[indexName][nodeID] = make(map[string]any)
+					}
+					db.metadataMap[indexName][nodeID]["score"] = rand.Float64()
+					idxMu.Unlock()
+				}
+			}
+		}()
+	}
+
+	time.Sleep(500 * time.Millisecond)
+	close(stopCh)
+	wg.Wait()
+
+	if panicCount.Load() > 0 {
+		t.Errorf("%d goroutines panicked", panicCount.Load())
+	}
 }
 

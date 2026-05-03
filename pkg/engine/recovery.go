@@ -565,13 +565,9 @@ func (e *Engine) RewriteAOF() error {
 			// tiene già h.metaMu.RLock.
 			internalID, _ := ref.hnswIdx.GetInternalIDUnlocked(id)
 
-			// GetMetadataForNodeUnlocked accede direttamente a metadataMap
-			// senza acquisire s.mu (è la versione "Unlocked"). Non aggiungiamo
-			// s.mu.RLock() qui per evitare il lock ordering:
-			//   h.metaMu:R → s.mu:R
-			// che potrebbe causare starvation se altri writer attendono s.mu:W.
-			// Per una compaction AOF, la consistenza eventual è accettabile.
-			meta := e.DB.GetMetadataForNodeUnlocked(ref.info.Name, internalID)
+			// GetMetadataForNode acquires s.mu.RLock + idxMu.RLock internally,
+			// protecting against concurrent AddMetadata writes to metadataMap.
+			meta := e.DB.GetMetadataForNode(ref.info.Name, internalID)
 
 			snap.vectors = append(snap.vectors, vectorEntry{
 				idxName:  ref.info.Name,

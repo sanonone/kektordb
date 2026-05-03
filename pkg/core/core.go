@@ -250,7 +250,7 @@ func (s *DB) Snapshot(writer io.Writer) error {
 				// Create the node snapshot
 				snap := &NodeSnapshot{
 					NodeData: node,
-					Metadata: s.getMetadataForNodeUnlocked(name, internalID),
+					Metadata: s.getMetadataForNode(name, internalID),
 				}
 
 				// Use a type switch to populate the correct vector field
@@ -598,7 +598,7 @@ func (s *DB) GetVector(indexName, vectorID string) (VectorData, error) {
 		return VectorData{}, fmt.Errorf("vector with ID '%s' not found in index '%s'", vectorID, indexName)
 	}
 
-	metadata := s.getMetadataForNodeUnlocked(indexName, nodeData.InternalID)
+				metadata := s.getMetadataForNode(indexName, nodeData.InternalID)
 
 	return VectorData{
 		ID:       vectorID,
@@ -657,7 +657,7 @@ func (s *DB) GetVectors(indexName string, vectorIDs []string) ([]VectorData, err
 				if !found {
 					continue
 				}
-				metadata := s.getMetadataForNodeUnlocked(indexName, nodeData.InternalID)
+	metadata := s.getMetadataForNode(indexName, nodeData.InternalID)
 
 				resultsChan <- VectorData{
 					ID:       vectorID,
