@@ -29,6 +29,13 @@ import (
 	"github.com/sanonone/kektordb/pkg/textanalyzer"
 )
 
+// Request validation limits to prevent DoS attacks (H14 fix).
+const (
+	maxK          = 10000  // Max number of results per search
+	maxBatchSize  = 50000  // Max batch insert/import size
+	maxVectorDim  = 65536  // Max vector dimension per add
+)
+
 // registerHTTPHandlers sets up all HTTP routes using Go 1.22+ routing.
 func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	// Debug endpoints
@@ -451,6 +458,10 @@ func (s *Server) handleVectorAdd(w http.ResponseWriter, r *http.Request) {
 		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("missing fields: index_name, id, or vector"))
 		return
 	}
+	if len(req.Vector) > maxVectorDim {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("vector dimension must be <= %d, got %d", maxVectorDim, len(req.Vector)))
+		return
+	}
 
 	// Validate vector dimension against index configuration
 	idx, ok := s.Engine.DB.GetVectorIndex(req.IndexName)
@@ -490,6 +501,10 @@ func (s *Server) handleVectorAddBatch(w http.ResponseWriter, r *http.Request) {
 		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name required"))
 		return
 	}
+	if len(req.Vectors) > maxBatchSize {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("batch size must be <= %d, got %d", maxBatchSize, len(req.Vectors)))
+		return
+	}
 
 	err := s.Engine.VAddBatch(req.IndexName, req.Vectors)
 	if err != nil {
@@ -515,6 +530,10 @@ func (s *Server) handleVectorImport(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.IndexName == "" || len(req.Vectors) == 0 {
 		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("Missing index_name or vectors"))
+		return
+	}
+	if len(req.Vectors) > maxBatchSize {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("batch size must be <= %d, got %d", maxBatchSize, len(req.Vectors)))
 		return
 	}
 
@@ -561,6 +580,13 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.IndexName == "" {
 		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name required"))
+		return
+	}
+	if req.K <= 0 {
+		req.K = 10
+	}
+	if req.K > maxK {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("k must be between 1 and %d", maxK))
 		return
 	}
 
@@ -643,6 +669,13 @@ func (s *Server) handleVectorSearchWithScores(w http.ResponseWriter, r *http.Req
 	}
 	if req.IndexName == "" {
 		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name required"))
+		return
+	}
+	if req.K <= 0 {
+		req.K = 10
+	}
+	if req.K > maxK {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("k must be between 1 and %d", maxK))
 		return
 	}
 
@@ -1521,6 +1554,10 @@ func (s *Server) handleRagRetrieve(w http.ResponseWriter, r *http.Request) {
 	if req.K <= 0 {
 		req.K = 3
 	}
+	if req.K > maxK {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("k must be between 1 and %d", maxK))
+		return
+	}
 
 	// Find the correct pipeline in the VectorizerService
 	pipeline := s.vectorizerService.GetPipeline(req.PipelineName)
@@ -1643,6 +1680,10 @@ func (s *Server) handleAdaptiveRagRetrieve(w http.ResponseWriter, r *http.Reques
 	}
 	if req.K <= 0 {
 		req.K = 5
+	}
+	if req.K > maxK {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("k must be between 1 and %d", maxK))
+		return
 	}
 
 	// Get pipeline
@@ -2404,7 +2445,7 @@ func (s *Server) handleBeliefAssessment(w http.ResponseWriter, r *http.Request) 
 
 	// Validate required fields
 	if req.IndexName == "" {
-		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name is required"))
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name required"))
 		return
 	}
 

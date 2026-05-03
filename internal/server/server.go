@@ -97,18 +97,25 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 	// 1. Auth (Inner)
 	handler = s.authMiddleware(handler)
 
-	// 2. Logging (Middle) - Logs duration and status
+	// 2. Body Size Limit - prevents oversized payloads (DoS protection)
+	handler = s.bodySizeLimitMiddleware(handler)
+
+	// 3. Logging (Middle) - Logs duration and status
 	handler = s.LoggingMiddleware(handler)
 
-	// 3. Recovery (Outer) - Catches panics
+	// 4. Recovery (Outer) - Catches panics
 	handler = s.RecoveryMiddleware(handler)
 
 	rootMux := http.NewServeMux()
 	rootMux.HandleFunc("GET /healthz", s.handleHealthz)
 	rootMux.Handle("/", handler)
 	s.httpServer = &http.Server{
-		Addr:    httpAddr,
-		Handler: rootMux,
+		Addr:           httpAddr,
+		Handler:        rootMux,
+		ReadTimeout:    30 * time.Second,
+		WriteTimeout:   60 * time.Second,
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 1 << 20, // 1 MB
 	}
 
 	return s, nil
