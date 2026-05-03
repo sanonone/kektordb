@@ -669,7 +669,7 @@ func (e *Engine) VReinforce(indexName string, ids []string) error {
 
 		// 3. Fetch current metadata (under protection of node-level lock)
 		e.DB.RLock()
-		meta := e.DB.GetMetadataForNodeUnlocked(indexName, internalID)
+		meta := e.DB.GetMetadataForNode(indexName, internalID)
 		e.DB.RUnlock()
 		if meta == nil {
 			meta = make(map[string]any)
@@ -746,7 +746,7 @@ func (e *Engine) VSetMetadata(indexName, id string, newProps map[string]any) err
 
 	// 2. Legge i metadati correnti (sotto protezione del node-level lock)
 	e.DB.RLock()
-	meta := e.DB.GetMetadataForNodeUnlocked(indexName, internalID)
+	meta := e.DB.GetMetadataForNode(indexName, internalID)
 	e.DB.RUnlock()
 
 	if meta == nil {
@@ -1242,7 +1242,7 @@ func (e *Engine) VSearchWithScores(indexName string, query []float32, k int) ([]
 
 		e.DB.RLock()
 		for i := range internalResults {
-			meta := e.DB.GetMetadataForNodeUnlocked(indexName, internalResults[i].DocID)
+			meta := e.DB.GetMetadataForNode(indexName, internalResults[i].DocID)
 
 			// Determine memory layer
 			layer := "episodic" // default

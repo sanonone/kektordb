@@ -97,25 +97,29 @@ func TestConcurrentThinkNoRace(t *testing.T) {
 		wg.Wait()
 	})
 
-	// Test concurrent think() calls (simulating ticker + adaptive trigger)
+	// Test concurrent think() calls routed through the serialization channel
 	t.Run("ConcurrentThinkCalls", func(t *testing.T) {
-		var wg sync.WaitGroup
-		numThinks := 5
+		gardener.thinkReqs = make(chan struct{}, 1)
+		go gardener.thinkWorker()
+		defer gardener.Stop()
 
-		// Simulate concurrent think() calls from different sources
-		for i := 0; i < numThinks; i++ {
+		var wg sync.WaitGroup
+		numRequests := 5
+
+		// Send multiple concurrent requests through the channel
+		for i := 0; i < numRequests; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				gardener.think()
+				gardener.requestThink()
 			}()
 		}
 
-		wg.Wait()
+		// Also test ForceThink (blocking send)
+		gardener.thinkReqs <- struct{}{}
 
-		// Verify cursors are in a valid state (not corrupted)
-		// The cursors should have advanced
-		t.Log("Concurrent think() calls completed without panic")
+		wg.Wait()
+		t.Log("Concurrent think requests serialized without panic")
 	})
 }
 
@@ -222,4 +226,61 @@ func TestHelperMethodsThreadSafety(t *testing.T) {
 
 	// If we got here without panic or race detector warning, the test passes
 	t.Log("Helper methods are thread-safe")
+}
+
+// TestThinkChannelSerialization verifies that the thinkReqs channel serializes
+// think() calls, preventing the reentrancy race on newReflections and scanCursors.
+// Regression test for H10.
+func TestThinkChannelSerialization(t *testing.T) {
+	tempDir := t.TempDir()
+	opts := engine.DefaultOptions(tempDir)
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	defer eng.Close()
+
+	indexName := "test_memory"
+	if err := eng.VCreate(indexName, distance.Cosine, 8, 100, distance.Float32, "english", nil, nil, nil); err != nil {
+		t.Fatalf("Failed to create index: %v", err)
+	}
+
+	for i := 0; i < 50; i++ {
+		vec := []float32{float32(i), 0, 0, 0, 0, 0, 0, 0}
+		id := string(rune('A'+i%26)) + string(rune('0'+i/26))
+		_ = eng.VAdd(indexName, id, vec, map[string]any{
+			"content":      "test content",
+			"memory_layer": "episodic",
+		})
+	}
+
+	cfg := Config{
+		Enabled:             true,
+		Interval:            1 * time.Hour, // Prevent automatic think
+		Mode:                "basic",
+		TargetIndexes:       []string{indexName},
+		AdaptiveThreshold:   5,
+		AdaptiveMinInterval: 10 * time.Millisecond,
+	}
+
+	gardener := NewGardener(eng, nil, cfg)
+	gardener.thinkReqs = make(chan struct{}, 1)
+	go gardener.thinkWorker()
+
+	// Simulate concurrent triggers: ticker + adaptive + ForceThink
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			gardener.requestThink()
+		}()
+	}
+
+	// ForceThink: blocking send through the channel
+	gardener.thinkReqs <- struct{}{}
+
+	wg.Wait()
+	gardener.Stop()
+	t.Log("Channel serialization test passed without races")
 }

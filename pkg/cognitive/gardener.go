@@ -87,6 +87,7 @@ type Gardener struct {
 	lastThinkMu    sync.RWMutex // Protects lastThinkTime from concurrent access
 	newReflections []string     // Reflection IDs created in current think() cycle
 	reflectionsMu  sync.Mutex   // Protects newReflections from concurrent access
+	thinkReqs      chan struct{} // Buffered channel (size 1) serializing think() calls
 
 	// User profiling
 	unassimilatedInteractions map[string]int // user_id -> count of new interactions
@@ -119,6 +120,29 @@ func (g *Gardener) setLastThinkTime(t time.Time) {
 	g.lastThinkMu.Lock()
 	defer g.lastThinkMu.Unlock()
 	g.lastThinkTime = t
+}
+
+// requestThink sends a non-blocking think request to the serialization channel.
+// If a request is already pending, it is silently dropped (no queue buildup).
+func (g *Gardener) requestThink() {
+	select {
+	case g.thinkReqs <- struct{}{}:
+	default:
+	}
+}
+
+// thinkWorker serializes think() executions by reading from the channel.
+// It runs as a background goroutine started by Start().
+func (g *Gardener) thinkWorker() {
+	for {
+		select {
+		case <-g.stopCh:
+			return
+		case <-g.thinkReqs:
+			g.think()
+			g.setLastThinkTime(time.Now())
+		}
+	}
 }
 
 // filterNodesByLayer filters a list of node IDs to include only those with the specified memory layer.
@@ -243,6 +267,8 @@ func (g *Gardener) Start() {
 	if !g.cfg.Enabled {
 		return
 	}
+	g.thinkReqs = make(chan struct{}, 1)
+	go g.thinkWorker()
 	slog.Info("[Cognitive Engine] Gardener started. Sleep cycle initiated.", "interval", g.cfg.Interval)
 	go g.loop()
 }
@@ -272,8 +298,7 @@ func (g *Gardener) loop() {
 			g.onEvent(event)
 		case <-ticker.C:
 			g.writeCounter.Store(0)
-			g.think()
-			g.setLastThinkTime(time.Now())
+			g.requestThink()
 		}
 	}
 }
@@ -286,10 +311,7 @@ func (g *Gardener) onEvent(event engine.Event) {
 	if g.writeCounter.Load() >= g.cfg.AdaptiveThreshold {
 		if time.Since(g.getLastThinkTime()) > g.cfg.AdaptiveMinInterval {
 			g.writeCounter.Store(0)
-			go func() {
-				g.think()
-				g.setLastThinkTime(time.Now())
-			}()
+			g.requestThink()
 		}
 	}
 
@@ -1176,13 +1198,14 @@ func (g *Gardener) detectImportanceShifts(indexName string) {
 
 // ForceThink triggers a cognitive cycle immediately for a specific index.
 // Used by the HTTP API for manual intervention or after heavy bulk imports.
+// Sends a request through the serialization channel; processes all target indexes
+// (superset of the requested index), ensuring no concurrent think() execution.
 func (g *Gardener) ForceThink(indexName string) {
 	if !g.eng.IndexExists(indexName) {
 		slog.Warn("[Cognitive Engine] Cannot think on missing index", "index", indexName)
 		return
 	}
 
-	// Security check: verify index is in the target list.
 	if !g.cfg.isIndexAllowed(indexName) {
 		slog.Warn("[Cognitive Engine] Index not in target list for cognitive analysis", "index", indexName)
 		return
@@ -1190,43 +1213,9 @@ func (g *Gardener) ForceThink(indexName string) {
 
 	slog.Info("[Cognitive Engine] Manual reflection cycle triggered.", "index", indexName, "mode", g.cfg.Mode)
 
-	g.reflectionsMu.Lock()
-	g.newReflections = nil
-	g.reflectionsMu.Unlock()
-
-	// Look up the index language for sentiment analysis.
-	var indexLang string
-	if info, err := g.eng.DB.GetSingleVectorIndexInfoAPI(indexName); err == nil {
-		indexLang = info.TextLanguage
-	}
-
-	// =====================================================================
-	// LAYER 1: BASIC (Fast, Math & Graph Only, NO LLM)
-	// =====================================================================
-	g.detectKnowledgeGaps(indexName)
-	g.detectImportanceShifts(indexName)
-	g.detectSentimentShifts(indexName, indexLang)
-	g.detectCentralityShifts(indexName)
-	g.detectForgettingPatterns(indexName)
-
-	// Consolidation: cluster finding is pure math (no LLM needed).
-	clusters := g.findRedundantClusters(indexName, 0.90, 5)
-	for _, cluster := range clusters {
-		g.consolidateCluster(indexName, cluster)
-	}
-
-	// Advanced-only: contradiction detection (requires LLM).
-	if g.llm != nil && (g.cfg.Mode == "advanced" || g.cfg.Mode == "meta") {
-		g.detectContradictions(indexName)
-		g.detectUserPreferences(indexName)
-		g.detectRepeatedFailures(indexName)
-		g.detectKnowledgeEvolution(indexName)
-	}
-
-	// Epistemic resolution: resolve volatile beliefs using VBeliefState (Fase 3)
-	if g.cfg.EpistemicResolutionEnabled {
-		g.resolveVolatileBeliefs(indexName)
-	}
+	// Blocking send: waits for any in-progress think to finish,
+	// then the worker runs think() on all target indexes.
+	g.thinkReqs <- struct{}{}
 }
 
 // SummarizeSession creates a semantic summary of a session and archives episodic memories.
