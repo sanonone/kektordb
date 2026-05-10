@@ -217,8 +217,8 @@ func extractNamespaceFromRequest(r *http.Request) string {
 	return "*" // Se non riusciamo a determinarlo, ritorniamo "*" (che fallirà il check se l'utente non ha permessi globali)
 }
 
-// defaultMaxBodySize is the maximum request body size in bytes (10 MB).
-const defaultMaxBodySize = 10 << 20
+// defaultMaxBodySize is the maximum request body size in bytes (512 MB).
+const defaultMaxBodySize = 512 << 20
 
 // bodySizeLimitMiddleware wraps each request with an http.MaxBytesReader
 // to prevent memory exhaustion from oversized payloads (DoS protection).
