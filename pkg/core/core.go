@@ -651,6 +651,10 @@ func (s *DB) GetVectors(indexName string, vectorIDs []string) ([]VectorData, err
 		return []VectorData{}, nil
 	}
 
+	// Pre-lookup per-index lock while s.mu is held, to avoid re-acquiring
+	// s.mu.RLock() inside worker goroutines (which would deadlock with Close).
+	idxMu, idxOk := s.indexLocks[indexName]
+
 	// Start Workers
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
@@ -668,7 +672,10 @@ func (s *DB) GetVectors(indexName string, vectorIDs []string) ([]VectorData, err
 				if !found {
 					continue
 				}
-	metadata := s.getMetadataForNode(indexName, nodeData.InternalID)
+				var metadata map[string]any
+				if idxOk {
+					metadata = s.getMetadataForNodeLocked(indexName, nodeData.InternalID, idxMu)
+				}
 
 				resultsChan <- VectorData{
 					ID:       vectorID,
@@ -715,6 +722,26 @@ func (s *DB) getMetadataForNode(indexName string, nodeID uint32) map[string]any 
 	if idxMap, ok := s.metadataMap[indexName]; ok {
 		if nodeMeta, ok := idxMap[nodeID]; ok {
 			// Return a copy to prevent external modification of internal state
+			result := make(map[string]any, len(nodeMeta))
+			for k, v := range nodeMeta {
+				result[k] = v
+			}
+			return result
+		}
+	}
+	return make(map[string]any)
+}
+
+// getMetadataForNodeLocked retrieves metadata assuming s.mu is already held by the caller.
+// It only acquires the per-index lock (idxMu) for safe metadata map access.
+// This variant prevents deadlock when called from worker goroutines
+// dispatched by a caller that already holds s.mu.RLock().
+func (s *DB) getMetadataForNodeLocked(indexName string, nodeID uint32, idxMu *sync.RWMutex) map[string]any {
+	idxMu.RLock()
+	defer idxMu.RUnlock()
+
+	if idxMap, ok := s.metadataMap[indexName]; ok {
+		if nodeMeta, ok := idxMap[nodeID]; ok {
 			result := make(map[string]any, len(nodeMeta))
 			for k, v := range nodeMeta {
 				result[k] = v
