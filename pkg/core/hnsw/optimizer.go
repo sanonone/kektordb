@@ -359,12 +359,21 @@ func (o *GraphOptimizer) Refine() bool {
 
 			localResults := make([]refineResult, 0, len(nodeSlice))
 
-			// No global lock needed here:
-			// - getNodes() is lock-free (atomic.Value)
-			// - searchLayerUnlocked() uses per-node shard locking (RLockNode)
-			// - node vector data is immutable after creation
 			for _, node := range nodeSlice {
-				newConns := o.computeNewConnections(node, entryPoint, ef, maxID, nil)
+				// Snapshot connections under per-node shard lock to prevent
+				// race with concurrent Add(). Released before computeNewConnections
+				// to avoid recursive RLock deadlock with pending writers.
+				o.index.RLockNode(node.InternalID)
+				connsCopy := make([][]uint32, len(node.Connections))
+				for l := range node.Connections {
+					if node.Connections[l] != nil {
+						c := make([]uint32, len(node.Connections[l]))
+						copy(c, node.Connections[l])
+						connsCopy[l] = c
+					}
+				}
+				o.index.RUnlockNode(node.InternalID)
+				newConns := o.computeNewConnections(connsCopy, node, entryPoint, ef, maxID, nil)
 				if newConns != nil {
 					localResults = append(localResults, refineResult{
 						nodeID:      node.InternalID,
@@ -434,9 +443,10 @@ func (o *GraphOptimizer) Refine() bool {
 }
 
 // computeNewConnections calculates the best neighbors for a node without modifying it.
+// conns is a read-only snapshot of the node's connections, taken under RLockNode
+// to avoid racing with concurrent Add(). node is used for read-only vector access.
 // Returns nil if no valid connections could be computed.
-// Caller must hold at least RLock on metaMu.
-func (o *GraphOptimizer) computeNewConnections(node *Node, entryPoint uint32, ef int, maxID uint32, ignoreSet map[uint32]struct{}) [][]uint32 {
+func (o *GraphOptimizer) computeNewConnections(conns [][]uint32, node *Node, entryPoint uint32, ef int, maxID uint32, ignoreSet map[uint32]struct{}) [][]uint32 {
 	var queryObj any
 	switch o.index.precision {
 	case distance.Float32:
@@ -447,7 +457,7 @@ func (o *GraphOptimizer) computeNewConnections(node *Node, entryPoint uint32, ef
 		queryObj = node.GetVectorI8()
 	}
 
-	numLayers := len(node.Connections)
+	numLayers := len(conns)
 	if numLayers == 0 {
 		return nil
 	}
@@ -459,12 +469,12 @@ func (o *GraphOptimizer) computeNewConnections(node *Node, entryPoint uint32, ef
 		candidates, err := o.index.searchLayerUnlocked(queryObj, entryPoint, ef, l, nil, ef, maxID, nil)
 		if err != nil {
 			// Keep existing connections for this layer
-			newConnections[l] = node.Connections[l]
+			newConnections[l] = conns[l]
 			continue
 		}
 
 		// 2. Add valid existing neighbors
-		currentNeighbors := node.Connections[l]
+		currentNeighbors := conns[l]
 		for _, nID := range currentNeighbors {
 			if ignoreSet != nil {
 				if _, ignore := ignoreSet[nID]; ignore {
