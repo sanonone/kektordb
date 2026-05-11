@@ -406,7 +406,7 @@ I benchmark sono stati eseguiti su una macchina Linux locale (Hardware Consumer,
 *   [x] **Fix di stabilità:** Risolti deadlock e data race nelle operazioni vettoriali concorrenti.
 
 ### In arrivo 🔨
-*   [ ] **Embedding Zero-Config:** Embedder ONNX integrato con download automatico del modello. Niente Ollama, niente servizi esterni—`save_memory` funziona al primo avvio. Rilevamento automatico: usa Ollama se disponibile, altrimenti embedding locale.
+*   [ ] **Embedding Zero-Config:** Embedder ONNX integrato con download automatico del modello. Niente Ollama, niente servizi esterni, `save_memory` funziona al primo avvio. Rilevamento automatico: usa Ollama se disponibile, altrimenti embedding locale.
 
 ### All'orizzonte
 *   [ ] **MCP One-Liner:** `kektordb setup <agente>` configura MCP per Claude Code, Cursor, VS Code, OpenCode e altri con un solo comando.

@@ -402,8 +402,22 @@ Benchmarks were performed on a local Linux machine (Consumer Hardware, Intel i5-
 *   [x] **Epistemic Engine:** Belief state assessment with 3-pillar confidence scoring (`VBeliefState`).
 *   [x] **Belief Consolidation:** Automatic resolution of volatile/contested beliefs.
 
-### Planned (Short Term)
-*   [ ] **Native Backup/Restore:** Simple API to snapshot data to S3/MinIO/Local.
+### Released in v0.5.2 ✅
+*   [x] **Stability fixes:** Deadlock and data race fixes in concurrent vector operations.
+ 
+### Coming Next 🔨
+*   [ ] **Zero-Config Embedding:** Built-in ONNX embedder with automatic model download. No Ollama, no external services, `save_memory` works on first launch. Smart auto-detect: uses Ollama if available, falls back to local embedding automatically.
+
+### On the Horizon
+*   [ ] **MCP One-Liner:** `kektordb setup <agent>` configures MCP for Claude Code, Cursor, VS Code, OpenCode, and more in a single command.
+*   [ ] **Docker Hub:** Official images for instant deployment.
+*   [ ] **Terminal UI:** Interactive dashboard with graph visualization, live semantic search, and memory timeline.
+*   [ ] **Knowledge Engine:** Pre-compiled knowledge artifacts with field-level confidence and provenance (`/compile`). Gardener autonomously keeps artifacts up-to-date with delta-recompilation.
+*   [ ] **Git Sync:** Push/pull memories across machines via git.
+*   [ ] **Docker Compose:** One-command production stack with persistent volumes and healthchecks.
+
+### Future
+*   [ ] **Native Backup/Restore:** API for S3/MinIO/local snapshots.
 *   [ ] **SIMD/AVX Optimizations:** Extending pure Go Assembly to more distance metrics.
 
 > **Want to influence the roadmap?** [Open an Issue](https://github.com/sanonone/kektordb/issues) or vote on existing ones!
