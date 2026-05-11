@@ -15,7 +15,7 @@
 <p align="center">
   <a href="DOCUMENTATION.md">📚 Documentazione</a> •
   <a href="CONTRIBUTING.md">🤝 Contributi</a> •
-  <a href="docs/guides/zero_code_rag.md">🤖 Guida RAG Open WebUI</a>
+  <a href="docs/guides/zero_code_rag.md">🤖 Guida GraphRAG Open WebUI</a>
 </p>
 
 [English](README.md) | [Italiano](README.it.md)
@@ -402,8 +402,22 @@ I benchmark sono stati eseguiti su una macchina Linux locale (Hardware Consumer,
 *   [x] **Motore Epistemico:** Valutazione stato credenza con punteggio confidenza a 3 pilastri (`VBeliefState`).
 *   [x] **Consolidamento Credenze:** Risoluzione automatica di credenze volatili/contestate.
 
-### Pianificati (Breve Termine)
-*   [ ] **Backup/Restore Nativo:** API semplice per salvare snapshot su S3/MinIO/Locale.
+### Rilasciato in v0.5.2 ✅
+*   [x] **Fix di stabilità:** Risolti deadlock e data race nelle operazioni vettoriali concorrenti.
+
+### In arrivo 🔨
+*   [ ] **Embedding Zero-Config:** Embedder ONNX integrato con download automatico del modello. Niente Ollama, niente servizi esterni—`save_memory` funziona al primo avvio. Rilevamento automatico: usa Ollama se disponibile, altrimenti embedding locale.
+
+### All'orizzonte
+*   [ ] **MCP One-Liner:** `kektordb setup <agente>` configura MCP per Claude Code, Cursor, VS Code, OpenCode e altri con un solo comando.
+*   [ ] **Docker Hub:** Immagini ufficiali per deploy immediato.
+*   [ ] **Interfaccia Terminale:** Dashboard interattiva con visualizzazione del grafo, ricerca semantica live e timeline della memoria.
+*   [ ] **Motore di Conoscenza:** Artefatti di conoscenza pre-compilati con confidenza e provenienza per campo (`/compile`). Il Gardener mantiene automaticamente aggiornati gli artefatti con delta-ricompilazione.
+*   [ ] **Git Sync:** Sincronizza le memorie tra macchine via git.
+*   [ ] **Docker Compose:** Stack di produzione con volumi persistenti e healthcheck.
+
+### Futuro
+*   [ ] **Backup/Restore Nativo:** API per snapshot su S3/MinIO/locale.
 *   [ ] **Ottimizzazioni SIMD/AVX:** Estensione Assembly Go puro a più metriche di distanza.
 
 > **Vuoi influenzare la roadmap?** [Apri una Issue](https://github.com/sanonone/kektordb/issues) o vota quelle esistenti!

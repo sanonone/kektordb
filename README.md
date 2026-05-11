@@ -15,7 +15,7 @@
 <p align="center">
   <a href="DOCUMENTATION.md">📚 Documentation</a> •
   <a href="CONTRIBUTING.md">🤝 Contributing</a> •
-  <a href="docs/guides/zero_code_rag.md">🤖 RAG Open WebUI Guide</a>
+  <a href="docs/guides/zero_code_rag.md">🤖 GraphRAG Open WebUI Guide</a>
 </p>
 
 [English](README.md) | [Italiano](README.it.md)
