@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	mcpi "github.com/sanonone/kektordb/internal/mcp"
 	"github.com/sanonone/kektordb/internal/server"
+	"github.com/sanonone/kektordb/internal/setup"
 	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/engine"
 	"github.com/sanonone/kektordb/pkg/proxy"
@@ -58,6 +60,18 @@ func setupLogger(levelStr string) {
 }
 
 func main() {
+	// Handle subcommands before flag parsing.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "setup":
+			cmdSetup()
+			return
+		case "--help", "-h":
+			printUsage()
+			return
+		}
+	}
+
 	defaultAddr := getEnv("KEKTOR_PORT", ":9091")
 	if !strings.HasPrefix(defaultAddr, ":") && !strings.Contains(defaultAddr, ":") {
 		defaultAddr = ":" + defaultAddr
@@ -90,6 +104,8 @@ func main() {
 	proxyConfigPath := flag.String("proxy-config", "", "Path to proxy.yaml config file")
 
 	modeMCP := flag.Bool("mcp", false, "Run as MCP Server (Stdio)")
+
+	toolsFlag := flag.String("tools", "all", "MCP tool profile: all, agent, admin, or comma-separated tool names")
 
 	embedderModeFlag  := flag.String("embedder", "auto", "Embedder mode: auto, ollama, openai, local")
 	embedderModelFlag := flag.String("embedder-model", "", "Path to directory with ONNX model and tokenizer (local mode)")
@@ -164,7 +180,8 @@ func main() {
 		}
 
 		// Init MCP Server
-		mcpSrv := mcpi.NewMCPServer(eng, embedder)
+		allowlist := mcpi.ResolveTools(*toolsFlag)
+		mcpSrv := mcpi.NewMCPServer(eng, embedder, allowlist)
 
 		// Create a Stdio transport
 		// Note from docs/server.md: "The server will have the 'tools' capability if any tool is added..."
@@ -306,4 +323,120 @@ func main() {
 	}
 
 	slog.Info("Bye.")
+}
+
+// cmdSetup handles the "kektordb setup" subcommand.
+func cmdSetup() {
+	agents := setup.SupportedAgents()
+
+	// Non-interactive: kektordb setup <agent>
+	if len(os.Args) > 2 && !strings.HasPrefix(os.Args[2], "-") {
+		agentName := os.Args[2]
+		switch agentName {
+		case "list":
+			fmt.Println("Supported agents:")
+			for _, a := range agents {
+				fmt.Printf("  %-15s %s\n", a.Name, a.Description)
+			}
+			return
+		case "status":
+			cmdSetupStatus(agents)
+			return
+		default:
+			result, err := setup.Install(agentName)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "setup failed: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("✓ Installed %s plugin (%d files)\n", result.Agent, result.Files)
+			fmt.Printf("  → %s\n", result.Destination)
+			printPostInstall(result)
+			return
+		}
+	}
+
+	// Interactive menu (kektordb setup without arguments)
+	fmt.Println("kektordb setup — Install agent plugin")
+	fmt.Println()
+	fmt.Println("Which agent do you want to set up?")
+	fmt.Println()
+	for i, a := range agents {
+		fmt.Printf("  [%d] %s\n", i+1, a.Description)
+		fmt.Printf("      Install to: %s\n\n", a.InstallDir)
+	}
+	fmt.Printf("Enter choice (1-%d): ", len(agents))
+
+	var input string
+	fmt.Scanln(&input)
+	choice, err := strconv.Atoi(strings.TrimSpace(input))
+	if err != nil || choice < 1 || choice > len(agents) {
+		fmt.Fprintln(os.Stderr, "Invalid choice.")
+		os.Exit(1)
+	}
+
+	selected := agents[choice-1]
+	result, err := setup.Install(selected.Name)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "setup failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("✓ Installed %s plugin (%d files)\n", result.Agent, result.Files)
+	fmt.Printf("  → %s\n", result.Destination)
+	printPostInstall(result)
+}
+
+func cmdSetupStatus(agents []setup.Agent) {
+	found := 0
+	for _, a := range agents {
+		// Check if config file/dir exists (heuristic: look for the install dir)
+		dir := a.InstallDir
+		if _, err := os.Stat(dir); err == nil {
+			fmt.Printf("  ✅ %-15s found at %s\n", a.Name, dir)
+			found++
+		} else if _, err := os.Stat(dir + "kektordb.ts"); err == nil {
+			// Special case for OpenCode plugin
+			fmt.Printf("  ✅ %-15s found at %s\n", a.Name, dir)
+			found++
+		}
+	}
+	if found == 0 {
+		fmt.Println("No agents configured. Run 'kektordb setup <agent>' to get started.")
+	}
+}
+
+func printPostInstall(result *setup.Result) {
+	fmt.Println()
+	fmt.Println("Next steps:")
+	fmt.Println("  1. Restart your AI agent (Claude Code / Cursor / Gemini CLI / OpenCode)")
+	fmt.Println("  2. The agent will now have access to KektorDB memory tools")
+	fmt.Println()
+	fmt.Println("To verify, ask your agent: 'What memory tools are available?'")
+}
+
+func printUsage() {
+	fmt.Println("KektorDB — Cognitive memory layer for AI agents")
+	fmt.Println()
+	fmt.Println("Usage:")
+	fmt.Println("  kektordb [flags]                 Start the server")
+	fmt.Println("  kektordb setup [agent]            Configure MCP for an AI agent")
+	fmt.Println("  kektordb setup list               List supported agents")
+	fmt.Println("  kektordb setup status             Show configured agents")
+	fmt.Println()
+	fmt.Println("Flags:")
+	fmt.Println("  --http-addr        HTTP address (default :9091)")
+	fmt.Println("  --aof-path         Path to AOF file")
+	fmt.Println("  --save             Auto-snapshot policy")
+	fmt.Println("  --auth-token       API authentication token")
+	fmt.Println("  --log-level        Log level: debug, info, warn, error")
+	fmt.Println("  --embedder         Embedder mode: auto, ollama, openai, local (default auto)")
+	fmt.Println("  --embedder-model   Path to directory with ONNX model (local mode)")
+	fmt.Println("  --mcp              Run as MCP Server (Stdio)")
+	fmt.Println("  --tools            MCP tool profile: all, agent, admin (default all)")
+	fmt.Println("  --enable-proxy     Enable the AI Semantic Proxy")
+	fmt.Println()
+	fmt.Println("Setup Subcommands:")
+	fmt.Println("  kektordb setup                   Interactive menu")
+	fmt.Println("  kektordb setup <agent>           Directly configure an agent")
+	fmt.Println("  kektordb setup list              List supported agents")
+	fmt.Println("  kektordb setup status            Show configured agents")
 }
