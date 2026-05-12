@@ -3,6 +3,10 @@ VERSION ?= $(shell git describe --tags --abbrev=0 || echo "v0.0.0")
 BINARY_NAME=kektordb
 RELEASE_DIR=release
 
+# protoc is required for candle-onnx (build-time only, not runtime).
+# Searches PATH first, falls back to a manually downloaded binary.
+PROTOC := $(shell which protoc 2>/dev/null || echo /tmp/protoc/bin/protoc)
+
 # --- Main Targets ---
 .PHONY: all test test-rust bench bench-rust clean release
 
@@ -47,12 +51,12 @@ bench-rust: build-rust-native
 # Build Rust for the current native platform
 build-rust-native:
 	@echo "==> Building Rust compute library (native)..."
-	@cd native/compute && cargo build --release
+	@cd native/compute && PROTOC=$(PROTOC) cargo build --release
 
 # Compile Rust for a specific target (used by the release)
 build-rust-target:
 	@echo "==> Building Rust compute library for target: $(TARGET)..."
-	@cd native/compute && cargo build --release --target=$(TARGET)
+	@cd native/compute && PROTOC=$(PROTOC) cargo build --release --target=$(TARGET)
 
 generate-avo:
 	@echo "==> Generating Assembly code with AVO..."

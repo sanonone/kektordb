@@ -11,7 +11,7 @@ package distance
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/../../../native/compute/include
-#cgo LDFLAGS: -lkektordb_compute
+#cgo LDFLAGS: -lkektordb_compute -lm -ldl -lstdc++
 #include "kektordb_compute.h"
 */
 import "C"

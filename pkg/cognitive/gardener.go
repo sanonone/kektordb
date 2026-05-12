@@ -88,6 +88,7 @@ type Gardener struct {
 	newReflections []string     // Reflection IDs created in current think() cycle
 	reflectionsMu  sync.Mutex   // Protects newReflections from concurrent access
 	thinkReqs      chan struct{} // Buffered channel (size 1) serializing think() calls
+	thinkDone      chan struct{} // Closed when thinkWorker goroutine exits
 
 	// User profiling
 	unassimilatedInteractions map[string]int // user_id -> count of new interactions
@@ -134,6 +135,7 @@ func (g *Gardener) requestThink() {
 // thinkWorker serializes think() executions by reading from the channel.
 // It runs as a background goroutine started by Start().
 func (g *Gardener) thinkWorker() {
+	defer close(g.thinkDone)
 	for {
 		select {
 		case <-g.stopCh:
@@ -255,6 +257,7 @@ func NewGardener(eng *engine.Engine, llmClient llm.Client, cfg Config) *Gardener
 		cfg:         cfg,
 		stopCh:      make(chan struct{}),
 		eventCh:     eventCh,
+		thinkDone:   make(chan struct{}),
 		scanCursors: make(map[string]uint32),
 
 		// User profiling
@@ -279,6 +282,7 @@ func (g *Gardener) Stop() {
 		return
 	}
 	close(g.stopCh)
+	<-g.thinkDone  // Wait for thinkWorker goroutine to exit
 	g.eng.EventBus.Unsubscribe(g.eventCh)
 	slog.Info("[Cognitive Engine] Gardener stopped.")
 }
