@@ -2,6 +2,8 @@
 #![allow(unused_imports)]
 #![allow(unsafe_op_in_unsafe_fn)]
 
+pub mod embedder;
+
 use half::f16;
 use std::mem;
 use std::os::raw::{c_float, c_int, c_ushort}; // c_ushort per u16

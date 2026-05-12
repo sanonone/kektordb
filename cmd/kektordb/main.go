@@ -91,6 +91,9 @@ func main() {
 
 	modeMCP := flag.Bool("mcp", false, "Run as MCP Server (Stdio)")
 
+	embedderModeFlag  := flag.String("embedder", "auto", "Embedder mode: auto, ollama, openai, local")
+	embedderModelFlag := flag.String("embedder-model", "", "Path to directory with ONNX model and tokenizer (local mode)")
+
 	flag.Parse()
 
 	// SETUP LOGGER
@@ -146,14 +149,22 @@ func main() {
 			}
 		}()
 
-		// MCP needs an embedder. Use Ollama default or env vars.
-		embedderURL := getEnv("MCP_EMBEDDER_URL", "http://localhost:11434/api/embeddings")
-		embedderModel := getEnv("MCP_EMBEDDER_MODEL", "nomic-embed-text")
-
-		embedder := embeddings.NewOllamaEmbedder(embedderURL, embedderModel, 60*time.Second)
+		// MCP needs an embedder. Use auto-select with graceful degradation.
+		embedderCfg := embeddings.EmbedderConfig{
+			Mode:        *embedderModeFlag,
+			OllamaURL:   getEnv("MCP_EMBEDDER_URL", "http://localhost:11434/api/embeddings"),
+			OllamaModel:  getEnv("MCP_EMBEDDER_MODEL", "nomic-embed-text"),
+			ModelDir:    *embedderModelFlag,
+		}
+		embedder, embedderErr := embeddings.SelectEmbedder(embedderCfg, dataDir)
+		if embedderErr != nil {
+			slog.Warn("No embedder available, MCP semantic tools will return errors", "err", embedderErr)
+			slog.Warn("Install Ollama or rebuild with -tags rust for built-in embedding.")
+			embedder = embeddings.NoopEmbedder{}
+		}
 
 		// Init MCP Server
-		mcpSrv := mcpi.NewMCPServer(eng, embedder) // mcpi = internal/mcp package
+		mcpSrv := mcpi.NewMCPServer(eng, embedder)
 
 		// Create a Stdio transport
 		// Note from docs/server.md: "The server will have the 'tools' capability if any tool is added..."
