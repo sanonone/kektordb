@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	mcpi "github.com/sanonone/kektordb/internal/mcp"
 	"github.com/sanonone/kektordb/internal/server"
 	"github.com/sanonone/kektordb/internal/setup"
+	"github.com/sanonone/kektordb/internal/tui"
 	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/engine"
 	"github.com/sanonone/kektordb/pkg/proxy"
@@ -110,6 +112,8 @@ func main() {
 	embedderModeFlag  := flag.String("embedder", "auto", "Embedder mode: auto, ollama, openai, local")
 	embedderModelFlag := flag.String("embedder-model", "", "Path to directory with ONNX model and tokenizer (local mode)")
 
+	modeTUI := flag.Bool("tui", false, "Launch terminal dashboard")
+
 	flag.Parse()
 
 	// SETUP LOGGER
@@ -145,6 +149,12 @@ func main() {
 	eng, err := engine.Open(opts)
 	if err != nil {
 		log.Fatalf("Failed to open engine: %v", err)
+	}
+
+	// TUI mode: start server in background, launch terminal dashboard.
+	if *modeTUI {
+		runTUI(*httpAddr, eng, *vectorizersConfig, *authToken, dataDir, *cognitiveConfig, *enableProxy, proxyConfigPath)
+		return
 	}
 
 	if *modeMCP {
@@ -439,4 +449,52 @@ func printUsage() {
 	fmt.Println("  kektordb setup <agent>           Directly configure an agent")
 	fmt.Println("  kektordb setup list              List supported agents")
 	fmt.Println("  kektordb setup status            Show configured agents")
+}
+
+// runTUI starts the HTTP server in a background goroutine and launches
+// the Bubble Tea terminal dashboard in the foreground.
+func runTUI(httpAddr string, eng *engine.Engine, vectorizersConfig, authToken, dataDir, cognitiveConfig string, enableProxy bool, proxyConfigPath *string) {
+	// Redirect ALL logs to discard — nothing must touch stdout/stderr
+	// while the TUI owns the terminal.
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	// Start HTTP server in background.
+	srv, err := server.NewServer(eng, httpAddr, vectorizersConfig, authToken, dataDir, cognitiveConfig)
+	if err != nil {
+		log.Fatalf("Failed to create server: %v", err)
+	}
+
+	go func() {
+		slog.Info("TUI: HTTP server listening", "addr", httpAddr)
+		if err := srv.Run(); err != nil && err != http.ErrServerClosed {
+			slog.Error("Server error", "err", err)
+		}
+	}()
+
+	// Optional proxy
+	if enableProxy && proxyConfigPath != nil && *proxyConfigPath != "" {
+		// Proxy startup omitted for TUI mode — API server is enough.
+		slog.Warn("TUI: proxy not supported in TUI mode")
+	}
+
+	// Handle graceful shutdown
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		slog.Info("TUI: shutting down...")
+		srv.Shutdown()
+		eng.Close()
+		os.Exit(0)
+	}()
+
+	// Launch TUI (blocks until user quits with q/Ctrl-C).
+	slog.Info("TUI: launching terminal dashboard")
+	if err := tui.RunTUI(httpAddr); err != nil {
+		log.Fatalf("TUI error: %v", err)
+	}
+
+	// Clean exit
+	srv.Shutdown()
+	eng.Close()
 }

@@ -90,11 +90,11 @@ func (p *Pipeline) extractionWorker() {
 func (p *Pipeline) Stop() {
 	close(p.stopCh)
 
-	// Close extractionChan to unblock extractionWorker
-	// This must be done after stopCh is closed to ensure no new jobs are queued
+	// Close extractionChan to unblock extractionWorker.
+	// The stopCh close will cause processFile to abort any pending sends.
 	if p.cfg.GraphEntityExtraction {
 		close(p.extractionChan)
-		// Wait for extractionWorker to finish
+		// Wait for extractionWorker to finish draining.
 		p.wg.Wait()
 	}
 }
@@ -426,6 +426,8 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 			// If text is too short, maybe skip? (Optional)
 			if len(jobText) > 50 {
 				select {
+				case <-p.stopCh:
+					return nil // pipeline is shutting down, abort
 				case p.extractionChan <- extractionJob{ChunkID: parentID, Text: jobText}:
 					// Job enqueued
 				default:

@@ -8,7 +8,7 @@ RELEASE_DIR=release
 PROTOC := $(shell which protoc 2>/dev/null || echo /tmp/protoc/bin/protoc)
 
 # --- Main Targets ---
-.PHONY: all test test-rust bench bench-rust clean release
+.PHONY: all test test-rust bench bench-rust clean release ensure-protoc
 
 # The default target is a quick test of the pure Go build
 all: test
@@ -48,13 +48,25 @@ bench-rust: build-rust-native
 	go test -tags rust -bench=. ./...
 
 # --- Build Target ---
+# Ensure protoc is available for candle-onnx (build-time only).
+ensure-protoc:
+	@if [ ! -x "$(PROTOC)" ]; then \
+		echo "==> Downloading protoc (build-time dependency)..."; \
+		mkdir -p /tmp/protoc && \
+		curl -sLo /tmp/protoc.zip "https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-linux-x86_64.zip" && \
+		unzip -o /tmp/protoc.zip -d /tmp/protoc && \
+		chmod +x /tmp/protoc/bin/protoc && \
+		rm /tmp/protoc.zip && \
+		echo "==> protoc $(shell /tmp/protoc/bin/protoc --version) ready"; \
+	fi
+
 # Build Rust for the current native platform
-build-rust-native:
+build-rust-native: ensure-protoc
 	@echo "==> Building Rust compute library (native)..."
 	@cd native/compute && PROTOC=$(PROTOC) cargo build --release
 
 # Compile Rust for a specific target (used by the release)
-build-rust-target:
+build-rust-target: ensure-protoc
 	@echo "==> Building Rust compute library for target: $(TARGET)..."
 	@cd native/compute && PROTOC=$(PROTOC) cargo build --release --target=$(TARGET)
 

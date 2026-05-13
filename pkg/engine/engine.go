@@ -212,6 +212,11 @@ func Open(opts Options) (*Engine, error) {
 	return e, nil
 }
 
+// AOFPath returns the path to the AOF file.
+func (e *Engine) AOFPath() string {
+	return e.aofPath
+}
+
 // Close performs a clean shutdown of the Engine.
 //
 // It stops background maintenance tasks and closes the AOF file.
