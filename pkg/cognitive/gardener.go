@@ -116,6 +116,11 @@ func (g *Gardener) getLastThinkTime() time.Time {
 	return g.lastThinkTime
 }
 
+// LastThinkTime returns the last time think() completed (exported).
+func (g *Gardener) LastThinkTime() time.Time {
+	return g.getLastThinkTime()
+}
+
 // setLastThinkTime updates the last think time with write lock.
 func (g *Gardener) setLastThinkTime(t time.Time) {
 	g.lastThinkMu.Lock()

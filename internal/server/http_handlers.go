@@ -14,6 +14,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/pprof"
+	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -49,6 +51,9 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /system/aof-rewrite", s.handleAOFRewriteHTTP)
 	mux.HandleFunc("POST /system/save", s.handleSaveHTTP)
 	mux.HandleFunc("GET /system/tasks/{id}", s.handleTaskStatus)
+	mux.HandleFunc("GET /system/stats", s.handleSystemStats)
+	mux.HandleFunc("GET /system/gardener", s.handleSystemGardener)
+	mux.HandleFunc("POST /system/embedder/reload", s.handleEmbedderReload)
 
 	// Event stream (SSE)
 	mux.HandleFunc("GET /events/stream", s.handleEventStream)
@@ -2774,6 +2779,153 @@ func (s *Server) handleGetMemoryEvolution(w http.ResponseWriter, r *http.Request
 		TotalSteps:     len(chain),
 	}
 
+	s.writeHTTPResponse(w, http.StatusOK, resp)
+}
+
+// ─── System Stats & Diagnostics ─────────────────────────────────────────────
+
+var serverStartTime = time.Now()
+
+// handleSystemStats returns aggregate system statistics for the TUI dashboard.
+func (s *Server) handleSystemStats(w http.ResponseWriter, r *http.Request) {
+	type statsResponse struct {
+		UptimeSeconds int          `json:"uptime_seconds"`
+		TotalVectors  int          `json:"total_vectors"`
+		TotalIndexes  int          `json:"total_indexes"`
+		Graph         struct {
+			TotalEdges    int `json:"total_edges"`
+			NodesWithLinks int `json:"nodes_with_links"`
+			PinnedNodes   int `json:"pinned_nodes"`
+		} `json:"graph"`
+		Gardener struct {
+			Enabled                bool   `json:"enabled"`
+			Mode                   string `json:"mode"`
+			LastThinkAgoMs        int64  `json:"last_think_ago_ms"`
+			TotalReflections       int    `json:"total_reflections"`
+			ContradictionsPending int    `json:"contradictions_pending"`
+			DecayedTotal          int    `json:"decayed_total"`
+		} `json:"gardener"`
+		Memory struct {
+			HeapAllocMB float64 `json:"heap_alloc_mb"`
+			AOFSizeMB   float64 `json:"aof_size_mb"`
+		} `json:"memory"`
+		Embedder struct {
+			Active    string `json:"active"`
+			Model     string `json:"model"`
+			Dimension int    `json:"dimension"`
+		} `json:"embedder"`
+	}
+
+	var resp statsResponse
+	resp.UptimeSeconds = int(time.Since(serverStartTime).Seconds())
+
+	// Vector index stats
+	indexes, err := s.Engine.DB.GetVectorIndexInfo()
+	if err == nil {
+		resp.TotalIndexes = len(indexes)
+		for _, idx := range indexes {
+			resp.TotalVectors += idx.VectorCount
+		}
+	}
+
+	// Graph edge count
+	edgeCount := 0
+	nodeSet := make(map[string]bool)
+	s.Engine.DB.IterateGraphEdges(func(source, target, rel string, weight float32, props []byte, cTime, dTime int64) {
+		edgeCount++
+		nodeSet[source] = true
+		nodeSet[target] = true
+	})
+	resp.Graph.TotalEdges = edgeCount
+	resp.Graph.NodesWithLinks = len(nodeSet)
+	resp.Graph.PinnedNodes = 0 // TODO: query pinned nodes count
+
+	// Gardener status
+	if s.gardener != nil {
+		resp.Gardener.Enabled = true
+		resp.Gardener.Mode = "basic"
+		lastThink := s.gardener.LastThinkTime()
+		if !lastThink.IsZero() {
+			resp.Gardener.LastThinkAgoMs = time.Since(lastThink).Milliseconds()
+		}
+		// TODO: get total reflections, contradictions, decayed counts
+	}
+
+	// Memory
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	resp.Memory.HeapAllocMB = float64(m.HeapAlloc) / (1024 * 1024)
+
+	// AOF file size
+	if fi, err := os.Stat(s.Engine.AOFPath()); err == nil {
+		resp.Memory.AOFSizeMB = float64(fi.Size()) / (1024 * 1024)
+	}
+
+	// Embedder info
+	resp.Embedder.Active = "none"
+	resp.Embedder.Model = ""
+	resp.Embedder.Dimension = 0
+
+	s.writeHTTPResponse(w, http.StatusOK, resp)
+}
+
+// handleSystemGardener returns the Gardener cognitive engine status.
+func (s *Server) handleSystemGardener(w http.ResponseWriter, r *http.Request) {
+	type gardenerResp struct {
+		Enabled                bool     `json:"enabled"`
+		Mode                   string   `json:"mode"`
+		Interval              string   `json:"interval"`
+		LastThinkTime         string   `json:"last_think_time"`
+		TotalReflections       int      `json:"total_reflections"`
+		ContradictionsPending int      `json:"contradictions_pending"`
+		MergedToday           int      `json:"merged_today"`
+		DecayedTotal          int      `json:"decayed_total"`
+		TargetIndexes         []string `json:"target_indexes"`
+	}
+
+	resp := gardenerResp{
+		Enabled: false,
+	}
+
+	if s.gardener != nil {
+		resp.Enabled = true
+		resp.Mode = "basic"
+		lastThink := s.gardener.LastThinkTime()
+		if !lastThink.IsZero() {
+			resp.LastThinkTime = lastThink.Format(time.RFC3339)
+		}
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, resp)
+}
+
+// handleEmbedderReload handles POST /system/embedder/reload.
+func (s *Server) handleEmbedderReload(w http.ResponseWriter, r *http.Request) {
+	type reloadReq struct {
+		Mode string `json:"mode"`
+	}
+	type reloadResp struct {
+		Status    string `json:"status"`
+		Active    string `json:"active"`
+		Model     string `json:"model"`
+		Dimension int    `json:"dimension"`
+	}
+
+	var req reloadReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+
+	// TODO: actually reload embedder via SelectEmbedder
+	resp := reloadResp{
+		Status:    "reloaded",
+		Active:    req.Mode,
+		Model:     "",
+		Dimension: 0,
+	}
+
+	slog.Info("Embedder reload requested", "mode", req.Mode)
 	s.writeHTTPResponse(w, http.StatusOK, resp)
 }
 
