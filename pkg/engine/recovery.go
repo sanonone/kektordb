@@ -115,7 +115,12 @@ func (e *Engine) replayAOF() error {
 
 				// --- CLEANUP DEI GHOST FILES ---
 				arenaPath := filepath.Join(e.opts.DataDir, "arenas", idxName)
-				_ = os.RemoveAll(arenaPath)
+				// A stale arena directory can exist when the process was killed after the VDROP
+				// was flushed to the AOF but before the next snapshot captured the deletion.
+				// Failing to remove it is non-fatal; log and continue recovery.
+				if removeErr := os.RemoveAll(arenaPath); removeErr != nil {
+					slog.Warn("failed to remove stale arena directory", "path", arenaPath, "error", removeErr)
+				}
 			}
 		case "VCREATE":
 			if len(cmd.Args) >= 1 {
@@ -240,12 +245,23 @@ func (e *Engine) replayAOF() error {
 				relType := string(cmd.Args[3])
 				invRelType := string(cmd.Args[4])
 
-				weight, _ := strconv.ParseFloat(string(cmd.Args[5]), 32)
+				weight, err := strconv.ParseFloat(string(cmd.Args[5]), 32)
+				if err != nil {
+					// Corrupt AOF record — most likely caused by bit-rot or manual editing.
+					// Skip the record and continue; losing one edge is safer than aborting recovery.
+					slog.Warn("skipping corrupt AOF record: invalid GLINK weight", "source", sourceID, "target", targetID, "error", err)
+					continue
+				}
 				props := cmd.Args[6]
 
 				var ts int64
 				if len(cmd.Args) >= 8 {
-					ts, _ = strconv.ParseInt(string(cmd.Args[7]), 10, 64)
+					ts, err = strconv.ParseInt(string(cmd.Args[7]), 10, 64)
+					if err != nil {
+						// Corrupt AOF record — skip and continue for the same reason as the weight guard above.
+						slog.Warn("skipping corrupt AOF record: invalid GLINK timestamp", "source", sourceID, "target", targetID, "error", err)
+						continue
+					}
 				} else {
 					ts = time.Now().UnixNano()
 				}
@@ -267,7 +283,12 @@ func (e *Engine) replayAOF() error {
 
 				var ts int64
 				if len(cmd.Args) >= 7 {
-					ts, _ = strconv.ParseInt(string(cmd.Args[6]), 10, 64)
+					ts, err = strconv.ParseInt(string(cmd.Args[6]), 10, 64)
+					if err != nil {
+						// Corrupt AOF record — skip and continue; losing one edge removal is safer than aborting recovery.
+						slog.Warn("skipping corrupt AOF record: invalid GUNLINK timestamp", "source", sourceID, "target", targetID, "error", err)
+						continue
+					}
 				} else {
 					ts = time.Now().UnixNano()
 				}
@@ -494,7 +515,7 @@ func (e *Engine) RewriteAOF() error {
 
 	tempAof := filepath.Join(e.opts.DataDir, "rewrite.tmp")
 
-	writer, err := persistence.NewAOFWriter(tempAof)
+	writer, err := persistence.NewAOFWriter(tempAof, 0)
 	if err != nil {
 		return err
 	}

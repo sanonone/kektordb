@@ -7,6 +7,10 @@ import (
 	"sync"
 )
 
+// DefaultAOFWriteBufferSize is the fallback write-buffer size (in bytes) used by NewAOFWriter
+// when the caller passes a bufferSize of 0 or less.
+const DefaultAOFWriteBufferSize = 4096
+
 // AOFWriter manages writing to the Append-Only File using a robust binary protocol.
 type AOFWriter struct {
 	mu   sync.Mutex
@@ -20,7 +24,7 @@ type AOFWriter struct {
 }
 
 // NewAOFWriter opens or creates an AOF file at the given path.
-func NewAOFWriter(path string) (*AOFWriter, error) {
+func NewAOFWriter(path string, bufferSize int) (*AOFWriter, error) {
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open AOF file: %w", err)
@@ -28,7 +32,10 @@ func NewAOFWriter(path string) (*AOFWriter, error) {
 
 	// Use a buffered writer to minimize syscalls.
 	// 4KB default buffer is usually fine, but can be increased for high throughput.
-	buf := bufio.NewWriter(file)
+	if bufferSize <= 0 {
+		bufferSize = DefaultAOFWriteBufferSize
+	}
+	buf := bufio.NewWriterSize(file, bufferSize)
 
 	return &AOFWriter{
 		file: file,

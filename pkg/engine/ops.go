@@ -786,7 +786,12 @@ func (e *Engine) VSetMetadata(indexName, id string, newProps map[string]any) err
 	metaBytes, err := json.Marshal(meta)
 	if err == nil {
 		cmd := persistence.FormatCommand("VMETA", []byte(indexName), []byte(id), metaBytes)
-		_ = e.AOF.Write(cmd)
+		// AOF write failure is non-recoverable: the operation succeeded in memory but will be
+		// lost on restart. Return the error so the caller can surface it (e.g. as HTTP 500).
+		if aofErr := e.AOF.Write(cmd); aofErr != nil {
+			slog.Error("Metadata updated in memory but append to log failed with error", "error", aofErr)
+			return fmt.Errorf("Metadata updated in memory but append to log failed with error: %w", aofErr)
+		}
 	}
 
 	e.EventBus.Emit(Event{Type: EventVectorUpdate, IndexName: indexName, ID: id, Timestamp: time.Now().UnixNano()})
