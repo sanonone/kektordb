@@ -4,8 +4,7 @@
 gardener:
   enabled: true
   mode: "advanced" # "basic", "advanced", or "meta"
-  #interval: "1h"
-  interval: "2m"
+  interval: "1h"
   target_indexes: ["mcp_memory", "agent_knowledge"]
   adaptive_threshold: 50
   adaptive_min_interval: "30s"
