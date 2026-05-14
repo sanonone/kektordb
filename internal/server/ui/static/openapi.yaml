@@ -157,7 +157,7 @@ components:
           type: array
           items: { type: number, format: float }
         filter: { type: string }
-        text_query: { type: string }
+        query_text: { type: string }
         ef_search: { type: integer }
         alpha: { type: number, format: float }
         graph_filter:

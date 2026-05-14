@@ -51,7 +51,7 @@ func (m *MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// ── Manual refresh ──
-		if key == "r" {
+		if key == "r" && m.activeTab != 2 {
 			cmds = append(cmds, m.fetchStats)
 		}
 
@@ -118,9 +118,12 @@ func (m *MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case graphLoadMsg:
 		m.graphSearch = false
 		if msg.err == nil {
-			if len(msg.nodes) > 0 {
+			if len(msg.nodes) == 1 {
 				m.graphFocus = msg.nodes[0].id
 				cmds = append(cmds, m.fetchGraphRelations(m.graphFocus))
+			} else if len(msg.nodes) > 1 {
+				m.graphNodeList = msg.nodes
+				m.graphListIdx = 0
 			}
 			m.graphErr = nil
 		} else {
@@ -176,18 +179,19 @@ func (m *MainModel) renderContent() string {
 func (m *MainModel) setTab(tab int) {
 	old := m.activeTab
 	m.activeTab = tab
+
+	// ── Cleanup tab precedente ──
+	m.graphSearch = false
+	if old == 1 || old == 2 {
+		m.searchInput.Blur()
+		m.filterInput.Blur()
+	}
+
+	// ── Setup nuovo tab ──
 	if tab == 2 {
 		m.searchFocus = 0
-		m.searchInput.Focus()
-	} else if old == 2 {
-		m.searchInput.Blur()
+		m.syncSearchFocus()
 	}
-	// Cancel graph search when switching away from graph
-	if old == 1 {
-		m.graphSearch = false
-		m.searchInput.Blur()
-	}
-	m.searchInput.SetValue("")
 }
 
 func (m *MainModel) renderHeader() string {

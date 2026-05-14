@@ -121,6 +121,26 @@ func (g *Gardener) LastThinkTime() time.Time {
 	return g.getLastThinkTime()
 }
 
+// IsEnabled reports whether the gardener background loop is enabled.
+func (g *Gardener) IsEnabled() bool {
+	return g.cfg.Enabled
+}
+
+// Mode returns the gardener operation mode ("basic", "advanced", "meta").
+func (g *Gardener) Mode() string {
+	return g.cfg.Mode
+}
+
+// Interval returns the configured think interval.
+func (g *Gardener) Interval() time.Duration {
+	return g.cfg.Interval
+}
+
+// TargetIndexes returns the list of indexes the gardener analyzes.
+func (g *Gardener) TargetIndexes() []string {
+	return g.cfg.TargetIndexes
+}
+
 // setLastThinkTime updates the last think time with write lock.
 func (g *Gardener) setLastThinkTime(t time.Time) {
 	g.lastThinkMu.Lock()

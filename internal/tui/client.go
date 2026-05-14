@@ -128,9 +128,9 @@ type GraphRelations struct {
 
 // GraphNodeRequest is the body for graph node search.
 type GraphNodeRequest struct {
-	IndexName  string `json:"index_name"`
-	SearchTerm string `json:"search_term,omitempty"`
-	Filter     string `json:"filter,omitempty"`
+	IndexName      string `json:"index_name"`
+	SearchTerm     string `json:"search_term,omitempty"`
+	PropertyFilter string `json:"property_filter,omitempty"`
 }
 
 // NodeSearchResponse is returned by POST /graph/actions/search-nodes.
@@ -143,13 +143,25 @@ type NodeSearchResponse struct {
 
 // SearchRequest is the body for /vector/actions/search.
 type SearchRequest struct {
-	IndexName       string    `json:"index_name"`
-	K               int       `json:"k"`
-	QueryVector     []float32 `json:"query_vector,omitempty"`
-	Filter          string    `json:"filter,omitempty"`
-	Alpha           float64   `json:"alpha,omitempty"`
+	IndexName        string    `json:"index_name"`
+	K                int       `json:"k"`
+	QueryVector      []float32 `json:"query_vector,omitempty"`
+	QueryText        string    `json:"query_text,omitempty"`
+	Filter           string    `json:"filter,omitempty"`
+	Alpha            float64   `json:"alpha,omitempty"`
 	IncludeRelations []string  `json:"include_relations,omitempty"`
-	GraphFilter     any       `json:"graph_filter,omitempty"`
+	Hydrate          bool      `json:"hydrate,omitempty"`
+	GraphFilter      any       `json:"graph_filter,omitempty"`
+}
+
+// SearchResultWithNode is a hydrated search result with full node metadata.
+type SearchResultWithNode struct {
+	ID    string `json:"id"`
+	Score float64 `json:"score"`
+	Node  struct {
+		Vector   []float32      `json:"vector"`
+		Metadata map[string]any `json:"metadata"`
+	} `json:"node"`
 }
 
 // SearchResult is a single search result from the engine.
@@ -162,24 +174,6 @@ type SearchResult struct {
 type ScoredResult struct {
 	ID    string  `json:"id"`
 	Score float64 `json:"score"`
-}
-
-// UISearchRequest is the body for /ui/search.
-type UISearchRequest struct {
-	IndexName  string `json:"index_name"`
-	Query      string `json:"query"`
-	K          int    `json:"k,omitempty"`
-	IncludeRelations []string `json:"include_relations,omitempty"`
-}
-
-// UISearchResult is a result from /ui/search.
-type UISearchResult struct {
-	ID    string `json:"id"`
-	Score float64 `json:"score"`
-	Node  struct {
-		Vector   []float32       `json:"vector"`
-		Metadata map[string]any  `json:"metadata"`
-	} `json:"node"`
 }
 
 // SSEEvent is a live event from the SSE stream.
@@ -234,10 +228,21 @@ func (c *TUIClient) FetchIndexes() ([]IndexInfo, error) {
 	return indexes, nil
 }
 
-// Search runs a full-featured search.
+// Search runs a full-featured search (returns IDs + scores only).
 func (c *TUIClient) Search(req SearchRequest) ([]SearchResult, error) {
 	var resp struct {
 		Results []SearchResult `json:"results"`
+	}
+	if err := c.post("/vector/actions/search", req, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Results, nil
+}
+
+// SearchHydrated runs a search and returns full node metadata for each result.
+func (c *TUIClient) SearchHydrated(req SearchRequest) ([]SearchResultWithNode, error) {
+	var resp struct {
+		Results []SearchResultWithNode `json:"results"`
 	}
 	if err := c.post("/vector/actions/search", req, &resp); err != nil {
 		return nil, err
@@ -261,21 +266,13 @@ func (c *TUIClient) SearchWithScores(index string, vec []float32, k int) ([]Scor
 	return resp.Results, nil
 }
 
-// UISearch runs a text-to-search (auto-embedding) search.
-func (c *TUIClient) UISearch(req UISearchRequest) ([]UISearchResult, error) {
-	var resp struct {
-		Results []UISearchResult `json:"results"`
-	}
-	if err := c.post("/ui/search", req, &resp); err != nil {
-		return nil, err
-	}
-	return resp.Results, nil
-}
-
 // GetRelations fetches all outgoing relations for a node.
-func (c *TUIClient) GetRelations(nodeID string) (*GraphRelations, error) {
+func (c *TUIClient) GetRelations(indexName, nodeID string) (*GraphRelations, error) {
 	var resp GraphRelations
-	body := map[string]string{"node_id": nodeID}
+	body := map[string]string{
+		"index_name": indexName,
+		"node_id":    nodeID,
+	}
 	if err := c.post("/graph/actions/get-all-relations", body, &resp); err != nil {
 		return nil, err
 	}
@@ -283,11 +280,12 @@ func (c *TUIClient) GetRelations(nodeID string) (*GraphRelations, error) {
 }
 
 // SearchNodes searches graph nodes by name/properties.
-func (c *TUIClient) SearchNodes(indexName, filter string) ([]GraphNode, error) {
+func (c *TUIClient) SearchNodes(indexName, propertyFilter string, limit int) ([]GraphNode, error) {
 	var resp NodeSearchResponse
-	body := GraphNodeRequest{
-		IndexName: indexName,
-		Filter:    filter,
+	body := map[string]any{
+		"index_name":      indexName,
+		"property_filter": propertyFilter,
+		"limit":           limit,
 	}
 	if err := c.post("/graph/actions/search-nodes", body, &resp); err != nil {
 		return nil, err

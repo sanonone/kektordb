@@ -789,6 +789,7 @@ func (c *Client) VSearchGraph(indexName string, queryVector []float32, k int, fi
 	}
 
 	if hydrate {
+		payload["hydrate"] = true
 		payload["hydrate_relations"] = true
 	}
 
@@ -964,7 +965,7 @@ func (c *Client) GetTaskStatus(taskID string) (*Task, error) {
 
 type uiSearchRequest struct {
 	IndexName        string   `json:"index_name"`
-	Query            string   `json:"query"`
+	QueryText        string   `json:"query_text"`
 	K                int      `json:"k"`
 	IncludeRelations []string `json:"include_relations"`
 	Hydrate          bool     `json:"hydrate"`
@@ -981,7 +982,7 @@ type uiSearchResponse struct {
 func (c *Client) SearchText(indexName, query string, k int, relations []string, compressContext ...bool) ([]GraphSearchResult, error) {
 	req := uiSearchRequest{
 		IndexName:        indexName,
-		Query:            query,
+		QueryText:        query,
 		K:                k,
 		IncludeRelations: relations,
 		Hydrate:          true,
@@ -990,7 +991,7 @@ func (c *Client) SearchText(indexName, query string, k int, relations []string, 
 		req.CompressContext = compressContext[0]
 	}
 
-	respBody, err := c.jsonRequest(http.MethodPost, "/ui/search", req)
+	respBody, err := c.jsonRequest(http.MethodPost, "/vector/actions/search", req)
 	if err != nil {
 		return nil, err
 	}

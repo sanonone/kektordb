@@ -27,12 +27,12 @@ async function performSearch() {
     const lv = document.getElementById('list-view');
     lv.innerHTML = "<div class='loading'>Searching...</div>";
     try {
-        const r = await fetch('/ui/search', {
+        const r = await fetch('/vector/actions/search', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 index_name: selectedIndex,
-                query: q,
+                query_text: q,
                 k: k,
                 include_relations: ["prev", "next", "parent", "child", "mentions", "related_to", "contradicts", "suggests_link", "focus_shifted"],
                 hydrate: true

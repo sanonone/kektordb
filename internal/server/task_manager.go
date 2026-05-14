@@ -156,3 +156,16 @@ func (t *Task) SetProgress(message string) {
 	defer t.mu.Unlock()
 	t.ProgressMessage = message
 }
+
+// Snapshot returns a safe copy of the task's public fields under read lock.
+// Use this when serializing the task to JSON to avoid data races with background workers.
+func (t *Task) Snapshot() Task {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return Task{
+		ID:              t.ID,
+		Status:          t.Status,
+		ProgressMessage: t.ProgressMessage,
+		Error:           t.Error,
+	}
+}

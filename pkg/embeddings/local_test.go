@@ -11,7 +11,7 @@ import (
 // Run with: CGO_LDFLAGS="-L$(pwd)/native/compute/target/release" go test -tags rust -run TestLocalEmbedder ./pkg/embeddings/
 func TestLocalEmbedderInteg(t *testing.T) {
 	modelPath := "/tmp/kektordb-test-models/all-MiniLM-L6-v2.onnx"
-	tokenizerPath := "/tmp/kektordb-test-models/tokenizer.json"
+	tokenizerPath := "/tmp/kektordb-test-models/all-MiniLM-L6-v2-tokenizer.json"
 
 	emb, err := NewLocalEmbedder(modelPath, tokenizerPath)
 	if err != nil {
@@ -42,11 +42,20 @@ func TestLocalEmbedderInteg(t *testing.T) {
 // TestLocalEmbedderConsistency verifies repeated calls produce identical output.
 func TestLocalEmbedderConsistency(t *testing.T) {
 	modelPath := "/tmp/kektordb-test-models/all-MiniLM-L6-v2.onnx"
-	tokenizerPath := "/tmp/kektordb-test-models/tokenizer.json"
+	tokenizerPath := "/tmp/kektordb-test-models/all-MiniLM-L6-v2-tokenizer.json"
 
-	emb, _ := NewLocalEmbedder(modelPath, tokenizerPath)
-	v1, _ := emb.Embed("hello world")
-	v2, _ := emb.Embed("hello world")
+	emb, err := NewLocalEmbedder(modelPath, tokenizerPath)
+	if err != nil {
+		t.Fatalf("NewLocalEmbedder: %v", err)
+	}
+	v1, err := emb.Embed("hello world")
+	if err != nil {
+		t.Fatalf("first Embed: %v", err)
+	}
+	v2, err := emb.Embed("hello world")
+	if err != nil {
+		t.Fatalf("second Embed: %v", err)
+	}
 
 	if len(v1) != len(v2) {
 		t.Fatalf("dimension mismatch: %d vs %d", len(v1), len(v2))

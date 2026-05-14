@@ -16,6 +16,7 @@ import (
 	"net/http/pprof"
 	"os"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sanonone/kektordb/internal/server/ui"
 	"github.com/sanonone/kektordb/pkg/auth"
+	"github.com/sanonone/kektordb/pkg/core"
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/embeddings"
@@ -143,8 +145,7 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	// We use http.StripPrefix because the FileServer expects the root path.
 	mux.Handle("GET /ui/", http.StripPrefix("/ui/", ui.GetHandler()))
 
-	// 2. UI Helper Endpoint (Text to Vector Search)
-	mux.HandleFunc("POST /ui/search", s.handleUISearch)
+	// 2. UI Helper Endpoints
 	mux.HandleFunc("POST /ui/explore", s.handleUIExplore)
 
 	// promhttp.Handler() Create a standard handler that formats data for Prometheus
@@ -170,12 +171,14 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 // Cache could use a map[contentHash]compressedContent with TTL.
 func compressGraphSearchResults(results []engine.GraphSearchResult, lang string) {
 	for i := range results {
-		// Compress main node content
+		// Compress main node content (clone first to avoid mutating live index data)
+		results[i].Node.Metadata = cloneMetadata(results[i].Node.Metadata)
 		compressMetadata(results[i].Node.Metadata, lang)
 
 		// Compress connected nodes recursively
 		for relType := range results[i].Node.Connections {
 			for j := range results[i].Node.Connections[relType] {
+				results[i].Node.Connections[relType][j].Metadata = cloneMetadata(results[i].Node.Connections[relType][j].Metadata)
 				compressMetadata(results[i].Node.Connections[relType][j].Metadata, lang)
 			}
 		}
@@ -217,6 +220,18 @@ func compressGraphNode(node *engine.GraphNode, lang string) {
 			compressGraphNode(&node.Connections[relType][i], lang)
 		}
 	}
+}
+
+// cloneMetadata returns a shallow copy of a metadata map.
+func cloneMetadata(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	c := make(map[string]any, len(m))
+	for k, v := range m {
+		c[k] = v
+	}
+	return c
 }
 
 // handleTransferMemory handles memory transfer between indexes
@@ -263,20 +278,8 @@ func (s *Server) handleTransferMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get embedder from server (need to access it)
-	// For now, return not implemented - the actual transfer should be done via MCP
-	// or we need to inject the embedder into the server
-	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
-		"status":  "accepted",
-		"message": "Use MCP tool 'transfer_memory' for actual transfer. HTTP endpoint validates parameters.",
-		"params": map[string]any{
-			"source_index": req.SourceIndex,
-			"target_index": req.TargetIndex,
-			"query":        req.Query,
-			"limit":        req.Limit,
-			"with_graph":   req.WithGraph,
-		},
-	})
+	// Not yet implemented - use MCP tool 'transfer_memory' for actual transfer.
+	s.writeHTTPError(w, http.StatusNotImplemented, fmt.Errorf("transfer memory via HTTP is not yet implemented; use MCP tool 'transfer_memory'"))
 }
 
 // --- INDEX HANDLERS ---
@@ -369,7 +372,7 @@ func (s *Server) handleIndexMaintenance(w http.ResponseWriter, r *http.Request) 
 		}
 	}()
 
-	s.writeHTTPResponse(w, http.StatusAccepted, task)
+	s.writeHTTPResponse(w, http.StatusAccepted, task.Snapshot())
 }
 
 // --- KV HANDLERS ---
@@ -595,8 +598,28 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// FILTER-ONLY: If QueryVector is empty/missing and filter is provided
-	isQueryVectorEmpty := len(req.QueryVector) == 0
+	// --- Auto-embed: if QueryVector empty but QueryText provided ---
+	queryVec := req.QueryVector
+	if len(queryVec) == 0 && req.QueryText != "" {
+		if s.vectorizerService == nil {
+			s.writeHTTPError(w, http.StatusServiceUnavailable, fmt.Errorf("vectorizer service not available"))
+			return
+		}
+		embedder := s.vectorizerService.GetEmbedderForIndex(req.IndexName)
+		if embedder == nil {
+			s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("no embedder configured for index '%s'", req.IndexName))
+			return
+		}
+		var err error
+		queryVec, err = embedder.Embed(req.QueryText)
+		if err != nil {
+			s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("embedding failed: %v", err))
+			return
+		}
+	}
+
+	// FILTER-ONLY: If both QueryVector and QueryText are empty/missing and filter is provided
+	isQueryVectorEmpty := len(queryVec) == 0
 	if isQueryVectorEmpty && req.Filter != "" {
 		ids, err := s.Engine.VFilter(req.IndexName, req.Filter, req.K)
 		if err != nil {
@@ -607,11 +630,12 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.IncludeRelations) > 0 {
-		// --- GRAPH SEARCH ---
+	// --- GRAPH / HYDRATED SEARCH ---
+	// If relations are requested OR hydrate is true, return rich GraphSearchResult objects
+	if len(req.IncludeRelations) > 0 || req.Hydrate {
 		results, err := s.Engine.VSearchGraph(
 			req.IndexName,
-			req.QueryVector,
+			queryVec,
 			req.K,
 			req.Filter,
 			"",
@@ -641,10 +665,9 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 
 	} else {
 		// --- STANDARD SEARCH ---
-		// Identical to above, returns only strings for compatibility
 		ids, err := s.Engine.VSearch(
 			req.IndexName,
-			req.QueryVector,
+			queryVec,
 			req.K,
 			req.Filter,
 			"",
@@ -738,7 +761,7 @@ func (s *Server) handleVectorCompress(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	s.writeHTTPResponse(w, http.StatusAccepted, task)
+	s.writeHTTPResponse(w, http.StatusAccepted, task.Snapshot())
 }
 
 func (s *Server) handleGetVectorsBatch(w http.ResponseWriter, r *http.Request) {
@@ -754,10 +777,11 @@ func (s *Server) handleGetVectorsBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Apply compression if requested
+	// Apply compression if requested (clone metadata first to avoid mutating live index data)
 	if req.CompressContext {
 		lang := s.Engine.GetIndexLanguage(req.IndexName)
 		for i := range data {
+			data[i].Metadata = cloneMetadata(data[i].Metadata)
 			compressMetadata(data[i].Metadata, lang)
 		}
 	}
@@ -914,9 +938,32 @@ func (s *Server) handleGraphTraverse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Apply compression if requested
+	// Apply compression if requested (clone node first to avoid mutating live index data)
 	if req.CompressContext {
 		lang := s.Engine.GetIndexLanguage(req.IndexName)
+		// Deep-clone the result node metadata before compression
+		result = &engine.GraphNode{
+			VectorData: core.VectorData{
+				ID:       result.ID,
+				Vector:   append([]float32(nil), result.Vector...),
+				Metadata: cloneMetadata(result.Metadata),
+			},
+			Connections: make(map[string][]engine.GraphNode, len(result.Connections)),
+		}
+		for relType, children := range result.Connections {
+			cloned := make([]engine.GraphNode, len(children))
+			for i, child := range children {
+				cloned[i] = engine.GraphNode{
+					VectorData: core.VectorData{
+						ID:       child.ID,
+						Vector:   append([]float32(nil), child.Vector...),
+						Metadata: cloneMetadata(child.Metadata),
+					},
+					Connections: make(map[string][]engine.GraphNode, len(child.Connections)),
+				}
+			}
+			result.Connections[relType] = cloned
+		}
 		compressGraphNode(result, lang)
 	}
 
@@ -967,10 +1014,11 @@ func (s *Server) handleGraphExtractSubgraph(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Apply compression if requested
+	// Apply compression if requested (clone metadata first to avoid mutating live index data)
 	if req.CompressContext {
 		lang := s.Engine.GetIndexLanguage(req.IndexName)
 		for i := range result.Nodes {
+			result.Nodes[i].Metadata = cloneMetadata(result.Nodes[i].Metadata)
 			compressMetadata(result.Nodes[i].Metadata, lang)
 		}
 	}
@@ -1087,58 +1135,54 @@ func (s *Server) handleGraphSearchNodes(w http.ResponseWriter, r *http.Request) 
 		req.Limit = 10
 	}
 
-	// "Search Nodes" is a Vector Search with NO query vector (only filter).
-	// Currently VSearch requires a query vector.
-	// We can pass a zero-vector if we knew the dimension, OR we can implement a pure-filter search.
-	// Since VSearch implementation supports "Text Only" (Alpha=0), let's try to leverage that or add logic.
+	var fullData []core.VectorData
 
-	// OPTION A: Add a specialized method in Engine for "Filter Only".
-	// OPTION B: Use VSearch with a dummy vector.
+	if req.PropertyFilter == "" {
+		// List all nodes (up to limit)
+		idx, ok := s.Engine.DB.GetVectorIndex(req.IndexName)
+		if !ok {
+			s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("index not found"))
+			return
+		}
+		hnswIdx, ok := idx.(*hnsw.Index)
+		if !ok {
+			s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("not hnsw index"))
+			return
+		}
 
-	// Let's use Option B for reuse, fetching dimension first.
-	// This is a bit inefficient but safe for this sprint.
+		count := 0
+		hnswIdx.IterateRaw(func(id string, _ interface{}) {
+			if count >= req.Limit {
+				return
+			}
+			vData, err := s.Engine.VGet(req.IndexName, id)
+			if err != nil {
+				return
+			}
+			fullData = append(fullData, vData)
+			count++
+		})
+	} else {
+		// Pure metadata filter search via VFilter (no vector required).
+		results, err := s.Engine.VFilter(req.IndexName, req.PropertyFilter, req.Limit)
+		if err != nil {
+			s.writeHTTPError(w, http.StatusInternalServerError, err)
+			return
+		}
 
-	// 1. Get dimension
-	idx, ok := s.Engine.DB.GetVectorIndex(req.IndexName)
-	if !ok {
-		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("index not found"))
-		return
+		// Hydrate results (we need properties back)
+		var err2 error
+		fullData, err2 = s.Engine.VGetMany(req.IndexName, results)
+		if err2 != nil {
+			s.writeHTTPError(w, http.StatusInternalServerError, err2)
+			return
+		}
 	}
 
-	var dim int
-	if hnswIdx, ok := idx.(*hnsw.Index); ok {
-		dim = hnswIdx.GetDimension()
-	}
-	if dim == 0 {
-		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index empty or invalid"))
-		return
-	}
-
-	dummyQuery := make([]float32, dim) // Zero vector
-
-	// Execute Search
-	// We use Alpha=0.0 to rely mostly on text/filter?
-	// Actually if vector is 0, distance will be constant or 0.
-	// The filter is a hard constraint (allowList).
-
-	results, err := s.Engine.VSearch(
-		req.IndexName,
-		dummyQuery,
-		req.Limit,
-		req.PropertyFilter,
-		"", // no text query
-		0,
-		1.0, // Alpha 1.0 (Vector) - but vector is 0. Filter does the job.
-		nil,
-	)
-
-	if err != nil {
-		s.writeHTTPError(w, http.StatusInternalServerError, err)
-		return
-	}
-
-	// Hydrate results (we need properties back)
-	fullData, err := s.Engine.VGetMany(req.IndexName, results)
+	// Sort alphabetically by human-readable label for better UX
+	sort.Slice(fullData, func(i, j int) bool {
+		return nodeSortLabel(fullData[i]) < nodeSortLabel(fullData[j])
+	})
 
 	// Format response to hide the vector part (we only want node properties)
 	var nodes []map[string]any
@@ -1163,6 +1207,32 @@ func (s *Server) handleGraphSearchNodes(w http.ResponseWriter, r *http.Request) 
 	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
 		"nodes": nodes,
 	})
+}
+
+// nodeSortLabel extracts a human-readable label from VectorData metadata for sorting.
+func nodeSortLabel(data core.VectorData) string {
+	if m, ok := data.Metadata["name"].(string); ok && m != "" {
+		return m
+	}
+	if m, ok := data.Metadata["title"].(string); ok && m != "" {
+		return m
+	}
+	if m, ok := data.Metadata["content"].(string); ok && m != "" {
+		if idx := strings.IndexByte(m, '\n'); idx > 0 {
+			m = m[:idx]
+		}
+		if len(m) > 40 {
+			m = m[:40]
+		}
+		return m
+	}
+	if m, ok := data.Metadata["source"].(string); ok && m != "" {
+		if idx := strings.LastIndexByte(m, '/'); idx >= 0 && idx < len(m)-1 {
+			return m[idx+1:]
+		}
+		return m
+	}
+	return data.ID
 }
 
 func (s *Server) handleGraphGetEdges(w http.ResponseWriter, r *http.Request) {
@@ -1571,6 +1641,10 @@ func (s *Server) handleRagRetrieve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Find the correct pipeline in the VectorizerService
+	if s.vectorizerService == nil {
+		s.writeHTTPError(w, http.StatusServiceUnavailable, fmt.Errorf("vectorizer service not available"))
+		return
+	}
 	pipeline := s.vectorizerService.GetPipeline(req.PipelineName)
 	if pipeline == nil {
 		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("pipeline '%s' not found", req.PipelineName))
@@ -1698,6 +1772,10 @@ func (s *Server) handleAdaptiveRagRetrieve(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Get pipeline
+	if s.vectorizerService == nil {
+		s.writeHTTPError(w, http.StatusServiceUnavailable, fmt.Errorf("vectorizer service not available"))
+		return
+	}
 	pipeline := s.vectorizerService.GetPipeline(req.PipelineName)
 	if pipeline == nil {
 		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("pipeline '%s' not found", req.PipelineName))
@@ -1972,7 +2050,7 @@ func (s *Server) handleAOFRewriteHTTP(w http.ResponseWriter, r *http.Request) {
 			task.SetStatus(TaskStatusCompleted)
 		}
 	}()
-	s.writeHTTPResponse(w, http.StatusAccepted, task)
+	s.writeHTTPResponse(w, http.StatusAccepted, task.Snapshot())
 }
 
 // --- SYSTEM & VECTORIZER HANDLERS ---
@@ -1990,9 +2068,7 @@ func (s *Server) handleTaskStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task.mu.RLock()
-	defer task.mu.RUnlock()
-	s.writeHTTPResponse(w, http.StatusOK, task)
+	s.writeHTTPResponse(w, http.StatusOK, task.Snapshot())
 }
 
 func (s *Server) handleGetVectorizers(w http.ResponseWriter, r *http.Request) {
@@ -2026,92 +2102,6 @@ func (s *Server) handleTriggerVectorizer(w http.ResponseWriter, r *http.Request)
 		"status":  "OK",
 		"message": fmt.Sprintf("Synchronization for vectorizer '%s' triggered.", name),
 	})
-}
-
-// --- UI HANDLERS ---
-// UISearchRequest defines the specific payload for the dashboard.
-type UISearchRequest struct {
-	IndexName        string   `json:"index_name"`
-	Query            string   `json:"query"`
-	K                int      `json:"k"`
-	IncludeRelations []string `json:"include_relations"`
-	Hydrate          bool     `json:"hydrate"`
-	CompressContext  bool     `json:"compress_context,omitempty"` // NEW: Enable safe lexical compression
-}
-
-// handleUISearch bridges the gap between text query and vector search for the UI.
-// It looks up the correct embedder from the VectorizerService.
-func (s *Server) handleUISearch(w http.ResponseWriter, r *http.Request) {
-	var req UISearchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON"))
-		return
-	}
-
-	if req.IndexName == "" || req.Query == "" {
-		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name and query required"))
-		return
-	}
-
-	// 1. Resolve Embedder
-	// We need to find a pipeline that targets this index to use its embedder.
-	// If multiple pipelines target the same index, any will do for embedding purposes.
-	var embedder embeddings.Embedder
-
-	// We iterate through running pipelines to find one matching the index
-	if s.vectorizerService != nil {
-		// Accessing pipelines via a new method we need to add to VectorizerService
-		// OR simply iterating if we expose the list.
-		// Ideally VectorizerService should have a method `GetEmbedderForIndex(indexName)`.
-		// For now, let's assume we add that helper.
-		embedder = s.vectorizerService.GetEmbedderForIndex(req.IndexName)
-	}
-
-	var queryVec []float32
-	var err error
-
-	if embedder != nil {
-		// 2a. Embed the query
-		queryVec, err = embedder.Embed(req.Query)
-		if err != nil {
-			s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("embedding failed: %v", err))
-			return
-		}
-	} else {
-		// 2b. Fallback: Check if the request manually provided a vector?
-		// The UI assumes text. If no embedder is found (e.g. index created manually via API),
-		// we cannot search by text.
-		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("no embedder configured for index '%s'. Cannot perform text search.", req.IndexName))
-		return
-	}
-
-	// 3. Execute Graph Search
-	// We reuse the powerful VSearchGraph method from the Engine
-	results, err := s.Engine.VSearchGraph(
-		req.IndexName,
-		queryVec,
-		req.K,
-		"", // No filter for simple UI
-		"",
-		0,   // Default ef
-		0.5, // Default alpha
-		req.IncludeRelations,
-		req.Hydrate,
-		nil,
-	)
-
-	if err != nil {
-		s.writeHTTPError(w, http.StatusInternalServerError, err)
-		return
-	}
-
-	// Apply compression if requested
-	if req.CompressContext {
-		lang := s.Engine.GetIndexLanguage(req.IndexName)
-		compressGraphSearchResults(results, lang)
-	}
-
-	s.writeHTTPResponse(w, http.StatusOK, map[string]any{"results": results})
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -2197,13 +2187,15 @@ func (s *Server) handleUIExplore(w http.ResponseWriter, r *http.Request) {
 		count++
 	})
 
-	// Apply compression if requested
+	// Apply compression if requested (clone metadata first to avoid mutating live index data)
 	if req.CompressContext {
 		lang := s.Engine.GetIndexLanguage(req.IndexName)
 		for i := range nodes {
+			nodes[i].Metadata = cloneMetadata(nodes[i].Metadata)
 			compressMetadata(nodes[i].Metadata, lang)
 			for relType := range nodes[i].Connections {
 				for j := range nodes[i].Connections[relType] {
+					nodes[i].Connections[relType][j].Metadata = cloneMetadata(nodes[i].Connections[relType][j].Metadata)
 					compressMetadata(nodes[i].Connections[relType][j].Metadata, lang)
 				}
 			}
@@ -2841,14 +2833,14 @@ func (s *Server) handleSystemStats(w http.ResponseWriter, r *http.Request) {
 	resp.Graph.PinnedNodes = 0 // TODO: query pinned nodes count
 
 	// Gardener status
-	if s.gardener != nil {
+	if s.gardener != nil && s.gardener.IsEnabled() {
 		resp.Gardener.Enabled = true
-		resp.Gardener.Mode = "basic"
+		resp.Gardener.Mode = s.gardener.Mode()
 		lastThink := s.gardener.LastThinkTime()
 		if !lastThink.IsZero() {
 			resp.Gardener.LastThinkAgoMs = time.Since(lastThink).Milliseconds()
 		}
-		// TODO: get total reflections, contradictions, decayed counts
+		// TODO: get total reflections, contradictions, decayed counts from atomic counters
 	}
 
 	// Memory
@@ -2887,13 +2879,16 @@ func (s *Server) handleSystemGardener(w http.ResponseWriter, r *http.Request) {
 		Enabled: false,
 	}
 
-	if s.gardener != nil {
+	if s.gardener != nil && s.gardener.IsEnabled() {
 		resp.Enabled = true
-		resp.Mode = "basic"
+		resp.Mode = s.gardener.Mode()
+		resp.Interval = s.gardener.Interval().String()
+		resp.TargetIndexes = s.gardener.TargetIndexes()
 		lastThink := s.gardener.LastThinkTime()
 		if !lastThink.IsZero() {
 			resp.LastThinkTime = lastThink.Format(time.RFC3339)
 		}
+		// TODO: populate TotalReflections, ContradictionsPending, MergedToday, DecayedTotal from atomic counters
 	}
 
 	s.writeHTTPResponse(w, http.StatusOK, resp)
@@ -2917,16 +2912,8 @@ func (s *Server) handleEmbedderReload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: actually reload embedder via SelectEmbedder
-	resp := reloadResp{
-		Status:    "reloaded",
-		Active:    req.Mode,
-		Model:     "",
-		Dimension: 0,
-	}
-
-	slog.Info("Embedder reload requested", "mode", req.Mode)
-	s.writeHTTPResponse(w, http.StatusOK, resp)
+	// Not yet implemented.
+	s.writeHTTPError(w, http.StatusNotImplemented, fmt.Errorf("embedder reload via HTTP is not yet implemented"))
 }
 
 // --- HELPER FUNCTIONS ---

@@ -296,7 +296,7 @@ export class KektorDBClient {
       query_vector: params.queryVector,
     };
     if (params.filter) payload.filter = params.filter;
-    if (params.textQuery) payload.text_query = params.textQuery;
+    if (params.textQuery) payload.query_text = params.textQuery;
     if (params.graphFilter) {
       payload.graph_filter = {
         root_id: params.graphFilter.rootId,
@@ -462,7 +462,7 @@ export class KektorDBClient {
       index_name: indexName,
       source_id: source,
       target_id: target,
-      relations: relations ?? ["related_to", "mentions", "parent", "child"],
+      relations: relations ?? ["related_to", "mentions", "parent", "child", "next", "prev"],
       at_time: atTime,
     });
   }
