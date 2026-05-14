@@ -47,12 +47,14 @@ type BatchGetVectorsRequest struct {
 type VectorSearchRequest struct {
 	IndexName        string             `json:"index_name"`
 	K                int                `json:"k"`
-	QueryVector      []float32          `json:"query_vector,omitempty"` // Optional - if empty/missing and filter provided, performs filter-only search
+	QueryVector      []float32          `json:"query_vector,omitempty"` // Optional - takes precedence over QueryText
+	QueryText        string             `json:"query_text,omitempty"`   // Optional - if set and QueryVector empty, server auto-embeds via VectorizerService
 	Filter           string             `json:"filter,omitempty"`
 	EfSearch         int                `json:"ef_search,omitempty"`
 	Alpha            float64            `json:"alpha,omitempty"`
 	IncludeRelations []string           `json:"include_relations,omitempty"`
 	HydrateRelations bool               `json:"hydrate_relations,omitempty"`
+	Hydrate          bool               `json:"hydrate,omitempty"`        // Optional - if true, returns full node metadata even without graph traversal
 	GraphFilter      *engine.GraphQuery `json:"graph_filter,omitempty"`
 	CompressContext  bool               `json:"compress_context,omitempty"` // NEW: Enable safe lexical compression for LLM optimization
 }

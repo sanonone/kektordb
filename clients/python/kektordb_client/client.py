@@ -419,9 +419,10 @@ class KektorDBClient:
     def vsearch(
         self,
         index_name: str,
-        query_vector: List[float],
-        k: int,
+        query_vector: List[float] = None,
+        k: int = 10,
         filter_str: str = "",
+        query_text: str = "",
         graph_filter: Dict[str, Any] = None,
         ef_search: int = 0,
         alpha: float = 0.5,
@@ -435,9 +436,11 @@ class KektorDBClient:
 
         Args:
             index_name: The name of the index to search in.
-            query_vector: The query vector.
+            query_vector: The query vector. Optional if query_text is provided.
             k: The number of nearest neighbors to return.
             filter_str: An optional filter string (e.g., "tag=cat AND price<50").
+            query_text: An optional text query. If provided and query_vector is None,
+                        the server will auto-embed the text via its vectorizer service.
             ef_search: An optional parameter to control the search breadth.
                        A higher value increases recall at the cost of speed.
                        If 0, the server's `efConstruction` default is used.
@@ -461,8 +464,11 @@ class KektorDBClient:
         payload = {
             "index_name": index_name,
             "k": k,
-            "query_vector": query_vector,
         }
+        if query_vector is not None:
+            payload["query_vector"] = query_vector
+        if query_text:
+            payload["query_text"] = query_text
         if filter_str:
             payload["filter"] = filter_str
 

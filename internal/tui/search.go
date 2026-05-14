@@ -8,6 +8,26 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
+func (m *MainModel) syncSearchFocus() {
+	if m.activeTab == 2 && m.searchFocus == 0 {
+		m.searchInput.Focus()
+	} else {
+		m.searchInput.Blur()
+	}
+	if m.activeTab == 2 && m.searchFocus == 2 {
+		m.filterInput.Focus()
+	} else {
+		m.filterInput.Blur()
+	}
+}
+
+func (m *MainModel) maxSearchFocus() int {
+	if m.searchMode == "quick" {
+		return 1
+	}
+	return 4 // 0=query, 1=alpha, 2=filter, 3=relations, 4=limit
+}
+
 func (m *MainModel) renderSearch() string {
 	if m.searchMode == "advanced" {
 		return m.renderAdvancedSearch()
@@ -104,42 +124,44 @@ func (m *MainModel) renderAdvancedSearch() string {
 	b.WriteString("\n\n")
 
 	// Filter - focus=2
-	filterDisplay := m.searchFilter
-	if filterDisplay == "" {
-		filterDisplay = "(empty)"
-	}
-	filterLine := fmt.Sprintf("  Filter: %s", filterDisplay)
+	var filterLine string
 	if m.searchFocus == 2 {
-		filterLine = styleFocused.Render(filterLine)
+		filterLine = styleFocused.Render("  Filter: " + m.filterInput.View())
+	} else {
+		filterDisplay := m.filterInput.Value()
+		if filterDisplay == "" {
+			filterDisplay = "(empty)"
+		}
+		filterLine = fmt.Sprintf("  Filter: %s", filterDisplay)
 	}
 	b.WriteString(filterLine)
 	if m.searchFocus == 2 {
-		b.WriteString(" ◀ editing — type to set, Esc to clear")
+		b.WriteString(styleMuted.Render(" ◀ editing — Esc to exit"))
 	}
 	b.WriteString("\n\n")
 
-	// Graph entity - focus=3
-	graphDisplay := m.searchGraphEntity
-	if graphDisplay == "" {
-		graphDisplay = "(none)"
-	}
-	graphLine := fmt.Sprintf("  Graph:  %s", graphDisplay)
-	if m.searchFocus == 3 {
-		graphLine = styleFocused.Render(graphLine)
-	}
-	b.WriteString(graphLine)
-	b.WriteString("\n\n")
-
-	// Relations - focus=4
+	// Relations - focus=3
 	relDisplay := "(none)"
 	if len(m.searchRelations) > 0 && m.searchRelations[0] != "" {
 		relDisplay = strings.Join(m.searchRelations, ", ")
 	}
 	relLine := fmt.Sprintf("  Incl:   %s", relDisplay)
-	if m.searchFocus == 4 {
+	if m.searchFocus == 3 {
 		relLine = styleFocused.Render(relLine)
 	}
 	b.WriteString(relLine)
+	b.WriteString("\n")
+	b.WriteString(styleMuted.Render("          [Enter] toggle relation paths"))
+	b.WriteString("\n\n")
+
+	// Limit K - focus=4
+	kLine := fmt.Sprintf("  Limit:  %d", m.searchK)
+	if m.searchFocus == 4 {
+		kLine = styleFocused.Render(kLine)
+	}
+	b.WriteString(kLine)
+	b.WriteString("\n")
+	b.WriteString(styleMuted.Render("          [←→] adjust  min 5  max 100"))
 	b.WriteString("\n\n")
 
 	// Results (viewport) - focus=99
@@ -165,89 +187,97 @@ func (m *MainModel) renderAdvancedSearch() string {
 	}
 	b.WriteString(vpStyle.Render(m.searchViewport.View()))
 
-	b.WriteString("\n[Enter] run  [/] close  [r] re-run  [↑↓] focus  [Esc] clear")
+	b.WriteString("\n[Enter] run  [/] close  [r] re-run  [←→] adjust  [↑↓] focus  [Esc] clear query")
 	return b.String()
 }
 
 func (m *MainModel) updateSearch(msg tea.KeyPressMsg) tea.Cmd {
 	key := msg.String()
 
-	// Delegate to viewport when it's focused.
+	// ── Toggle advanced mode con / (solo fuori dai text input) ──
+	if key == "/" && m.searchFocus != 0 && m.searchFocus != 2 {
+		if m.searchMode == "quick" {
+			m.searchMode = "advanced"
+		} else {
+			m.searchMode = "quick"
+		}
+		m.searchFocus = 0
+		m.syncSearchFocus()
+		return nil
+	}
+
+	// ── Viewport focus ──
 	if m.searchFocus == 99 {
 		var vpCmd tea.Cmd
 		m.searchViewport, vpCmd = m.searchViewport.Update(msg)
 		if key == "esc" || key == "0" {
 			m.searchFocus = 0
+			m.syncSearchFocus()
 		}
 		return vpCmd
 	}
 
-	// If filter is focused, handle typing directly.
-	if m.searchFocus == 2 {
-		switch key {
-		case "esc":
-			m.searchFilter = ""
-			m.searchFocus = 0
-			return nil
-		case "backspace":
-			if len(m.searchFilter) > 0 {
-				m.searchFilter = m.searchFilter[:len(m.searchFilter)-1]
-			}
-			return nil
-		case "enter":
-			m.searchFocus = 0
-			return nil
-		default:
-			if len(key) == 1 {
-				m.searchFilter += key
-			}
-			return nil
+	// ── Navigazione focus con ↑↓ (prima del textinput) ──
+	switch key {
+	case "up":
+		if m.searchFocus > 0 {
+			m.searchFocus--
 		}
+		m.syncSearchFocus()
+		return nil
+	case "down":
+		maxFocus := m.maxSearchFocus()
+		if m.searchFocus < maxFocus {
+			m.searchFocus++
+		} else if m.searchFocus == maxFocus {
+			m.searchFocus = 99
+		}
+		m.syncSearchFocus()
+		return nil
+	case "0":
+		m.searchFocus = 0
+		m.syncSearchFocus()
+		return nil
+	case "v":
+		if m.searchFocus != 0 {
+			m.searchFocus = 99
+			m.syncSearchFocus()
+		}
+		return nil
 	}
 
-	// Text input always processes keys when focus=0.
+	// ── Passa il messaggio al textinput appropriato ──
 	var inputCmd tea.Cmd
 	if m.searchFocus == 0 {
 		m.searchInput, inputCmd = m.searchInput.Update(msg)
+	} else if m.searchFocus == 2 {
+		m.filterInput, inputCmd = m.filterInput.Update(msg)
+		m.searchFilter = m.filterInput.Value()
 	}
 
-	// Focus navigation: ↑↓
+	// ── Azioni globali Search ──
 	switch key {
-	case "up":
-		m.searchFocus = max(0, m.searchFocus-1)
-	case "down":
-		m.searchFocus = min(99, m.searchFocus+1)
-		if m.searchMode == "quick" && m.searchFocus > 1 {
-			m.searchFocus = 1
-		}
-		if m.searchMode == "advanced" && m.searchFocus == 5 {
-			m.searchFocus = 99
-		}
-		return inputCmd
-	case "0":
-		m.searchFocus = 0
-		return inputCmd
-	case "v":
-		// Only focus viewport when NOT on text input.
-		if m.searchFocus != 0 {
-			m.searchFocus = 99
-		}
-		return inputCmd
-	}
-
-	// Global search keys (work regardless of focus).
-	switch key {
-	case "/":
-		m.searchMode = map[bool]string{true: "quick", false: "advanced"}[m.searchMode == "quick"]
-	case "r":
-		if m.searchMode == "advanced" && m.searchInput.Value() != "" {
-			return m.doAdvancedSearch
-		}
 	case "tab":
 		m.cycleIndex()
+		return inputCmd
+	case "r":
+		if m.searchInput.Value() != "" {
+			if m.searchMode == "advanced" {
+				return m.doAdvancedSearch
+			}
+			return m.doQuickSearch
+		}
+		return inputCmd
 	}
 
-	// Actions on specific focuses.
+	// ── Global Esc: da qualsiasi campo torna a focus 0 ──
+	if key == "esc" && m.searchFocus != 0 {
+		m.searchFocus = 0
+		m.syncSearchFocus()
+		return inputCmd
+	}
+
+	// ── Azioni per focus specifico ──
 	switch m.searchFocus {
 	case 0:
 		switch key {
@@ -264,15 +294,12 @@ func (m *MainModel) updateSearch(msg tea.KeyPressMsg) tea.Cmd {
 			m.searchUIRaws = nil
 			m.searchErr = nil
 		}
-
 	case 1:
 		if m.searchMode == "quick" {
-			// Index selector
 			if key == "enter" || key == " " {
 				m.cycleIndex()
 			}
 		} else {
-			// Alpha slider
 			switch key {
 			case "left":
 				m.searchAlpha = max(0, m.searchAlpha-0.1)
@@ -280,29 +307,31 @@ func (m *MainModel) updateSearch(msg tea.KeyPressMsg) tea.Cmd {
 				m.searchAlpha = min(1.0, m.searchAlpha+0.1)
 			}
 		}
-
 	case 2:
-		// Filter — handled above
-
-	case 3:
-		if key == "enter" || key == " " {
-			return m.doSearchEntities
+		switch key {
+		case "esc":
+			m.searchFocus = 0
+			m.syncSearchFocus()
+			return inputCmd
+		case "enter":
+			m.searchFilter = m.filterInput.Value()
+			return inputCmd
 		}
-
-	case 4:
+	case 3:
 		if key == "enter" || key == " " {
 			m.cycleRelations()
 		}
-	}
-
-	// Global search keys.
-	switch key {
-	case "r":
-		if m.searchMode == "advanced" && m.searchInput.Value() != "" {
-			return m.doAdvancedSearch
+	case 4:
+		switch key {
+		case "left":
+			if m.searchK > 5 {
+				m.searchK -= 5
+			}
+		case "right":
+			if m.searchK < 100 {
+				m.searchK += 5
+			}
 		}
-	case "tab":
-		m.cycleIndex()
 	}
 
 	return inputCmd
@@ -313,38 +342,29 @@ func (m *MainModel) doQuickSearch() tea.Msg {
 	if query == "" {
 		return searchResultMsg{err: fmt.Errorf("empty query")}
 	}
-	req := UISearchRequest{
+	req := SearchRequest{
 		IndexName: m.searchIndex,
-		Query:     query,
-		K:         10,
+		QueryText: query,
+		K:         m.searchK,
+		Hydrate:   true,
 	}
-	results, err := m.client.UISearch(req)
+	results, err := m.client.SearchHydrated(req)
 	return searchResultMsg{raw: results, err: err}
 }
 
 func (m *MainModel) doAdvancedSearch() tea.Msg {
 	req := SearchRequest{
 		IndexName: m.searchIndex,
-		K:         10,
+		K:         m.searchK,
+		QueryText: m.searchInput.Value(),
 		Alpha:     m.searchAlpha,
-		Filter:    m.searchFilter,
+		Filter:    m.filterInput.Value(),
 	}
 	if len(m.searchRelations) > 0 {
 		req.IncludeRelations = m.searchRelations
 	}
 	results, err := m.client.Search(req)
 	return searchResultMsg{results: results, err: err}
-}
-
-func (m *MainModel) doSearchEntities() tea.Msg {
-	nodes, err := m.client.SearchNodes(m.searchIndex, m.searchFilter)
-	if err != nil {
-		return searchResultMsg{err: err}
-	}
-	if len(nodes) > 0 {
-		m.searchGraphEntity = nodes[0].ID
-	}
-	return nil
 }
 
 func (m *MainModel) cycleIndex() {

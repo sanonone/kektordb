@@ -26,6 +26,9 @@ func (m *MainModel) renderGraph() string {
 	if m.graphSearch {
 		return m.renderGraphSearch()
 	}
+	if len(m.graphNodeList) > 0 {
+		return m.renderGraphNodeList()
+	}
 	if m.graphFocus == "" {
 		return m.renderGraphInit()
 	}
@@ -58,6 +61,21 @@ func (m *MainModel) renderGraphSearch() string {
 	return styleBorder.Render(b.String())
 }
 
+func (m *MainModel) renderGraphNodeList() string {
+	var b strings.Builder
+	b.WriteString(styleHeader.Render(fmt.Sprintf("Graph  %d nodes  [↑↓] select  [Enter] expand  [Esc] clear", len(m.graphNodeList))))
+	b.WriteString("\n\n")
+	for i, n := range m.graphNodeList {
+		line := fmt.Sprintf("  %s (%s)", n.label, n.nType)
+		if i == m.graphListIdx {
+			line = styleFocused.Render(line)
+		}
+		b.WriteString(line + "\n")
+	}
+	b.WriteString("\n[Enter] expand  [Esc] clear list  [1-5] tabs")
+	return styleBorder.Render(b.String())
+}
+
 func (m *MainModel) renderGraphExplorer() string {
 	var b strings.Builder
 	b.WriteString(styleHeader.Render("Graph  [f]ind  [b]ack  [l]ist  [Enter] expand"))
@@ -67,24 +85,33 @@ func (m *MainModel) renderGraphExplorer() string {
 	b.WriteString(styleTitle.Render(centerText(fmt.Sprintf("[ %s ]", focusLabel), m.width)))
 	b.WriteString("\n\n")
 
-	targets := m.graphEdges[m.graphFocus]
-	if len(targets) == 0 {
-		b.WriteString(styleMuted.Render("  (no connections)"))
-	} else {
-		for i, target := range targets {
-			prefix := "├──"
-			if i == len(targets)-1 {
-				prefix = "└──"
-			}
-			edgeKey := m.graphFocus + "->" + target
-			relType := m.graphRelTypes[edgeKey]
-			if relType == "" {
-				relType = "connected"
-			}
-			label := nodeLabel(target, m.graphNodes)
-			b.WriteString(fmt.Sprintf("  %s %s  —%s→ %s\n", prefix, label, relType, truncateID(target, 20)))
-		}
+	if m.graphErr != nil {
+		b.WriteString(styleDanger.Render(fmt.Sprintf("  Error: %v", m.graphErr)))
+		b.WriteString("\n\n")
 	}
+
+	targets := m.graphEdges[m.graphFocus]
+		if len(targets) == 0 {
+			b.WriteString(styleMuted.Render("  (no connections)"))
+		} else {
+			for i, target := range targets {
+				prefix := "├──"
+				if i == len(targets)-1 {
+					prefix = "└──"
+				}
+				edgeKey := m.graphFocus + "->" + target
+				relType := m.graphRelTypes[edgeKey]
+				if relType == "" {
+					relType = "connected"
+				}
+				label := nodeLabel(target, m.graphNodes)
+				line := fmt.Sprintf("  %s %s  —%s→ %s", prefix, label, relType, truncateID(target, 20))
+				if i == m.graphSelectedIdx {
+					line = styleFocused.Render(line)
+				}
+				b.WriteString(line + "\n")
+			}
+		}
 
 	b.WriteString("\n")
 	sep := strings.Repeat("─", m.width-4)
@@ -125,7 +152,33 @@ func (m *MainModel) updateGraph(msg tea.KeyPressMsg) tea.Cmd {
 		return cmd
 	}
 
-	// Normal graph mode.
+	// Node list mode.
+	if len(m.graphNodeList) > 0 {
+		switch key {
+		case "up":
+			if m.graphListIdx > 0 {
+				m.graphListIdx--
+			}
+			return nil
+		case "down":
+			if m.graphListIdx < len(m.graphNodeList)-1 {
+				m.graphListIdx++
+			}
+			return nil
+		case "enter":
+			m.graphFocus = m.graphNodeList[m.graphListIdx].id
+			m.graphNodeList = nil
+			m.graphListIdx = 0
+			return m.fetchGraphRelations(m.graphFocus)
+		case "esc":
+			m.graphNodeList = nil
+			m.graphListIdx = 0
+			return nil
+		}
+		return nil
+	}
+
+	// Normal graph explorer mode.
 	switch key {
 	case "f":
 		m.graphSearch = true
@@ -134,18 +187,39 @@ func (m *MainModel) updateGraph(msg tea.KeyPressMsg) tea.Cmd {
 		m.searchInput.SetWidth(m.width - 8)
 		return nil
 
-	case "b", "backspace":
+	case "b", "backspace", "left":
 		if len(m.graphStack) > 0 {
 			m.graphFocus = m.graphStack[len(m.graphStack)-1]
 			m.graphStack = m.graphStack[:len(m.graphStack)-1]
+			m.graphSelectedIdx = 0
 			return m.fetchGraphRelations(m.graphFocus)
 		}
 
 	case "l":
 		return m.fetchAllGraphNodes
 
-	case "enter":
+	case "up":
+		if m.graphSelectedIdx > 0 {
+			m.graphSelectedIdx--
+		}
 		return nil
+
+	case "down":
+		targets := m.graphEdges[m.graphFocus]
+		if m.graphSelectedIdx < len(targets)-1 {
+			m.graphSelectedIdx++
+		}
+		return nil
+
+	case "right", "enter":
+		targets := m.graphEdges[m.graphFocus]
+		if len(targets) > 0 && m.graphSelectedIdx < len(targets) {
+			selectedID := targets[m.graphSelectedIdx]
+			m.graphStack = append(m.graphStack, m.graphFocus)
+			m.graphFocus = selectedID
+			m.graphSelectedIdx = 0
+			return m.fetchGraphRelations(selectedID)
+		}
 	}
 
 	return nil
@@ -153,7 +227,7 @@ func (m *MainModel) updateGraph(msg tea.KeyPressMsg) tea.Cmd {
 
 func (m *MainModel) fetchGraphRelations(nodeID string) tea.Cmd {
 	return func() tea.Msg {
-		rel, err := m.client.GetRelations(nodeID)
+		rel, err := m.client.GetRelations(m.searchIndex, nodeID)
 		if err != nil {
 			return graphRelationsMsg{nodeID: nodeID, err: err}
 		}
@@ -180,7 +254,7 @@ func (m *MainModel) fetchGraphRelations(nodeID string) tea.Cmd {
 }
 
 func (m *MainModel) fetchAllGraphNodes() tea.Msg {
-	nodes, err := m.client.SearchNodes(m.searchIndex, "")
+	nodes, err := m.client.SearchNodes(m.searchIndex, "", m.graphListLimit)
 	if err != nil {
 		return graphLoadMsg{err: err}
 	}
@@ -201,7 +275,7 @@ func (m *MainModel) fetchAllGraphNodes() tea.Msg {
 
 func (m *MainModel) searchGraphEntities(query string) tea.Cmd {
 	return func() tea.Msg {
-		nodes, err := m.client.SearchNodes(m.searchIndex, query)
+		nodes, err := m.client.SearchNodes(m.searchIndex, query, m.graphListLimit)
 		if err != nil {
 			return graphLoadMsg{err: err}
 		}
