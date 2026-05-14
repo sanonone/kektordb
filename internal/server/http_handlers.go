@@ -1138,7 +1138,8 @@ func (s *Server) handleGraphSearchNodes(w http.ResponseWriter, r *http.Request) 
 	var fullData []core.VectorData
 
 	if req.PropertyFilter == "" {
-		// List all nodes (up to limit)
+		// List all nodes (up to limit): collect IDs first, hydrate outside the lock
+		// to avoid recursive metaMu.RLock in IterateRaw → VGet → GetNodeData.
 		idx, ok := s.Engine.DB.GetVectorIndex(req.IndexName)
 		if !ok {
 			s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("index not found"))
@@ -1150,18 +1151,22 @@ func (s *Server) handleGraphSearchNodes(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 
+		var ids []string
 		count := 0
 		hnswIdx.IterateRaw(func(id string, _ interface{}) {
 			if count >= req.Limit {
 				return
 			}
-			vData, err := s.Engine.VGet(req.IndexName, id)
-			if err != nil {
-				return
-			}
-			fullData = append(fullData, vData)
+			ids = append(ids, id)
 			count++
 		})
+
+		var err2 error
+		fullData, err2 = s.Engine.VGetMany(req.IndexName, ids)
+		if err2 != nil {
+			s.writeHTTPError(w, http.StatusInternalServerError, err2)
+			return
+		}
 	} else {
 		// Pure metadata filter search via VFilter (no vector required).
 		results, err := s.Engine.VFilter(req.IndexName, req.PropertyFilter, req.Limit)
