@@ -31,6 +31,8 @@ type MainModel struct {
 	events      []SSEEvent
 	eventsMu    sync.Mutex
 	pauseEvents bool
+	eventFilter string // empty=all, or event type like "vector.add"
+	sseCh       chan tea.Msg
 
 	graphFocus       string
 	graphNodes       map[string]GraphNode
@@ -99,11 +101,14 @@ func NewMainModel(httpAddr string) *MainModel {
 }
 
 func (m *MainModel) Init() tea.Cmd {
+	m.sseCh = make(chan tea.Msg, 32)
+	go m.readSSELoop()
 	return tea.Batch(
 		tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
 			return pollMsg{}
 		}),
 		textinput.Blink,
+		waitForSSE(m.sseCh),
 	)
 }
 
@@ -142,4 +147,12 @@ type graphRelationsMsg struct {
 type embedderReloadMsg struct {
 	response *EmbedderReloadResponse
 	err      error
+}
+
+type sseEventMsg struct {
+	event SSEEvent
+}
+
+type sseErrMsg struct {
+	err error
 }

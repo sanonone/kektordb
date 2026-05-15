@@ -140,6 +140,21 @@ func (m *MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case embedderReloadMsg:
 		cmds = append(cmds, m.fetchStats)
+
+	case sseEventMsg:
+		m.appendEvent(msg.event)
+		if m.sseCh != nil {
+			cmds = append(cmds, waitForSSE(m.sseCh))
+		}
+
+	case sseErrMsg:
+		m.appendEvent(SSEEvent{
+			Type:      "system.error",
+			Timestamp: time.Now().UnixNano(),
+		})
+		if m.sseCh != nil {
+			cmds = append(cmds, waitForSSE(m.sseCh))
+		}
 	}
 
 	return m, tea.Batch(cmds...)
