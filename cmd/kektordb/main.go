@@ -110,7 +110,7 @@ func main() {
 
 	toolsFlag := flag.String("tools", "all", "MCP tool profile: all, agent, admin, or comma-separated tool names")
 
-	embedderModeFlag  := flag.String("embedder", "auto", "Embedder mode: auto, ollama, openai, local")
+	embedderModeFlag := flag.String("embedder", "auto", "Embedder mode: auto, ollama, openai, local")
 	embedderModelFlag := flag.String("embedder-model", "", "Path to directory with ONNX model and tokenizer (local mode)")
 
 	modeTUI := flag.Bool("tui", false, "Launch terminal dashboard")
@@ -119,7 +119,7 @@ func main() {
 
 	// SETUP LOGGER
 	setupLogger(*logLevel)
-	slog.Info("Starting KektorDB...", "version", "v0.5.1", "log_level", *logLevel)
+	slog.Info("Starting KektorDB...", "version", "v0.5.3", "log_level", *logLevel)
 
 	// Engine Configuration
 	dataDir := filepath.Dir(*aofPath)
@@ -180,7 +180,7 @@ func main() {
 		embedderCfg := embeddings.EmbedderConfig{
 			Mode:        *embedderModeFlag,
 			OllamaURL:   getEnv("MCP_EMBEDDER_URL", "http://localhost:11434/api/embeddings"),
-			OllamaModel:  getEnv("MCP_EMBEDDER_MODEL", "nomic-embed-text"),
+			OllamaModel: getEnv("MCP_EMBEDDER_MODEL", "nomic-embed-text"),
 			ModelDir:    *embedderModelFlag,
 		}
 		embedder, embedderErr := embeddings.SelectEmbedder(embedderCfg, dataDir)
