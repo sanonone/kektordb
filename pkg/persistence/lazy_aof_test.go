@@ -14,7 +14,7 @@ func TestLazyAOFWriterSnapshotMode(t *testing.T) {
 	aofPath := filepath.Join(tempDir, "test.aof")
 
 	// Create underlying AOF writer
-	underlying, err := NewAOFWriter(aofPath)
+	underlying, err := NewAOFWriter(aofPath, 0)
 	if err != nil {
 		t.Fatalf("Failed to create AOF writer: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestLazyAOFWriterSnapshotModeConcurrent(t *testing.T) {
 	tempDir := t.TempDir()
 	aofPath := filepath.Join(tempDir, "test.aof")
 
-	underlying, err := NewAOFWriter(aofPath)
+	underlying, err := NewAOFWriter(aofPath, 0)
 	if err != nil {
 		t.Fatalf("Failed to create AOF writer: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestLazyAOFWriterSnapshotModeDoubleBegin(t *testing.T) {
 	tempDir := t.TempDir()
 	aofPath := filepath.Join(tempDir, "test.aof")
 
-	underlying, err := NewAOFWriter(aofPath)
+	underlying, err := NewAOFWriter(aofPath, 0)
 	if err != nil {
 		t.Fatalf("Failed to create AOF writer: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestLazyAOFWriterSnapshotModeEndWithoutBegin(t *testing.T) {
 	tempDir := t.TempDir()
 	aofPath := filepath.Join(tempDir, "test.aof")
 
-	underlying, err := NewAOFWriter(aofPath)
+	underlying, err := NewAOFWriter(aofPath, 0)
 	if err != nil {
 		t.Fatalf("Failed to create AOF writer: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestLazyAOFWriterSnapshotModeClosedWriter(t *testing.T) {
 	tempDir := t.TempDir()
 	aofPath := filepath.Join(tempDir, "test.aof")
 
-	underlying, err := NewAOFWriter(aofPath)
+	underlying, err := NewAOFWriter(aofPath, 0)
 	if err != nil {
 		t.Fatalf("Failed to create AOF writer: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestLazyAOFWriterSnapshotModePreservesOrder(t *testing.T) {
 	tempDir := t.TempDir()
 	aofPath := filepath.Join(tempDir, "test.aof")
 
-	underlying, err := NewAOFWriter(aofPath)
+	underlying, err := NewAOFWriter(aofPath, 0)
 	if err != nil {
 		t.Fatalf("Failed to create AOF writer: %v", err)
 	}

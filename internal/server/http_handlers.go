@@ -31,9 +31,9 @@ import (
 
 // Request validation limits to prevent DoS attacks (H14 fix).
 const (
-	maxK          = 10000  // Max number of results per search
-	maxBatchSize  = 50000  // Max batch insert/import size
-	maxVectorDim  = 65536  // Max vector dimension per add
+	maxK         = 10000 // Max number of results per search
+	maxBatchSize = 50000 // Max batch insert/import size
+	maxVectorDim = 65536 // Max vector dimension per add
 )
 
 // registerHTTPHandlers sets up all HTTP routes using Go 1.22+ routing.
@@ -1369,14 +1369,20 @@ func (s *Server) handleResolveReflection(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// 2. Se l'utente umano/dashboard ha specificato un ID da scartare, lo archiviamo
+	// 2. If a DiscardID was specified, archive and soft-delete it.
+	// These errors are non-fatal: the primary reflection was already resolved above.
+	// Log and continue rather than rolling back the resolved state.
 	if req.DiscardID != "" {
 		discardProps := map[string]any{
 			"_archived":      true,
 			"invalidated_by": reflectionID,
 		}
-		_ = s.Engine.VSetMetadata(indexName, req.DiscardID, discardProps)
-		_ = s.Engine.VDelete(indexName, req.DiscardID)
+		if vSetMetadataError := s.Engine.VSetMetadata(indexName, req.DiscardID, discardProps); vSetMetadataError != nil {
+			slog.Warn("Failed to Set", "IndexName", indexName, "Error", vSetMetadataError)
+		}
+		if vDeleteMetadataError := s.Engine.VDelete(indexName, req.DiscardID); vDeleteMetadataError != nil {
+			slog.Warn("Failed to Delete", "IndexName", indexName, "Error", vDeleteMetadataError)
+		}
 	}
 
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{

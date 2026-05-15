@@ -63,6 +63,11 @@ type Options struct {
 	// EpistemicConfig provides default settings for the epistemic engine (belief assessment).
 	// Can be overridden per-index during VCreate.
 	EpistemicConfig *EpistemicConfig
+
+	// AOFWriteBufferSize controls the size of the write buffer for the AOF file in bytes.
+	// A larger buffer reduces syscall frequency under high write throughput.
+	// Set to 0 to use the default (4096 bytes).
+	AOFWriteBufferSize int
 }
 
 // DefaultOptions returns a standard configuration suitable for most use cases.
@@ -76,6 +81,8 @@ func DefaultOptions(dataDir string) Options {
 	return Options{
 		DataDir:              dataDir,
 		AofFilename:          "kektordb.aof",
+		AOFWriteBufferSize:   persistence.DefaultAOFWriteBufferSize,
+
 		AutoSaveInterval:     60 * time.Second,
 		AutoSaveThreshold:    1000,
 		AofRewritePercentage: 100,
@@ -186,7 +193,7 @@ func Open(opts Options) (*Engine, error) {
 	// 2. Open AOF with lazy batching for improved write performance.
 	// The lazy writer batches operations and flushes periodically rather than on every write,
 	// significantly improving throughput while maintaining durability through periodic fsync.
-	aofWriter, err := persistence.NewAOFWriter(aofPath)
+	aofWriter, err := persistence.NewAOFWriter(aofPath, opts.AOFWriteBufferSize)
 	if err != nil {
 		return nil, err
 	}
