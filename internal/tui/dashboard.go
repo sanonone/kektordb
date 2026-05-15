@@ -55,27 +55,40 @@ func (m *MainModel) renderDashboard() string {
 	b.WriteString(columns)
 	b.WriteString("\n\n")
 
-	// Recent events.
+	// Recent events — show as many as fit vertically.
 	b.WriteString(styleHeader.Render("Recent events"))
 	b.WriteString("\n")
-	start := 0
-	count := len(m.events)
-	if count > 5 {
-		start = count - 5
-	}
-	for i := start; i < count; i++ {
+	eventW := m.contentWidth() - 8
+	eventCap := m.eventsCap()
+	m.eventsMu.Lock()
+	total := len(m.events)
+	m.eventsMu.Unlock()
+	shown := 0
+	start := max(0, total-eventCap)
+	for i := start; i < total && shown < eventCap; i++ {
+		m.eventsMu.Lock()
+		if i >= len(m.events) {
+			m.eventsMu.Unlock()
+			break
+		}
 		e := m.events[i]
+		m.eventsMu.Unlock()
 		icon := eventIcon(e.Type)
 		ts := formatTimestamp(e.Timestamp)
-		desc := formatEventDesc(e)
+		desc := formatEventDesc(e, eventW)
 		b.WriteString(fmt.Sprintf(" %s %s  %s\n", icon, ts, desc))
+		shown++
 	}
-	if count == 0 {
+	if shown == 0 {
 		b.WriteString(styleMuted.Render("  No events yet. Start using KektorDB to see activity.\n"))
 	}
 	b.WriteString("\n[r] refresh  [1-5] tabs  [q] quit")
 
-	return styleBorder.Render(b.String())
+	return m.renderBordered(b.String())
+}
+
+func (m *MainModel) eventsCap() int {
+	return max(5, m.height-16)
 }
 
 func renderPanel(title string, lines ...string) string {
@@ -104,17 +117,21 @@ func formatTimestamp(ts int64) string {
 	return fmt.Sprintf("%02d:%02d:%02d", h, m, s)
 }
 
-func formatEventDesc(e SSEEvent) string {
+func formatEventDesc(e SSEEvent, width int) string {
+	idLen := max(12, width/3-10)
+	if idLen > 64 {
+		idLen = 64
+	}
 	switch e.Type {
 	case "vector.add":
-		return fmt.Sprintf("vector.add    %s  index=%s", truncateID(e.ID, 20), e.IndexName)
+		return fmt.Sprintf("vector.add    %s  index=%s", truncateID(e.ID, idLen), e.IndexName)
 	case "edge.create":
-		return fmt.Sprintf("edge.create   %s → %s  (%s)", truncateID(e.ID, 12), truncateID(e.TargetID, 12), e.RelType)
+		return fmt.Sprintf("edge.create   %s → %s  (%s)", truncateID(e.ID, idLen/2), truncateID(e.TargetID, idLen/2), e.RelType)
 	case "vector.delete", "edge.delete":
-		return fmt.Sprintf("%s    %s", e.Type, truncateID(e.ID, 20))
+		return fmt.Sprintf("%s    %s", e.Type, truncateID(e.ID, idLen))
 	case "vector.access":
-		return fmt.Sprintf("vector.access %s", truncateID(e.ID, 20))
+		return fmt.Sprintf("vector.access %s", truncateID(e.ID, idLen))
 	default:
-		return fmt.Sprintf("%s    %s", e.Type, truncateID(e.ID, 20))
+		return fmt.Sprintf("%s    %s", e.Type, truncateID(e.ID, idLen))
 	}
 }

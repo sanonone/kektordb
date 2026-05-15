@@ -33,6 +33,8 @@ type Pipeline struct {
 
 	stopCh chan struct{}
 
+	stopOnce sync.Once // ensures Stop() is idempotent
+
 	// isScanning is 1 if a scan is in progress, 0 otherwise
 	isScanning     int32
 	extractionChan chan extractionJob
@@ -86,17 +88,19 @@ func (p *Pipeline) extractionWorker() {
 	}
 }
 
-// Stop halts the background watcher.
+// Stop halts the background watcher. Safe to call multiple times.
 func (p *Pipeline) Stop() {
-	close(p.stopCh)
+	p.stopOnce.Do(func() {
+		close(p.stopCh)
 
-	// Close extractionChan to unblock extractionWorker.
-	// The stopCh close will cause processFile to abort any pending sends.
-	if p.cfg.GraphEntityExtraction {
-		close(p.extractionChan)
-		// Wait for extractionWorker to finish draining.
-		p.wg.Wait()
-	}
+		// Close extractionChan to unblock extractionWorker.
+		// The stopCh close will cause processFile to abort any pending sends.
+		if p.cfg.GraphEntityExtraction {
+			close(p.extractionChan)
+			// Wait for extractionWorker to finish draining.
+			p.wg.Wait()
+		}
+	})
 }
 
 func (p *Pipeline) loop() {

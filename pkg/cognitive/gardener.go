@@ -79,6 +79,7 @@ type Gardener struct {
 	llm            llm.Client // LLM client for synthesis and reasoning
 	cfg            Config
 	stopCh         chan struct{}
+	stopOnce       sync.Once // ensures Stop() is idempotent
 	eventCh        chan engine.Event // Subscribed to engine event bus
 	scanCursors    map[string]uint32
 	cursorsMu      sync.RWMutex // Protects scanCursors from concurrent access
@@ -325,10 +326,12 @@ func (g *Gardener) Stop() {
 	if !g.cfg.Enabled {
 		return
 	}
-	close(g.stopCh)
-	<-g.thinkDone  // Wait for thinkWorker goroutine to exit
-	g.eng.EventBus.Unsubscribe(g.eventCh)
-	slog.Info("[Cognitive Engine] Gardener stopped.")
+	g.stopOnce.Do(func() {
+		close(g.stopCh)
+		<-g.thinkDone // Wait for thinkWorker goroutine to exit
+		g.eng.EventBus.Unsubscribe(g.eventCh)
+		slog.Info("[Cognitive Engine] Gardener stopped.")
+	})
 }
 
 func (g *Gardener) loop() {

@@ -48,7 +48,7 @@ func (m *MainModel) renderGraphInit() string {
 		b.WriteString(styleDanger.Render(fmt.Sprintf("  Error: %v", m.graphErr)))
 	}
 	b.WriteString("\n[f] find  [l] list all  [1-5] tabs")
-	return styleBorder.Render(b.String())
+	return m.renderBordered(b.String())
 }
 
 func (m *MainModel) renderGraphSearch() string {
@@ -58,7 +58,7 @@ func (m *MainModel) renderGraphSearch() string {
 	b.WriteString("  > " + m.searchInput.View())
 	b.WriteString("\n\n")
 	b.WriteString(styleMuted.Render("  Type entity name and press Enter."))
-	return styleBorder.Render(b.String())
+	return m.renderBordered(b.String())
 }
 
 func (m *MainModel) renderGraphNodeList() string {
@@ -73,7 +73,7 @@ func (m *MainModel) renderGraphNodeList() string {
 		b.WriteString(line + "\n")
 	}
 	b.WriteString("\n[Enter] expand  [Esc] clear list  [1-5] tabs")
-	return styleBorder.Render(b.String())
+	return m.renderBordered(b.String())
 }
 
 func (m *MainModel) renderGraphExplorer() string {
@@ -121,7 +121,7 @@ func (m *MainModel) renderGraphExplorer() string {
 	b.WriteString(fmt.Sprintf("  Node: %s  Edges: %d  Stack: %d\n", m.graphFocus, len(targets), len(m.graphStack)))
 	b.WriteString("[f] find  [l] list  [b] back  [1-5] tabs")
 
-	return styleBorder.Render(b.String())
+	return m.renderBordered(b.String())
 }
 
 func (m *MainModel) updateGraph(msg tea.KeyPressMsg) tea.Cmd {
