@@ -1379,7 +1379,6 @@ func (s *Server) handleResolveReflection(w http.ResponseWriter, r *http.Request)
 		}
 		if vSetMetadataError := s.Engine.VSetMetadata(indexName, req.DiscardID, discardProps); vSetMetadataError != nil {
 			slog.Warn("Failed to Set", "IndexName", indexName, "Error", vSetMetadataError)
-			return
 		}
 		if vDeleteMetadataError := s.Engine.VDelete(indexName, req.DiscardID); vDeleteMetadataError != nil {
 			slog.Warn("Failed to Delete", "IndexName", indexName, "Error", vDeleteMetadataError)
