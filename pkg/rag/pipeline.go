@@ -152,6 +152,14 @@ func (p *Pipeline) scanAndProcess() {
 		if err != nil {
 			return nil // Skip unreadable files
 		}
+
+		// Check for shutdown before processing each file.
+		select {
+		case <-p.stopCh:
+			return filepath.SkipAll
+		default:
+		}
+
 		if info.IsDir() {
 			if strings.HasPrefix(info.Name(), ".") || info.Name() == "kektor_data" || info.Name() == "temp_rag_data" {
 				return filepath.SkipDir // Skip entire directories
@@ -226,6 +234,13 @@ func (p *Pipeline) needsProcessing(path string, info os.FileInfo) (bool, *fileSt
 
 // processFile executes the Load -> Split -> Embed -> Store flow.
 func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileState) error {
+	// Check for shutdown before any blocking I/O (loader, embedder, vision).
+	select {
+	case <-p.stopCh:
+		return nil
+	default:
+	}
+
 	slog.Info("[RAG] Processing file", "path", path)
 
 	// 0. CLEANUP: Remove old chunks to avoid orphan IDs
@@ -260,6 +275,13 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 		slog.Debug("[RAG] Analyzing images", "file", info.Name(), "count", len(doc.Images))
 
 		for i, img := range doc.Images {
+			// Check for shutdown before blocking vision calls.
+			select {
+			case <-p.stopCh:
+				return nil
+			default:
+			}
+
 			prompt := "Describe this image in detail. Identify charts, data points, or text inside it. Be concise."
 
 			desc, err := p.visionClient.ChatWithImages(prompt, "", [][]byte{img.Data})
@@ -310,6 +332,13 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 	parentID := fmt.Sprintf("doc:%s", path)
 
 	for i, chunkText := range chunks {
+		// Check for shutdown between chunks to avoid blocking Stop().
+		select {
+		case <-p.stopCh:
+			return nil
+		default:
+		}
+
 		// --- Accumulate text for Parent extraction ---
 		if fullTextPreview.Len() < maxPreviewChars {
 			fullTextPreview.WriteString(chunkText)
