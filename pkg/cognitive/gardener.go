@@ -90,6 +90,10 @@ type Gardener struct {
 	thinkReqs      chan struct{} // Buffered channel (size 1) serializing think() calls
 	thinkDone      chan struct{} // Closed when thinkWorker goroutine exits
 
+	totalReflections   atomic.Int64
+	totalContradictions atomic.Int64
+	totalDecayed       atomic.Int64
+
 	// User profiling
 	unassimilatedInteractions map[string]int // user_id -> count of new interactions
 	profileMutex              sync.RWMutex
@@ -139,6 +143,21 @@ func (g *Gardener) Interval() time.Duration {
 // TargetIndexes returns the list of indexes the gardener analyzes.
 func (g *Gardener) TargetIndexes() []string {
 	return g.cfg.TargetIndexes
+}
+
+// TotalReflections returns the cumulative number of reflections created.
+func (g *Gardener) TotalReflections() int {
+	return int(g.totalReflections.Load())
+}
+
+// TotalContradictions returns the cumulative number of contradictions detected.
+func (g *Gardener) TotalContradictions() int {
+	return int(g.totalContradictions.Load())
+}
+
+// TotalDecayed returns the cumulative number of decay events detected.
+func (g *Gardener) TotalDecayed() int {
+	return int(g.totalDecayed.Load())
 }
 
 // setLastThinkTime updates the last think time with write lock.
@@ -1132,10 +1151,12 @@ Guidelines for suggested_resolution:
 
 					reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
 					g.reflectionsMu.Lock()
-					g.newReflections = append(g.newReflections, reflectionID)
-					g.reflectionsMu.Unlock()
+				g.newReflections = append(g.newReflections, reflectionID)
+				g.reflectionsMu.Unlock()
+				g.totalReflections.Add(1)
+				g.totalContradictions.Add(1)
 
-					// Zero-cost embedding: average of the two conflicting vectors.
+				// Zero-cost embedding: average of the two conflicting vectors.
 					dim := len(node.Vector)
 					avgVec := make([]float32, dim)
 					for i := range node.Vector {
@@ -1212,11 +1233,12 @@ func (g *Gardener) detectImportanceShifts(indexName string) {
 
 			if !alreadyFlagged {
 				reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
-				g.reflectionsMu.Lock()
-				g.newReflections = append(g.newReflections, reflectionID)
-				g.reflectionsMu.Unlock()
+			g.reflectionsMu.Lock()
+			g.newReflections = append(g.newReflections, reflectionID)
+			g.reflectionsMu.Unlock()
+			g.totalReflections.Add(1)
 
-				nodeData, _ := g.eng.VGet(indexName, id)
+			nodeData, _ := g.eng.VGet(indexName, id)
 
 				confidence := math.Min(1.0, float64(recentMentions)/10.0)
 				meta := map[string]any{
@@ -1830,10 +1852,11 @@ func (g *Gardener) detectKnowledgeGaps(indexName string) {
 
 					reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
 					g.reflectionsMu.Lock()
-					g.newReflections = append(g.newReflections, reflectionID)
-					g.reflectionsMu.Unlock()
+				g.newReflections = append(g.newReflections, reflectionID)
+				g.reflectionsMu.Unlock()
+				g.totalReflections.Add(1)
 
-					dim := len(node.Vector)
+				dim := len(node.Vector)
 					avgVec := make([]float32, dim)
 					for i := range node.Vector {
 						avgVec[i] = (node.Vector[i] + neighborData.Vector[i]) / 2.0
@@ -2095,9 +2118,10 @@ func (g *Gardener) detectSentimentShifts(indexName string, lang string) {
 				nodeData, _ := g.eng.VGet(indexName, id)
 				reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
 				g.reflectionsMu.Lock()
-				g.newReflections = append(g.newReflections, reflectionID)
-				g.reflectionsMu.Unlock()
-				evidenceRatio := math.Min(1.0, float64(pastCount+recentCount)/8.0)
+			g.newReflections = append(g.newReflections, reflectionID)
+			g.reflectionsMu.Unlock()
+			g.totalReflections.Add(1)
+			evidenceRatio := math.Min(1.0, float64(pastCount+recentCount)/8.0)
 				confidence := math.Min(1.0, (math.Abs(delta)/3.0)*evidenceRatio)
 				meta := map[string]any{
 					"type":        "reflection",
@@ -2176,6 +2200,7 @@ func (g *Gardener) detectCentralityShifts(indexName string) {
 			g.reflectionsMu.Lock()
 			g.newReflections = append(g.newReflections, reflectionID)
 			g.reflectionsMu.Unlock()
+			g.totalReflections.Add(1)
 			confidence := math.Min(1.0, float64(degreeNow)/float64(degreePast)/5.0)
 			meta := map[string]any{
 				"type":        "reflection",
@@ -2236,8 +2261,10 @@ func (g *Gardener) detectForgettingPatterns(indexName string) {
 			reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
 			g.reflectionsMu.Lock()
 			g.newReflections = append(g.newReflections, reflectionID)
-			g.reflectionsMu.Unlock()
-			confidence := math.Min(1.0, float64(len(edges))/10.0)
+		g.reflectionsMu.Unlock()
+		g.totalReflections.Add(1)
+		g.totalDecayed.Add(1)
+		confidence := math.Min(1.0, float64(len(edges))/10.0)
 			meta := map[string]any{
 				"type":        "reflection",
 				"content":     fmt.Sprintf("Knowledge Decay: The concept '%s' was previously important (%d mentions) but hasn't been accessed or mentioned in over 30 days.", id, len(edges)),
@@ -3296,9 +3323,10 @@ func (g *Gardener) processCoreFactExtraction(indexName, userID string, items []c
 			g.eng.VLink(indexName, factID, item.ID, "extracted_from", "", 1.0, nil)
 		}
 
-		g.reflectionsMu.Lock()
-		g.newReflections = append(g.newReflections, factID)
-		g.reflectionsMu.Unlock()
+	g.reflectionsMu.Lock()
+	g.newReflections = append(g.newReflections, factID)
+	g.reflectionsMu.Unlock()
+	g.totalReflections.Add(1)
 
 		slog.Info("[Cognitive Engine] Core fact extracted",
 			"id", factID,

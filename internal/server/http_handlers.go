@@ -56,6 +56,7 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("GET /system/stats", s.handleSystemStats)
 	mux.HandleFunc("GET /system/gardener", s.handleSystemGardener)
 	mux.HandleFunc("POST /system/embedder/reload", s.handleEmbedderReload)
+	mux.HandleFunc("GET /system/embedder/status", s.handleEmbedderStatus)
 
 	// Event stream (SSE)
 	mux.HandleFunc("GET /events/stream", s.handleEventStream)
@@ -2835,7 +2836,11 @@ func (s *Server) handleSystemStats(w http.ResponseWriter, r *http.Request) {
 	})
 	resp.Graph.TotalEdges = edgeCount
 	resp.Graph.NodesWithLinks = len(nodeSet)
-	resp.Graph.PinnedNodes = 0 // TODO: query pinned nodes count
+	for _, idx := range indexes {
+		if pinned, err := s.Engine.VFilter(idx.Name, "_pinned=true", 1_000_000); err == nil {
+			resp.Graph.PinnedNodes += len(pinned)
+		}
+	}
 
 	// Gardener status
 	if s.gardener != nil && s.gardener.IsEnabled() {
@@ -2845,7 +2850,9 @@ func (s *Server) handleSystemStats(w http.ResponseWriter, r *http.Request) {
 		if !lastThink.IsZero() {
 			resp.Gardener.LastThinkAgoMs = time.Since(lastThink).Milliseconds()
 		}
-		// TODO: get total reflections, contradictions, decayed counts from atomic counters
+		resp.Gardener.TotalReflections = s.gardener.TotalReflections()
+		resp.Gardener.ContradictionsPending = s.gardener.TotalContradictions()
+		resp.Gardener.DecayedTotal = s.gardener.TotalDecayed()
 	}
 
 	// Memory
@@ -2902,7 +2909,49 @@ func (s *Server) handleSystemGardener(w http.ResponseWriter, r *http.Request) {
 		if !lastThink.IsZero() {
 			resp.LastThinkTime = lastThink.Format(time.RFC3339)
 		}
-		// TODO: populate TotalReflections, ContradictionsPending, MergedToday, DecayedTotal from atomic counters
+		resp.TotalReflections = s.gardener.TotalReflections()
+		resp.ContradictionsPending = s.gardener.TotalContradictions()
+		resp.DecayedTotal = s.gardener.TotalDecayed()
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, resp)
+}
+
+// handleEmbedderStatus handles GET /system/embedder/status.
+func (s *Server) handleEmbedderStatus(w http.ResponseWriter, r *http.Request) {
+	type statusResp struct {
+		Active    string `json:"active"`
+		Model     string `json:"model"`
+		Dimension int    `json:"dimension"`
+		Available bool   `json:"available"`
+	}
+
+	resp := statusResp{Active: "none"}
+
+	if s.vectorizerConfig != nil {
+		for _, vc := range s.vectorizerConfig.Vectorizers {
+			if vc.Embedder.Type != "" {
+				resp.Active = vc.Embedder.Type
+				resp.Model = vc.Embedder.Model
+				break
+			}
+		}
+	}
+
+	if s.vectorizerService != nil && resp.Active != "none" {
+		// Find first index with an embedder to measure dimension.
+		if indexes, err := s.Engine.DB.GetVectorIndexInfo(); err == nil {
+			for _, idx := range indexes {
+				emb := s.vectorizerService.GetEmbedderForIndex(idx.Name)
+				if emb != nil {
+					if vec, err := emb.Embed("."); err == nil && len(vec) > 0 {
+						resp.Dimension = len(vec)
+						resp.Available = true
+					}
+					break
+				}
+			}
+		}
 	}
 
 	s.writeHTTPResponse(w, http.StatusOK, resp)
