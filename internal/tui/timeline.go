@@ -13,7 +13,11 @@ func (m *MainModel) renderTimeline() string {
 	if m.pauseEvents {
 		pauseLabel = "resume"
 	}
-	b.WriteString(styleHeader.Render(fmt.Sprintf("Timeline  [Space] %s", pauseLabel)))
+	filterLabel := "all"
+	if m.eventFilter != "" {
+		filterLabel = m.eventFilter
+	}
+	b.WriteString(styleHeader.Render(fmt.Sprintf("Timeline  [Space] %s  [f] filter: %s", pauseLabel, filterLabel)))
 	b.WriteString("\n\n")
 
 	m.eventsMu.Lock()
@@ -27,6 +31,9 @@ func (m *MainModel) renderTimeline() string {
 		m.eventsMu.Lock()
 		for i := start; i < count; i++ {
 			e := m.events[i]
+			if m.eventFilter != "" && e.Type != m.eventFilter {
+				continue
+			}
 			icon := eventIcon(e.Type)
 			ts := formatTimestamp(e.Timestamp)
 			desc := formatEventDesc(e)
@@ -36,15 +43,30 @@ func (m *MainModel) renderTimeline() string {
 	}
 
 	b.WriteString(fmt.Sprintf("\n  %d events buffered", count))
-	b.WriteString("\n[Space] pause  [1-5] tabs")
+	b.WriteString("\n[Space] pause  [f] filter  [1-5] tabs")
 	return styleBorder.Render(b.String())
 }
 
 func (m *MainModel) updateTimeline(msg tea.KeyPressMsg) tea.Cmd {
-	if msg.String() == "space" {
+	key := msg.String()
+	switch key {
+	case "space":
 		m.pauseEvents = !m.pauseEvents
+	case "f":
+		m.eventFilter = nextTimelineFilter(m.eventFilter)
 	}
 	return nil
+}
+
+var timelineFilters = []string{"", "vector.add", "edge.create", "vector.delete", "vector.update"}
+
+func nextTimelineFilter(current string) string {
+	for i, f := range timelineFilters {
+		if f == current {
+			return timelineFilters[(i+1)%len(timelineFilters)]
+		}
+	}
+	return timelineFilters[0]
 }
 
 func (m *MainModel) appendEvent(e SSEEvent) {

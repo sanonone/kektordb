@@ -2845,7 +2845,7 @@ func (s *Server) handleSystemStats(w http.ResponseWriter, r *http.Request) {
 			resp.Gardener.LastThinkAgoMs = time.Since(lastThink).Milliseconds()
 		}
 		resp.Gardener.TotalReflections = s.gardener.TotalReflections()
-		resp.Gardener.ContradictionsPending = s.gardener.TotalContradictions()
+		resp.Gardener.ContradictionsPending = s.countContradictionsPending()
 		resp.Gardener.DecayedTotal = s.gardener.TotalDecayed()
 	}
 
@@ -2909,6 +2909,28 @@ func (s *Server) handleSystemGardener(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeHTTPResponse(w, http.StatusOK, resp)
+}
+
+// countContradictionsPending queries all active gardener target indexes for
+// unresolved contradiction reflections (type=reflection, status=unresolved,
+// content containing "Conflict detected"). Returns the total count.
+func (s *Server) countContradictionsPending() int {
+	if s.gardener == nil {
+		return 0
+	}
+	targets := s.gardener.TargetIndexes()
+	if len(targets) == 0 {
+		return 0
+	}
+	filter := "type=reflection AND content CONTAINS \"Conflict detected\" AND status=unresolved"
+	total := 0
+	for _, idx := range targets {
+		ids, err := s.Engine.VFilter(idx, filter, 10_000)
+		if err == nil {
+			total += len(ids)
+		}
+	}
+	return total
 }
 
 // handleEmbedderStatus handles GET /system/embedder/status.
