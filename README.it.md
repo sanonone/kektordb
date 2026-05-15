@@ -243,14 +243,21 @@ KektorDB funziona come un **Cognitive Memory Server** completo basato sul protoc
     ```bash
     ./kektordb --mcp
     ```
-*   **Integrazione:** Aggiungi KektorDB alla configurazione del tuo client MCP usando il flag `--mcp`.
+*   **Setup one-liner per agenti AI:**
+    ```bash
+    kektordb setup claude-code    # oppure: cursor, gemini-cli, codex, opencode
+    ```
+    Scrive la configurazione MCP con `--tools=agent` (14 tool) per mantenere il contesto snello. Idempotente -- eseguibile piu' volte.
+*   **Per avviare con un profilo tool specifico:**
+    ```bash
+    ./kektordb --mcp --tools=agent
+    ```
 
 ---
 
-### Dashboard Integrata
-Disponibile su `http://localhost:9091/ui/`.
-*   **Graph Explorer:** Visualizza il tuo grafo di conoscenza con un layout force-directed.
-*   **Debugger di Ricerca:** Testa le tue query e vedi esattamente perché un documento è stato recuperato.
+### Dashboard
+*   **Interfaccia Web:** Disponibile su `http://localhost:9091/ui/`. Graph Explorer e Debugger di Ricerca.
+*   **Terminale (TUI):** Avvia con `--tui` per una dashboard a 5 tab con statistiche live, esploratore grafo, ricerca, timeline e impostazioni. Sperimentale -- potrebbe essere instabile. Usa `q` o `Ctrl+C` per uscire.
 
 ---
 
@@ -283,8 +290,34 @@ Scarica il binario pre-compilato dalla [Pagina delle Release](https://github.com
 *   `-proxy-config`: Percorso del file di configurazione del proxy
 *   `-vectorizers-config`: Percorso del file di configurazione dei vectorizers
 *   `-mcp`: Esegui come Server MCP (Stdio)
+*   `--embedder`: Modalita' embedder: `auto`, `ollama`, `openai`, `local`
+*   `--embedder-model`: Directory con modello ONNX + tokenizer (modalita' local)
+*   `--tools`: Profilo tool MCP: `agent`, `admin`, `all`
+*   `--tui`: Avvia dashboard terminale (sperimentale)
+*   `--cognitive-config`: Percorso al file YAML di configurazione cognitiva (abilita Gardener)
 
 > **Nota sulla Compatibilità:** Tutto lo sviluppo e i test sono stati eseguiti su **Linux (x86_64)**. Le build pure Go dovrebbero funzionare su Windows/Mac/ARM.
+
+---
+
+### Embedding Integrato (Opzionale)
+
+KektorDB include un embedder ONNX integrato opzionale (`all-MiniLM-L6-v2`, 384 dimensioni) basato su Rust/Candle per embedding locali senza configurazione -- nessun Ollama richiesto.
+
+**Build con supporto Rust:**
+```bash
+make build-rust-native    # richiede protoc (scaricato automaticamente dal Makefile)
+make run-rust
+```
+
+Il modello ONNX (~90 MB) viene scaricato automaticamente da HuggingFace al primo avvio con verifica SHA256.
+
+| Modalita' | Descrizione |
+|-----------|-------------|
+| `auto` | Rilevamento automatico: Ollama se disponibile, ONNX locale come fallback (default) |
+| `ollama` | Usa API embedding di Ollama |
+| `openai` | Usa API embedding compatibile OpenAI |
+| `local` | Modello ONNX integrato (richiede build con `-tags rust`) |
 
 ---
 
@@ -403,15 +436,15 @@ I benchmark sono stati eseguiti su una macchina Linux locale (Hardware Consumer,
 *   [x] **Consolidamento Credenze:** Risoluzione automatica di credenze volatili/contestate.
 
 ### Rilasciato in v0.5.2 ✅
-*   [x] **Fix di stabilità:** Risolti deadlock e data race nelle operazioni vettoriali concorrenti.
+*   [x] **Fix di stabilita':** Risolti deadlock e data race nelle operazioni vettoriali concorrenti.
 
-### In arrivo 🔨
-*   [ ] **Embedding Zero-Config:** Embedder ONNX integrato con download automatico del modello. Niente Ollama, niente servizi esterni, `save_memory` funziona al primo avvio. Rilevamento automatico: usa Ollama se disponibile, altrimenti embedding locale.
+### Completato (branch feat/tui, non rilasciato) ✅
+*   [x] **Embedding Zero-Config:** Embedder ONNX integrato (`all-MiniLM-L6-v2`, 384dim) via Rust/Candle. Download automatico del modello da HuggingFace con verifica SHA256. Rilevamento automatico: usa Ollama se disponibile, altrimenti embedding locale. Flag `--embedder` con modalita' `auto`/`ollama`/`openai`/`local`.
+*   [x] **MCP One-Liner:** `kektordb setup <agente>` configura MCP per Claude Code, Cursor, Gemini CLI, Codex e OpenCode con un solo comando. Flag `--tools` con profili `agent`/`admin`/`all` (14/6/22 tool).
+*   [x] **Dashboard Terminale (TUI):** Interfaccia terminale a 5 tab con Bubble Tea v2: statistiche live, esploratore grafo, ricerca semantica, timeline SSE e impostazioni. Avvia con `--tui`. Stato: sperimentale, limitazioni note nello shutdown sotto carico pipeline.
 
 ### All'orizzonte
-*   [ ] **MCP One-Liner:** `kektordb setup <agente>` configura MCP per Claude Code, Cursor, VS Code, OpenCode e altri con un solo comando.
 *   [ ] **Docker Hub:** Immagini ufficiali per deploy immediato.
-*   [ ] **Interfaccia Terminale:** Dashboard interattiva con visualizzazione del grafo, ricerca semantica live e timeline della memoria.
 *   [ ] **Motore di Conoscenza:** Artefatti di conoscenza pre-compilati con confidenza e provenienza per campo (`/compile`). Il Gardener mantiene automaticamente aggiornati gli artefatti con delta-ricompilazione.
 *   [ ] **Git Sync:** Sincronizza le memorie tra macchine via git.
 *   [ ] **Docker Compose:** Stack di produzione con volumi persistenti e healthcheck.
@@ -424,7 +457,7 @@ I benchmark sono stati eseguiti su una macchina Linux locale (Hardware Consumer,
 
 ---
 
-## 🛑 Limitazioni Attuali (v0.5.1)
+## 🛑 Limitazioni Attuali 
 *   **Singolo nodo:** KektorDB attualmente non supporta il clustering. Scala verticalmente entro i limiti delle risorse della macchina.
 
 ---

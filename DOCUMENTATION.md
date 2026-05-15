@@ -155,6 +155,11 @@ These control the database engine itself.
 | `-enable-proxy` | `-KEKTOR_ENABLE_PROXY` | `false` | Enables the AI Gateway/Proxy service on the port specified by -proxy-port. |
 | `-proxy-config` | - | `""` | Path to `proxy.yaml`. Enables Proxy if set. |
 | `-vectorizers-config` | - | `""` | Path to `vectorizers.yaml`. Enables RAG if set. |
+| `-cognitive-config` | - | `""` | Path to cognitive YAML config. Enables Gardener with memory layers, decay, etc. |
+| `--embedder` | - | `auto` | Embedder mode: `auto`, `ollama`, `openai`, `local`. ONNX model needed for `local`. |
+| `--embedder-model` | - | `""` | Directory with `model.onnx` and `tokenizer.json` (local mode only). |
+| `--tools` | - | `all` | MCP tool profile: `agent` (14 tools), `admin` (6), `all` (22), or comma-separated. |
+| `--tui` | - | `false` | Launch terminal dashboard. Experimental -- see section 4.10. |
 
 ---
 
@@ -555,6 +560,25 @@ Add `compress_context: true` to any search or RAG request:
 *   Compressed: "mio cane chiama Fuffi e io lavoro come sviluppatore" (10 tokens) - ~23% reduction
 
 **Important:** The compression is applied on-the-fly to the response only. Original data in the database remains unchanged and grammatically correct.
+
+---
+
+### 4.10 Terminal Dashboard (TUI)
+
+Launch with `--tui` for a Bubble Tea v2 terminal dashboard with 5 tabs:
+
+| Tab | Description |
+|-----|-------------|
+| Dashboard | Live stats, Gardener counters (reflections, contradictions, decayed), recent SSE events |
+| Graph | Interactive entity explorer with relation traversal (`f` find, `l` list all, arrow keys navigate) |
+| Search | Vector/hybrid search with advanced controls (K 5-100, alpha 0.0-1.0, SQL-like filter) |
+| Timeline | Real-time SSE event stream with pause/resume and type filter (`vector.add`, `edge.create`, etc.) |
+| Settings | Embedder mode switcher (auto/ollama/openai/local), Gardener/Server status |
+
+**Status: Experimental.** The TUI is under active development. Known limitations
+include shutdown delays under heavy pipeline load and incomplete SSE delivery
+during startup. Use `q` or `Ctrl+C` to exit. The Web UI (`/ui/`) remains the
+stable dashboard option.
 
 ---
 
@@ -1146,6 +1170,22 @@ KektorDB implements the [Model Context Protocol](https://modelcontextprotocol.io
 
 **Activation:**
 Run KektorDB with the `--mcp` flag. It will listen for JSON-RPC messages on standard input.
+
+**One-liner agent setup:**
+```bash
+kektordb setup claude-code    # Claude Code
+kektordb setup cursor         # Cursor
+kektordb setup gemini-cli     # Gemini CLI
+kektordb setup codex          # OpenAI Codex
+kektordb setup opencode       # OpenCode
+```
+Writes platform-specific MCP config with `--tools=agent` (14 tools) to keep
+agent context lean. Safe to run multiple times (idempotent).
+
+**Tool profiles (`--tools`):**
+- `agent` (default for setup): 14 tools for AI coding agents
+- `admin`: 6 administrative tools (`list_vectors`, `transfer_memory`, etc.)
+- `all`: all 22 tools
 
 **Available Tools:**
 
