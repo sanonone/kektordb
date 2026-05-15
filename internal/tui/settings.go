@@ -47,7 +47,7 @@ func (m *MainModel) renderSettings() string {
 	b.WriteString(fmt.Sprintf("    HTTP: http://%s\n", m.httpAddr))
 	b.WriteString("\n[↑↓] change mode  [Enter] apply  [1-5] tabs")
 
-	return styleBorder.Render(b.String())
+	return m.renderBordered(b.String())
 }
 
 func (m *MainModel) updateSettings(msg tea.KeyPressMsg) tea.Cmd {

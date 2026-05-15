@@ -199,6 +199,14 @@ func (m *MainModel) renderContent() string {
 		Render(tab)
 }
 
+func (m *MainModel) contentWidth() int {
+	return max(40, m.width-4)
+}
+
+func (m *MainModel) renderBordered(content string) string {
+	return styleBorder.Copy().Width(m.contentWidth()).Render(content)
+}
+
 func (m *MainModel) setTab(tab int) {
 	old := m.activeTab
 	m.activeTab = tab

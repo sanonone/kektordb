@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -477,14 +478,22 @@ func runTUI(httpAddr string, eng *engine.Engine, vectorizersConfig, authToken, d
 		slog.Warn("TUI: proxy not supported in TUI mode")
 	}
 
-	// Handle graceful shutdown
+	// Handle graceful shutdown — idempotent via sync.Once so signal handler
+	// and clean-exit path don't race on double Shutdown()/Close().
+	var shutdownOnce sync.Once
+	shutdown := func() {
+		shutdownOnce.Do(func() {
+			slog.Info("TUI: shutting down...")
+			srv.Shutdown()
+			eng.Close()
+		})
+	}
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		slog.Info("TUI: shutting down...")
-		srv.Shutdown()
-		eng.Close()
+		shutdown()
 		os.Exit(0)
 	}()
 
@@ -495,6 +504,5 @@ func runTUI(httpAddr string, eng *engine.Engine, vectorizersConfig, authToken, d
 	}
 
 	// Clean exit
-	srv.Shutdown()
-	eng.Close()
+	shutdown()
 }

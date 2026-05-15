@@ -36,7 +36,7 @@ func (m *MainModel) renderTimeline() string {
 			}
 			icon := eventIcon(e.Type)
 			ts := formatTimestamp(e.Timestamp)
-			desc := formatEventDesc(e)
+			desc := formatEventDesc(e, m.contentWidth()-8)
 			b.WriteString(fmt.Sprintf(" %s %s  %s\n", icon, ts, desc))
 		}
 		m.eventsMu.Unlock()
@@ -44,7 +44,7 @@ func (m *MainModel) renderTimeline() string {
 
 	b.WriteString(fmt.Sprintf("\n  %d events buffered", count))
 	b.WriteString("\n[Space] pause  [f] filter  [1-5] tabs")
-	return styleBorder.Render(b.String())
+	return m.renderBordered(b.String())
 }
 
 func (m *MainModel) updateTimeline(msg tea.KeyPressMsg) tea.Cmd {
