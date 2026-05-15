@@ -1,6 +1,9 @@
 package mcp
 
-import "strings"
+import (
+	"log/slog"
+	"strings"
+)
 
 // Tool name constants — used by MCP server registration and setup allowlist.
 const (
@@ -27,6 +30,32 @@ const (
 	ToolUnpinMemory        = "unpin_memory"
 	ToolConfigureAutoLinks = "configure_auto_links"
 )
+
+// allToolNames maps every known MCP tool name for validation.
+var allToolNames = map[string]bool{
+	ToolSaveMemory:         true,
+	ToolRecallMemory:       true,
+	ToolScopedRecall:       true,
+	ToolCreateEntity:       true,
+	ToolConnectEntities:    true,
+	ToolExploreConnections: true,
+	ToolFindConnection:     true,
+	ToolStartSession:       true,
+	ToolEndSession:         true,
+	ToolGetUserProfile:     true,
+	ToolListUserProfiles:   true,
+	ToolTransferMemory:     true,
+	ToolAdaptiveRetrieve:   true,
+	ToolFilterVectors:      true,
+	ToolListVectors:        true,
+	ToolCheckSubconscious:  true,
+	ToolResolveConflict:    true,
+	ToolAskMetaQuestion:    true,
+	ToolEvolveMemory:       true,
+	ToolGetMemoryEvolution: true,
+	ToolUnpinMemory:        true,
+	ToolConfigureAutoLinks: true,
+}
 
 // ProfileAgent contains tools useful for AI coding agents.
 // Filters out admin-only tools (list_vectors, filter_vectors, transfer_memory, etc.)
@@ -87,8 +116,10 @@ func ResolveTools(input string) map[string]bool {
 			for tool := range profile {
 				result[tool] = true
 			}
-		} else {
+		} else if allToolNames[token] {
 			result[token] = true
+		} else {
+			slog.Warn("unknown tool or profile in --tools, ignored", "token", token)
 		}
 	}
 	if len(result) == 0 {

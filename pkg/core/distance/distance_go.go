@@ -12,9 +12,7 @@ package distance
 import (
 	"errors"
 	"fmt"
-	"log/slog"
 
-	// "github.com/klauspost/cpuid/v2"
 	"github.com/x448/float16"
 	"gonum.org/v1/gonum/blas/gonum"
 )
@@ -23,15 +21,6 @@ func init() {
 	// Override defaults with optimized versions from Gonum.
 	// Gonum handles SIMD dispatch internally.
 	float32Funcs[Cosine] = dotProductAsDistanceGonum
-
-	// if cpuid.CPU.Has(cpuid.AVX2) && cpuid.CPU.Has(cpuid.F16C) {
-	// float16Funcs[Euclidean] = squaredEuclideanF16AVX2Wrapper // Use the wrapper
-	// }
-	slog.Info("KektorDB compute engine: using PURE GO / GONUM implementation.")
-	slog.Info("  - Euclidean (float32): Pure Go")
-	slog.Info("  - Cosine (float32):    Gonum (SIMD)")
-	slog.Info("  - Euclidean (float16): Pure Go (Fallback)")
-	slog.Info("  - Cosine (int8):       Pure Go (Fallback)")
 }
 
 // --- Public Types ---

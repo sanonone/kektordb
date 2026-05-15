@@ -2862,6 +2862,15 @@ func (s *Server) handleSystemStats(w http.ResponseWriter, r *http.Request) {
 	resp.Embedder.Active = "none"
 	resp.Embedder.Model = ""
 	resp.Embedder.Dimension = 0
+	if s.vectorizerConfig != nil {
+		for _, vc := range s.vectorizerConfig.Vectorizers {
+			if vc.Embedder.Type != "" {
+				resp.Embedder.Active = vc.Embedder.Type
+				resp.Embedder.Model = vc.Embedder.Model
+				break
+			}
+		}
+	}
 
 	s.writeHTTPResponse(w, http.StatusOK, resp)
 }
