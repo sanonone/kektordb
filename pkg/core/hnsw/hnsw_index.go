@@ -3059,7 +3059,14 @@ func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uin
 		defer h.maintenanceCoord.ReleaseSnapshotLock()
 	}
 
-	// This method expects the caller to have already acquired a lock.
+	// Lock ordering: metaMu before shard locks (consistent with Add/Delete).
+	// By holding metaMu.RLock, we prevent concurrent Add/Delete from reaching
+	// LockNode — this avoids a lock-ordering inversion (metaMu → LockNode in
+	// Add vs LockNode → metaMu in the caller's GetAutoLinks/GetMemoryConfig).
+	// Searches are unaffected: they use RLockNode directly, never metaMu.
+	h.metaMu.RLock()
+	defer h.metaMu.RUnlock()
+
 	nodes := h.getNodes()
 
 	nodesMap := make(map[uint32]*Node, len(nodes))
@@ -3068,21 +3075,15 @@ func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uin
 		if node != nil {
 			node.InternalID = uint32(internalID)
 
-			// Deep-copy Connections under RLockNode to prevent a data race with
-			// concurrent Add/Delete operations. Without this, gob serialization in
-			// DB.Snapshot() would read node.Connections while Add() writes to
-			// neighborNode.Connections[l] under LockNode. RLockNode uses the
-			// per-shard RWMutex (128 shards), so:
-			//   - concurrent searches (also under RLockNode) are never blocked
-			//   - writes to other shards are unaffected
-			//   - writes to this shard are only blocked for the duration of this copy
-			h.RLockNode(uint32(internalID))
+			// Deep-copy Connections to prevent a data race between gob serialization
+			// in DB.Snapshot() and concurrent Add() modifying Connections[l].
+			// Protected by metaMu.RLock (held for the entire method), which blocks
+			// Add/Delete at metaMu.Lock before they reach LockNode.
 			connCopy := make([][]uint32, len(node.Connections))
 			for i, layer := range node.Connections {
 				connCopy[i] = make([]uint32, len(layer))
 				copy(connCopy[i], layer)
 			}
-			h.RUnlockNode(uint32(internalID))
 
 			nodeCopy := &Node{
 				Id:          node.Id,
