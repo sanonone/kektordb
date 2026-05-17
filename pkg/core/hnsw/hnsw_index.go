@@ -3059,16 +3059,13 @@ func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uin
 		defer h.maintenanceCoord.ReleaseSnapshotLock()
 	}
 
-	// Lock ordering: metaMu before shard locks (consistent with Add/Delete).
-	// By holding metaMu.RLock, we prevent concurrent Add/Delete from reaching
-	// LockNode. All snapshot data — node connections, autoLinks, memoryConfig,
-	// and dimension — are captured under this single lock so the caller does not
-	// need to call GetAutoLinks/GetMemoryConfig/GetDimension (which would
-	// recursively try metaMu.RLock from the same goroutine → deadlock).
-	// Searches are unaffected: they use RLockNode directly, never metaMu.
-	h.metaMu.RLock()
-	defer h.metaMu.RUnlock()
-
+	// ── FASE A: deep-copy Connections under per-node RLockNode ──
+	// RLockNode blocks LockNode used by Add Phase 3 (lines 708-773 of Add),
+	// which modifies Connections[l] after releasing metaMu at line 668.
+	// By using RLockNode instead of metaMu.RLock here we avoid any lock
+	// ordering inversion: Add acquires metaMu.Lock → LockNode, and we
+	// acquire RLockNode → metaMu.RLock at separate times.
+	// Searches are unaffected: they also use RLockNode, compatible with RLocks.
 	nodes := h.getNodes()
 
 	nodesMap := make(map[uint32]*Node, len(nodes))
@@ -3077,15 +3074,13 @@ func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uin
 		if node != nil {
 			node.InternalID = uint32(internalID)
 
-			// Deep-copy Connections to prevent a data race between gob serialization
-			// in DB.Snapshot() and concurrent Add() modifying Connections[l].
-			// Protected by metaMu.RLock (held for the entire method), which blocks
-			// Add/Delete at metaMu.Lock before they reach LockNode.
+			h.RLockNode(uint32(internalID))
 			connCopy := make([][]uint32, len(node.Connections))
 			for i, layer := range node.Connections {
 				connCopy[i] = make([]uint32, len(layer))
 				copy(connCopy[i], layer)
 			}
+			h.RUnlockNode(uint32(internalID))
 
 			nodeCopy := &Node{
 				Id:          node.Id,
@@ -3098,14 +3093,20 @@ func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uin
 		}
 	}
 
+	// ── FASE B: read config under metaMu.RLock ──
+	// All RLockNodes have been released, so holding metaMu.RLock here
+	// cannot create an inversion with Add's metaMu.Lock → LockNode.
+	// The caller uses these values directly instead of calling
+	// GetAutoLinks/GetMemoryConfig/GetDimension (which would recursively
+	// try metaMu.RLock from the same goroutine → deadlock).
+	h.metaMu.RLock()
+	defer h.metaMu.RUnlock()
+
 	currentNorms := h.getNorms()
 
 	normsCopy := make([]float32, len(currentNorms))
 	copy(normsCopy, currentNorms)
 
-	// Capture config and dimension under the same metaMu.RLock so the entire
-	// snapshot is consistent. The caller uses these directly instead of calling
-	// GetAutoLinks/GetMemoryConfig/GetDimension (which would deadlock).
 	autoLinksCopy := make([]AutoLinkRule, len(h.autoLinks))
 	copy(autoLinksCopy, h.autoLinks)
 
