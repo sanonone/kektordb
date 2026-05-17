@@ -10,6 +10,9 @@ import (
 // Requires the model and tokenizer at the given paths (pre-downloaded).
 // Run with: CGO_LDFLAGS="-L$(pwd)/native/compute/target/release" go test -tags rust -run TestLocalEmbedder ./pkg/embeddings/
 func TestLocalEmbedderInteg(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode (requires ONNX model)")
+	}
 	modelPath := "/tmp/kektordb-test-models/all-MiniLM-L6-v2.onnx"
 	tokenizerPath := "/tmp/kektordb-test-models/all-MiniLM-L6-v2-tokenizer.json"
 
@@ -41,6 +44,9 @@ func TestLocalEmbedderInteg(t *testing.T) {
 
 // TestLocalEmbedderConsistency verifies repeated calls produce identical output.
 func TestLocalEmbedderConsistency(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode (requires ONNX model)")
+	}
 	modelPath := "/tmp/kektordb-test-models/all-MiniLM-L6-v2.onnx"
 	tokenizerPath := "/tmp/kektordb-test-models/all-MiniLM-L6-v2-tokenizer.json"
 
