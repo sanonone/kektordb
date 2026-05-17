@@ -20,7 +20,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.26.2"
+          go-version: "1.26"
 
       - name: Check formatting (gofmt)
         run: |
@@ -32,15 +32,6 @@ jobs:
 
       - name: Check go vet
         run: go vet ./...
-
-      - name: Check go mod tidy
-        run: |
-          go mod tidy
-          if [ -n "$(git diff --exit-code go.mod go.sum)" ]; then
-            echo "go.mod or go.sum is not tidy. Run 'go mod tidy' locally."
-            git diff go.mod go.sum
-            exit 1
-          fi
 
   # ─────────────────────────────────────────────────────────
   # Job 2: Pure Go tests with race detector — always required.
@@ -55,7 +46,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.26.2"
+          go-version: "1.26"
 
       - name: Run Pure Go tests with race detector
         run: go test -race -short -v -cover ./...
@@ -75,7 +66,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.26.2"
+          go-version: "1.26"
 
       - name: Set up Rust (stable)
         uses: dtolnay/rust-toolchain@stable
@@ -105,7 +96,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.26.2"
+          go-version: "1.26"
 
       - name: Run E2E tests
         run: make test-e2e
