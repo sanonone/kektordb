@@ -3,6 +3,7 @@ package client
 import (
 	"fmt"
 	"math/rand"
+	"net"
 	"net/http"
 	"reflect"
 	"sort"
@@ -26,6 +27,12 @@ func TestClientIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode.")
 	}
+
+	conn, err := net.DialTimeout("tcp", "localhost:9091", time.Second)
+	if err != nil {
+		t.Skip("Skipping integration test: server not running at localhost:9091")
+	}
+	conn.Close()
 
 	client := New("localhost", 9091, "")
 

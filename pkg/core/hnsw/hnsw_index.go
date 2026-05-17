@@ -3067,7 +3067,31 @@ func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uin
 	for internalID, node := range nodes {
 		if node != nil {
 			node.InternalID = uint32(internalID)
-			nodesMap[uint32(internalID)] = node
+
+			// Deep-copy Connections under RLockNode to prevent a data race with
+			// concurrent Add/Delete operations. Without this, gob serialization in
+			// DB.Snapshot() would read node.Connections while Add() writes to
+			// neighborNode.Connections[l] under LockNode. RLockNode uses the
+			// per-shard RWMutex (128 shards), so:
+			//   - concurrent searches (also under RLockNode) are never blocked
+			//   - writes to other shards are unaffected
+			//   - writes to this shard are only blocked for the duration of this copy
+			h.RLockNode(uint32(internalID))
+			connCopy := make([][]uint32, len(node.Connections))
+			for i, layer := range node.Connections {
+				connCopy[i] = make([]uint32, len(layer))
+				copy(connCopy[i], layer)
+			}
+			h.RUnlockNode(uint32(internalID))
+
+			nodeCopy := &Node{
+				Id:          node.Id,
+				InternalID:  node.InternalID,
+				Connections: connCopy,
+			}
+			nodeCopy.Deleted.Store(node.Deleted.Load())
+
+			nodesMap[uint32(internalID)] = nodeCopy
 		}
 	}
 
