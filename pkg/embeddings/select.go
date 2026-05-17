@@ -81,11 +81,11 @@ func SelectEmbedder(cfg EmbedderConfig, dataDir string) (Embedder, error) {
 
 	// 4. Nothing available — error with guidance
 	return nil, fmt.Errorf(
-		"no embedder available.\n\n"+
-			"  Option A (recommended): Install Ollama\n"+
-			"    curl -fsSL https://ollama.com/install.sh | sh\n"+
-			"    ollama pull nomic-embed-text && ollama serve\n\n"+
-			"  Option B: Rebuild with built-in embedding\n"+
+		"no embedder available.\n\n" +
+			"  Option A (recommended): Install Ollama\n" +
+			"    curl -fsSL https://ollama.com/install.sh | sh\n" +
+			"    ollama pull nomic-embed-text && ollama serve\n\n" +
+			"  Option B: Rebuild with built-in embedding\n" +
 			"    go build -tags rust ./cmd/kektordb\n",
 	)
 }

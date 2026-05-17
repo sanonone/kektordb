@@ -23,10 +23,10 @@ type MainModel struct {
 	lastPoll time.Time
 	polling  bool
 
-	stats     *SystemStats
-	gardener  *GardenerStatus
-	indexes   []IndexInfo
-	statsErr  error
+	stats    *SystemStats
+	gardener *GardenerStatus
+	indexes  []IndexInfo
+	statsErr error
 
 	events      []SSEEvent
 	eventsMu    sync.Mutex
@@ -46,20 +46,20 @@ type MainModel struct {
 	graphListIdx     int
 	graphListLimit   int
 
-	searchInput    textinput.Model
-	filterInput    textinput.Model
-	searchViewport viewport.Model
-	searchFocus    int // 0=textinput, 1=index/alpha, 2=filter, 3=relations, 4=limit, 99=results
-	searchMode     string
-	searchAlpha    float64
-	searchFilter   string
-	searchRelations   []string
-	searchResults     []SearchResult
-	searchUIRaws      []SearchResultWithNode
-	searchErr         error
-	searchLoading     bool
-	searchIndex       string
-	searchK          int
+	searchInput     textinput.Model
+	filterInput     textinput.Model
+	searchViewport  viewport.Model
+	searchFocus     int // 0=textinput, 1=index/alpha, 2=filter, 3=relations, 4=limit, 99=results
+	searchMode      string
+	searchAlpha     float64
+	searchFilter    string
+	searchRelations []string
+	searchResults   []SearchResult
+	searchUIRaws    []SearchResultWithNode
+	searchErr       error
+	searchLoading   bool
+	searchIndex     string
+	searchK         int
 
 	embedderMode string
 }
@@ -80,23 +80,23 @@ func NewMainModel(httpAddr string) *MainModel {
 	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(20))
 
 	return &MainModel{
-		client:         NewTUIClient(httpAddr),
-		httpAddr:       httpAddr,
-		tabs:           []string{"Dashboard", "Graph", "Search", "Timeline", "Settings"},
-		searchInput:    ti,
-		filterInput:    fi,
-		searchViewport: vp,
-		searchFocus:    0,
-		searchMode:     "quick",
-		searchAlpha:    0.5,
-		searchIndex:    "",
-		searchK:        10,
-		embedderMode:   "auto",
-		graphNodes:     make(map[string]GraphNode),
-		graphEdges:     make(map[string][]string),
-		graphRelTypes:  make(map[string]string),
+		client:           NewTUIClient(httpAddr),
+		httpAddr:         httpAddr,
+		tabs:             []string{"Dashboard", "Graph", "Search", "Timeline", "Settings"},
+		searchInput:      ti,
+		filterInput:      fi,
+		searchViewport:   vp,
+		searchFocus:      0,
+		searchMode:       "quick",
+		searchAlpha:      0.5,
+		searchIndex:      "",
+		searchK:          10,
+		embedderMode:     "auto",
+		graphNodes:       make(map[string]GraphNode),
+		graphEdges:       make(map[string][]string),
+		graphRelTypes:    make(map[string]string),
 		graphSelectedIdx: 0,
-		graphListLimit: 50,
+		graphListLimit:   50,
 	}
 }
 

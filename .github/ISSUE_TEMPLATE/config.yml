@@ -1,0 +1,9 @@
+blank_issues_enabled: true
+
+contact_links:
+  - name: "📖 KektorDB Documentation"
+    url: https://github.com/sanonone/kektordb/blob/main/README.md
+    about: Read the documentation before opening an issue.
+  - name: "💬 GitHub Discussions"
+    url: https://github.com/sanonone/kektordb/discussions
+    about: Ask questions, share ideas, or discuss usage patterns.

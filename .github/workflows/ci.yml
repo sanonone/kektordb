@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ─────────────────────────────────────────────────────────
+  # Job 1: Lint — static checks, always required.
+  # ─────────────────────────────────────────────────────────
+  lint:
+    name: Lint & Static Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Check formatting (gofmt)
+        run: |
+          if [ -n "$(gofmt -l .)" ]; then
+            echo "The following files are not formatted. Run 'gofmt -w .' locally:"
+            gofmt -l .
+            exit 1
+          fi
+
+      - name: Check go vet
+        run: go vet ./...
+
+      - name: Check go mod tidy
+        run: |
+          go mod tidy
+          if [ -n "$(git diff --exit-code go.mod go.sum)" ]; then
+            echo "go.mod or go.sum is not tidy. Run 'go mod tidy' locally."
+            git diff go.mod go.sum
+            exit 1
+          fi
+
+  # ─────────────────────────────────────────────────────────
+  # Job 2: Pure Go tests with race detector — always required.
+  # ─────────────────────────────────────────────────────────
+  test-go:
+    name: Test Pure Go (Race)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Run Pure Go tests with race detector
+        run: go test -race -short -v -cover ./...
+
+  # ─────────────────────────────────────────────────────────
+  # Job 3: Rust CGO tests — only when native/compute/ changes.
+  #         Non-required, informative only.
+  # ─────────────────────────────────────────────────────────
+  test-rust:
+    name: Test Rust CGO Mode
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y unzip
+
+      - name: Build Rust native library
+        run: make build-rust-native
+
+      - name: Run Rust CGO tests
+        run: make test-rust
+
+  # ─────────────────────────────────────────────────────────
+  # Job 4: E2E tests — only on push to main (post-merge).
+  #         Non-required, catches regressions after merge.
+  # ─────────────────────────────────────────────────────────
+  test-e2e:
+    name: End-to-End Tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    continue-on-error: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Run E2E tests
+        run: make test-e2e

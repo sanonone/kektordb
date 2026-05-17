@@ -268,7 +268,7 @@ func TestExecuteConsolidationEvolvedContent(t *testing.T) {
 
 	// 4. Create Gardener and call executeConsolidation directly
 	g := &Gardener{
-		eng:        eng,
+		eng:         eng,
 		scanCursors: make(map[string]uint32),
 	}
 	g.executeConsolidation(indexName, reflectionID, nodesData, resolution, centroid)

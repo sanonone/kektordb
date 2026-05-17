@@ -366,10 +366,10 @@ func TestAddMetadataStaleOnOverwrite(t *testing.T) {
 
 	// 2. Add initial metadata: string, float, bool, text.
 	err = db.AddMetadata(indexName, nodeID, map[string]any{
-		"status":   "draft",
-		"score":    42.0,
-		"active":   false,
-		"content":  "hello world",
+		"status":  "draft",
+		"score":   42.0,
+		"active":  false,
+		"content": "hello world",
 	})
 	if err != nil {
 		t.Fatalf("Failed to add initial metadata: %v", err)
@@ -418,10 +418,10 @@ func TestAddMetadataStaleOnOverwrite(t *testing.T) {
 
 	// 4. Overwrite ALL fields (emulating VSetMetadata merge behavior).
 	err = db.AddMetadata(indexName, nodeID, map[string]any{
-		"status":   "published",
-		"score":    100.0,
-		"active":   true,
-		"content":  "goodbye",
+		"status":  "published",
+		"score":   100.0,
+		"active":  true,
+		"content": "goodbye",
 	})
 	if err != nil {
 		t.Fatalf("Failed to update metadata: %v", err)
@@ -604,4 +604,3 @@ func TestGetVectorsConcurrentWithAddMetadata(t *testing.T) {
 		t.Errorf("%d goroutines panicked", panicCount.Load())
 	}
 }
-

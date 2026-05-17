@@ -65,16 +65,16 @@ type SystemStats struct {
 }
 
 type GraphStats struct {
-	TotalEdges    int `json:"total_edges"`
+	TotalEdges     int `json:"total_edges"`
 	NodesWithLinks int `json:"nodes_with_links"`
-	PinnedNodes   int `json:"pinned_nodes"`
+	PinnedNodes    int `json:"pinned_nodes"`
 }
 
 type GardenerInfo struct {
 	Enabled               bool   `json:"enabled"`
 	Mode                  string `json:"mode"`
 	LastThinkAgoMs        int64  `json:"last_think_ago_ms"`
-	TotalReflections       int    `json:"total_reflections"`
+	TotalReflections      int    `json:"total_reflections"`
 	ContradictionsPending int    `json:"contradictions_pending"`
 	DecayedTotal          int    `json:"decayed_total"`
 }
@@ -96,7 +96,7 @@ type GardenerStatus struct {
 	Mode                  string   `json:"mode"`
 	Interval              string   `json:"interval"`
 	LastThinkTime         string   `json:"last_think_time"`
-	TotalReflections       int      `json:"total_reflections"`
+	TotalReflections      int      `json:"total_reflections"`
 	ContradictionsPending int      `json:"contradictions_pending"`
 	MergedToday           int      `json:"merged_today"`
 	DecayedTotal          int      `json:"decayed_total"`
@@ -105,13 +105,13 @@ type GardenerStatus struct {
 
 // IndexInfo is returned by GET /vector/indexes.
 type IndexInfo struct {
-	Name         string `json:"name"`
-	Metric       string `json:"metric"`
-	Precision    string `json:"precision"`
-	M            int    `json:"m"`
-	EfConstruction int  `json:"ef_construction"`
-	VectorCount  int    `json:"vector_count"`
-	TextLanguage string `json:"text_language"`
+	Name           string `json:"name"`
+	Metric         string `json:"metric"`
+	Precision      string `json:"precision"`
+	M              int    `json:"m"`
+	EfConstruction int    `json:"ef_construction"`
+	VectorCount    int    `json:"vector_count"`
+	TextLanguage   string `json:"text_language"`
 }
 
 // GraphNode is a node in the knowledge graph.
@@ -156,7 +156,7 @@ type SearchRequest struct {
 
 // SearchResultWithNode is a hydrated search result with full node metadata.
 type SearchResultWithNode struct {
-	ID    string `json:"id"`
+	ID    string  `json:"id"`
 	Score float64 `json:"score"`
 	Node  struct {
 		Vector   []float32      `json:"vector"`

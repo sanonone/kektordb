@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	defaultModelName   = "all-MiniLM-L6-v2"
-	defaultModelDim    = 384
+	defaultModelName = "all-MiniLM-L6-v2"
+	defaultModelDim  = 384
 
 	// HuggingFace model repo and file paths
 	hfModelRepo     = "sentence-transformers/all-MiniLM-L6-v2"

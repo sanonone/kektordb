@@ -91,27 +91,27 @@ func (m *MainModel) renderGraphExplorer() string {
 	}
 
 	targets := m.graphEdges[m.graphFocus]
-		if len(targets) == 0 {
-			b.WriteString(styleMuted.Render("  (no connections)"))
-		} else {
-			for i, target := range targets {
-				prefix := "├──"
-				if i == len(targets)-1 {
-					prefix = "└──"
-				}
-				edgeKey := m.graphFocus + "->" + target
-				relType := m.graphRelTypes[edgeKey]
-				if relType == "" {
-					relType = "connected"
-				}
-				label := nodeLabel(target, m.graphNodes)
-				line := fmt.Sprintf("  %s %s  —%s→ %s", prefix, label, relType, truncateID(target, 20))
-				if i == m.graphSelectedIdx {
-					line = styleFocused.Render(line)
-				}
-				b.WriteString(line + "\n")
+	if len(targets) == 0 {
+		b.WriteString(styleMuted.Render("  (no connections)"))
+	} else {
+		for i, target := range targets {
+			prefix := "├──"
+			if i == len(targets)-1 {
+				prefix = "└──"
 			}
+			edgeKey := m.graphFocus + "->" + target
+			relType := m.graphRelTypes[edgeKey]
+			if relType == "" {
+				relType = "connected"
+			}
+			label := nodeLabel(target, m.graphNodes)
+			line := fmt.Sprintf("  %s %s  —%s→ %s", prefix, label, relType, truncateID(target, 20))
+			if i == m.graphSelectedIdx {
+				line = styleFocused.Render(line)
+			}
+			b.WriteString(line + "\n")
 		}
+	}
 
 	b.WriteString("\n")
 	sep := strings.Repeat("─", m.width-4)

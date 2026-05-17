@@ -49,7 +49,7 @@ func installClaudeCode() (*Result, error) {
 		if installErr != nil && !strings.Contains(string(installOut), "already") {
 			fmt.Fprintf(os.Stderr, "warning: plugin install failed: %s\n", strings.TrimSpace(string(installOut)))
 		}
-		_ = addOut    // used only in error path
+		_ = addOut     // used only in error path
 		_ = installOut // used only in error path
 	}
 

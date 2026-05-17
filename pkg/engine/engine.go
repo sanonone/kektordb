@@ -79,9 +79,9 @@ type Options struct {
 //   - AofRewrite: At 100% growth
 func DefaultOptions(dataDir string) Options {
 	return Options{
-		DataDir:              dataDir,
-		AofFilename:          "kektordb.aof",
-		AOFWriteBufferSize:   persistence.DefaultAOFWriteBufferSize,
+		DataDir:            dataDir,
+		AofFilename:        "kektordb.aof",
+		AOFWriteBufferSize: persistence.DefaultAOFWriteBufferSize,
 
 		AutoSaveInterval:     60 * time.Second,
 		AutoSaveThreshold:    1000,

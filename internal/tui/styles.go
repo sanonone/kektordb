@@ -31,8 +31,8 @@ var (
 			Padding(0, 1)
 
 	styleTabInactive = lipgloss.NewStyle().
-			Foreground(colorMuted).
-			Padding(0, 1)
+				Foreground(colorMuted).
+				Padding(0, 1)
 
 	styleSuccess = lipgloss.NewStyle().
 			Foreground(colorSuccess)

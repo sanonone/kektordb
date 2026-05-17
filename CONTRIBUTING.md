@@ -5,7 +5,7 @@ First off, thank you for considering contributing to KektorDB! 🚀
 ## 🛠️ Getting Started
 
 ### Prerequisites
-*   **Go 1.24.6+**
+*   **Go 1.26.x+**
 *   **Make** (Essential for the build workflow)
 *   **Rust/Cargo** (Optional, only required if you touch the compute kernels)
 *   **Zig** (Optional, only for cross-compilation releases)
@@ -43,7 +43,8 @@ make run-rust
 
 We follow standard Go idioms.
 
-*   **Formatting:** Most editors (VSCode, Neovim, GoLand) handle this automatically. If yours doesn't, please run `make fmt` before committing.
+*   **Formatting:** Most editors (VSCode, Zed, Neovim, GoLand) handle this automatically. If yours doesn't, run `make fmt` before committing.
+*   **Static Analysis:** Run `go vet ./...` before opening a PR. It catches real bugs (mutex copies, format string errors, unreachable code).
 *   **Architecture:**
     *   `pkg/core`: Pure data structures (HNSW, KV). No HTTP dependencies.
     *   `pkg/engine`: Persistence and Orchestration logic.
@@ -80,7 +81,11 @@ We don't demand 100% coverage, but PRs with tests are merged much faster because
 
 1.  **Create a Branch:** Use a descriptive name (e.g., `feat/epub-support`, `fix/race-condition`).
 2.  **Make your Changes.**
-3.  **Run Tests:** Ensure everything passes in Pure Go mode (`make test`).
+3.  **Run Tests:** Ensure everything passes in Pure Go mode:
+    ```bash
+    go test -race -short ./...
+    ```
+    The CI runs with the `-race` flag to catch data races.
 4.  **🧹 CLEANUP (Crucial):** Before staging your files, run:
     ```bash
     make clean

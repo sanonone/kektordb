@@ -12,7 +12,7 @@ func TestSelectEmbedderExplicitOllama(t *testing.T) {
 	cfg := EmbedderConfig{
 		Mode:        "ollama",
 		OllamaURL:   "http://localhost:19999/api/embeddings",
-		OllamaModel:  "nomic-embed-text",
+		OllamaModel: "nomic-embed-text",
 	}
 	emb, err := SelectEmbedder(cfg, t.TempDir())
 	if err != nil {

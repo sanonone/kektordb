@@ -14,18 +14,17 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
-        # Esegui il fetch di tutti i tag per ottenere il nome della versione corretto
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0 
+          fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
-          go-version: '1.24.6'
-      
+          go-version: "1.26"
+
       - name: Set up Rust (Stable Toolchain)
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
       

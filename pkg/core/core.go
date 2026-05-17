@@ -17,8 +17,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"regexp"
 	"reflect"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -609,7 +609,7 @@ func (s *DB) GetVector(indexName, vectorID string) (VectorData, error) {
 		return VectorData{}, fmt.Errorf("vector with ID '%s' not found in index '%s'", vectorID, indexName)
 	}
 
-				metadata := s.getMetadataForNode(indexName, nodeData.InternalID)
+	metadata := s.getMetadataForNode(indexName, nodeData.InternalID)
 
 	return VectorData{
 		ID:       vectorID,

@@ -1,0 +1,86 @@
+name: "🚀 Feature Request"
+description: Propose a new feature or improvement for KektorDB.
+title: "feat: [Brief description]"
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: Describe the problem this feature would solve.
+      placeholder: "e.g. Currently there is no way to bulk-export vectors in CSV format, which makes it hard to integrate with data analysis tools..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: How should this feature work? Describe the behavior, new flags, or API changes.
+      placeholder: |
+        Add a new endpoint: `GET /vector/{name}/export?format=csv&limit=1000`
+
+        Response format:
+        ```
+        id,vector,metadata
+        doc1,0.1,0.2,0.3,"{""title"":""hello""}"
+        ...
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: api_surface
+    attributes:
+      label: Proposed API Surface
+      description: |
+        If this involves new or changed API endpoints, CLI flags, or config fields,
+        describe them here with request/response examples.
+      placeholder: |
+        **New CLI flag:** `--export-format csv|json`
+
+        **New endpoint:** `POST /vector/actions/export`
+        ```json
+        { "index_name": "docs", "format": "csv", "limit": 500 }
+        ```
+      render: json
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What alternative solutions or workarounds have you considered or tried?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impact on Existing Users
+      description: Does this change affect existing behavior?
+      options:
+        - "None (purely additive)"
+        - "Minor (new defaults, optional flags)"
+        - "Breaking change (requires migration or API change)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: breaking_details
+    attributes:
+      label: Breaking Change Details (if applicable)
+      description: If you selected "Breaking change" above, explain the migration path.
+
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Willingness to Contribute
+      description: Are you interested in implementing this feature yourself?
+      options:
+        - "Yes, I would like to work on this"
+        - "No, leaving it for the community"
+        - "Maybe, but I'd need guidance"
+    validations:
+      required: true

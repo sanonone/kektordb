@@ -54,7 +54,7 @@ type VectorSearchRequest struct {
 	Alpha            float64            `json:"alpha,omitempty"`
 	IncludeRelations []string           `json:"include_relations,omitempty"`
 	HydrateRelations bool               `json:"hydrate_relations,omitempty"`
-	Hydrate          bool               `json:"hydrate,omitempty"`        // Optional - if true, returns full node metadata even without graph traversal
+	Hydrate          bool               `json:"hydrate,omitempty"` // Optional - if true, returns full node metadata even without graph traversal
 	GraphFilter      *engine.GraphQuery `json:"graph_filter,omitempty"`
 	CompressContext  bool               `json:"compress_context,omitempty"` // NEW: Enable safe lexical compression for LLM optimization
 }

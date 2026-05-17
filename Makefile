@@ -8,7 +8,7 @@ RELEASE_DIR=release
 PROTOC := $(shell which protoc 2>/dev/null || echo /tmp/protoc/bin/protoc)
 
 # --- Main Targets ---
-.PHONY: all test test-rust bench bench-rust clean release ensure-protoc
+.PHONY: all test test-rust bench bench-rust clean release ensure-protoc fmt
 
 # The default target is a quick test of the pure Go build
 all: test
@@ -132,6 +132,11 @@ release-build-pure:
 	go build -ldflags="-s -w" -o "$(RELEASE_DIR)/$(BINARY_NAME)-$(GOOS)-$(GOARCH)$(EXT)" ./cmd/kektordb
 
 
+
+# --- Formatting ---
+fmt:
+	@echo "==> Formatting Go source files..."
+	@gofmt -w .
 
 # --- Cleaning ---
 clean:

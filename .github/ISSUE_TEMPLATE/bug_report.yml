@@ -1,0 +1,154 @@
+name: "🐛 Bug Report"
+description: Report a malfunction or unexpected behavior.
+title: "fix: [Brief description]"
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what is not working.
+      placeholder: "e.g. VSearch returns fewer results than expected when using a filter on metadata fields..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Exact steps to reproduce the issue. Include code snippets, curl commands, or queries.
+      placeholder: |
+        1. Start KektorDB with `kektordb --embedder ollama`
+        2. Run: `curl -X POST http://localhost:9091/vector/actions/search -d '{"index_name":"test","query_vector":[...]}'`
+        3. Observe...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: Expected vs Actual Behavior
+      description: What did you expect to happen, and what actually happened?
+      placeholder: |
+        **Expected:** The search should return 10 results.
+        **Actual:** Only 3 results are returned, no errors in logs.
+    validations:
+      required: true
+
+  - type: textarea
+    id: minimal_reproduction
+    attributes:
+      label: Minimal Reproduction (if applicable)
+      description: |
+        A self-contained Go test or script that reproduces the issue.
+        This is extremely helpful and speeds up the fix significantly.
+      placeholder: |
+        ```go
+        func TestReproduction(t *testing.T) {
+            eng, _ := engine.Open(engine.Options{DataDir: t.TempDir()})
+            defer eng.Close()
+            // ...
+        }
+        ```
+      render: go
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: KektorDB Version
+      description: Run `kektordb --version` or provide the commit hash.
+      placeholder: "v0.5.2 or commit 1a2b3c4"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: go_version
+    attributes:
+      label: Go Version
+      description: Which Go version are you using?
+      options:
+        - "1.26.x"
+        - "1.25.x"
+        - "1.24.x"
+        - "other (specify in description)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: arch
+    attributes:
+      label: Operating System / Architecture
+      options:
+        - Linux x86_64 (amd64)
+        - Linux ARM64 (aarch64)
+        - macOS x86_64 (amd64)
+        - macOS ARM64 (Apple Silicon)
+        - Windows x86_64
+        - other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Execution Mode
+      description: How are you running KektorDB?
+      options:
+        - "Pure Go (default, no Rust)"
+        - "Rust CGO optimized mode"
+        - "MCP Server (--mcp)"
+        - "AI Proxy (--proxy)"
+        - "TUI Dashboard (--tui)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: embedder
+    attributes:
+      label: Embedder
+      options:
+        - "auto (auto-detect)"
+        - "ollama"
+        - "openai"
+        - "local (ONNX via Rust/CGO)"
+        - "none (not using vector search)"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: config_flags
+    attributes:
+      label: Configuration
+      description: Relevant CLI flags or config settings.
+      options:
+        - label: AOF persistence enabled (default)
+        - label: Snapshots enabled (--snapshot-freq)
+        - label: Graph mode enabled
+        - label: Cognitive engine (Gardener) enabled
+        - label: RBAC / auth token set
+        - label: Custom vectorizer config used
+
+  - type: textarea
+    id: cli_flags
+    attributes:
+      label: CLI Flags Used at Startup
+      description: Paste the exact command line or key flags (omit secrets).
+      placeholder: "kektordb --embedder ollama --port 9091 --data-dir ./data"
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Stack Trace
+      description: Paste any relevant error messages, panics, or log output.
+      placeholder: |
+        2026/05/17 10:30:45 ERROR engine: failed to write AOF: no space left on device
+        panic: runtime error: invalid memory address or nil pointer dereference
+        ...
+      render: text
+    validations:
+      required: false

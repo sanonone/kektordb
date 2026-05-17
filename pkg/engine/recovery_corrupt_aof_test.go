@@ -24,13 +24,13 @@ func TestRecovery_CorruptGLINKWeightSkipped(t *testing.T) {
 	}
 	// GLINK args: indexName, source, target, relType, invRelType, weight, props
 	cmd := persistence.FormatCommand("GLINK",
-		[]byte(""),          // indexName (unused during recovery)
-		[]byte("node_a"),    // source
-		[]byte("node_b"),    // target
-		[]byte("links_to"),  // relType
-		[]byte(""),          // invRelType
+		[]byte(""),            // indexName (unused during recovery)
+		[]byte("node_a"),      // source
+		[]byte("node_b"),      // target
+		[]byte("links_to"),    // relType
+		[]byte(""),            // invRelType
 		[]byte("not_a_float"), // corrupt weight
-		[]byte("{}"),        // props
+		[]byte("{}"),          // props
 	)
 	if err := eng.AOF.Write(cmd); err != nil {
 		t.Fatal(err)
@@ -72,12 +72,12 @@ func TestRecovery_CorruptGUNLINKTimestampSkipped(t *testing.T) {
 	}
 	// GUNLINK args: indexName, source, target, relType, invRelType, hardDelete, timestamp
 	cmd := persistence.FormatCommand("GUNLINK",
-		[]byte(""),          // indexName
-		[]byte("node_a"),    // source
-		[]byte("node_b"),    // target
-		[]byte("links_to"),  // relType
-		[]byte(""),          // invRelType
-		[]byte("false"),     // hardDelete
+		[]byte(""),           // indexName
+		[]byte("node_a"),     // source
+		[]byte("node_b"),     // target
+		[]byte("links_to"),   // relType
+		[]byte(""),           // invRelType
+		[]byte("false"),      // hardDelete
 		[]byte("not_an_int"), // corrupt timestamp
 	)
 	if err := eng.AOF.Write(cmd); err != nil {
