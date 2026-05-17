@@ -241,7 +241,7 @@ func (s *DB) Snapshot(writer io.Writer) error {
 
 	for name, idx := range s.vectorIndexes {
 		if hnswIndex, ok := idx.(*hnsw.Index); ok {
-			nodes, extToInt, counter, entrypoint, maxLevel, quantizer, norms := hnswIndex.SnapshotData()
+			nodes, extToInt, counter, entrypoint, maxLevel, quantizer, norms, autoLinks, memoryConfig, vectorDim := hnswIndex.SnapshotData()
 
 			metric, m, efc, precision, _, textLang := hnswIndex.GetInfoUnlocked()
 
@@ -276,10 +276,10 @@ func (s *DB) Snapshot(writer io.Writer) error {
 					M:              m,
 					EfConstruction: efc,
 					TextLanguage:   textLang,
-					AutoLinks:      hnswIndex.GetAutoLinks(),
-					MemoryConfig:   hnswIndex.GetMemoryConfig(),
+					AutoLinks:      autoLinks,
+					MemoryConfig:   memoryConfig,
 				},
-				VectorDim:          hnswIndex.GetDimension(),
+				VectorDim:          vectorDim,
 				Nodes:              nodeSnapshots,
 				ExternalToInternal: extToInt,
 				InternalCounter:    counter,

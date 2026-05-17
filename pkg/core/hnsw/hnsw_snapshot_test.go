@@ -68,9 +68,9 @@ func TestSnapshotAndReload(t *testing.T) {
 	}
 
 	// 1. Estrazione Dati per lo Snapshot
-	nodes, extToInt, counter, entrypoint, maxLevel, quantizer, norms := idx.SnapshotData()
+	nodes, extToInt, counter, entrypoint, maxLevel, quantizer, norms, _, _, vectorDim := idx.SnapshotData()
 	arenaState := idx.GetArenaState()
-	vectorDim := idx.GetDimension() // Prendi la dimensione
+	_ = vectorDim // dimension already captured via SnapshotData
 
 	// Simula l'effetto della serializzazione gob: i vettori mmap non vengono salvati (vedi TestNodeGobSerialization).
 	// Se non lo facciamo, quando idx.Close() unmap la memoria, LoadSnapshotData andrà in segmentation fault
@@ -118,9 +118,9 @@ func TestDeletedNodeSnapshot(t *testing.T) {
 	idx.Add("a", randomVector64(32))
 	internalIDA, _ := idx.GetInternalIDUnlocked("a")
 
-	nodes, extToInt, counter, entrypoint, maxLevel, quantizer, norms := idx.SnapshotData()
+	nodes, extToInt, counter, entrypoint, maxLevel, quantizer, norms, _, _, vectorDim := idx.SnapshotData()
 	arenaState := idx.GetArenaState()
-	vectorDim := idx.GetDimension()
+	_ = vectorDim
 
 	if nodeToDelete, exists := nodes[internalIDA]; exists {
 		nodeToDelete.Deleted.Store(true)
@@ -137,7 +137,7 @@ func TestDeletedNodeSnapshot(t *testing.T) {
 	newIdx, err := New(16, 200, distance.Cosine, distance.Float32, "", arenaDir)
 	err = newIdx.LoadSnapshotData(nodes, extToInt, counter, entrypoint, maxLevel, quantizer, norms, arenaState, vectorDim)
 
-	newNodes, _, _, _, _, _, _ := newIdx.SnapshotData()
+	newNodes, _, _, _, _, _, _, _, _, _ := newIdx.SnapshotData()
 	if !newNodes[internalIDA].Deleted.Load() {
 		t.Error("Il nodo dovrebbe essere ancora eliminato dopo il reload")
 	}

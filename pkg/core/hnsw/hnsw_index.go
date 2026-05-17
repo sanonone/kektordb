@@ -3050,7 +3050,7 @@ func (h *Index) GetParametersUnlocked() (distance.DistanceMetric, distance.Preci
 
 // SnapshotData exports the internal data of the index for persistence.
 // It expects the caller to handle locking.
-func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uint32, int, *distance.Quantizer, []float32) {
+func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uint32, int, *distance.Quantizer, []float32, []AutoLinkRule, MemoryConfig, int) {
 	// Try to acquire snapshot lock to prevent compaction during snapshot
 	if h.maintenanceCoord != nil {
 		if !h.maintenanceCoord.TryAcquireSnapshotLock() {
@@ -3061,8 +3061,10 @@ func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uin
 
 	// Lock ordering: metaMu before shard locks (consistent with Add/Delete).
 	// By holding metaMu.RLock, we prevent concurrent Add/Delete from reaching
-	// LockNode — this avoids a lock-ordering inversion (metaMu → LockNode in
-	// Add vs LockNode → metaMu in the caller's GetAutoLinks/GetMemoryConfig).
+	// LockNode. All snapshot data — node connections, autoLinks, memoryConfig,
+	// and dimension — are captured under this single lock so the caller does not
+	// need to call GetAutoLinks/GetMemoryConfig/GetDimension (which would
+	// recursively try metaMu.RLock from the same goroutine → deadlock).
 	// Searches are unaffected: they use RLockNode directly, never metaMu.
 	h.metaMu.RLock()
 	defer h.metaMu.RUnlock()
@@ -3101,7 +3103,17 @@ func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uin
 	normsCopy := make([]float32, len(currentNorms))
 	copy(normsCopy, currentNorms)
 
-	return nodesMap, h.externalToInternalID, uint32(h.nodeCounter.Load()), uint32(h.entrypointID.Load()), int(h.maxLevel.Load()), h.quantizer, normsCopy
+	// Capture config and dimension under the same metaMu.RLock so the entire
+	// snapshot is consistent. The caller uses these directly instead of calling
+	// GetAutoLinks/GetMemoryConfig/GetDimension (which would deadlock).
+	autoLinksCopy := make([]AutoLinkRule, len(h.autoLinks))
+	copy(autoLinksCopy, h.autoLinks)
+
+	memCfg := h.memoryConfig
+
+	dim := h.vectorDim
+
+	return nodesMap, h.externalToInternalID, uint32(h.nodeCounter.Load()), uint32(h.entrypointID.Load()), int(h.maxLevel.Load()), h.quantizer, normsCopy, autoLinksCopy, memCfg, dim
 }
 
 // LoadSnapshotData restores the internal state of the index from snapshot data.
