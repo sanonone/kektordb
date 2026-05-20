@@ -15,7 +15,8 @@ const (
 	BenchDim      = 128
 	BenchM        = 16
 	BenchEf       = 200
-	BenchNumItems = 10000 // Elementi di base per il test misto
+	BenchNumItems = 10000   // Elementi di base per il test misto
+	benchPoolSize = 100_000 // Fixed pool size — does NOT scale with b.N
 )
 
 func randomVector(dim int) []float32 {
@@ -26,13 +27,23 @@ func randomVector(dim int) []float32 {
 	return v
 }
 
+// buildVectorPool generates a fixed-size pool of random vectors.
+// Using a pool instead of b.N vectors prevents O(b.N) setup cost
+// that causes benchmarks to run far longer than -benchtime specifies.
+func buildVectorPool(n, dim int) [][]float32 {
+	pool := make([][]float32, n)
+	for i := range pool {
+		pool[i] = randomVector(dim)
+	}
+	return pool
+}
+
 // 1. Benchmark Solo Scrittura (VAdd concorrente)
 func BenchmarkConcurrentWrite(b *testing.B) {
-	// Setup: Creiamo i vettori prima per non misurare la generazione random
-	vectors := make([][]float32, b.N)
-	for i := 0; i < b.N; i++ {
-		vectors[i] = randomVector(BenchDim)
-	}
+	// Fixed pool: setup is O(poolSize), not O(b.N).
+	// b.N can reach millions; allocating b.N vectors causes 500MB+ setup overhead
+	// that makes -benchtime=10s run for minutes instead of seconds.
+	vectors := buildVectorPool(benchPoolSize, BenchDim)
 
 	index, _ := New(BenchM, BenchEf, distance.Cosine, distance.Float32, "", "")
 	var counter int64
@@ -44,8 +55,7 @@ func BenchmarkConcurrentWrite(b *testing.B) {
 		for pb.Next() {
 			i := atomic.AddInt64(&counter, 1) - 1
 			id := fmt.Sprintf("vec-%d", i)
-			// Qui testiamo la contenzione del lock in VAdd
-			index.Add(id, vectors[i%int64(len(vectors))])
+			index.Add(id, vectors[i%int64(benchPoolSize)])
 		}
 	})
 }
@@ -55,7 +65,10 @@ func BenchmarkConcurrentWrite(b *testing.B) {
 // Con il vecchio Global Lock, questo test dovrebbe essere lentissimo.
 // Con i Shard Lock, dovrebbe volare.
 func BenchmarkMixedReadWrite(b *testing.B) {
-	// Setup iniziale
+	// Fixed pool: avoids O(b.N) allocation and global rand mutex contention
+	// inside the hot loop.
+	vectors := buildVectorPool(benchPoolSize, BenchDim)
+
 	index, _ := New(BenchM, BenchEf, distance.Cosine, distance.Float32, "", "")
 
 	// Popoliamo un po' l'indice inizialmente
@@ -63,20 +76,17 @@ func BenchmarkMixedReadWrite(b *testing.B) {
 	for i := 0; i < 1000; i++ {
 		initialObjs[i] = types.BatchObject{
 			Id:     fmt.Sprintf("init-%d", i),
-			Vector: randomVector(BenchDim),
+			Vector: vectors[i],
 		}
 	}
 	index.AddBatch(initialObjs)
 
 	var writeCounter int64
-	queryVec := randomVector(BenchDim)
+	queryVec := vectors[0]
 
 	b.ResetTimer()
 
 	b.RunParallel(func(pb *testing.PB) {
-		// Decidiamo casualmente se leggere o scrivere per simulare traffico misto
-		// Usiamo un counter locale o random per evitare lock su rand
-		// Qui alterniamo semplicemente.
 		isWriter := false
 
 		for pb.Next() {
@@ -84,9 +94,8 @@ func BenchmarkMixedReadWrite(b *testing.B) {
 
 			if isWriter {
 				i := atomic.AddInt64(&writeCounter, 1)
-				index.Add(fmt.Sprintf("new-%d", i), randomVector(BenchDim))
+				index.Add(fmt.Sprintf("new-%d", i), vectors[i%int64(benchPoolSize)])
 			} else {
-				// Search deve acquisire RLockNode (shardato)
 				index.SearchWithScores(queryVec, 10, nil, 100)
 			}
 		}
