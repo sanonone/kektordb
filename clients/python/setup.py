@@ -6,7 +6,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="kektordb_client",
-    version="0.5.1",
+    version="0.5.3",
     author="Sanonone",
     author_email="fedeld023@gmail.com",
     description="An official Python client for KektorDB. AI memory system combining vector search with temporal knowledge graph. Built-in cognitive engine for agents. Supports memory decay, contradiction detection, and MCP integration.",
