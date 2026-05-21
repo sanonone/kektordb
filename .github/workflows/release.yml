@@ -36,7 +36,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y p7zip-full mingw-w64
+          sudo apt-get install -y p7zip-full mingw-w64 g++-aarch64-linux-gnu
 
       - name: Add all Rust cross-compilation targets
         run: |
