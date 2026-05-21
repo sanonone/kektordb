@@ -80,23 +80,23 @@ generate-avo:
 release: clean
 	@echo "Building releases for all targets..."
 	@mkdir -p $(RELEASE_DIR)
-	# Linux AMD64 (native linker, no Zig needed)
-	@make release-build TARGET=x86_64-unknown-linux-gnu ZIG_TARGET=x86_64-linux-gnu \
+	# Linux AMD64 (native linker)
+	@make release-build TARGET=x86_64-unknown-linux-gnu \
 	GOOS=linux GOARCH=amd64 \
 	BUILD_CC="gcc" BUILD_CXX="g++" \
 	CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/x86_64-unknown-linux-gnu/release -lkektordb_compute -ldl -lm -lgcc_s -lc -lpthread -lstdc++"
 
-	# Linux ARM64 (cross-compile with GNU cross-compiler)
-	@make release-build TARGET=aarch64-unknown-linux-gnu ZIG_TARGET=aarch64-linux-gnu \
+	# Linux ARM64 (GNU cross-compiler)
+	@make release-build TARGET=aarch64-unknown-linux-gnu \
 	GOOS=linux GOARCH=arm64 \
 	BUILD_CC="aarch64-linux-gnu-gcc" BUILD_CXX="aarch64-linux-gnu-g++" \
 	CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/aarch64-unknown-linux-gnu/release -lkektordb_compute -ldl -lm -lgcc_s -lc -lpthread -lstdc++"
 
-	# Windows AMD64 (cross-compile with Zig)
-	@make release-build TARGET=x86_64-pc-windows-gnu ZIG_TARGET=x86_64-windows-gnu \
+	# Windows AMD64 (mingw-w64 cross-compiler)
+	@make release-build TARGET=x86_64-pc-windows-gnu \
 	GOOS=windows GOARCH=amd64 EXT=.exe \
-	BUILD_CC="zig cc -target x86_64-windows-gnu" BUILD_CXX="zig c++ -target x86_64-windows-gnu" \
-	CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/x86_64-pc-windows-gnu/release -lkektordb_compute -lws2_32 -luserenv -ladvapi32 -lbcrypt -lntdll -lgcc_s"
+	BUILD_CC="x86_64-w64-mingw32-gcc" BUILD_CXX="x86_64-w64-mingw32-g++" \
+	CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/x86_64-pc-windows-gnu/release -lkektordb_compute -lws2_32 -luserenv -ladvapi32 -lbcrypt -lntdll -lgcc_s -lstdc++"
 
 	# --- macOS (Go Puro) ---
 	# target release-build-pure.
@@ -104,21 +104,21 @@ release: clean
 	@make release-build-pure GOOS=darwin GOARCH=arm64
 
 	# macOS AMD64
-	# @make release-build TARGET=x86_64-apple-darwin ZIG_TARGET=x86_64-macos-none \
+	# @make release-build TARGET=x86_64-apple-darwin \
 	# GOOS=darwin GOARCH=amd64 \
 	# CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/x86_64-apple-darwin/release -lkektordb_compute -ldl -lm"
 
 	# macOS ARM64
-	# @make release-build TARGET=aarch64-apple-darwin ZIG_TARGET=aarch64-macos-none \
+	# @make release-build TARGET=aarch64-apple-darwin \
 	# GOOS=darwin GOARCH=arm64 \
 	# CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/aarch64-apple-darwin/release -lkektordb_compute -ldl -lm"
 
 
-# Test a single release target locally (requires zig).
+# Test a single release target locally (requires gcc).
 # Usage: make release-test-linux
 .PHONY: release-test-linux
 release-test-linux:
-	@make release-build TARGET=x86_64-unknown-linux-gnu ZIG_TARGET=x86_64-linux-gnu \
+	@make release-build TARGET=x86_64-unknown-linux-gnu \
 	GOOS=linux GOARCH=amd64 \
 	BUILD_CC="gcc" BUILD_CXX="g++" \
 	CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/x86_64-unknown-linux-gnu/release -lkektordb_compute -ldl -lm -lgcc_s -lc -lpthread -lstdc++"
