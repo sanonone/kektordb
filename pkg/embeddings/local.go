@@ -11,7 +11,7 @@ package embeddings
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/../../native/compute/include
-#cgo LDFLAGS: -lkektordb_compute -lm -ldl -lstdc++
+#cgo LDFLAGS: -lkektordb_compute -lstdc++
 #include "kektordb_compute.h"
 #include <stdlib.h>
 */
