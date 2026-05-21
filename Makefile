@@ -21,7 +21,7 @@ run:
 # Run the Rust-optimized version
 run-rust: build-rust-native
 	@echo "==> Running KektorDB (Rust CGO implementation)..."
-	@CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/release" \
+	@CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/release -lkektordb_compute -lm -ldl -lstdc++" \
 	go run -tags rust ./cmd/kektordb/ $(ARGS)
 
 # --- Test Targets and Benchmarks ---
@@ -35,7 +35,7 @@ test-e2e: generate-avo
 
 test-rust: build-rust-native
 	@echo "==> Running Go tests (Rust CGO implementation)..."
-	@CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/release" \
+	@CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/release -lkektordb_compute -lm -ldl -lstdc++" \
 	go test -tags rust -short -v ./...
 
 bench: generate-avo
@@ -44,7 +44,7 @@ bench: generate-avo
 
 bench-rust: build-rust-native
 	@echo "==> Running Go benchmarks (Rust CGO implementation)..."
-	@CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/release" \
+	@CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/release -lkektordb_compute -lm -ldl -lstdc++" \
 	go test -tags rust -bench=. ./...
 
 # --- Build Target ---
