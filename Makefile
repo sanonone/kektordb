@@ -7,14 +7,6 @@ RELEASE_DIR=release
 # Searches PATH first, falls back to a manually downloaded binary.
 PROTOC := $(shell which protoc 2>/dev/null || echo /tmp/protoc/bin/protoc)
 
-# Path to GCC's libstdc++ for release linking with Zig.
-# Zig's lld doesn't search the system GCC library path by default.
-# Each target needs its own architecture-specific libstdc++:
-# - AMD64 uses the host g++ path (native)
-# - ARM64 uses the cross-compiler g++ path (aarch64-linux-gnu-g++)
-GCC_LIBSTDCPP_DIR := $(shell dirname $$(g++ --print-file-name=libstdc++.a 2>/dev/null || echo /usr/lib))
-GCC_AARCH64_LIBSTDCPP_DIR := $(shell dirname $$(aarch64-linux-gnu-g++ --print-file-name=libstdc++.a 2>/dev/null || echo /usr/lib))
-
 # --- Main Targets ---
 .PHONY: all test test-rust bench bench-rust clean release ensure-protoc fmt
 
@@ -94,11 +86,11 @@ release: clean
 	BUILD_CC="gcc" BUILD_CXX="g++" \
 	CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/x86_64-unknown-linux-gnu/release -lkektordb_compute -ldl -lm -lgcc_s -lc -lpthread -lstdc++"
 
-	# Linux ARM64 (cross-compile with Zig)
+	# Linux ARM64 (cross-compile with GNU cross-compiler)
 	@make release-build TARGET=aarch64-unknown-linux-gnu ZIG_TARGET=aarch64-linux-gnu \
 	GOOS=linux GOARCH=arm64 \
-	BUILD_CC="zig cc -target aarch64-linux-gnu" BUILD_CXX="zig c++ -target aarch64-linux-gnu" \
-	CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/aarch64-unknown-linux-gnu/release -lkektordb_compute -ldl -lm -lgcc_s -lc -lpthread -L$(GCC_AARCH64_LIBSTDCPP_DIR) -lstdc++"
+	BUILD_CC="aarch64-linux-gnu-gcc" BUILD_CXX="aarch64-linux-gnu-g++" \
+	CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/aarch64-unknown-linux-gnu/release -lkektordb_compute -ldl -lm -lgcc_s -lc -lpthread -lstdc++"
 
 	# Windows AMD64 (cross-compile with Zig)
 	@make release-build TARGET=x86_64-pc-windows-gnu ZIG_TARGET=x86_64-windows-gnu \
