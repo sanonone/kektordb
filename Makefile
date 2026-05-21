@@ -87,19 +87,19 @@ release: clean
 	# Linux AMD64 (native linker, no Zig needed)
 	@make release-build TARGET=x86_64-unknown-linux-gnu ZIG_TARGET=x86_64-linux-gnu \
 	GOOS=linux GOARCH=amd64 \
-	CC="gcc" CXX="g++" \
+	BUILD_CC="gcc" BUILD_CXX="g++" \
 	CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/x86_64-unknown-linux-gnu/release -lkektordb_compute -ldl -lm -lgcc_s -lc -lpthread -lstdc++"
 
 	# Linux ARM64 (cross-compile with Zig)
 	@make release-build TARGET=aarch64-unknown-linux-gnu ZIG_TARGET=aarch64-linux-gnu \
 	GOOS=linux GOARCH=arm64 \
-	CC="zig cc -target aarch64-linux-gnu" CXX="zig c++ -target aarch64-linux-gnu" \
+	BUILD_CC="zig cc -target aarch64-linux-gnu" BUILD_CXX="zig c++ -target aarch64-linux-gnu" \
 	CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/aarch64-unknown-linux-gnu/release -lkektordb_compute -ldl -lm -lgcc_s -lc -lpthread -L$(GCC_LIBSTDCPP_DIR) -lstdc++"
 
 	# Windows AMD64 (cross-compile with Zig)
 	@make release-build TARGET=x86_64-pc-windows-gnu ZIG_TARGET=x86_64-windows-gnu \
 	GOOS=windows GOARCH=amd64 EXT=.exe \
-	CC="zig cc -target x86_64-windows-gnu" CXX="zig c++ -target x86_64-windows-gnu" \
+	BUILD_CC="zig cc -target x86_64-windows-gnu" BUILD_CXX="zig c++ -target x86_64-windows-gnu" \
 	CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/x86_64-pc-windows-gnu/release -lkektordb_compute -lws2_32 -luserenv -ladvapi32 -lbcrypt -lntdll -lgcc_s"
 
 	# --- macOS (Go Puro) ---
@@ -124,7 +124,7 @@ release: clean
 release-test-linux:
 	@make release-build TARGET=x86_64-unknown-linux-gnu ZIG_TARGET=x86_64-linux-gnu \
 	GOOS=linux GOARCH=amd64 \
-	CC="gcc" CXX="g++" \
+	BUILD_CC="gcc" BUILD_CXX="g++" \
 	CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/x86_64-unknown-linux-gnu/release -lkektordb_compute -ldl -lm -lgcc_s -lc -lpthread -lstdc++"
 
 # Rust-optimized build (for Linux and Windows)
@@ -135,7 +135,7 @@ release-build: build-rust-target
 	@CGO_LDFLAGS="$(CGO_LDFLAGS)" \
 	CGO_ENABLED=1 \
 	GOOS=$(GOOS) GOARCH=$(GOARCH) \
-	CC="$(CC)" CXX="$(CXX)" \
+	CC="$(BUILD_CC)" CXX="$(BUILD_CXX)" \
 	go build -tags "rust netgo" -ldflags="-s -w" -o "$(RELEASE_DIR)/$(BINARY_NAME)-$(GOOS)-$(GOARCH)$(EXT)" ./cmd/kektordb
 
 
