@@ -24,61 +24,93 @@ import (
 // SNAPSHOT MODE: The writer supports a special "snapshot mode" to prevent AOF data loss during
 // snapshot operations. When snapshot mode is active, new writes are buffered separately and
 // can be flushed to the AOF after truncation, ensuring no in-flight writes are lost.
+//
+// CONCURRENCY MODEL: All mutable state (write buffer, snapshot buffer, closed flag, fatal error)
+// is owned exclusively by a single background goroutine (run). Callers interact with it via two
+// channels:
+//   - writeCh: buffered, for data writes; provides natural batching and rarely blocks callers.
+//   - cmdCh: unbuffered, for control operations (flush, sync, close, etc.); provides ordered
+//     command processing with a synchronous ack.
+//
+// This design is race-free by construction and requires no explicit mutex on the hot path.
 type LazyAOFWriter struct {
-	// underlying is the actual AOF writer that performs the disk operations
+	// underlying is the actual AOF writer that performs the disk operations.
+	// It must not be used directly after being wrapped by LazyAOFWriter.
 	underlying *AOFWriter
 
-	// buffer holds pending write operations before flushing
-	buffer []string
+	// Configuration parameters (can be adjusted for different durability/performance trade-offs).
+	flushInterval     time.Duration // How often to flush the in-memory buffer to the OS page cache.
+	forceSyncInterval time.Duration // How often to fsync, persisting the OS page cache to disk.
+	maxBufferSize     int           // Maximum buffered entries before an immediate flush is triggered.
 
-	// mu protects the buffer and other internal state
-	mu sync.Mutex
+	// writeCh carries data writes to the run goroutine.
+	// It is buffered (DefaultWriteQueueSize) so callers rarely block waiting for the goroutine.
+	writeCh chan writeRequest
 
-	// flushTicker triggers periodic flushes based on time
-	flushTicker *time.Ticker
+	// cmdCh carries control commands (flush, sync, close, etc.) to the run goroutine.
+	// It is unbuffered to provide back-pressure and ensure ordered command processing.
+	cmdCh chan command
 
-	// syncTicker triggers periodic forced fsync operations for durability
-	syncTicker *time.Ticker
+	// closeOnce ensures Close is idempotent; only the first caller sends cmdClose.
+	closeOnce sync.Once
 
-	// stopCh signals the background goroutines to stop
-	stopCh chan struct{}
+	// closedCh is closed by the run goroutine's defer just before it exits.
+	// Callers that hold a reference can select on this to detect shutdown.
+	closedCh chan struct{}
+}
 
-	// stopped indicates whether the writer has been closed
-	stopped bool
+type writeRequest struct {
+	data string
+}
 
-	// Configuration parameters (can be adjusted for different durability/performance trade-offs)
-	flushInterval     time.Duration // How often to flush buffer to OS
-	forceSyncInterval time.Duration // How often to force fsync to disk
-	maxBufferSize     int           // Maximum buffer size before forced flush
+type command struct {
+	kind   commandKind
+	path   string
+	respCh chan commandResponse
+}
 
-	// Snapshot mode fields - prevent AOF data loss during snapshot+truncate
-	// When inSnapshotMode is true, new writes go to snapshotBuffer instead of buffer.
-	// This allows the AOF to be truncated without losing writes that occur between
-	// the snapshot and the truncate operation.
-	inSnapshotMode bool
-	snapshotBuffer []string
+type commandKind int
+
+type commandResponse struct {
+	err    error
+	writes []string
 }
 
 // Default configuration constants for LazyAOFWriter.
 // These values provide a good balance between performance and durability for most use cases.
 const (
-	// DefaultLazyFlushInterval is the default time between buffer flushes to the OS.
+	// DefaultLazyFlushInterval is the default time between buffer flushes to the OS page cache.
 	// Flushing every 100ms provides good batching while keeping latency low.
 	DefaultLazyFlushInterval = 100 * time.Millisecond
 
 	// DefaultForceSyncInterval is the default time between forced fsync operations.
-	// Syncing every 1 second ensures that data is persisted to disk regularly,
-	// limiting potential data loss to approximately 1 second of writes in case of crash.
+	// Syncing every 1 second limits potential data loss to approximately 1 second of writes
+	// in the event of a crash.
 	DefaultForceSyncInterval = 1 * time.Second
 
-	// DefaultMaxBufferSize is the default maximum number of entries in the buffer.
-	// When the buffer reaches this size, a flush is triggered immediately.
+	// DefaultMaxBufferSize is the default maximum number of in-memory entries before an
+	// immediate flush to the OS page cache is triggered.
 	DefaultMaxBufferSize = 1000
+
+	// DefaultWriteQueueSize is the capacity of the buffered writeCh channel. A large
+	// buffer allows bursty writers to enqueue without blocking, decoupling them from
+	// the periodic flush cadence.
+	DefaultWriteQueueSize = 16384
+
+	cmdFlush commandKind = iota
+	cmdSync
+	cmdClose
+	cmdTruncate
+	cmdReplaceWith
+	cmdBeginSnapshot
+	cmdEndSnapshot
+	cmdIsSnapshotActive
+	cmdErr
 )
 
 // NewLazyAOFWriter creates a new lazy AOF writer that wraps an existing AOFWriter.
 // The lazy writer will batch writes and flush them periodically for better performance.
-// The underlying AOFWriter should not be used directly after wrapping it.
+// The underlying AOFWriter must not be used directly after wrapping it.
 func NewLazyAOFWriter(underlying *AOFWriter) *LazyAOFWriter {
 	return NewLazyAOFWriterWithConfig(
 		underlying,
@@ -88,293 +120,438 @@ func NewLazyAOFWriter(underlying *AOFWriter) *LazyAOFWriter {
 	)
 }
 
-// NewLazyAOFWriterWithConfig creates a new lazy AOF writer with custom configuration parameters.
-// This allows fine-tuning of the durability vs performance trade-off.
+// NewLazyAOFWriterWithConfig creates a new lazy AOF writer with custom configuration parameters,
+// allowing fine-tuning of the durability vs. performance trade-off.
+//
+// All state mutations are owned by a single background goroutine (run), which eliminates
+// the need for a explicit mutex and makes the concurrency model easy to reason about.
+// Callers communicate with run via writeCh (data path) and cmdCh (control path).
 //
 // Parameters:
-//   - underlying: The actual AOF writer to wrap
-//   - flushInterval: How often to flush the buffer to the OS (e.g., 100ms)
-//   - forceSyncInterval: How often to force fsync to disk for durability (e.g., 1s)
-//   - maxBufferSize: Maximum buffer entries before forced flush (e.g., 1000)
+//   - underlying: The actual AOF writer to wrap; must not be used directly after this call.
+//   - flushInterval: How often to flush the buffer to the OS page cache (e.g., 100ms).
+//   - forceSyncInterval: How often to fsync to disk for crash-safety (e.g., 1s).
+//   - maxBufferSize: Maximum buffered entries before an immediate flush is triggered.
 func NewLazyAOFWriterWithConfig(
 	underlying *AOFWriter,
 	flushInterval time.Duration,
 	forceSyncInterval time.Duration,
 	maxBufferSize int,
 ) *LazyAOFWriter {
+	if flushInterval <= 0 {
+		flushInterval = DefaultLazyFlushInterval
+	}
+	if forceSyncInterval <= 0 {
+		forceSyncInterval = DefaultForceSyncInterval
+	}
+	if maxBufferSize <= 0 {
+		maxBufferSize = DefaultMaxBufferSize
+	}
+
 	lw := &LazyAOFWriter{
 		underlying:        underlying,
-		buffer:            make([]string, 0, maxBufferSize),
 		flushInterval:     flushInterval,
 		forceSyncInterval: forceSyncInterval,
 		maxBufferSize:     maxBufferSize,
-		stopCh:            make(chan struct{}),
+		writeCh:           make(chan writeRequest, DefaultWriteQueueSize),
+		cmdCh:             make(chan command),
+		closedCh:          make(chan struct{}),
 	}
 
-	// Start background flush routine
-	lw.flushTicker = time.NewTicker(flushInterval)
-	go lw.flushRoutine()
-
-	// Start background sync routine for durability
-	lw.syncTicker = time.NewTicker(forceSyncInterval)
-	go lw.syncRoutine()
+	go lw.run()
 
 	slog.Info("LazyAOFWriter initialized",
 		"flush_interval", flushInterval,
 		"sync_interval", forceSyncInterval,
 		"max_buffer_size", maxBufferSize,
+		"write_queue_size", DefaultWriteQueueSize,
 	)
 
 	return lw
 }
 
-// Write appends data to the internal buffer for later flushing.
-// This method is non-blocking and returns immediately after adding data to the buffer.
-// The actual disk write happens asynchronously in the background.
-// If the buffer reaches maxBufferSize, an immediate flush is triggered.
+// Write enqueues data to be written to the AOF on the next flush cycle and returns
+// immediately — it does not wait for the data to reach disk or even for run() to
+// process the entry. This is a fire-and-forget design: throughput is maximised by
+// decoupling the caller from the I/O goroutine.
+//
+// The only errors returned here are structural (writer already closed). Flush/sync
+// errors from the background goroutine are not propagated per-write; call Err() after
+// a Flush() or Sync() to check for a permanent write failure, mirroring bufio.Writer.
 //
 // When snapshot mode is active (see BeginSnapshotMode), writes are redirected to a
-// separate snapshot buffer to prevent data loss during AOF truncation.
+// separate shadow buffer without leaving this channel path.
 func (lw *LazyAOFWriter) Write(data string) error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-
-	if lw.stopped {
+	select {
+	case <-lw.closedCh:
 		return fmt.Errorf("cannot write to closed LazyAOFWriter")
-	}
-
-	// During snapshot mode, redirect writes to snapshot buffer
-	// This prevents losing writes that occur between snapshot and truncate
-	if lw.inSnapshotMode {
-		lw.snapshotBuffer = append(lw.snapshotBuffer, data)
+	case lw.writeCh <- writeRequest{data: data}:
 		return nil
 	}
-
-	// Add data to buffer
-	lw.buffer = append(lw.buffer, data)
-
-	// If buffer is full, trigger immediate flush in background
-	if len(lw.buffer) >= lw.maxBufferSize {
-		go lw.Flush()
-	}
-
-	return nil
 }
 
-// Flush immediately writes all buffered data to the underlying AOF writer.
-// This method blocks until the flush is complete.
-// Note: This only flushes to the OS buffer, not necessarily to disk (use Sync for that).
+// Flush immediately writes all buffered data to the underlying AOF writer and blocks until
+// the operation completes. Data is written to the OS page cache but is NOT guaranteed to
+// be on disk; call Sync for that guarantee.
 func (lw *LazyAOFWriter) Flush() error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-
-	return lw.flushUnlocked()
+	return lw.call(cmdFlush).err
 }
 
-// flushUnlocked performs the actual flush operation.
-// Caller must hold the mutex.
-func (lw *LazyAOFWriter) flushUnlocked() error {
-	if len(lw.buffer) == 0 {
-		return nil
-	}
-
-	// Write all buffered entries to the underlying AOF
-	for _, data := range lw.buffer {
-		if err := lw.underlying.Write(data); err != nil {
-			return fmt.Errorf("failed to write to AOF: %w", err)
-		}
-	}
-
-	// Flush the underlying buffer to OS
-	if err := lw.underlying.Flush(); err != nil {
-		return fmt.Errorf("failed to flush AOF buffer: %w", err)
-	}
-
-	// Clear the buffer
-	lw.buffer = lw.buffer[:0]
-
-	return nil
-}
-
-// Sync forces a flush to disk (fsync) for durability.
-// This first flushes any pending buffer, then calls fsync on the underlying file.
+// Sync flushes all buffered data and forces an fsync on the underlying file, guaranteeing
+// that all previously written data has been persisted to disk. This is more expensive than
+// Flush but provides full crash-safety.
 func (lw *LazyAOFWriter) Sync() error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-
-	// First flush any pending writes
-	if err := lw.flushUnlocked(); err != nil {
-		return err
-	}
-
-	// Then force sync to disk
-	return lw.underlying.Sync()
+	return lw.call(cmdSync).err
 }
 
-// Close gracefully shuts down the lazy writer.
-// This stops the background routines, flushes any pending data, and syncs to disk.
-// After Close(), no more writes are accepted.
+// Err returns the first permanent error encountered by the background goroutine (e.g. a
+// failed flush or sync). Once set, fatalErr causes all subsequent flushes to fail.
+// Call Err() after Flush() or Sync() to confirm data was persisted.
+func (lw *LazyAOFWriter) Err() error {
+	return lw.call(cmdErr).err
+}
+
+// Close gracefully shuts down the writer. It flushes any buffered data, syncs to disk, and
+// closes the underlying file.
+// Close is safe to call concurrently and is idempotent — subsequent calls return nil.
 func (lw *LazyAOFWriter) Close() error {
-	lw.mu.Lock()
-	if lw.stopped {
-		lw.mu.Unlock()
-		return fmt.Errorf("LazyAOFWriter already closed")
-	}
-	lw.stopped = true
-	lw.mu.Unlock()
+	var err error
 
-	// Stop background routines
-	close(lw.stopCh)
-	lw.flushTicker.Stop()
-	lw.syncTicker.Stop()
+	lw.closeOnce.Do(func() {
+		resp := lw.call(cmdClose)
+		err = resp.err
+	})
 
-	// Final flush and sync to ensure all data is persisted
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-
-	if err := lw.flushUnlocked(); err != nil {
-		slog.Error("Failed to flush during Close", "error", err)
-		// Continue to try closing underlying even if flush failed
-	}
-
-	return lw.underlying.Close()
+	return err
 }
 
-// Path returns the file path of the underlying AOF writer.
+// Truncate flushes any pending buffer and then truncates the AOF file to zero length
+// via the underlying writer.
+func (lw *LazyAOFWriter) Truncate() error {
+	return lw.call(cmdTruncate).err
+}
+
+// ReplaceWith flushes any pending buffer and then atomically replaces the current AOF file
+// with the file at newFilePath via the underlying writer.
+func (lw *LazyAOFWriter) ReplaceWith(newFilePath string) error {
+	return lw.callWithPath(cmdReplaceWith, newFilePath).err
+}
+
+// BeginSnapshotMode flushes the current buffer and then activates snapshot mode.
+// While active, new writes are redirected into a separate shadow buffer instead of the
+// normal write buffer, allowing the caller to safely truncate the AOF file without losing
+// any writes that arrive between snapshot creation and truncation.
+//
+// The caller MUST call EndSnapshotMode after the truncation to retrieve the buffered shadow
+// writes and replay them into the freshly truncated AOF.
+// Returns an error if snapshot mode is already active or the writer is closed.
+func (lw *LazyAOFWriter) BeginSnapshotMode() error {
+	return lw.call(cmdBeginSnapshot).err
+}
+
+// EndSnapshotMode deactivates snapshot mode and returns all writes that were buffered in the
+// shadow buffer since BeginSnapshotMode was called. The caller is responsible for replaying
+// these entries into the AOF (typically after truncating) in the order they are returned.
+// Returns an error if snapshot mode was not active.
+func (lw *LazyAOFWriter) EndSnapshotMode() ([]string, error) {
+	resp := lw.call(cmdEndSnapshot)
+	return resp.writes, resp.err
+}
+
+// IsSnapshotModeActive reports whether snapshot mode is currently active.
+// The answer is authoritative because it is supplied directly by the run goroutine.
+// Returns false if the writer is fully closed.
+func (lw *LazyAOFWriter) IsSnapshotModeActive() bool {
+	resp := lw.call(cmdIsSnapshotActive)
+	return len(resp.writes) == 1 && resp.writes[0] == "true"
+}
+
+// Path returns the file path of the underlying AOF file.
 func (lw *LazyAOFWriter) Path() string {
 	return lw.underlying.Path()
 }
 
-// File returns the underlying OS file (read-only access recommended).
+// File returns the underlying OS file handle. Callers should treat this as read-only;
+// direct writes bypass the lazy buffer and may corrupt the AOF state.
 func (lw *LazyAOFWriter) File() *os.File {
 	return lw.underlying.File()
 }
 
-// Truncate clears the file content via the underlying writer.
-// This is a synchronous operation that also flushes any pending buffer first.
-func (lw *LazyAOFWriter) Truncate() error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-
-	// First flush any pending writes
-	if err := lw.flushUnlocked(); err != nil {
-		return err
-	}
-
-	return lw.underlying.Truncate()
+// call sends a command to run and waits for the response.
+func (lw *LazyAOFWriter) call(kind commandKind) commandResponse {
+	return lw.callWithPath(kind, "")
 }
 
-// ReplaceWith replaces the current AOF file with a new one atomically.
-// This first flushes any pending buffer to ensure data consistency.
-func (lw *LazyAOFWriter) ReplaceWith(newFilePath string) error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
+// callWithPath sends a command with an optional file path to run and waits for the response.
+// If closedCh is already closed, it returns an error immediately without blocking.
+func (lw *LazyAOFWriter) callWithPath(kind commandKind, path string) commandResponse {
+	respCh := make(chan commandResponse, 1)
 
-	// First flush any pending writes to ensure consistency
-	if err := lw.flushUnlocked(); err != nil {
-		return err
+	select {
+	case <-lw.closedCh:
+		return commandResponse{err: fmt.Errorf("LazyAOFWriter is closed")}
+	case lw.cmdCh <- command{kind: kind, path: path, respCh: respCh}:
 	}
 
-	return lw.underlying.ReplaceWith(newFilePath)
+	return <-respCh
 }
 
-// BeginSnapshotMode activates snapshot mode.
-// When snapshot mode is active:
-//   - New writes via Write() are stored in a separate snapshot buffer
-//   - The normal buffer continues to be flushed normally
-//   - Background flush/sync routines continue operating on the normal buffer
+// run is the single-owner goroutine for all mutable state. It serialises writes and
+// control commands, eliminating the need for external locking.
 //
-// This allows the AOF to be truncated after a snapshot without losing writes
-// that occur between the snapshot creation and the truncate operation.
+// State ownership:
+//   - buffer, snapshotBuffer, inSnapshotMode, fatalErr, closed: owned solely by this goroutine.
 //
-// The caller MUST call EndSnapshotMode after the truncate is complete to
-// retrieve the accumulated writes and write them to the truncated AOF.
-//
-// This method is safe for concurrent use with Write().
-func (lw *LazyAOFWriter) BeginSnapshotMode() error {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
+// Shutdown sequence (cmdClose):
+//  1. closeWriter() flushes, syncs, and closes the underlying file.
+//  2. Any writes already enqueued in writeCh (e.g. goroutines that sent to the buffered
+//     channel before cmdClose was processed) are drained and returned errors — this avoids
+//     goroutine leaks from callers blocked on <-errCh.
+//  3. The run goroutine returns; the deferred close(closedCh) unblocks any caller selecting
+//     on that channel.
+func (lw *LazyAOFWriter) run() {
+	defer close(lw.closedCh)
 
-	if lw.stopped {
-		return fmt.Errorf("cannot begin snapshot mode on closed LazyAOFWriter")
-	}
+	flushTicker := time.NewTicker(lw.flushInterval)
+	defer flushTicker.Stop()
 
-	if lw.inSnapshotMode {
-		return fmt.Errorf("snapshot mode already active")
-	}
+	syncTicker := time.NewTicker(lw.forceSyncInterval)
+	defer syncTicker.Stop()
 
-	// First flush any pending writes to ensure all previous data is persisted
-	if err := lw.flushUnlocked(); err != nil {
-		return fmt.Errorf("failed to flush before snapshot mode: %w", err)
-	}
+	buffer := make([]string, 0, lw.maxBufferSize)
+	snapshotBuffer := make([]string, 0, lw.maxBufferSize)
 
-	// Initialize snapshot buffer with reasonable capacity
-	lw.snapshotBuffer = make([]string, 0, lw.maxBufferSize)
-	lw.inSnapshotMode = true
+	inSnapshotMode := false
+	var fatalErr error
+	closed := false
 
-	slog.Debug("LazyAOFWriter entered snapshot mode")
-	return nil
-}
+	// flush writes the in-memory buffer to the underlying AOF and clears it.
+	// On error it sets fatalErr, permanently disabling further flushes.
+	flush := func() error {
+		if fatalErr != nil {
+			return fatalErr
+		}
 
-// EndSnapshotMode deactivates snapshot mode and returns the accumulated snapshot writes.
-// The caller is responsible for writing these entries to the AOF after truncation.
-//
-// Returns:
-//   - snapshotWrites: all writes that occurred during snapshot mode
-//   - err: any error that occurred
-//
-// This method is safe for concurrent use with Write().
-func (lw *LazyAOFWriter) EndSnapshotMode() ([]string, error) {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
+		if len(buffer) == 0 {
+			return nil
+		}
 
-	if !lw.inSnapshotMode {
-		return nil, fmt.Errorf("snapshot mode not active")
-	}
-
-	// Capture the snapshot buffer
-	snapshotWrites := lw.snapshotBuffer
-	lw.snapshotBuffer = nil
-	lw.inSnapshotMode = false
-
-	slog.Debug("LazyAOFWriter exited snapshot mode", "buffered_writes", len(snapshotWrites))
-	return snapshotWrites, nil
-}
-
-// IsSnapshotModeActive returns true if snapshot mode is currently active.
-// This is useful for debugging and testing.
-func (lw *LazyAOFWriter) IsSnapshotModeActive() bool {
-	lw.mu.Lock()
-	defer lw.mu.Unlock()
-	return lw.inSnapshotMode
-}
-
-// flushRoutine runs in a background goroutine and periodically flushes the buffer.
-func (lw *LazyAOFWriter) flushRoutine() {
-	for {
-		select {
-		case <-lw.flushTicker.C:
-			if err := lw.Flush(); err != nil {
-				slog.Error("Periodic flush failed", "error", err)
+		for _, data := range buffer {
+			if err := lw.underlying.Write(data); err != nil {
+				fatalErr = fmt.Errorf("failed to write to AOF: %w", err)
+				return fatalErr
 			}
-		case <-lw.stopCh:
-			return
+		}
+
+		if err := lw.underlying.Flush(); err != nil {
+			fatalErr = fmt.Errorf("failed to flush AOF buffer: %w", err)
+			return fatalErr
+		}
+
+		buffer = buffer[:0]
+		return nil
+	}
+
+	// syncNow flushes the buffer and fsyncs the underlying file to disk.
+	syncNow := func() error {
+		if err := flush(); err != nil {
+			return err
+		}
+
+		if err := lw.underlying.Sync(); err != nil {
+			fatalErr = fmt.Errorf("failed to sync AOF: %w", err)
+			return fatalErr
+		}
+
+		return nil
+	}
+
+	// closeWriter performs the final flush+sync+close sequence exactly once.
+	closeWriter := func() error {
+		if closed {
+			return nil
+		}
+		closed = true
+
+		var err error
+
+		if flushErr := flush(); flushErr != nil {
+			slog.Error("failed to flush during close", "error", flushErr)
+			err = flushErr
+		}
+
+		if syncErr := lw.underlying.Sync(); syncErr != nil && err == nil {
+			err = fmt.Errorf("failed to sync during close: %w", syncErr)
+		}
+
+		if closeErr := lw.underlying.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+
+		return err
+	}
+
+	// drainWriteCh discards any writes already queued in the buffered writeCh when
+	// cmdClose is processed. Because Write() is fire-and-forget there are no callers
+	// blocked on a response — we simply drop the enqueued entries.
+	drainWriteCh := func() {
+		for {
+			select {
+			case <-lw.writeCh:
+			default:
+				return
+			}
 		}
 	}
-}
 
-// syncRoutine runs in a background goroutine and periodically forces fsync.
-// This ensures data durability by regularly syncing to disk, even if the buffer
-// hasn't filled up or the flush interval hasn't triggered yet.
-func (lw *LazyAOFWriter) syncRoutine() {
 	for {
 		select {
-		case <-lw.syncTicker.C:
-			if err := lw.Sync(); err != nil {
-				slog.Error("Periodic sync failed", "error", err)
+		case req := <-lw.writeCh:
+			// Discard writes that arrive after close — the underlying file is gone.
+			if closed {
+				continue
 			}
-		case <-lw.stopCh:
-			return
+
+			// Snapshot buffer always accepts writes regardless of fatalErr; the
+			// caller retrieves them via EndSnapshotMode and writes them itself.
+			// Unlike the normal buffer, the snapshot buffer cannot be flushed to
+			// disk during snapshot mode — the AOF is about to be truncated, which
+			// is precisely why the mode exists. We can only warn when it grows large.
+			if inSnapshotMode {
+				snapshotBuffer = append(snapshotBuffer, req.data)
+				n := len(snapshotBuffer)
+				if n == lw.maxBufferSize || (n > lw.maxBufferSize && n%lw.maxBufferSize == 0) {
+					slog.Warn("snapshot buffer growing large; EndSnapshotMode may be delayed",
+						"size", n,
+						"max_buffer_size", lw.maxBufferSize,
+					)
+				}
+				continue
+			}
+
+			// Drop normal writes if a permanent flush error has occurred.
+			// Callers detect this via Err() or the return value of Flush()/Sync().
+			if fatalErr != nil {
+				continue
+			}
+
+			// Buffer hit capacity — flush inline. Safe because flush() only touches
+			// run()-owned state; no lock or channel round-trip needed.
+			if len(buffer) >= lw.maxBufferSize {
+				if err := flush(); err != nil {
+					slog.Error("size-triggered flush failed", "error", err)
+				}
+			}
+
+			buffer = append(buffer, req.data)
+
+		case <-flushTicker.C:
+			if err := flush(); err != nil {
+				slog.Error("periodic flush failed", "error", err)
+			}
+
+		case <-syncTicker.C:
+			if err := syncNow(); err != nil {
+				slog.Error("periodic sync failed", "error", err)
+			}
+
+		case cmd := <-lw.cmdCh:
+			switch cmd.kind {
+			case cmdFlush:
+				cmd.respCh <- commandResponse{err: flush()}
+
+			case cmdSync:
+				cmd.respCh <- commandResponse{err: syncNow()}
+
+			case cmdTruncate:
+				err := flush()
+				if err == nil {
+					err = lw.underlying.Truncate()
+				}
+				cmd.respCh <- commandResponse{err: err}
+
+			case cmdReplaceWith:
+				err := flush()
+				if err == nil {
+					err = lw.underlying.ReplaceWith(cmd.path)
+				}
+				cmd.respCh <- commandResponse{err: err}
+
+			case cmdBeginSnapshot:
+				var err error
+
+				if closed {
+					err = fmt.Errorf("cannot begin snapshot mode on closed LazyAOFWriter")
+				} else if inSnapshotMode {
+					err = fmt.Errorf("snapshot mode already active")
+				} else {
+					err = flush()
+					if err == nil {
+						snapshotBuffer = snapshotBuffer[:0]
+						inSnapshotMode = true
+						slog.Debug("LazyAOFWriter entered snapshot mode")
+					}
+				}
+
+				cmd.respCh <- commandResponse{err: err}
+
+			case cmdEndSnapshot:
+				var resp commandResponse
+
+				if !inSnapshotMode {
+					resp.err = fmt.Errorf("snapshot mode not active")
+				} else {
+					// Drain any writes already sitting in writeCh before closing
+					// snapshot mode. Because Write() is fire-and-forget, callers
+					// return as soon as data enters the buffered writeCh. By the
+					// time EndSnapshotMode sends on cmdCh (unbuffered) and run()
+					// receives it, all Write() calls that returned before this
+					// point are guaranteed to be in writeCh. Draining here ensures
+					// none of them are missed from the snapshot buffer.
+					for {
+						select {
+						case req := <-lw.writeCh:
+							if !closed {
+								snapshotBuffer = append(snapshotBuffer, req.data)
+							}
+						default:
+							goto donedraining
+						}
+					}
+				donedraining:
+					writes := make([]string, len(snapshotBuffer))
+					copy(writes, snapshotBuffer)
+
+					snapshotBuffer = snapshotBuffer[:0]
+					inSnapshotMode = false
+
+					resp.writes = writes
+
+					slog.Debug("LazyAOFWriter exited snapshot mode",
+						"buffered_writes", len(writes),
+					)
+				}
+
+				cmd.respCh <- resp
+
+			case cmdIsSnapshotActive:
+				if inSnapshotMode {
+					cmd.respCh <- commandResponse{writes: []string{"true"}}
+				} else {
+					cmd.respCh <- commandResponse{writes: []string{"false"}}
+				}
+
+			case cmdErr:
+				cmd.respCh <- commandResponse{err: fatalErr}
+
+			case cmdClose:
+				err := closeWriter()
+				// Unblock any writes already sitting in the buffered channel that will
+				// never be consumed now that the goroutine is about to exit.
+				drainWriteCh()
+				cmd.respCh <- commandResponse{err: err}
+				return
+			}
 		}
 	}
 }

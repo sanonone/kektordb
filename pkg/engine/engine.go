@@ -293,7 +293,9 @@ func (e *Engine) backgroundTasks() {
 	for {
 		select {
 		case <-e.closed:
-			e.AOF.Flush() // last flush before close
+			if err := e.AOF.Flush(); err != nil {
+				slog.Error("Final AOF flush failed on close", "error", err)
+			}
 			return
 		case <-ticker.C:
 			e.checkMaintenance()
