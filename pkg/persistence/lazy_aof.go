@@ -394,11 +394,20 @@ func (lw *LazyAOFWriter) run() {
 	// drainWriteCh discards any writes already queued in the buffered writeCh when
 	// cmdClose is processed. Because Write() is fire-and-forget there are no callers
 	// blocked on a response — we simply drop the enqueued entries.
+	// If any entries are dropped, a single warning is emitted so operators know
+	// data was in-flight at shutdown time.
 	drainWriteCh := func() {
+		dropped := 0
 		for {
 			select {
 			case <-lw.writeCh:
+				dropped++
 			default:
+				if dropped > 0 {
+					slog.Warn("LazyAOFWriter: dropped in-flight writes during close",
+						"count", dropped,
+					)
+				}
 				return
 			}
 		}
@@ -555,3 +564,6 @@ func (lw *LazyAOFWriter) run() {
 		}
 	}
 }
+
+
+
