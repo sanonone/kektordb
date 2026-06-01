@@ -564,6 +564,3 @@ func (lw *LazyAOFWriter) run() {
 		}
 	}
 }
-
-
-
