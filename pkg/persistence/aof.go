@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"sync"
 )
 
 // DefaultAOFWriteBufferSize is the fallback write-buffer size (in bytes) used by NewAOFWriter
@@ -12,8 +11,11 @@ import (
 const DefaultAOFWriteBufferSize = 4096
 
 // AOFWriter manages writing to the Append-Only File using a robust binary protocol.
+//
+// AOFWriter is NOT goroutine-safe by itself. Concurrent access is the responsibility
+// of the caller. In production it is always wrapped by LazyAOFWriter, whose single
+// run() goroutine is the only caller — so no locking is needed here.
 type AOFWriter struct {
-	mu   sync.Mutex
 	file *os.File
 	buf  *bufio.Writer
 	path string
@@ -53,9 +55,6 @@ func NewAOFWriter(path string, bufferSize int) (*AOFWriter, error) {
 // Unlike the previous version which wrote raw strings, this method now guarantees
 // that partial writes can be detected during recovery.
 func (a *AOFWriter) Write(data string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	// Convert the string command (RESP) to bytes and wrap it in a frame.
 	// Frame Format: [Magic(1)][Op(1)][Len(4)][CRC(4)][Data(N)]
 	if err := a.frameWriter.WriteFrame([]byte(data)); err != nil {
@@ -67,16 +66,11 @@ func (a *AOFWriter) Write(data string) error {
 
 // Flush forces the buffer contents to be written to the OS file descriptor.
 func (a *AOFWriter) Flush() error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	return a.buf.Flush()
 }
 
 // Sync forces a flush to disk (fsync).
 func (a *AOFWriter) Sync() error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	if err := a.buf.Flush(); err != nil {
 		return err
 	}
@@ -85,9 +79,6 @@ func (a *AOFWriter) Sync() error {
 
 // Close closes the underlying file.
 func (a *AOFWriter) Close() error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	var flushErr error
 	if err := a.buf.Flush(); err != nil {
 		flushErr = fmt.Errorf("flush failed: %w", err)
@@ -105,9 +96,6 @@ func (a *AOFWriter) Close() error {
 
 // Truncate clears the file content. Used during rewriting/snapshotting.
 func (a *AOFWriter) Truncate() error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	// Reset buffer state to discard any pending data
 	a.buf.Reset(a.file)
 
@@ -131,9 +119,6 @@ func (a *AOFWriter) File() *os.File {
 // ReplaceWith replaces the current AOF file with a new one atomically (rename) and reopens it.
 // Used at the end of AOF rewriting.
 func (a *AOFWriter) ReplaceWith(newFilePath string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	// 1. Flush & Close old
 	if err := a.buf.Flush(); err != nil {
 		return fmt.Errorf("failed to flush buffer before replace: %w", err)

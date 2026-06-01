@@ -726,14 +726,18 @@ func (e *Engine) VReinforce(indexName string, ids []string) error {
 		if err == nil {
 			// New Command: VMETA <IndexName> <ExternalID> <JSON_Metadata>
 			cmd := persistence.FormatCommand("VMETA", []byte(indexName), []byte(extID), metaBytes)
-			e.AOF.Write(cmd) // AOF.Write is thread-safe internally
+			if err := e.AOF.Write(cmd); err != nil {
+				slog.Warn("VReinforce: AOF write failed", "error", err, "id", extID)
+			}
 		}
 
 		lock.Unlock()
 	}
 
 	if updatedCount > 0 {
-		e.AOF.Flush()
+		if err := e.AOF.Flush(); err != nil {
+			slog.Warn("VReinforce: AOF flush failed", "error", err)
+		}
 		atomic.AddInt64(&e.dirtyCounter, updatedCount)
 		e.EventBus.Emit(Event{Type: EventVectorAccess, IndexName: indexName, ID: ids[0], Timestamp: time.Now().UnixNano()})
 	}
