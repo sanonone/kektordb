@@ -160,6 +160,11 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	// User Profile endpoints
 	mux.HandleFunc("GET /users/{id}/profile", s.handleGetUserProfile)
 	mux.HandleFunc("GET /users", s.handleListUserProfiles)
+
+	// Knowledge Engine routes (registered when compiler is available)
+	if s.compiler != nil {
+		s.registerCompilerRoutes(mux)
+	}
 }
 
 // --- Context Compression Helpers ---

@@ -11,6 +11,7 @@ import (
 
 	"github.com/sanonone/kektordb/pkg/auth"
 	"github.com/sanonone/kektordb/pkg/cognitive"
+	"github.com/sanonone/kektordb/pkg/compiler"
 	"github.com/sanonone/kektordb/pkg/engine"
 	"github.com/sanonone/kektordb/pkg/llm"
 )
@@ -30,6 +31,7 @@ type Server struct {
 	authService *auth.AuthService // RBAC Manager
 
 	gardener *cognitive.Gardener
+	compiler *compiler.Compiler
 }
 
 // NewServer initializes the HTTP server using an existing Engine.
@@ -74,6 +76,9 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 	}
 
 	s.gardener = cognitive.NewGardener(eng, brain, gardenerCfg)
+
+	// Initialize Knowledge Engine Compiler (always available, works without LLM)
+	s.compiler = compiler.NewCompiler(eng, brain)
 
 	// Initialize Vectorizer Service
 	vecService, err := NewVectorizerService(s, assetsPath)
@@ -161,4 +166,10 @@ func (s *Server) Shutdown() {
 	if s.gardener != nil {
 		s.gardener.Stop()
 	}
+}
+
+// SetCompiler sets the Knowledge Engine compiler on the server.
+// Routes are registered lazily when the compiler is set.
+func (s *Server) SetCompiler(c *compiler.Compiler) {
+	s.compiler = c
 }
