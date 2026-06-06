@@ -21,15 +21,17 @@ type Compiler struct {
 	templates map[string]CompileTemplate
 
 	muPerArtifact sync.Map // key: "index:name:entity_type:entity_id" -> *sync.Mutex
+	taskManager   *compileTaskManager
 }
 
 // NewCompiler creates a new Compiler backed by the given engine.
 // If llmClient is nil, only deterministic compilation is available.
 func NewCompiler(eng *engine.Engine, llmClient llm.Client) *Compiler {
 	return &Compiler{
-		eng:       eng,
-		llm:       llmClient,
-		templates: BuiltinTemplates,
+		eng:         eng,
+		llm:         llmClient,
+		templates:   BuiltinTemplates,
+		taskManager: newCompileTaskManager(),
 	}
 }
 
@@ -182,9 +184,8 @@ func (c *Compiler) compileField(
 	template *CompileTemplate,
 	mode CompileMode,
 ) (value any, provenance []Provenance, confidence float64, err error) {
-	if !fieldDef.LLM || mode == CompileModeDeterministic || c.llm == nil {
-		return c.compileFieldDeterministic(fieldName, fieldDef, nodes)
+	if c.needsLLMForField(fieldDef, mode) {
+		return c.compileFieldLLM(fieldName, fieldDef, nodes, req, template)
 	}
-	// Phase 4B: LLM compilation will go here
 	return c.compileFieldDeterministic(fieldName, fieldDef, nodes)
 }

@@ -134,6 +134,25 @@ class KektorDBClient:
         except requests.exceptions.RequestException as e:
             raise ConnectionError(f"KektorDB Connection Error: {e}") from e
 
+    def _request_raw(
+        self, method: str, endpoint: str, **kwargs
+    ) -> requests.Response:
+        """Like _request but returns the raw Response object.
+        Useful for endpoints that return non-200 status codes (e.g. 202 Accepted).
+        """
+        headers = kwargs.pop("headers", {})
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        kwargs["headers"] = headers
+        req_timeout = kwargs.pop("timeout", self.timeout)
+
+        try:
+            return self._session.request(
+                method, f"{self.base_url}{endpoint}", timeout=req_timeout, **kwargs
+            )
+        except requests.exceptions.RequestException as e:
+            raise ConnectionError(f"KektorDB Connection Error: {e}") from e
+
     # --- Key-Value Store Methods ---
 
     def set(self, key: str, value: Union[str, bytes]) -> None:
@@ -1287,3 +1306,132 @@ class KektorDBClient:
             "direction": direction,
         }
         return self._request("POST", "/vector/actions/get-evolution", json=payload)
+
+    # --- Knowledge Engine (Compiler) Methods ---
+
+    def compile(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Compiles a knowledge artifact from the graph.
+
+        If the compilation is deterministic (no LLM fields), returns the
+        artifact directly. If LLM fields are present and an LLM is configured,
+        returns 202 Accepted with a task_id for polling.
+
+        Args:
+            req: CompileRequest dict with:
+                - name (str, required): Artifact name or template name
+                - template (str, optional): Built-in template name
+                - sources (dict, required): {"type": "graph_query", "entity": {"type": "user", "id": "123"}, "depth": 2}
+                - index_name (str, optional): Default "mcp_memory"
+                - task_spec (dict, optional): Custom task specification
+                - compile_mode (str, optional): "deterministic", "llm", "hybrid", "auto"
+
+        Returns:
+            Artifact dict with data, provenance, confidence, metadata
+            OR task poll dict with task_id, status, poll URL (202 Accepted)
+        """
+        resp = self._request_raw("POST", "/compile", json=req)
+        if resp.status_code == 202:
+            return resp.json()
+        resp.raise_for_status()
+        return resp.json()
+
+    def compile_and_wait(
+        self, req: Dict[str, Any], timeout: int = 300, poll_interval: float = 0.5
+    ) -> Dict[str, Any]:
+        """
+        Compiles an artifact and waits for async compilation to complete.
+
+        Args:
+            req: Same as compile()
+            timeout: Max wait time in seconds (default 300)
+            poll_interval: Seconds between status checks (default 0.5)
+
+        Returns:
+            Artifact dict with data, provenance, confidence, metadata
+
+        Raises:
+            TimeoutError: If compilation takes longer than timeout.
+            APIError: If compilation fails.
+        """
+        import time
+
+        resp = self._request_raw("POST", "/compile", json=req)
+        if resp.status_code == 200:
+            return resp.json()
+
+        if resp.status_code != 202:
+            resp.raise_for_status()
+
+        task_info = resp.json()
+        task_id = task_info.get("task_id")
+        if not task_id:
+            raise APIError("Missing task_id in async compile response")
+
+        start = time.time()
+        while time.time() - start < timeout:
+            status = self.get_compile_status(task_id)
+            if status.get("status") == "complete":
+                return status.get("result", status)
+            if status.get("status") == "failed":
+                raise APIError(
+                    f"Compilation failed: {status.get('error', 'unknown error')}"
+                )
+            time.sleep(poll_interval)
+
+        raise TimeoutError(
+            f"Compilation did not complete within {timeout} seconds"
+        )
+
+    def get_compile_status(self, task_id: str) -> Dict[str, Any]:
+        """Retrieves the status of an async compilation task."""
+        return self._request("GET", f"/compile/status?task_id={task_id}")
+
+    def get_artifact(
+        self,
+        name: str,
+        entity_type: str,
+        entity_id: str,
+        index_name: str = "mcp_memory",
+    ) -> Dict[str, Any]:
+        """
+        Retrieves the latest version of a compiled artifact.
+
+        Args:
+            name: Artifact name (e.g. "entity_card", "user_profile")
+            entity_type: Entity type (e.g. "user", "project")
+            entity_id: Entity identifier
+            index_name: Index name (default "mcp_memory")
+        """
+        return self._request(
+            "GET",
+            f"/artifact/{name}",
+            params={
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "index": index_name,
+            },
+        )
+
+    def list_artifacts(
+        self, index_name: str = "mcp_memory"
+    ) -> Dict[str, Any]:
+        """
+        Lists all compiled artifacts in the given index.
+
+        Args:
+            index_name: Index name (default "mcp_memory")
+
+        Returns:
+            Dict with "count" and "artifacts" keys.
+        """
+        return self._request("GET", "/artifacts", params={"index": index_name})
+
+    def list_compile_templates(self) -> Dict[str, Any]:
+        """
+        Lists all built-in compilation templates.
+
+        Returns:
+            Dict with "templates" and "names" keys.
+        """
+        return self._request("GET", "/compile/templates")

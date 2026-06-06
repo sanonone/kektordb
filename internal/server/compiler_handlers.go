@@ -13,6 +13,7 @@ import (
 func (s *Server) registerCompilerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /compile", s.handleCompile)
 	mux.HandleFunc("GET /compile/templates", s.handleListTemplates)
+	mux.HandleFunc("GET /compile/status", s.handleCompileStatus)
 	mux.HandleFunc("GET /artifacts", s.handleListArtifacts)
 	mux.HandleFunc("GET /artifact/{name}", s.handleGetArtifact)
 	mux.HandleFunc("GET /artifact/{name}/history", s.handleArtifactHistory)
@@ -40,6 +41,22 @@ func (s *Server) handleCompile(w http.ResponseWriter, r *http.Request) {
 		req.IndexName = "mcp_memory"
 	}
 
+	// Route to async if LLM fields present and LLM available
+	if s.compiler.NeedsAsync(req) {
+		taskID, err := s.compiler.StartAsyncCompile(req)
+		if err != nil {
+			s.writeHTTPError(w, http.StatusInternalServerError, err)
+			return
+		}
+		w.Header().Set("Location", "/compile/status?task_id="+taskID)
+		s.writeHTTPResponse(w, http.StatusAccepted, map[string]any{
+			"task_id": taskID,
+			"status":  "compiling",
+			"poll":    "/compile/status?task_id=" + taskID,
+		})
+		return
+	}
+
 	artifact, err := s.compiler.Compile(req)
 	if err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, err)
@@ -47,6 +64,23 @@ func (s *Server) handleCompile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeHTTPResponse(w, http.StatusOK, artifact)
+}
+
+// handleCompileStatus GET /compile/status?task_id=
+func (s *Server) handleCompileStatus(w http.ResponseWriter, r *http.Request) {
+	taskID := r.URL.Query().Get("task_id")
+	if taskID == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("missing query parameter: task_id"))
+		return
+	}
+
+	task, err := s.compiler.GetTaskStatus(taskID)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusNotFound, err)
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, task)
 }
 
 // handleListTemplates GET /compile/templates

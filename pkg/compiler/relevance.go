@@ -16,8 +16,8 @@ func (c *Compiler) FilterByRelevance(
 	taskSpec *TaskSpec,
 ) []NodeInfo {
 	threshold := 0.1 // low base threshold for deterministic compilation
-	if taskSpec != nil && taskSpec.ConfidenceMin > 0 {
-		threshold = taskSpec.ConfidenceMin * 0.6
+	if taskSpec != nil && hasRelevantKeywords(taskSpec.Description) {
+		threshold = 0.2 // slightly higher for keyword-based tasks
 	}
 
 	var relevant []NodeInfo
@@ -96,7 +96,6 @@ func (c *Compiler) computeRelevance(
 
 func tokenize(text string) []string {
 	fields := strings.Fields(text)
-	// Filter common stopwords
 	stopwords := map[string]bool{
 		"the": true, "is": true, "at": true, "which": true, "on": true,
 		"a": true, "an": true, "of": true, "to": true, "in": true,
@@ -109,4 +108,8 @@ func tokenize(text string) []string {
 		}
 	}
 	return out
+}
+
+func hasRelevantKeywords(description string) bool {
+	return len(tokenize(description)) > 0
 }
