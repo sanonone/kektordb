@@ -10,12 +10,9 @@ import (
 
 const defaultArtifactVectorDim = 384
 
-// StoreArtifact saves an artifact as a pinned graph node with
-// compiled_from relations to its source nodes.
-// If a previous version exists and KeepHistory is true (default),
-// the old version is marked _is_historical and linked via superseded_by.
+// StoreArtifact saves an artifact as a pinned graph node.
 func (c *Compiler) StoreArtifact(artifact *Artifact, sources []NodeInfo, indexName string, policy RefreshPolicy) error {
-	_ = policy // used below
+	_ = policy
 
 	existingID, existingVersion, err := c.findLatestArtifact(
 		artifact.Name, artifact.EntityType, artifact.EntityID, indexName,
@@ -32,7 +29,7 @@ func (c *Compiler) StoreArtifact(artifact *Artifact, sources []NodeInfo, indexNa
 
 	metadata := c.buildArtifactMetadata(artifact)
 
-	vector := computeArtifactVector(sources)
+	vector := c.computeArtifactVector(sources, indexName)
 	nodeID := artifactNodeID(artifact)
 
 	if existingID != "" && policy.KeepHistory {
@@ -257,9 +254,39 @@ func (c *Compiler) pruneHistoricalVersions(name, entityType, entityID, indexName
 	}
 }
 
-// computeArtifactVector returns a zero vector for the artifact dimension.
-func computeArtifactVector(sources []NodeInfo) []float32 {
-	return make([]float32, defaultArtifactVectorDim)
+// computeArtifactVector returns the mean vector of source nodes,
+// or a zero vector if embedder is unavailable.
+func (c *Compiler) computeArtifactVector(sources []NodeInfo, indexName string) []float32 {
+	if c.embedder == nil || len(sources) == 0 {
+		return make([]float32, defaultArtifactVectorDim)
+	}
+
+	var accum []float32
+	count := 0
+	for _, src := range sources {
+		data, err := c.eng.VGet(indexName, src.ID)
+		if err != nil || len(data.Vector) == 0 {
+			continue
+		}
+		if accum == nil {
+			accum = make([]float32, len(data.Vector))
+		}
+		for i, v := range data.Vector {
+			if i < len(accum) {
+				accum[i] += v
+			}
+		}
+		count++
+	}
+
+	if count == 0 || accum == nil {
+		return make([]float32, defaultArtifactVectorDim)
+	}
+
+	for i := range accum {
+		accum[i] /= float32(count)
+	}
+	return accum
 }
 
 // artifactNodeID generates a predictable node ID for an artifact version.

@@ -61,7 +61,7 @@ func TestCompileEntityCard(t *testing.T) {
 	eng.VLink(indexName, "user:alice", "user:alice:pref_2", "has_interaction", "interaction_of", 1.0, nil)
 	eng.VLink(indexName, "user:alice", "user:alice:inter_1", "has_interaction", "interaction_of", 1.0, nil)
 
-	c := NewCompiler(eng, nil) // no LLM
+	c := NewCompiler(eng, nil, nil) // no LLM, no embedder
 
 	req := CompileRequest{
 		Name:    "entity_card",
@@ -153,7 +153,7 @@ func TestCompileUserProfile(t *testing.T) {
 	eng.VLink(indexName, "user:bob", "user:bob:pref_1", "has_interaction", "interaction_of", 1.0, nil)
 	eng.VLink(indexName, "user:bob", "user:bob:pref_2", "has_interaction", "interaction_of", 1.0, nil)
 
-	c := NewCompiler(eng, nil)
+	c := NewCompiler(eng, nil, nil)
 
 	req := CompileRequest{
 		Name:    "user_profile",
@@ -190,7 +190,7 @@ func TestGetArtifactRoundTrip(t *testing.T) {
 		"_pinned":   true,
 	})
 
-	c := NewCompiler(eng, nil)
+	c := NewCompiler(eng, nil, nil)
 
 	req := CompileRequest{
 		Name:    "entity_card",
@@ -231,7 +231,7 @@ func TestArtifactVersioning(t *testing.T) {
 	})
 	eng.VLink(indexName, "project:testproj", "project:testproj:node_1", "has_memory", "memory_of", 1.0, nil)
 
-	c := NewCompiler(eng, nil)
+	c := NewCompiler(eng, nil, nil)
 
 	req := CompileRequest{
 		Name:    "project_summary",
@@ -306,7 +306,7 @@ func TestListArtifacts(t *testing.T) {
 		"_pinned":   true,
 	})
 
-	c := NewCompiler(eng, nil)
+	c := NewCompiler(eng, nil, nil)
 
 	req := CompileRequest{
 		Name:    "entity_card",
@@ -348,7 +348,7 @@ func TestCompileWithTemplateLookup(t *testing.T) {
 		"_pinned":   true,
 	})
 
-	c := NewCompiler(eng, nil)
+	c := NewCompiler(eng, nil, nil)
 
 	// Use template name in sources.entity.type to trigger template lookup
 	req := CompileRequest{
@@ -383,7 +383,7 @@ func TestArtifactMultiVersion(t *testing.T) {
 		"type": "project", "entity_id": "verproj", "_pinned": true,
 	})
 
-	c := NewCompiler(eng, nil)
+	c := NewCompiler(eng, nil, nil)
 
 	req := CompileRequest{
 		Name:     "project_summary",
@@ -432,7 +432,7 @@ func TestArtifactHistory(t *testing.T) {
 		"type": "project", "entity_id": "histproj", "_pinned": true,
 	})
 
-	c := NewCompiler(eng, nil)
+	c := NewCompiler(eng, nil, nil)
 
 	req := CompileRequest{
 		Name:     "project_summary",
@@ -468,7 +468,7 @@ func TestKeepHistoryFalse(t *testing.T) {
 		"type": "user", "entity_id": "nohist", "name": "NoHist", "_pinned": true,
 	})
 
-	c := NewCompiler(eng, nil)
+	c := NewCompiler(eng, nil, nil)
 
 	req := CompileRequest{
 		Name:     "entity_card",

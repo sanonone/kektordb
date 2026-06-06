@@ -12,6 +12,7 @@ import (
 	"github.com/sanonone/kektordb/pkg/auth"
 	"github.com/sanonone/kektordb/pkg/cognitive"
 	"github.com/sanonone/kektordb/pkg/compiler"
+	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/engine"
 	"github.com/sanonone/kektordb/pkg/llm"
 )
@@ -36,7 +37,7 @@ type Server struct {
 
 // NewServer initializes the HTTP server using an existing Engine.
 // Note: The Engine must be initialized (Open) before passing it here.
-func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string, authToken string, dataDir string, cognitiveConfigPath string) (*Server, error) {
+func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string, authToken string, dataDir string, cognitiveConfigPath string, emb embeddings.Embedder) (*Server, error) {
 	// Load Vectorizer Configuration
 	vecConfig, err := LoadVectorizersConfig(vectorizersConfigPath)
 	if err != nil {
@@ -77,8 +78,8 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 
 	s.gardener = cognitive.NewGardener(eng, brain, gardenerCfg)
 
-	// Initialize Knowledge Engine Compiler (always available, works without LLM)
-	s.compiler = compiler.NewCompiler(eng, brain)
+	// Initialize Knowledge Engine Compiler
+	s.compiler = compiler.NewCompiler(eng, brain, emb)
 
 	// Initialize Vectorizer Service
 	vecService, err := NewVectorizerService(s, assetsPath)

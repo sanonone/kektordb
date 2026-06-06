@@ -195,7 +195,7 @@ func TestNeedsAsync(t *testing.T) {
 	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
 
 	// Without LLM
-	c := NewCompiler(eng, nil)
+	c := NewCompiler(eng, nil, nil)
 	req := CompileRequest{
 		Template: "user_profile",
 		Sources:  SourceSpec{Entity: EntityRef{Type: "user", ID: "test"}},
@@ -288,7 +288,7 @@ func TestAsyncCompileFlow(t *testing.T) {
 
 func TestGetTaskStatusNotFound(t *testing.T) {
 	eng := newTestEngine(t)
-	c := NewCompiler(eng, nil)
+	c := NewCompiler(eng, nil, nil)
 
 	_, err := c.GetTaskStatus("nonexistent")
 	if err == nil {
@@ -330,7 +330,7 @@ func TestCompileLLMFieldWithArray(t *testing.T) {
 }
 
 func TestBuildFieldPromptIncludesSchema(t *testing.T) {
-	c := NewCompiler(nil, nil)
+	c := NewCompiler(nil, nil, nil)
 	nodes := []NodeInfo{
 		{ID: "node_1", Content: "test content", Metadata: map[string]any{"name": "test"}},
 	}

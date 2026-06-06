@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sanonone/kektordb/pkg/core"
 	"github.com/sanonone/kektordb/pkg/engine"
 )
 
@@ -52,11 +53,45 @@ func (c *Compiler) queryFromGraph(spec SourceSpec, indexName string) ([]NodeInfo
 	return c.subgraphToNodeInfo(subgraph, indexName), nil
 }
 
-// queryFromSearch is a stub that falls back to graph query.
-// Full semantic search will be implemented in Phase 4B.
+// queryFromSearch gathers nodes via semantic search using the embedder.
+// Falls back to graph query if embedder is unavailable.
 func (c *Compiler) queryFromSearch(spec SourceSpec, indexName string) ([]NodeInfo, error) {
-	spec.Type = "graph_query"
-	return c.queryFromGraph(spec, indexName)
+	if c.embedder == nil {
+		// Fallback to graph query when no embedder available
+		spec.Type = "graph_query"
+		return c.queryFromGraph(spec, indexName)
+	}
+
+	query := spec.Query
+	if query == "" {
+		query = fmt.Sprintf("%s %s", spec.Entity.Type, spec.Entity.ID)
+	}
+
+	vec, err := c.embedder.Embed(query)
+	if err != nil {
+		return nil, fmt.Errorf("embed query: %w", err)
+	}
+
+	k := 20
+	if spec.Depth > 0 && spec.Depth < k {
+		k = spec.Depth * 10
+	}
+
+	results, err := c.eng.VSearch(indexName, vec, k, "", "", 0, 0, nil)
+	if err != nil {
+		return nil, fmt.Errorf("semantic search: %w", err)
+	}
+
+	nodes := make([]NodeInfo, 0, len(results))
+	for _, id := range results {
+		data, err := c.eng.VGet(indexName, id)
+		if err != nil {
+			continue
+		}
+		nodes = append(nodes, vectorDataToNodeInfo(id, data))
+	}
+
+	return nodes, nil
 }
 
 // subgraphToNodeInfo converts engine.SubgraphResult nodes to NodeInfo.
@@ -107,4 +142,22 @@ func (c *Compiler) subgraphToNodeInfo(sg *engine.SubgraphResult, indexName strin
 	}
 
 	return nodes
+}
+
+// vectorDataToNodeInfo converts a core.VectorData to a NodeInfo.
+func vectorDataToNodeInfo(id string, data core.VectorData) NodeInfo {
+	ni := NodeInfo{
+		ID:       id,
+		Metadata: data.Metadata,
+	}
+	if content, ok := data.Metadata["content"].(string); ok {
+		ni.Content = content
+	}
+	if ca, ok := data.Metadata["_created_at"].(float64); ok {
+		ni.CreatedAt = time.Unix(int64(ca), 0)
+	}
+	if pinned, ok := data.Metadata["_pinned"].(bool); ok {
+		ni.IsPinned = pinned
+	}
+	return ni
 }

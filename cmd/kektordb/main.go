@@ -154,7 +154,17 @@ func main() {
 
 	// TUI mode: start server in background, launch terminal dashboard.
 	if *modeTUI {
-		runTUI(*httpAddr, eng, *vectorizersConfig, *authToken, dataDir, *cognitiveConfig, *enableProxy, proxyConfigPath)
+		embCfg := embeddings.EmbedderConfig{
+			Mode:       *embedderModeFlag,
+			OllamaURL:  "http://localhost:11434/api/embeddings",
+			OllamaModel: "nomic-embed-text",
+			ModelDir:   *embedderModelFlag,
+		}
+		emb, _ := embeddings.SelectEmbedder(embCfg, dataDir)
+		if emb == nil {
+			emb = embeddings.NoopEmbedder{}
+		}
+		runTUI(*httpAddr, eng, *vectorizersConfig, *authToken, dataDir, *cognitiveConfig, *enableProxy, proxyConfigPath, emb)
 		return
 	}
 
@@ -216,8 +226,22 @@ func main() {
 		return
 	}
 
+	// Select embedder for HTTP mode (shared with compiler)
+	embedderCfg := embeddings.EmbedderConfig{
+		Mode:       *embedderModeFlag,
+		OllamaURL:  getEnv("EMBEDDER_URL", "http://localhost:11434/api/embeddings"),
+		OllamaModel: getEnv("EMBEDDER_MODEL", "nomic-embed-text"),
+		ModelDir:   *embedderModelFlag,
+	}
+	embedder, embedderErr := embeddings.SelectEmbedder(embedderCfg, dataDir)
+	if embedderErr != nil {
+		slog.Warn("No embedder available for semantic features",
+			"err", embedderErr, "hint", "Install Ollama or rebuild with -tags rust")
+		embedder = embeddings.NoopEmbedder{}
+	}
+
 	// Starting HTTP Server
-	srv, err := server.NewServer(eng, *httpAddr, *vectorizersConfig, *authToken, dataDir, *cognitiveConfig)
+	srv, err := server.NewServer(eng, *httpAddr, *vectorizersConfig, *authToken, dataDir, *cognitiveConfig, embedder)
 	if err != nil {
 		slog.Error("Failed to create server", "error", err)
 		eng.Close()
@@ -454,13 +478,13 @@ func printUsage() {
 
 // runTUI starts the HTTP server in a background goroutine and launches
 // the Bubble Tea terminal dashboard in the foreground.
-func runTUI(httpAddr string, eng *engine.Engine, vectorizersConfig, authToken, dataDir, cognitiveConfig string, enableProxy bool, proxyConfigPath *string) {
+func runTUI(httpAddr string, eng *engine.Engine, vectorizersConfig, authToken, dataDir, cognitiveConfig string, enableProxy bool, proxyConfigPath *string, emb embeddings.Embedder) {
 	// Redirect ALL logs to discard — nothing must touch stdout/stderr
 	// while the TUI owns the terminal.
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	// Start HTTP server in background.
-	srv, err := server.NewServer(eng, httpAddr, vectorizersConfig, authToken, dataDir, cognitiveConfig)
+	srv, err := server.NewServer(eng, httpAddr, vectorizersConfig, authToken, dataDir, cognitiveConfig, emb)
 	if err != nil {
 		log.Fatalf("Failed to create server: %v", err)
 	}

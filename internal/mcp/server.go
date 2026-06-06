@@ -13,7 +13,7 @@ func NewMCPServer(eng *engine.Engine, embedder embeddings.Embedder, allowlist ma
 
 	s := mcp.NewServer(&mcp.Implementation{
 		Name:    "KektorDB Memory",
-		Version: "0.4.7",
+		Version: "0.5.3",
 	}, nil)
 
 	registerTools(s, service, allowlist)

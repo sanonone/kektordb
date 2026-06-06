@@ -5,7 +5,7 @@ import (
 )
 
 func TestEnrichProvenanceFiltersInvalidSources(t *testing.T) {
-	c := NewCompiler(nil, nil)
+	c := NewCompiler(nil, nil, nil)
 
 	llmSources := []Provenance{
 		{SourceID: "node_1", Confidence: 0.9, Evidence: "valid", Role: "primary"},
@@ -28,7 +28,7 @@ func TestEnrichProvenanceFiltersInvalidSources(t *testing.T) {
 }
 
 func TestEnrichProvenanceAddsAutoWhenAllInvalid(t *testing.T) {
-	c := NewCompiler(nil, nil)
+	c := NewCompiler(nil, nil, nil)
 
 	llmSources := []Provenance{
 		{SourceID: "node_fake_1", Confidence: 0.9, Evidence: "fake"},
@@ -53,7 +53,7 @@ func TestEnrichProvenanceAddsAutoWhenAllInvalid(t *testing.T) {
 }
 
 func TestEnrichProvenanceAddsAutoWhenEmpty(t *testing.T) {
-	c := NewCompiler(nil, nil)
+	c := NewCompiler(nil, nil, nil)
 
 	actualNodes := []NodeInfo{
 		{ID: "node_1"},
@@ -71,7 +71,7 @@ func TestEnrichProvenanceAddsAutoWhenEmpty(t *testing.T) {
 }
 
 func TestValidateProvenanceAddsAutoForMissingFields(t *testing.T) {
-	c := NewCompiler(nil, nil)
+	c := NewCompiler(nil, nil, nil)
 
 	artifact := &Artifact{
 		Data:          map[string]any{"name": "Alice", "age": 30},
@@ -90,7 +90,7 @@ func TestValidateProvenanceAddsAutoForMissingFields(t *testing.T) {
 }
 
 func TestValidateProvenancePreservesExisting(t *testing.T) {
-	c := NewCompiler(nil, nil)
+	c := NewCompiler(nil, nil, nil)
 
 	existingProv := []Provenance{
 		{SourceID: "node_1", Confidence: 0.95, Evidence: "from metadata", Role: "primary"},

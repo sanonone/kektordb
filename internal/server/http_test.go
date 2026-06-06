@@ -24,7 +24,7 @@ func TestHealthzEndpoint(t *testing.T) {
 	}
 	defer eng.Close()
 
-	s, err := NewServer(eng, ":9092", "", "test-secret-token", "", "")
+	s, err := NewServer(eng, ":9092", "", "test-secret-token", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestKUpperBoundRejected(t *testing.T) {
 	}
 	defer eng.Close()
 
-	s, err := NewServer(eng, ":0", "", "", "", "")
+	s, err := NewServer(eng, ":0", "", "", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestBatchSizeLimitRejected(t *testing.T) {
 	}
 	defer eng.Close()
 
-	s, err := NewServer(eng, ":0", "", "", "", "")
+	s, err := NewServer(eng, ":0", "", "", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestVectorDimLimitRejected(t *testing.T) {
 	}
 	defer eng.Close()
 
-	s, err := NewServer(eng, ":0", "", "", "", "")
+	s, err := NewServer(eng, ":0", "", "", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestBodySizeLimit(t *testing.T) {
 	}
 	defer eng.Close()
 
-	s, err := NewServer(eng, ":0", "", "", "", "")
+	s, err := NewServer(eng, ":0", "", "", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestServerTimeoutsSet(t *testing.T) {
 	}
 	defer eng.Close()
 
-	s, err := NewServer(eng, ":0", "", "", "", "")
+	s, err := NewServer(eng, ":0", "", "", "", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +292,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *engine.Engine) {
 	}
 	t.Cleanup(func() { eng.Close() })
 
-	srv, err := NewServer(eng, ":0", "", "", tmpDir, "")
+	srv, err := NewServer(eng, ":0", "", "", tmpDir, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

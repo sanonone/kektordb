@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/engine"
 	"github.com/sanonone/kektordb/pkg/llm"
 )
@@ -18,18 +19,21 @@ import (
 type Compiler struct {
 	eng       *engine.Engine
 	llm       llm.Client
+	embedder  embeddings.Embedder
 	templates map[string]CompileTemplate
 
-	muPerArtifact sync.Map // key: "index:name:entity_type:entity_id" -> *sync.Mutex
+	muPerArtifact sync.Map
 	taskManager   *compileTaskManager
 }
 
 // NewCompiler creates a new Compiler backed by the given engine.
 // If llmClient is nil, only deterministic compilation is available.
-func NewCompiler(eng *engine.Engine, llmClient llm.Client) *Compiler {
+// If embedder is nil, semantic search and artifact vector averaging are unavailable.
+func NewCompiler(eng *engine.Engine, llmClient llm.Client, emb embeddings.Embedder) *Compiler {
 	return &Compiler{
 		eng:         eng,
 		llm:         llmClient,
+		embedder:    emb,
 		templates:   BuiltinTemplates,
 		taskManager: newCompileTaskManager(),
 	}
