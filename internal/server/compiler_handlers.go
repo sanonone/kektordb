@@ -116,6 +116,7 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	entityType := r.URL.Query().Get("entity_type")
 	entityID := r.URL.Query().Get("entity_id")
 	indexName := r.URL.Query().Get("index")
+	versionStr := r.URL.Query().Get("version")
 	if indexName == "" {
 		indexName = "mcp_memory"
 	}
@@ -126,7 +127,18 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	artifact, err := s.compiler.GetArtifact(name, entityType, entityID, indexName)
+	version := 0
+	if versionStr != "" {
+		var err error
+		version, err = strconv.Atoi(versionStr)
+		if err != nil {
+			s.writeHTTPError(w, http.StatusBadRequest,
+				fmt.Errorf("invalid version: %s", versionStr))
+			return
+		}
+	}
+
+	artifact, err := s.compiler.GetArtifact(name, entityType, entityID, indexName, version)
 	if err != nil {
 		s.writeHTTPError(w, http.StatusNotFound, err)
 		return
@@ -151,35 +163,15 @@ func (s *Server) handleArtifactHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filter := fmt.Sprintf(
-		"type='knowledge_artifact' AND artifact_name='%s' AND entity_type='%s' AND entity_id='%s'",
-		name, entityType, entityID,
-	)
-	ids, err := s.Engine.VFilter(indexName, filter, 20)
+	history, err := s.compiler.GetArtifactHistory(name, entityType, entityID, indexName)
 	if err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, err)
 		return
 	}
 
-	type versionEntry struct {
-		ID      string `json:"id"`
-		Version int    `json:"version"`
-	}
-	history := make([]versionEntry, 0, len(ids))
-	for _, id := range ids {
-		data, err := s.Engine.VGet(indexName, id)
-		if err != nil {
-			continue
-		}
-		v := 0
-		if ver, ok := data.Metadata["version"].(float64); ok {
-			v = int(ver)
-		}
-		history = append(history, versionEntry{ID: id, Version: v})
-	}
-
 	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
 		"name":    name,
+		"count":   len(history),
 		"history": history,
 	})
 }
@@ -252,8 +244,72 @@ func (s *Server) handleArtifactAtTime(w http.ResponseWriter, r *http.Request) {
 
 // handleArtifactDiff GET /artifact/{name}/diff?v1=&v2=
 func (s *Server) handleArtifactDiff(w http.ResponseWriter, r *http.Request) {
-	s.writeHTTPResponse(w, http.StatusNotImplemented, map[string]string{
-		"message": "artifact diff not yet implemented",
+	name := r.PathValue("name")
+	v1Str := r.URL.Query().Get("v1")
+	v2Str := r.URL.Query().Get("v2")
+
+	if v1Str == "" || v2Str == "" {
+		s.writeHTTPError(w, http.StatusBadRequest,
+			fmt.Errorf("missing query params: v1 and v2 are required"))
+		return
+	}
+
+	v1, err := strconv.Atoi(v1Str)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid v1: %s", v1Str))
+		return
+	}
+	v2, err := strconv.Atoi(v2Str)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid v2: %s", v2Str))
+		return
+	}
+
+	entityType := r.URL.Query().Get("entity_type")
+	entityID := r.URL.Query().Get("entity_id")
+	indexName := r.URL.Query().Get("index")
+	if indexName == "" {
+		indexName = "mcp_memory"
+	}
+
+	a1, err := s.compiler.GetArtifact(name, entityType, entityID, indexName, v1)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("v1 not found: %w", err))
+		return
+	}
+	a2, err := s.compiler.GetArtifact(name, entityType, entityID, indexName, v2)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("v2 not found: %w", err))
+		return
+	}
+
+	diff := map[string]any{
+		"added":    map[string]any{},
+		"removed":  map[string]any{},
+		"modified": map[string]any{},
+	}
+
+	for k, v := range a2.Data {
+		if _, ok := a1.Data[k]; !ok {
+			diff["added"].(map[string]any)[k] = v
+		} else if fmt.Sprintf("%v", a1.Data[k]) != fmt.Sprintf("%v", v) {
+			diff["modified"].(map[string]any)[k] = map[string]any{
+				"v1": a1.Data[k],
+				"v2": v,
+			}
+		}
+	}
+	for k := range a1.Data {
+		if _, ok := a2.Data[k]; !ok {
+			diff["removed"].(map[string]any)[k] = a1.Data[k]
+		}
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
+		"name": name,
+		"v1":   v1,
+		"v2":   v2,
+		"diff": diff,
 	})
 }
 

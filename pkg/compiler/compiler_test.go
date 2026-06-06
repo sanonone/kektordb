@@ -202,7 +202,7 @@ func TestGetArtifactRoundTrip(t *testing.T) {
 		t.Fatalf("Compile failed: %v", err)
 	}
 
-	retrieved, err := c.GetArtifact("entity_card", "user", "eve", indexName)
+	retrieved, err := c.GetArtifact("entity_card", "user", "eve", indexName, 0)
 	if err != nil {
 		t.Fatalf("GetArtifact failed: %v", err)
 	}
@@ -264,12 +264,13 @@ func TestArtifactVersioning(t *testing.T) {
 		t.Errorf("expected version 2, got %d", a2.Version)
 	}
 
-	// Verify the artifact was updated in the graph
+	// Verify the artifact was updated (new node for v2, old marked historical)
 	ids, err := eng.VFilter(indexName, "type='knowledge_artifact'", 10)
 	if err != nil {
 		t.Fatalf("VFilter failed: %v", err)
 	}
 	found := 0
+	histCount := 0
 	for _, id := range ids {
 		data, err := eng.VGet(indexName, id)
 		if err != nil {
@@ -277,13 +278,20 @@ func TestArtifactVersioning(t *testing.T) {
 		}
 		if name, ok := data.Metadata["artifact_name"].(string); ok && name == "project_summary" {
 			found++
-			if v, ok := data.Metadata["version"].(float64); ok && int(v) >= 2 {
-				t.Logf("found version %d", int(v))
+			if hist, ok := data.Metadata["_is_historical"].(bool); ok && hist {
+				histCount++
+			}
+			if v, ok := data.Metadata["version"].(float64); ok {
+				t.Logf("found version %d, historical=%v", int(v),
+					data.Metadata["_is_historical"])
 			}
 		}
 	}
-	if found < 1 {
-		t.Errorf("expected at least 1 artifact version, found %d", found)
+	if found < 2 {
+		t.Errorf("expected at least 2 artifact nodes (v1 historical + v2 current), found %d", found)
+	}
+	if histCount < 1 {
+		t.Errorf("expected at least 1 historical version, found %d", histCount)
 	}
 }
 
@@ -363,5 +371,127 @@ func TestCompileWithTemplateLookup(t *testing.T) {
 	// summary is LLM field, should not exist in deterministic mode
 	if _, ok := artifact.Data["summary"]; ok {
 		t.Log("summary field present (best-effort from deterministic mode)")
+	}
+}
+
+func TestArtifactMultiVersion(t *testing.T) {
+	eng := newTestEngine(t)
+	indexName := "mcp_memory"
+
+	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
+	eng.VAdd(indexName, "project:verproj", make([]float32, 384), map[string]any{
+		"type": "project", "entity_id": "verproj", "_pinned": true,
+	})
+
+	c := NewCompiler(eng, nil)
+
+	req := CompileRequest{
+		Name:     "project_summary",
+		Template: "project_summary",
+		Sources:  SourceSpec{Type: "graph_query", Entity: EntityRef{Type: "project", ID: "verproj"}, Depth: 1},
+	}
+
+	for i := 0; i < 3; i++ {
+		a, err := c.Compile(req)
+		if err != nil {
+			t.Fatalf("compile %d failed: %v", i+1, err)
+		}
+		if a.Version != i+1 {
+			t.Errorf("expected version %d, got %d", i+1, a.Version)
+		}
+	}
+
+	ids, _ := eng.VFilter(indexName, "type='knowledge_artifact'", 10)
+	if len(ids) < 3 {
+		t.Errorf("expected at least 3 artifact nodes, got %d", len(ids))
+	}
+
+	latest, _ := c.GetArtifact("project_summary", "project", "verproj", indexName, 0)
+	if latest.Version != 3 {
+		t.Errorf("expected version 3, got %d", latest.Version)
+	}
+
+	v1, err := c.GetArtifact("project_summary", "project", "verproj", indexName, 1)
+	if err != nil {
+		t.Fatalf("GetArtifact v1 failed: %v", err)
+	}
+	if v1.Version != 1 {
+		t.Errorf("expected version 1, got %d", v1.Version)
+	}
+	if v1.Status != CompileStatusStale {
+		t.Errorf("v1 should be historical (stale), got %s", v1.Status)
+	}
+}
+
+func TestArtifactHistory(t *testing.T) {
+	eng := newTestEngine(t)
+	indexName := "mcp_memory"
+
+	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
+	eng.VAdd(indexName, "project:histproj", make([]float32, 384), map[string]any{
+		"type": "project", "entity_id": "histproj", "_pinned": true,
+	})
+
+	c := NewCompiler(eng, nil)
+
+	req := CompileRequest{
+		Name:     "project_summary",
+		Template: "project_summary",
+		Sources:  SourceSpec{Type: "graph_query", Entity: EntityRef{Type: "project", ID: "histproj"}, Depth: 1},
+	}
+
+	for i := 0; i < 2; i++ {
+		_, err := c.Compile(req)
+		if err != nil {
+			t.Fatalf("compile %d failed: %v", i+1, err)
+		}
+	}
+
+	history, err := c.GetArtifactHistory("project_summary", "project", "histproj", indexName)
+	if err != nil {
+		t.Fatalf("GetArtifactHistory failed: %v", err)
+	}
+	if len(history) < 2 {
+		t.Errorf("expected at least 2 in history, got %d", len(history))
+	}
+	if len(history) >= 2 && history[0].Version < history[1].Version {
+		t.Error("history should be sorted by version desc")
+	}
+}
+
+func TestKeepHistoryFalse(t *testing.T) {
+	eng := newTestEngine(t)
+	indexName := "mcp_memory"
+
+	eng.VCreate(indexName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
+	eng.VAdd(indexName, "user:nohist", make([]float32, 384), map[string]any{
+		"type": "user", "entity_id": "nohist", "name": "NoHist", "_pinned": true,
+	})
+
+	c := NewCompiler(eng, nil)
+
+	req := CompileRequest{
+		Name:     "entity_card",
+		Template: "entity_card",
+		Sources:  SourceSpec{Type: "graph_query", Entity: EntityRef{Type: "user", ID: "nohist"}, Depth: 1},
+	}
+
+	for i := 0; i < 2; i++ {
+		_, err := c.Compile(req)
+		if err != nil {
+			t.Fatalf("compile %d failed: %v", i+1, err)
+		}
+	}
+
+	ids, _ := eng.VFilter(indexName, "type='knowledge_artifact'", 10)
+	count := 0
+	for _, id := range ids {
+		data, _ := eng.VGet(indexName, id)
+		if name, ok := data.Metadata["artifact_name"].(string); ok && name == "entity_card" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected 1 artifact node with KeepHistory=false, got %d", count)
 	}
 }

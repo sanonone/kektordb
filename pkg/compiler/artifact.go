@@ -81,25 +81,30 @@ type EntityRef struct {
 
 // RefreshPolicy controls when and how an artifact is recompiled.
 type RefreshPolicy struct {
-	Mode          string   `json:"mode,omitempty"`              // "on_source_change", "scheduled", "manual"
-	MaxStalenessH int      `json:"max_staleness_hours,omitempty"` // 0 = no limit
-	RecompileOn   []string `json:"recompile_on,omitempty"`       // "entity_update", "new_relationship", "contradiction"
+	Mode            string   `json:"mode,omitempty"`               // "on_source_change", "scheduled", "manual"
+	MaxStalenessH   int      `json:"max_staleness_hours,omitempty"` // 0 = no limit
+	RecompileOn     []string `json:"recompile_on,omitempty"`        // "entity_update", "new_relationship", "contradiction"
+	KeepHistory     bool     `json:"keep_history,omitempty"`        // Keep all versions (default true)
+	MaxVersions     int      `json:"max_versions,omitempty"`        // Max versions to keep (0 = unlimited)
+	PruneAfterDays  int      `json:"prune_after_days,omitempty"`   // Auto-delete versions older than N days (0 = never)
 }
 
 // TaskSpec defines the agent role and desired output shape for compilation.
 type TaskSpec struct {
-	AgentRole     string       `json:"agent_role,omitempty"`
-	Description   string       `json:"description,omitempty"`
-	OutputSchema  OutputSchema `json:"output_schema,omitempty"`
-	ConfidenceMin float64      `json:"confidence_min,omitempty"`
+	AgentRole      string        `json:"agent_role,omitempty"`
+	Description    string        `json:"description,omitempty"`
+	OutputSchema   OutputSchema  `json:"output_schema,omitempty"`
+	ConfidenceMin  float64       `json:"confidence_min,omitempty"`
+	RefreshPolicy  RefreshPolicy `json:"refresh_policy,omitempty"`
 }
 
 // CompileTemplate defines a built-in compilation recipe.
 type CompileTemplate struct {
-	Name        string        `json:"name"`
-	Description string        `json:"description"`
-	EntityTypes []string      `json:"entity_types"`
-	Schema      OutputSchema  `json:"schema"`
-	Sources     SourceSpec    `json:"sources"`
-	CompileMode  CompileMode   `json:"compile_mode"`
+	Name          string        `json:"name"`
+	Description   string        `json:"description"`
+	EntityTypes   []string      `json:"entity_types"`
+	Schema        OutputSchema  `json:"schema"`
+	Sources       SourceSpec    `json:"sources"`
+	CompileMode   CompileMode   `json:"compile_mode"`
+	RefreshPolicy RefreshPolicy `json:"refresh_policy,omitempty"`
 }

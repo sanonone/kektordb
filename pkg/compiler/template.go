@@ -56,6 +56,11 @@ var BuiltinTemplates = map[string]CompileTemplate{
 			Depth:  2,
 		},
 		CompileMode: CompileModeHybrid,
+		RefreshPolicy: RefreshPolicy{
+			KeepHistory:    true,
+			MaxVersions:    20,
+			PruneAfterDays: 90,
+		},
 	},
 
 	"project_summary": {
@@ -104,6 +109,11 @@ var BuiltinTemplates = map[string]CompileTemplate{
 			Depth:  2,
 		},
 		CompileMode: CompileModeHybrid,
+		RefreshPolicy: RefreshPolicy{
+			KeepHistory:    true,
+			MaxVersions:    30,
+			PruneAfterDays: 90,
+		},
 	},
 
 	"conversation_context": {
@@ -153,6 +163,11 @@ var BuiltinTemplates = map[string]CompileTemplate{
 			Depth:  1,
 		},
 		CompileMode: CompileModeHybrid,
+		RefreshPolicy: RefreshPolicy{
+			KeepHistory:    true,
+			MaxVersions:    10,
+			PruneAfterDays: 60,
+		},
 	},
 
 	"topic_overview": {
@@ -196,6 +211,11 @@ var BuiltinTemplates = map[string]CompileTemplate{
 			Depth: 2,
 		},
 		CompileMode: CompileModeHybrid,
+		RefreshPolicy: RefreshPolicy{
+			KeepHistory:    true,
+			MaxVersions:    10,
+			PruneAfterDays: 60,
+		},
 	},
 
 	"entity_card": {
@@ -242,6 +262,11 @@ var BuiltinTemplates = map[string]CompileTemplate{
 			Depth: 1,
 		},
 		CompileMode: CompileModeDeterministic,
+		RefreshPolicy: RefreshPolicy{
+			KeepHistory:    false,
+			MaxVersions:    1,
+			PruneAfterDays: 0,
+		},
 	},
 }
 

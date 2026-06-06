@@ -88,6 +88,21 @@ func (c *Compiler) resolveConfidenceMin(req CompileRequest, template *CompileTem
 	return 0.0
 }
 
+// resolveRefreshPolicy returns the refresh policy from the request or template.
+func (c *Compiler) resolveRefreshPolicy(req CompileRequest, template *CompileTemplate) RefreshPolicy {
+	if req.TaskSpec != nil && req.TaskSpec.RefreshPolicy.KeepHistory {
+		return req.TaskSpec.RefreshPolicy
+	}
+	if template != nil {
+		return template.RefreshPolicy
+	}
+	return RefreshPolicy{
+		KeepHistory:    true,
+		MaxVersions:    0,
+		PruneAfterDays: 90,
+	}
+}
+
 func (c *Compiler) artifactKey(indexName, name, entityType, entityID string) string {
 	return fmt.Sprintf("%s:%s:%s:%s", indexName, name, entityType, entityID)
 }
@@ -165,7 +180,10 @@ func (c *Compiler) Compile(req CompileRequest) (*Artifact, error) {
 		artifact.Confidence[fieldName] = confidence
 	}
 
-	if err := c.StoreArtifact(artifact, relevantNodes, req.IndexName); err != nil {
+	// Resolve refresh policy: request TaskSpec > template > defaults
+	policy := c.resolveRefreshPolicy(req, template)
+
+	if err := c.StoreArtifact(artifact, relevantNodes, req.IndexName, policy); err != nil {
 		artifact.Status = CompileStatusFailed
 		return artifact, fmt.Errorf("store artifact: %w", err)
 	}
