@@ -1585,7 +1585,15 @@ func (s *Service) RequestKnowledge(ctx context.Context, req *mcp.CallToolRequest
 	if confidenceMin <= 0 {
 		confidenceMin = 0.5
 	}
-	includeProv := args.IncludeProvenance
+	includeProv := true
+	if !args.IncludeProvenance {
+		includeProv = false
+	}
+
+	budgetMs := args.BudgetMs
+	if budgetMs <= 0 {
+		budgetMs = 500
+	}
 
 	entityType := args.EntityType
 	if entityType == "" {
@@ -1596,7 +1604,7 @@ func (s *Service) RequestKnowledge(ctx context.Context, req *mcp.CallToolRequest
 	}
 
 	if s.compiler == nil {
-		return s.requestKnowledgeFallback(idx, args.Intent, args.Entity, entityType)
+		return s.requestKnowledgeFallback(idx, args.Intent, args.Entity, entityType, budgetMs)
 	}
 
 	artifact, err := s.compiler.GetArtifact(args.Intent, entityType, args.Entity, idx, 0)
@@ -1634,10 +1642,34 @@ func (s *Service) RequestKnowledge(ctx context.Context, req *mcp.CallToolRequest
 		return nil, result, nil
 	}
 
-	return s.requestKnowledgeFallback(idx, args.Intent, args.Entity, entityType)
+	return s.requestKnowledgeFallback(idx, args.Intent, args.Entity, entityType, budgetMs)
 }
 
-func (s *Service) requestKnowledgeFallback(indexName, intent, entity, entityType string) (*mcp.CallToolResult, RequestKnowledgeResult, error) {
+func (s *Service) requestKnowledgeFallback(indexName, intent, entity, entityType string, budgetMs int) (*mcp.CallToolResult, RequestKnowledgeResult, error) {
+	// Trigger async recompile in background for next request
+	if s.compiler != nil {
+		go func() {
+			_, _ = s.compiler.StartAsyncCompile(compiler.CompileRequest{
+				Name:     intent,
+				Template: intent,
+				Sources: compiler.SourceSpec{
+					Type:   "graph_query",
+					Entity: compiler.EntityRef{Type: entityType, ID: entity},
+					Depth:  2,
+				},
+				IndexName: indexName,
+			})
+		}()
+	}
+
+	// If budget is too small, skip search
+	if budgetMs < 100 {
+		return nil, RequestKnowledgeResult{
+			Found:           false,
+			Status:          "not_found",
+		}, nil
+	}
+
 	query := intent + " " + entity
 
 	if s.embedder != nil && s.engine.IndexExists(indexName) {

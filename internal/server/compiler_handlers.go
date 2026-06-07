@@ -19,6 +19,7 @@ func (s *Server) registerCompilerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /artifact/{name}/history", s.handleArtifactHistory)
 	mux.HandleFunc("GET /artifact/{name}/at", s.handleArtifactAtTime)
 	mux.HandleFunc("GET /artifact/{name}/diff", s.handleArtifactDiff)
+	mux.HandleFunc("GET /artifact/{name}/stale", s.handleArtifactStale)
 	mux.HandleFunc("POST /compile/validate", s.handleValidateCompile)
 }
 
@@ -348,5 +349,38 @@ func (s *Server) handleValidateCompile(w http.ResponseWriter, r *http.Request) {
 
 	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
 		"valid": true,
+	})
+}
+
+// handleArtifactStale GET /artifact/{name}/stale?entity_type=&entity_id=
+func (s *Server) handleArtifactStale(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	entityType := r.URL.Query().Get("entity_type")
+	entityID := r.URL.Query().Get("entity_id")
+	indexName := r.URL.Query().Get("index")
+	if indexName == "" {
+		indexName = "mcp_memory"
+	}
+
+	if entityType == "" || entityID == "" {
+		s.writeHTTPError(w, http.StatusBadRequest,
+			fmt.Errorf("missing query params: entity_type and entity_id are required"))
+		return
+	}
+
+	artifact, err := s.compiler.GetArtifact(name, entityType, entityID, indexName, 0)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusNotFound, err)
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
+		"name":            artifact.Name,
+		"entity_type":     artifact.EntityType,
+		"entity_id":       artifact.EntityID,
+		"version":         artifact.Version,
+		"staleness_score": artifact.StalenessScore,
+		"status":          artifact.Status,
+		"compiled_at":     artifact.CompiledAt,
 	})
 }

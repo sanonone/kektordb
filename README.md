@@ -158,6 +158,8 @@ KektorDB speaks the **Model Context Protocol** natively. Connect Claude Desktop 
 
 **Cognitive Tools:** `start_session`, `end_session`, `get_user_profile`, `check_subconscious`, `resolve_conflict`, `ask_meta_question`
 
+**Knowledge Tools:** `request_knowledge`
+
 **Utility:** `transfer_memory`, `unpin_memory`, `filter_vectors`
 
 ---
@@ -247,7 +249,7 @@ KektorDB functions as a full **Cognitive Memory Server** under the [Model Contex
     ```bash
     kektordb setup claude-code    # or: cursor, gemini-cli, codex, opencode
     ```
-    Writes MCP config with `--tools=agent` (14 tools) to keep agent context lean. Idempotent -- safe to re-run.
+    Writes MCP config with `--tools=agent` (15 tools) to keep agent context lean. Idempotent -- safe to re-run.
 *   **To run with a specific tool profile:**
     ```bash
     ./kektordb --mcp --tools=agent
@@ -446,12 +448,12 @@ Benchmarks were performed on a local Linux machine (Consumer Hardware, Intel i5-
 
 ### Completed (feat/tui branch, unreleased) ✅
 *   [x] **Zero-Config Embedding:** Built-in ONNX embedder (`all-MiniLM-L6-v2`, 384dim) via Rust/Candle. Automatic model download from HuggingFace with SHA256 verification. Smart auto-detect: uses Ollama if available, falls back to local embedding. `--embedder` flag with `auto`/`ollama`/`openai`/`local` modes.
-*   [x] **MCP One-Liner:** `kektordb setup <agent>` configures MCP for Claude Code, Cursor, Gemini CLI, Codex, and OpenCode in a single command. `--tools` flag with `agent`/`admin`/`all` tool profiles (14/6/22 tools).
+*   [x] **MCP One-Liner:** `kektordb setup <agent>` configures MCP for Claude Code, Cursor, Gemini CLI, Codex, and OpenCode in a single command. `--tools` flag with `agent`/`admin`/`all` tool profiles (15/6/23 tools).
 *   [x] **Terminal Dashboard (TUI):** 5-tab Bubble Tea v2 terminal interface with live stats, graph explorer, semantic search, SSE timeline, and settings. Launch with `--tui`. Status: experimental, known shutdown limitations under heavy pipeline load.
+*   [x] **Knowledge Engine:** Pre-compiled knowledge artifacts with field-level confidence and provenance. `/compile` endpoint with 5 built-in templates. `request_knowledge` MCP tool with artifact caching (<50ms HIT, zero tokens). Artifact Watcher integrated into Gardener for autonomous staleness tracking, recompilation, and lifecycle management.
 
 ### On the Horizon
 *   [ ] **Docker Hub:** Official images for instant deployment.
-*   [ ] **Knowledge Engine:** Pre-compiled knowledge artifacts with field-level confidence and provenance (`/compile`). Gardener autonomously keeps artifacts up-to-date with delta-recompilation.
 *   [ ] **Git Sync:** Push/pull memories across machines via git.
 *   [ ] **Docker Compose:** One-command production stack with persistent volumes and healthchecks.
 

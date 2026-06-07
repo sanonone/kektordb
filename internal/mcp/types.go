@@ -342,8 +342,9 @@ type RequestKnowledgeArgs struct {
 	EntityType   string  `json:"entity_type,omitempty" jsonschema:"description=Entity type (auto-detected if omitted)"`
 	IndexName    string  `json:"index_name,omitempty" jsonschema:"description=Index name (default mcp_memory)"`
 	ConfidenceMin float64 `json:"confidence_min,omitempty" jsonschema:"description=Minimum confidence threshold (0.0-1.0, default 0.5)"`
-	BudgetMs     int     `json:"budget_ms,omitempty" jsonschema:"description=Maximum latency budget in ms (default 500)"`
-	IncludeProvenance bool `json:"include_provenance,omitempty" jsonschema:"description=Include source citations per field (default true)"`
+	BudgetMs     int     `json:"budget_ms,omitempty" jsonschema:"description=Maximum latency budget in ms (default 500). If < 100, skip fallback search"`
+	IncludeProvenance bool `json:"include_provenance" jsonschema:"description=Include source citations per field (default true)"`
+	OutputShape  map[string]any `json:"output_shape,omitempty" jsonschema:"description=Desired output fields (omitted = all fields from template)"`
 }
 
 type RequestKnowledgeResult struct {

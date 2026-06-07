@@ -1557,3 +1557,147 @@ Graph quality in HNSW can be sensitive to the order of insertion.
 *   **No Blocking**: Refine uses a "yielding" strategy: it processes small batches and releases the global lock between them, ensuring that search QPS remains stable even during heavy optimization.
 
 > **Performance Note:** Starting from v0.4.0, Int8 quantization uses an auto-training mechanism with smart sampling. You can ingest data directly into an `int8` index with zero pre-training delay. Ingestion and Compression are fully parallelized.
+
+---
+
+### 5.11 Knowledge Engine (Compiler)
+
+The Knowledge Engine compiles structured knowledge artifacts from the memory graph. Artifacts are pre-compiled knowledge objects with deterministic field extraction and optional LLM-assisted inference. Each artifact has field-level provenance (which source nodes contributed to each value) and confidence scoring. The Artifact Watcher (integrated into the Gardener) autonomously monitors source changes and triggers recompilation when knowledge becomes stale.
+
+#### Compile Artifact
+**`POST /compile`**
+
+Compiles a knowledge artifact from the graph. Returns `200 OK` for deterministic compilation or `202 Accepted` with a `task_id` for LLM-assisted compilation (async).
+
+**Body:**
+```json
+{
+  "name": "user_profile",
+  "template": "user_profile",
+  "sources": {
+    "type": "graph_query",
+    "entity": {"type": "user", "id": "user_123"},
+    "depth": 2
+  },
+  "index_name": "mcp_memory",
+  "compile_mode": "auto",
+  "task_spec": {
+    "agent_role": "assistant",
+    "description": "User profile for personalization",
+    "confidence_min": 0.7
+  }
+}
+```
+
+**Response (200 OK, deterministic):**
+```json
+{
+  "name": "user_profile",
+  "version": 1,
+  "entity_type": "user",
+  "entity_id": "user_123",
+  "data": {
+    "name": "Alice",
+    "interaction_count": 15,
+    "last_interaction": "2026-06-01T10:00:00Z"
+  },
+  "provenance": {
+    "name": [{"source_id": "user:alice", "confidence": 0.95, "evidence": "metadata"}],
+    "interaction_count": [{"source_id": "computed", "confidence": 1.0, "evidence": "graph count"}]
+  },
+  "confidence": {"name": 0.95, "interaction_count": 1.0},
+  "compile_mode": "hybrid",
+  "status": "complete",
+  "staleness_score": 0,
+  "compiled_at": "2026-06-01T10:00:00Z"
+}
+```
+
+**Response (202 Accepted, async):**
+```json
+{
+  "task_id": "compile_1718054400_1",
+  "status": "compiling",
+  "poll": "/compile/status?task_id=compile_1718054400_1"
+}
+```
+
+#### List Compiled Artifacts
+**`GET /artifacts?index=mcp_memory`**
+
+Returns all non-historical artifacts in the given index.
+
+#### Get Artifact
+**`GET /artifact/{name}?entity_type=user&entity_id=alice&version=1&index=mcp_memory`**
+
+Returns a specific artifact version. Omit `version` to get the latest.
+
+#### Artifact History
+**`GET /artifact/{name}/history?entity_type=user&entity_id=alice&index=mcp_memory`**
+
+Returns all versions (including historical ones), ordered by version descending.
+
+#### Artifact Version Diff
+**`GET /artifact/{name}/diff?v1=1&v2=3&entity_type=user&entity_id=alice`**
+
+Compares two versions and returns added, removed, and modified fields.
+
+#### Check Staleness
+**`GET /artifact/{name}/stale?entity_type=user&entity_id=alice&index=mcp_memory`**
+
+Returns the artifact's staleness score and compilation status.
+
+#### Compile Status (Async)
+**`GET /compile/status?task_id=...`**
+
+Polls the status of an async compilation task.
+
+#### Validate Task Spec
+**`POST /compile/validate`**
+
+Validates a task specification without compiling. Returns `{"valid": true}` or `{"valid": false, "errors": [...]}`.
+
+#### List Templates
+**`GET /compile/templates`**
+
+Returns all built-in compilation templates with their schemas.
+
+#### Built-in Templates
+
+| Template | Description | Mode | Keep History |
+|---|---|---|---|
+| `user_profile` | Aggregated user profile with preferences, communication style, core facts | hybrid | 20 versions |
+| `project_summary` | Statistical and relational summary: node count, relations, top entities | hybrid | 30 versions |
+| `conversation_context` | Session context: topic, key decisions, participants, duration | hybrid | 10 versions |
+| `topic_overview` | Topic overview with related entities, sentiment, relation types | hybrid | 10 versions |
+| `entity_card` | Compact entity card: name, type, connections, last updated | deterministic | 1 version |
+
+#### MCP Tool: `request_knowledge`
+
+The `request_knowledge` MCP tool abstracts the Knowledge Engine for AI agents. It first checks for a pre-compiled artifact cache. If found, returns structured data in <50ms with zero token cost. If not found, falls back to semantic search and triggers async compilation in the background—the next request will hit the cache.
+
+**Cache HIT (artifact exists):**
+```json
+{
+  "found": true,
+  "artifact_name": "user_profile",
+  "version": 3,
+  "data": {"name": "Alice", "interaction_count": 15},
+  "provenance": {"name": [{"source_id": "user:alice", "confidence": 0.95}]},
+  "confidence": {"name": 0.95},
+  "staleness_score": 0.05,
+  "compile_mode": "hybrid",
+  "status": "complete"
+}
+```
+
+**Cache MISS (fallback retrieval):**
+```json
+{
+  "found": false,
+  "status": "not_found",
+  "fallback_results": ["[user:alice:mem1] Alice prefers concise code", ...]
+}
+```
+
+An artifact is compiled in the background and will be available on the next request. Artifacts that haven't been accessed in 30+ days are automatically archived by the Artifact Watcher.
