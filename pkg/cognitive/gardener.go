@@ -70,6 +70,10 @@ type Config struct {
 	EpistemicResolutionEnabled   bool    // Enable epistemic auto-resolution using VBeliefState
 	EpistemicMaxPerCycle         int     // Max reflections to process per cycle (default: 3)
 	EpistemicConfidenceThreshold float64 // Min confidence to trigger resolution (default: 0.40)
+
+	// Artifact Watcher callbacks (set by compiler.Watcher)
+	ArtifactScan  func()             // Called in think() to scan stale artifacts
+	ArtifactEvent func(engine.Event) // Called in onEvent() to track source changes
 }
 
 // Gardener is the autonomous background worker that analyzes the database graph
@@ -370,6 +374,11 @@ func (g *Gardener) onEvent(event engine.Event) {
 	if g.cfg.EnableUserProfiling && event.Type == "vector.add" {
 		g.trackUserInteraction(event)
 	}
+
+	// Artifact Watcher: notify of source node changes
+	if g.cfg.ArtifactEvent != nil {
+		g.cfg.ArtifactEvent(event)
+	}
 }
 
 // trackUserInteraction increments the unassimilated counter for user profiling.
@@ -514,6 +523,11 @@ func (g *Gardener) think() {
 		if g.cfg.EpistemicResolutionEnabled {
 			g.resolveVolatileBeliefs(idx)
 		}
+	}
+
+	// Artifact Watcher: scan for stale artifacts and trigger recompilation
+	if g.cfg.ArtifactScan != nil {
+		g.cfg.ArtifactScan()
 	}
 
 	slog.Info("[Cognitive Engine] Sleep cycle completed. Graph optimized.")

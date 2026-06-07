@@ -81,6 +81,9 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 	// Initialize Knowledge Engine Compiler
 	s.compiler = compiler.NewCompiler(eng, brain, emb)
 
+	// Initialize Artifact Watcher (connects to Gardener lifecycle)
+	compiler.NewWatcher(s.compiler, eng, &gardenerCfg)
+
 	// Initialize Vectorizer Service
 	vecService, err := NewVectorizerService(s, assetsPath)
 	if err != nil {
