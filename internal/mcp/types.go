@@ -335,3 +335,27 @@ type GetMemoryEvolutionResult struct {
 	EvolutionChain []MemoryEvolutionStep `json:"evolution_chain"`
 	TotalSteps     int                   `json:"total_steps"`
 }
+
+type RequestKnowledgeArgs struct {
+	Intent       string  `json:"intent" jsonschema:"required,description=Type of knowledge requested (e.g. user_profile, project_summary, entity_card)"`
+	Entity       string  `json:"entity" jsonschema:"required,description=Entity identifier"`
+	EntityType   string  `json:"entity_type,omitempty" jsonschema:"description=Entity type (auto-detected if omitted)"`
+	IndexName    string  `json:"index_name,omitempty" jsonschema:"description=Index name (default mcp_memory)"`
+	ConfidenceMin float64 `json:"confidence_min,omitempty" jsonschema:"description=Minimum confidence threshold (0.0-1.0, default 0.5)"`
+	BudgetMs     int     `json:"budget_ms,omitempty" jsonschema:"description=Maximum latency budget in ms (default 500)"`
+	IncludeProvenance bool `json:"include_provenance,omitempty" jsonschema:"description=Include source citations per field (default true)"`
+}
+
+type RequestKnowledgeResult struct {
+	Found           bool                     `json:"found"`
+	ArtifactName    string                   `json:"artifact_name,omitempty"`
+	Version         int                      `json:"version,omitempty"`
+	CompiledAt      string                   `json:"compiled_at,omitempty"`
+	Data            map[string]any           `json:"data,omitempty"`
+	Confidence      map[string]float64       `json:"confidence,omitempty"`
+	Provenance      map[string][]interface{} `json:"provenance,omitempty"`
+	StalenessScore  float64                  `json:"staleness_score,omitempty"`
+	CompileMode     string                   `json:"compile_mode,omitempty"`
+	Status          string                   `json:"status"`
+	FallbackResults []string                 `json:"fallback_results,omitempty"`
+}

@@ -22,6 +22,7 @@ import (
 	"github.com/sanonone/kektordb/internal/server"
 	"github.com/sanonone/kektordb/internal/setup"
 	"github.com/sanonone/kektordb/internal/tui"
+	"github.com/sanonone/kektordb/pkg/compiler"
 	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/engine"
 	"github.com/sanonone/kektordb/pkg/proxy"
@@ -200,9 +201,10 @@ func main() {
 			embedder = embeddings.NoopEmbedder{}
 		}
 
-		// Init MCP Server
+		// Init MCP Server (with compiler for request_knowledge)
 		allowlist := mcpi.ResolveTools(*toolsFlag)
-		mcpSrv := mcpi.NewMCPServer(eng, embedder, allowlist)
+		comp := compiler.NewCompiler(eng, nil, embedder) // no LLM in MCP mode
+		mcpSrv := mcpi.NewMCPServer(eng, embedder, allowlist, comp)
 
 		// Create a Stdio transport
 		// Note from docs/server.md: "The server will have the 'tools' capability if any tool is added..."

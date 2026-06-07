@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/sanonone/kektordb/pkg/compiler"
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/core/types"
@@ -20,6 +21,7 @@ import (
 type Service struct {
 	engine   *engine.Engine
 	embedder embeddings.Embedder
+	compiler *compiler.Compiler
 
 	// Session management (per-connection)
 	sessions   map[string]*SessionContext // key: connection ID or session ID
@@ -28,10 +30,11 @@ type Service struct {
 
 const defaultMemoryFilter = "_is_historical != 'true' AND _archived != 'true'"
 
-func NewService(eng *engine.Engine, emb embeddings.Embedder) *Service {
+func NewService(eng *engine.Engine, emb embeddings.Embedder, comp *compiler.Compiler) *Service {
 	return &Service{
 		engine:   eng,
 		embedder: emb,
+		compiler: comp,
 		sessions: make(map[string]*SessionContext),
 	}
 }
@@ -1567,5 +1570,101 @@ func (s *Service) GetMemoryEvolution(ctx context.Context, req *mcp.CallToolReque
 	return nil, GetMemoryEvolutionResult{
 		EvolutionChain: chain,
 		TotalSteps:     len(chain),
+	}, nil
+}
+
+// RequestKnowledge handles the request_knowledge MCP tool.
+// It first checks for a pre-compiled artifact; if found, returns it.
+// If not found, falls back to semantic search and triggers async compilation.
+func (s *Service) RequestKnowledge(ctx context.Context, req *mcp.CallToolRequest, args RequestKnowledgeArgs) (*mcp.CallToolResult, RequestKnowledgeResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	confidenceMin := args.ConfidenceMin
+	if confidenceMin <= 0 {
+		confidenceMin = 0.5
+	}
+	includeProv := args.IncludeProvenance
+
+	entityType := args.EntityType
+	if entityType == "" {
+		if parts := strings.SplitN(args.Entity, ":", 2); len(parts) == 2 {
+			entityType = parts[0]
+			args.Entity = parts[1]
+		}
+	}
+
+	if s.compiler == nil {
+		return s.requestKnowledgeFallback(idx, args.Intent, args.Entity, entityType)
+	}
+
+	artifact, err := s.compiler.GetArtifact(args.Intent, entityType, args.Entity, idx, 0)
+	if err == nil && artifact != nil {
+		status := "complete"
+		if artifact.StalenessScore > 0.1 {
+			status = "stale"
+		}
+
+		result := RequestKnowledgeResult{
+			Found:          true,
+			ArtifactName:   artifact.Name,
+			Version:        artifact.Version,
+			Data:           artifact.Data,
+			Confidence:     artifact.Confidence,
+			StalenessScore: artifact.StalenessScore,
+			CompileMode:    string(artifact.CompileMode),
+			Status:         status,
+		}
+		if !artifact.CompiledAt.IsZero() {
+			result.CompiledAt = artifact.CompiledAt.Format(time.RFC3339)
+		}
+		if includeProv {
+			prov := make(map[string][]interface{})
+			for k, v := range artifact.Provenance {
+				provEntries := make([]interface{}, len(v))
+				for i, p := range v {
+					provEntries[i] = p
+				}
+				prov[k] = provEntries
+			}
+			result.Provenance = prov
+		}
+
+		return nil, result, nil
+	}
+
+	return s.requestKnowledgeFallback(idx, args.Intent, args.Entity, entityType)
+}
+
+func (s *Service) requestKnowledgeFallback(indexName, intent, entity, entityType string) (*mcp.CallToolResult, RequestKnowledgeResult, error) {
+	query := intent + " " + entity
+
+	if s.embedder != nil && s.engine.IndexExists(indexName) {
+		vec, err := s.embedder.Embed(query)
+		if err == nil {
+			ids, err := s.engine.VSearch(indexName, vec, 5, "", "", 0, 0, nil)
+			if err == nil && len(ids) > 0 {
+				data, _ := s.engine.VGetMany(indexName, ids)
+				var results []string
+				for _, item := range data {
+					content := item.Metadata["content"]
+					if content == nil {
+						content = fmt.Sprintf("[%s]", item.ID)
+					}
+					results = append(results, fmt.Sprintf("[%s] %v", item.ID, content))
+				}
+				return nil, RequestKnowledgeResult{
+					Found:           false,
+					Status:          "not_found",
+					FallbackResults: results,
+				}, nil
+			}
+		}
+	}
+
+	return nil, RequestKnowledgeResult{
+		Found:  false,
+		Status: "not_found",
 	}, nil
 }

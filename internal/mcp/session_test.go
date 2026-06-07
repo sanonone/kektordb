@@ -38,7 +38,7 @@ func setupTestService(t *testing.T) (*Service, *engine.Engine, func()) {
 	eng.VCreate("mcp_memory", distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
 
 	embedder := &mockEmbedder{}
-	svc := NewService(eng, embedder)
+	svc := NewService(eng, embedder, nil)
 
 	cleanup := func() {
 		eng.Close()

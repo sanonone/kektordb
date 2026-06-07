@@ -2,14 +2,16 @@ package mcp
 
 import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/sanonone/kektordb/pkg/compiler"
 	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/engine"
 )
 
-// NewMCPServer creates an MCP server with the given engine, embedder, and tool allowlist.
+// NewMCPServer creates an MCP server with the given engine, embedder, compiler, and tool allowlist.
 // allowlist is a set of tool names to register. If nil or empty, all tools are registered.
-func NewMCPServer(eng *engine.Engine, embedder embeddings.Embedder, allowlist map[string]bool) *mcp.Server {
-	service := NewService(eng, embedder)
+// compiler may be nil — the request_knowledge tool falls back gracefully.
+func NewMCPServer(eng *engine.Engine, embedder embeddings.Embedder, allowlist map[string]bool, comp *compiler.Compiler) *mcp.Server {
+	service := NewService(eng, embedder, comp)
 
 	s := mcp.NewServer(&mcp.Implementation{
 		Name:    "KektorDB Memory",
@@ -182,5 +184,12 @@ func registerTools(s *mcp.Server, service *Service, allowlist map[string]bool) {
 			Name:        ToolGetMemoryEvolution,
 			Description: "Traces the evolution chain of a memory node by following superseded_by/evolves_from edges. Returns the history of how a piece of information changed over time.",
 		}, service.GetMemoryEvolution)
+	}
+
+	if shouldRegister(ToolRequestKnowledge, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolRequestKnowledge,
+			Description: "Request structured knowledge about an entity. Uses cached artifacts when available (returns in <50ms with zero token cost). Falls back to semantic search and triggers async compilation when not cached.",
+		}, service.RequestKnowledge)
 	}
 }

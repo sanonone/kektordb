@@ -29,6 +29,7 @@ const (
 	ToolGetMemoryEvolution = "get_memory_evolution"
 	ToolUnpinMemory        = "unpin_memory"
 	ToolConfigureAutoLinks = "configure_auto_links"
+	ToolRequestKnowledge   = "request_knowledge"
 )
 
 // allToolNames maps every known MCP tool name for validation.
@@ -55,6 +56,7 @@ var allToolNames = map[string]bool{
 	ToolGetMemoryEvolution: true,
 	ToolUnpinMemory:        true,
 	ToolConfigureAutoLinks: true,
+	ToolRequestKnowledge:   true,
 }
 
 // ProfileAgent contains tools useful for AI coding agents.
@@ -77,6 +79,7 @@ var ProfileAgent = map[string]bool{
 	ToolAskMetaQuestion:    true,
 	ToolEvolveMemory:       true,
 	ToolGetMemoryEvolution: true,
+	ToolRequestKnowledge:   true,
 }
 
 // ProfileAdmin contains tools for administrative tasks and data curation.
