@@ -27,7 +27,7 @@ func (c *Compiler) StoreArtifact(artifact *Artifact, sources []NodeInfo, indexNa
 		artifact.Version = 1
 	}
 
-	metadata := c.buildArtifactMetadata(artifact)
+	metadata := c.buildArtifactMetadata(artifact, indexName)
 
 	vector := c.computeArtifactVector(sources, indexName)
 	nodeID := artifactNodeID(artifact)
@@ -68,7 +68,7 @@ func (c *Compiler) StoreArtifact(artifact *Artifact, sources []NodeInfo, indexNa
 }
 
 // buildArtifactMetadata serializes an artifact into graph node metadata.
-func (c *Compiler) buildArtifactMetadata(artifact *Artifact) map[string]any {
+func (c *Compiler) buildArtifactMetadata(artifact *Artifact, indexName string) map[string]any {
 	dataJSON, _ := json.Marshal(artifact.Data)
 	provenanceJSON, _ := json.Marshal(artifact.Provenance)
 	confidenceJSON, _ := json.Marshal(artifact.Confidence)
@@ -85,6 +85,7 @@ func (c *Compiler) buildArtifactMetadata(artifact *Artifact) map[string]any {
 		"compile_mode":    string(artifact.CompileMode),
 		"staleness_score": artifact.StalenessScore,
 		"status":          string(artifact.Status),
+		"_index_name":     indexName,
 		"_pinned":         true,
 		"_created_at":     float64(time.Now().UnixNano()) / 1e9,
 	}

@@ -37,9 +37,10 @@ type CreateEntityResult struct {
 }
 
 type ConnectArgs struct {
-	SourceID string `json:"source_id" jsonschema:"required"`
-	TargetID string `json:"target_id" jsonschema:"required"`
-	Relation string `json:"relation" jsonschema:"The type of relationship (e.g. 'mentions', 'author_of', 'related_to'),required"`
+	SourceID  string `json:"source_id" jsonschema:"required"`
+	TargetID  string `json:"target_id" jsonschema:"required"`
+	Relation  string `json:"relation" jsonschema:"The type of relationship (e.g. 'mentions', 'author_of', 'related_to'),required"`
+	IndexName string `json:"index_name,omitempty" jsonschema:"The index to operate in. Defaults to 'mcp_memory'"`
 }
 
 type RecallArgs struct {
@@ -61,6 +62,7 @@ type ScopedRecallArgs struct {
 	Direction string `json:"direction,omitempty" jsonschema:"Direction of traversal: 'out' (children), 'in' (parents), 'both'. Default 'out',enum=out,enum=in,enum=both"`
 	Depth     int    `json:"depth,omitempty" jsonschema:"Traversal depth (default 2)"`
 	Limit     int    `json:"limit,omitempty"`
+	IndexName string `json:"index_name,omitempty" jsonschema:"The index to search in. Defaults to 'mcp_memory'"`
 }
 
 type RecallResult struct {

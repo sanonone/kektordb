@@ -71,6 +71,10 @@ type Config struct {
 	EpistemicMaxPerCycle         int     // Max reflections to process per cycle (default: 3)
 	EpistemicConfidenceThreshold float64 // Min confidence to trigger resolution (default: 0.40)
 
+	// Safety limits
+	MaxNodesPerScan int // Max nodes to load in a single scan (default: 10000, 0=unlimited)
+	MaxItemsForLLM  int // Max items sent to LLM per consolidation batch (default: 15)
+
 	// Artifact Watcher callbacks (set by compiler.Watcher)
 	ArtifactScan  func()             // Called in think() to scan stale artifacts
 	ArtifactEvent func(engine.Event) // Called in onEvent() to track source changes
@@ -240,6 +244,7 @@ func (g *Gardener) filterNodesByLayers(idx string, nodeIDs []string, layers []st
 }
 
 // getAllNodes retrieves all node IDs in an index, optionally filtered by layer.
+// Uses the configured MaxNodesPerScan limit to prevent unbounded memory usage.
 func (g *Gardener) getAllNodes(idx string, layerFilter string) []string {
 	// Use VFilter to get all nodes, optionally with layer filter
 	var filter string
@@ -247,7 +252,11 @@ func (g *Gardener) getAllNodes(idx string, layerFilter string) []string {
 		filter = fmt.Sprintf("memory_layer='%s'", layerFilter)
 	}
 
-	ids, err := g.eng.VFilter(idx, filter, 0) // 0 = no limit
+	limit := g.cfg.MaxNodesPerScan
+	if limit <= 0 {
+		limit = math.MaxInt // 0 = unlimited
+	}
+	ids, err := g.eng.VFilter(idx, filter, limit)
 	if err != nil {
 		return nil
 	}
@@ -296,6 +305,12 @@ func NewGardener(eng *engine.Engine, llmClient llm.Client, cfg Config) *Gardener
 	}
 	if cfg.CoreFactMinConfidence == 0 {
 		cfg.CoreFactMinConfidence = 0.85 // Default confidence threshold for core facts
+	}
+	if cfg.MaxNodesPerScan == 0 {
+		cfg.MaxNodesPerScan = 10000
+	}
+	if cfg.MaxItemsForLLM == 0 {
+		cfg.MaxItemsForLLM = 15
 	}
 
 	eventCh := eng.EventBus.Subscribe(64)
@@ -698,7 +713,7 @@ func (g *Gardener) consolidateCluster(indexName string, cluster MemoryCluster) {
 	dim := len(items[0].Vector)
 	avgVector := make([]float32, dim)
 
-	maxItemsForLLM := 15
+	maxItemsForLLM := g.cfg.MaxItemsForLLM
 
 	for i, item := range items {
 		content := ""
@@ -882,7 +897,7 @@ func (g *Gardener) consolidateEpisodicToSemantic(indexName string, cluster Memor
 	var texts []string
 	dim := len(items[0].Vector)
 	avgVector := make([]float32, dim)
-	maxItemsForLLM := 15
+	maxItemsForLLM := g.cfg.MaxItemsForLLM
 
 	for i, item := range items {
 		content := ""
@@ -1307,8 +1322,12 @@ func (g *Gardener) SummarizeSession(indexName, sessionID string) error {
 	slog.Info("[Cognitive Engine] Summarizing session", "index", indexName, "session", sessionID)
 
 	// 1. Retrieve all memories belonging to this session
+	limit := g.cfg.MaxNodesPerScan
+	if limit <= 0 {
+		limit = math.MaxInt
+	}
 	filter := fmt.Sprintf("session_id='%s' AND type='memory'", sessionID)
-	memoryIDs, err := g.eng.VFilter(indexName, filter, 0) // 0 = no limit
+	memoryIDs, err := g.eng.VFilter(indexName, filter, limit)
 	if err != nil {
 		return fmt.Errorf("failed to retrieve session memories: %w", err)
 	}

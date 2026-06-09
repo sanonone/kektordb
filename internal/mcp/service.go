@@ -229,7 +229,10 @@ func (s *Service) CreateEntity(ctx context.Context, req *mcp.CallToolRequest, ar
 */
 
 func (s *Service) Connect(ctx context.Context, req *mcp.CallToolRequest, args ConnectArgs) (*mcp.CallToolResult, struct{}, error) {
-	idx := "mcp_memory"
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
 
 	if err := s.engine.VLink(idx, args.SourceID, args.TargetID, args.Relation, "", 1.0, nil); err != nil {
 		return nil, struct{}{}, err
@@ -300,7 +303,10 @@ func (s *Service) Recall(ctx context.Context, req *mcp.CallToolRequest, args Rec
 }
 
 func (s *Service) ScopedRecall(ctx context.Context, req *mcp.CallToolRequest, args ScopedRecallArgs) (*mcp.CallToolResult, RecallResult, error) {
-	idx := "mcp_memory"
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
 	if !s.engine.IndexExists(idx) {
 		return nil, RecallResult{}, nil
 	}

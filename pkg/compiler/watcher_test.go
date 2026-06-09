@@ -17,7 +17,7 @@ func newTestCompilerAndWatcher(t *testing.T) (*Compiler, *Watcher, *cognitive.Co
 
 	c := NewCompiler(eng, nil, nil)
 	cfg := &cognitive.Config{Enabled: true}
-	w := NewWatcher(c, eng, cfg)
+	w := NewWatcher(c, eng, cfg, []string{indexName})
 
 	return c, w, cfg
 }

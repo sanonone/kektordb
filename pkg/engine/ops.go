@@ -87,6 +87,19 @@ func (e *Engine) IndexExists(name string) bool {
 	return found
 }
 
+// ListIndexes returns the names of all vector indexes currently in the database.
+func (e *Engine) ListIndexes() []string {
+	infos, err := e.DB.GetVectorIndexInfoAPI()
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(infos))
+	for _, info := range infos {
+		names = append(names, info.Name)
+	}
+	return names
+}
+
 // GetIndexLanguage returns the text language configured for an index.
 // Returns empty string if index doesn't exist or has no language configured.
 func (e *Engine) GetIndexLanguage(name string) string {

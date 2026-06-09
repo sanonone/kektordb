@@ -41,10 +41,11 @@ type Watcher struct {
 	compiler *Compiler
 	eng      *engine.Engine
 
-	tracked map[string]*watchedArtifact // key: "name:entity_type:entity_id"
+	tracked map[string]*watchedArtifact // key: "index:name:entity_type:entity_id"
 	mu      sync.RWMutex
 
-	stalenessThreshold     float64
+	targetIndexes         []string
+	stalenessThreshold    float64
 	maxRecompilePerCycle  int
 
 	recompileThisCycle int // reset per ScanArtifacts call
@@ -59,25 +60,50 @@ const (
 
 // NewWatcher creates a new Artifact Watcher and registers it
 // with the Gardener config via callback functions.
-func NewWatcher(comp *Compiler, eng *engine.Engine, cfg *cognitive.Config) *Watcher {
+// targetIndexes specifies which indexes to scan for artifacts.
+// Use ["*"] to auto-discover all indexes (with vector count >= 10).
+// Use ["mcp_memory"] for the default single-index mode.
+func NewWatcher(comp *Compiler, eng *engine.Engine, cfg *cognitive.Config, targetIndexes []string) *Watcher {
 	w := &Watcher{
-		compiler:              comp,
-		eng:                   eng,
-		tracked:               make(map[string]*watchedArtifact),
-		stalenessThreshold:    defaultStalenessThreshold,
-		maxRecompilePerCycle:  defaultMaxRecompilePerCycle,
+		compiler:             comp,
+		eng:                  eng,
+		tracked:              make(map[string]*watchedArtifact),
+		stalenessThreshold:   defaultStalenessThreshold,
+		maxRecompilePerCycle: defaultMaxRecompilePerCycle,
+	}
+
+	// Resolve target indexes
+	if len(targetIndexes) == 1 && targetIndexes[0] == "*" {
+		all := eng.ListIndexes()
+		for _, idx := range all {
+			info, err := eng.DB.GetSingleVectorIndexInfoAPI(idx)
+			if err != nil || info.VectorCount < 10 {
+				continue
+			}
+			w.targetIndexes = append(w.targetIndexes, idx)
+		}
+	} else {
+		if len(targetIndexes) == 0 {
+			w.targetIndexes = []string{"mcp_memory"}
+		} else {
+			w.targetIndexes = append([]string(nil), targetIndexes...)
+		}
 	}
 
 	// Register callbacks with Gardener
 	cfg.ArtifactScan = w.ScanArtifacts
 	cfg.ArtifactEvent = w.OnEvent
 
-	slog.Info("ArtifactWatcher initialized", "staleness_threshold", w.stalenessThreshold)
+	slog.Info("ArtifactWatcher initialized",
+		"target_indexes", w.targetIndexes,
+		"staleness_threshold", w.stalenessThreshold,
+	)
 	return w
 }
 
 // OnEvent handles engine write events. If a changed node is a source
 // of a tracked artifact, increments its staleness score.
+// Events are filtered by index: only artifacts in the event's index are checked.
 func (w *Watcher) OnEvent(event engine.Event) {
 	if event.ID == "" {
 		return
@@ -87,6 +113,10 @@ func (w *Watcher) OnEvent(event engine.Event) {
 	defer w.mu.RUnlock()
 
 	for key, a := range w.tracked {
+		// Filter by index if the event specifies one
+		if event.IndexName != "" && event.IndexName != a.IndexName {
+			continue
+		}
 		for _, srcID := range a.SourceNodeIDs {
 			if srcID == event.ID || event.TargetID == srcID {
 				w.mu.RUnlock()
@@ -149,89 +179,93 @@ func (w *Watcher) ScanArtifacts() {
 	w.manageLifecycle()
 }
 
-// loadArtifacts scans the graph for knowledge_artifact nodes and
-// registers them for tracking.
+// loadArtifacts scans all configured indexes for knowledge_artifact nodes
+// and registers them for tracking.
 func (w *Watcher) loadArtifacts() error {
-	// Find all non-historical artifacts
-	ids, err := w.eng.VFilter("mcp_memory", "type='knowledge_artifact'", 200)
-	if err != nil {
-		return fmt.Errorf("filter artifacts: %w", err)
-	}
-
-	for _, id := range ids {
-		data, err := w.eng.VGet("mcp_memory", id)
+	for _, idx := range w.targetIndexes {
+		if !w.eng.IndexExists(idx) {
+			continue
+		}
+		ids, err := w.eng.VFilter(idx, "type='knowledge_artifact'", 100000)
 		if err != nil {
 			continue
 		}
-		if hist, ok := data.Metadata["_is_historical"].(bool); ok && hist {
-			continue
-		}
 
-		name, _ := data.Metadata["artifact_name"].(string)
-		entityType, _ := data.Metadata["entity_type"].(string)
-		entityID, _ := data.Metadata["entity_id"].(string)
-		if name == "" || entityType == "" || entityID == "" {
-			continue
-		}
-
-		key := fmt.Sprintf("%s:%s:%s", name, entityType, entityID)
-
-		// Skip if already tracked
-		if _, exists := w.tracked[key]; exists {
-			continue
-		}
-
-		// Extract version
-		version := 1
-		if v, ok := data.Metadata["version"].(float64); ok {
-			version = int(v)
-		}
-
-		// Extract source node IDs from compiled_from edges
-		edges, _ := w.eng.VGetEdges("mcp_memory", id, "compiled_from", 0)
-		sourceIDs := make([]string, 0, len(edges))
-		for _, e := range edges {
-			sourceIDs = append(sourceIDs, e.TargetID)
-		}
-
-		// Extract staleness score
-		staleness := 0.0
-		if s, ok := data.Metadata["staleness_score"].(float64); ok {
-			staleness = s
-		}
-
-		// Extract compiled_at
-		var compiledAt time.Time
-		if ca, ok := data.Metadata["_created_at"].(float64); ok {
-			compiledAt = time.Unix(int64(ca), int64((ca-float64(int64(ca)))*1e9))
-		}
-
-		wa := &watchedArtifact{
-			Name:           name,
-			EntityType:     entityType,
-			EntityID:       entityID,
-			Version:        version,
-			SourceNodeIDs:  sourceIDs,
-			CompiledAt:     compiledAt,
-			StalenessScore: staleness,
-			FieldStaleness:  make(map[string]float64),
-			RefreshPolicy: RefreshPolicy{
-				KeepHistory:    true,
-				MaxVersions:    20,
-				PruneAfterDays: 90,
-			},
-			IndexName: "mcp_memory",
-		}
-
-		// Use stored refresh policy if available
-		if taskStr, ok := data.Metadata["task_spec"].(string); ok && taskStr != "" {
-			var taskSpec TaskSpec
-			if json.Unmarshal([]byte(taskStr), &taskSpec) == nil {
-				wa.RefreshPolicy = taskSpec.RefreshPolicy
+		for _, id := range ids {
+			data, err := w.eng.VGet(idx, id)
+			if err != nil {
+				continue
 			}
-		}
+			if hist, ok := data.Metadata["_is_historical"].(bool); ok && hist {
+				continue
+			}
 
-		w.tracked[key] = wa
+			name, _ := data.Metadata["artifact_name"].(string)
+			entityType, _ := data.Metadata["entity_type"].(string)
+			entityID, _ := data.Metadata["entity_id"].(string)
+			if name == "" || entityType == "" || entityID == "" {
+				continue
+			}
+
+			key := fmt.Sprintf("%s:%s:%s:%s", idx, name, entityType, entityID)
+
+			// Skip if already tracked
+			if _, exists := w.tracked[key]; exists {
+				continue
+			}
+
+			// Extract version
+			version := 1
+			if v, ok := data.Metadata["version"].(float64); ok {
+				version = int(v)
+			}
+
+			// Extract source node IDs from compiled_from edges
+			edges, _ := w.eng.VGetEdges(idx, id, "compiled_from", 0)
+			sourceIDs := make([]string, 0, len(edges))
+			for _, e := range edges {
+				sourceIDs = append(sourceIDs, e.TargetID)
+			}
+
+			// Extract staleness score
+			staleness := 0.0
+			if s, ok := data.Metadata["staleness_score"].(float64); ok {
+				staleness = s
+			}
+
+			// Extract compiled_at
+			var compiledAt time.Time
+			if ca, ok := data.Metadata["_created_at"].(float64); ok {
+				compiledAt = time.Unix(int64(ca), int64((ca-float64(int64(ca)))*1e9))
+			}
+
+			wa := &watchedArtifact{
+				Name:           name,
+				EntityType:     entityType,
+				EntityID:       entityID,
+				Version:        version,
+				SourceNodeIDs:  sourceIDs,
+				CompiledAt:     compiledAt,
+				StalenessScore: staleness,
+				FieldStaleness:  make(map[string]float64),
+				RefreshPolicy: RefreshPolicy{
+					KeepHistory:    true,
+					MaxVersions:    20,
+					PruneAfterDays: 90,
+				},
+				IndexName: idx,
+			}
+
+			// Use stored refresh policy if available
+			if taskStr, ok := data.Metadata["task_spec"].(string); ok && taskStr != "" {
+				var taskSpec TaskSpec
+				if json.Unmarshal([]byte(taskStr), &taskSpec) == nil {
+					wa.RefreshPolicy = taskSpec.RefreshPolicy
+				}
+			}
+
+			w.tracked[key] = wa
+		}
 	}
 
 	return nil
