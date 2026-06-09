@@ -249,7 +249,7 @@ KektorDB funziona come un **Cognitive Memory Server** completo basato sul protoc
     ```bash
     kektordb setup claude-code    # oppure: cursor, gemini-cli, codex, opencode
     ```
-    Scrive la configurazione MCP con `--tools=agent` (15 tool) per mantenere il contesto snello. Idempotente -- eseguibile piu' volte.
+    Scrive la configurazione MCP con `--tools=agent` (17 tool) per mantenere il contesto snello. Idempotente -- eseguibile piu' volte.
 *   **Per avviare con un profilo tool specifico:**
     ```bash
     ./kektordb --mcp --tools=agent
@@ -442,7 +442,7 @@ I benchmark sono stati eseguiti su una macchina Linux locale (Hardware Consumer,
 
 ### Completato (branch feat/tui, non rilasciato) ✅
 *   [x] **Embedding Zero-Config:** Embedder ONNX integrato (`all-MiniLM-L6-v2`, 384dim) via Rust/Candle. Download automatico del modello da HuggingFace con verifica SHA256. Rilevamento automatico: usa Ollama se disponibile, altrimenti embedding locale. Flag `--embedder` con modalita' `auto`/`ollama`/`openai`/`local`.
-*   [x] **MCP One-Liner:** `kektordb setup <agente>` configura MCP per Claude Code, Cursor, Gemini CLI, Codex e OpenCode con un solo comando. Flag `--tools` con profili `agent`/`admin`/`all` (15/6/23 tool).
+*   [x] **MCP One-Liner:** `kektordb setup <agente>` configura MCP per Claude Code, Cursor, Gemini CLI, Codex e OpenCode con un solo comando. Flag `--tools` con profili `agent`/`admin`/`all` (17/6/23 tool).
 *   [x] **Dashboard Terminale (TUI):** Interfaccia terminale a 5 tab con Bubble Tea v2: statistiche live, esploratore grafo, ricerca semantica, timeline SSE e impostazioni. Avvia con `--tui`. Stato: sperimentale, limitazioni note nello shutdown sotto carico pipeline.
 *   [x] **Motore di Conoscenza:** Artefatti di conoscenza pre-compilati con confidenza e provenienza per campo. Endpoint `/compile` con 5 template predefiniti. Tool MCP `request_knowledge` con cache artifact (<50ms HIT, zero token). Artifact Watcher integrato nel Gardener per tracciamento staleness, ricompilazione e gestione del ciclo di vita autonomi.
 

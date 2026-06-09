@@ -1,3 +1,9 @@
+// Package mcp implements the Model Context Protocol server for KektorDB.
+//
+// It exposes 23 tools across agent (17 tools) and admin (6 tools) profiles,
+// including memory management, graph traversal, knowledge compilation,
+// and agent lifecycle commands. Also provides MCP setup/installer commands
+// for Claude Code, Cursor, Gemini CLI, Codex, and OpenCode.
 package mcp
 
 import (

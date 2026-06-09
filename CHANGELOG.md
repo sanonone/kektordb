@@ -15,7 +15,7 @@ All notable changes to KektorDB are documented here.
 
 - **Built-in ONNX embedder** (`all-MiniLM-L6-v2`, 384dim) via Rust/candle CGO wrapper. Downloads model from HuggingFace on first launch with SHA256 verification. `--embedder` flag with auto-detect (Ollama → local → error guidance).
 - **MCP one-liner setup** (`kektordb setup <agent>`) — configures Claude Code, Cursor, Gemini CLI, Codex, and OpenCode with a single command.
-- **Tool profiles** (`--tools=agent|admin|all`): 16 tools (agent), 6 (admin), 22 (all). Default `agent` reduces token consumption in MCP.
+- **Tool profiles** (`--tools=agent|admin|all`): 17 tools (agent), 6 (admin), 23 (all). Default `agent` reduces token consumption in MCP.
 - **TUI terminal dashboard** (Bubble Tea v2): 5 tabs — Dashboard, Graph, Search, Timeline, Settings. Run with `--tui`.
 - **Configurable K limit** (5–100) in TUI and search parameters.
 - **`hydrate` field** on `POST /vector/actions/search`: returns full node metadata without traversing graph relations.

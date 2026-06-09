@@ -29,6 +29,11 @@ test: generate-avo
 	@echo "==> Running Go tests (Go/AVO implementation)..."
 	@go test -short -v ./...
 
+.PHONY: vet
+vet:
+	@echo "==> Running go vet..."
+	@go vet ./...
+
 test-e2e: generate-avo
 	@echo "==> Running E2E tests with real server..."
 	@go test -v -run "TestClientFullLifecycle|TestAPIContracts" ./pkg/client/...

@@ -1,5 +1,5 @@
 
-# KektorDB Technical Documentation (v0.5.1)
+# KektorDB Technical Documentation (v0.6.0)
 
 ## Table of Contents
 
@@ -25,11 +25,13 @@
     *   [Graph Operations](#53-graph-operations)
     *   [Key-Value Store](#54-key-value-store)
     *   [RAG Retrieval](#55-rag-retrieval)
-    *   [Model Context Protocol (MCP)](#56-model-context-protocol-mcp)
+    *   [API: Cognitive & Session Engine](#56-api-cognitive--session-engine)
+    *   [Model Context Protocol (MCP)](#57-model-context-protocol-mcp)
     *   [System & Maintenance](#58-system--maintenance)
     *   [Epistemic Engine (Belief Assessment)](#59-epistemic-engine-belief-assessment)
     *   [Memory Evolution (Semantic Git)](#510-memory-evolution-semantic-git)
     *   [Belief Consolidation](#511-belief-consolidation)
+    *   [Knowledge Engine (Compiler)](#512-knowledge-engine-compiler)
 6.  [Go Library Interface](#6-go-library-interface)
 7.  [Maintenance & Internals](#7-maintenance--internals)
 
@@ -158,7 +160,7 @@ These control the database engine itself.
 | `-cognitive-config` | - | `""` | Path to cognitive YAML config. Enables Gardener with memory layers, decay, etc. |
 | `--embedder` | - | `auto` | Embedder mode: `auto`, `ollama`, `openai`, `local`. ONNX model needed for `local`. |
 | `--embedder-model` | - | `""` | Directory with `model.onnx` and `tokenizer.json` (local mode only). |
-| `--tools` | - | `all` | MCP tool profile: `agent` (14 tools), `admin` (6), `all` (22), or comma-separated. |
+| `--tools` | - | `all` | MCP tool profile: `agent` (17 tools), `admin` (6), `all` (23), or comma-separated. |
 | `--tui` | - | `false` | Launch terminal dashboard. Experimental -- see section 4.10. |
 
 ---
@@ -1179,13 +1181,13 @@ kektordb setup gemini-cli     # Gemini CLI
 kektordb setup codex          # OpenAI Codex
 kektordb setup opencode       # OpenCode
 ```
-Writes platform-specific MCP config with `--tools=agent` (14 tools) to keep
+Writes platform-specific MCP config with `--tools=agent` (17 tools) to keep
 agent context lean. Safe to run multiple times (idempotent).
 
 **Tool profiles (`--tools`):**
-- `agent` (default for setup): 14 tools for AI coding agents
+- `agent` (default for setup): 17 tools for AI coding agents
 - `admin`: 6 administrative tools (`list_vectors`, `transfer_memory`, etc.)
-- `all`: all 22 tools
+- `all`: all 23 tools
 
 **Available Tools:**
 
@@ -1560,7 +1562,7 @@ Graph quality in HNSW can be sensitive to the order of insertion.
 
 ---
 
-### 5.11 Knowledge Engine (Compiler)
+### 5.12 Knowledge Engine (Compiler)
 
 The Knowledge Engine compiles structured knowledge artifacts from the memory graph. Artifacts are pre-compiled knowledge objects with deterministic field extraction and optional LLM-assisted inference. Each artifact has field-level provenance (which source nodes contributed to each value) and confidence scoring. The Artifact Watcher (integrated into the Gardener) autonomously monitors source changes and triggers recompilation when knowledge becomes stale.
 

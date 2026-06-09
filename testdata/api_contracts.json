@@ -1,5 +1,5 @@
 {
-  "version": "0.5.0",
+  "version": "0.5.3",
   "description": "Shared API contracts for KektorDB client testing. All clients (Go, Python, TypeScript) must pass these contracts.",
   "base_url": "http://localhost:9091",
   "tests": [
@@ -65,7 +65,7 @@
         "index_name": "CONTRACT_TEST_IDX",
         "id": "entity_1",
         "vector": [0, 0, 0, 0],
-        "metadata": {"name": "Python", "type": "entity"}
+        "metadata": {"name": "Python", "type": "entity", "entity_id": "entity_1"}
       },
       "expected_status": 200
     },
@@ -354,6 +354,50 @@
         "inverse_relation_type": "mentioned_in"
       },
       "expected_status": 200
+    },
+    {
+      "name": "embedder_status",
+      "method": "GET",
+      "path": "/system/embedder/status",
+      "expected_status": 200,
+      "expected_response_fields": ["active", "model", "dimension", "available"]
+    },
+    {
+      "name": "compile_entity_card",
+      "method": "POST",
+      "path": "/compile",
+      "depends_on": ["add_vector_entity"],
+      "request": {
+        "name": "entity_card",
+        "template": "entity_card",
+        "sources": {"type": "graph_query", "entity": {"type": "entity", "id": "entity_1"}, "depth": 2},
+        "index_name": "CONTRACT_TEST_IDX"
+      },
+      "expected_status": 200,
+      "expected_response_fields": ["name", "version", "data", "compile_mode"]
+    },
+    {
+      "name": "list_compile_templates",
+      "method": "GET",
+      "path": "/compile/templates",
+      "expected_status": 200,
+      "expected_response_type": "array"
+    },
+    {
+      "name": "list_artifacts",
+      "method": "GET",
+      "path": "/artifacts?index=CONTRACT_TEST_IDX",
+      "depends_on": ["compile_entity_card"],
+      "expected_status": 200,
+      "expected_response_type": "array"
+    },
+    {
+      "name": "get_artifact",
+      "method": "GET",
+      "path": "/artifact/entity_card?index=CONTRACT_TEST_IDX&entity_type=entity&entity_id=entity_1",
+      "depends_on": ["compile_entity_card"],
+      "expected_status": 200,
+      "expected_response_fields": ["name", "version", "data", "provenance"]
     },
     {
       "name": "delete_index",

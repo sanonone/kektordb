@@ -1,3 +1,10 @@
+// Package compiler provides deterministic and LLM-assisted artifact compilation
+// for the KektorDB Knowledge Engine.
+//
+// It supports built-in templates (user_profile, project_summary, entity_card,
+// conversation_context, topic_overview), field-level provenance tracking,
+// asynchronous compilation with polling, multi-version artifact storage,
+// and an autonomous Artifact Watcher that tracks staleness across indexes.
 package compiler
 
 import (
