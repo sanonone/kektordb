@@ -104,39 +104,54 @@ func NewWatcher(comp *Compiler, eng *engine.Engine, cfg *cognitive.Config, targe
 // OnEvent handles engine write events. If a changed node is a source
 // of a tracked artifact, increments its staleness score.
 // Events are filtered by index: only artifacts in the event's index are checked.
+//
+// FIX (bugs #3.2, #5.4): Uses a two-phase approach to avoid the reentrant
+// RLock→Unlock→Lock→Unlock→RLock lock dance. Phase 1 collects keys under
+// RLock (read-only), Phase 2 applies updates under Lock (write-only).
+// This eliminates the deferred RUnlock panic (#3.2) and the concurrent
+// map iteration panic (#5.4).
 func (w *Watcher) OnEvent(event engine.Event) {
 	if event.ID == "" {
 		return
 	}
 
+	// Phase 1: Collect artifact keys that need updating (under RLock)
 	w.mu.RLock()
-	defer w.mu.RUnlock()
-
+	var toUpdate []string
 	for key, a := range w.tracked {
-		// Filter by index if the event specifies one
 		if event.IndexName != "" && event.IndexName != a.IndexName {
 			continue
 		}
 		for _, srcID := range a.SourceNodeIDs {
 			if srcID == event.ID || event.TargetID == srcID {
-				w.mu.RUnlock()
-				w.mu.Lock()
-				a.StalenessScore += stalenessIncrementOnChange
-				for field := range a.FieldStaleness {
-					a.FieldStaleness[field] += stalenessIncrementOnChange
-				}
-				w.mu.Unlock()
-				w.mu.RLock()
-
-				slog.Debug("ArtifactWatcher: source changed, staleness updated",
-					"artifact", key,
-					"source_node", srcID,
-					"staleness", a.StalenessScore,
-				)
+				toUpdate = append(toUpdate, key)
 				break
 			}
 		}
 	}
+	w.mu.RUnlock()
+
+	if len(toUpdate) == 0 {
+		return
+	}
+
+	// Phase 2: Apply staleness updates (under Lock)
+	w.mu.Lock()
+	for _, key := range toUpdate {
+		a, ok := w.tracked[key]
+		if !ok {
+			continue
+		}
+		a.StalenessScore += stalenessIncrementOnChange
+		for field := range a.FieldStaleness {
+			a.FieldStaleness[field] += stalenessIncrementOnChange
+		}
+		slog.Debug("ArtifactWatcher: source changed, staleness updated",
+			"artifact", key,
+			"staleness", a.StalenessScore,
+		)
+	}
+	w.mu.Unlock()
 }
 
 // ScanArtifacts loads artifacts from the graph, checks staleness

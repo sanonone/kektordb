@@ -301,3 +301,129 @@ func TestGetStalenessThreshold(t *testing.T) {
 		t.Errorf("expected threshold > 1.0 for low usage, got %f", th3)
 	}
 }
+
+func TestOnEvent_ConcurrentScanArtifacts_NoPanic(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping concurrent stress test in short mode")
+	}
+
+	c, w, _ := newTestCompilerAndWatcher(t)
+	addArtifactSourceData(t, c, "mcp_memory")
+
+	// Load and populate source node IDs
+	w.mu.Lock()
+	w.loadArtifacts()
+	for key, a := range w.tracked {
+		a.SourceNodeIDs = []string{"user:alice:mem1", "user:alice:mem2", key}
+	}
+	w.mu.Unlock()
+
+	stopCh := make(chan struct{})
+	panicCh := make(chan any, 4)
+
+	// Goroutine A: OnEvent in loop (simulates engine event stream)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicCh <- r
+			}
+		}()
+		for i := 0; ; i++ {
+			select {
+			case <-stopCh:
+				return
+			default:
+			}
+			w.OnEvent(engine.Event{
+				Type:      "vector.add",
+				ID:        "user:alice:mem1",
+				IndexName: "mcp_memory",
+			})
+			w.OnEvent(engine.Event{
+				Type:      "vector.add",
+				ID:        "user:alice:mem2",
+				IndexName: "mcp_memory",
+			})
+		}
+	}()
+
+	// Goroutine B: ScanArtifacts in loop (simulates Gardener scan cycle)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicCh <- r
+			}
+		}()
+		for {
+			select {
+			case <-stopCh:
+				return
+			default:
+			}
+			w.ScanArtifacts()
+		}
+	}()
+
+	// Run for a few seconds to trigger race conditions
+	time.Sleep(3 * time.Second)
+	close(stopCh)
+
+	select {
+	case r := <-panicCh:
+		t.Fatalf("PANIC during concurrent OnEvent/ScanArtifacts: %v", r)
+	default:
+		// No panic — test passed
+	}
+}
+
+// TestOnEvent_LockDance_NoLockUpgrade verifies that the OnEvent
+// lock dance (RLock→RUnlock→Lock→Unlock→RLock) does NOT cause
+// a deadlock or panic under non-concurrent usage.
+// This test exercises the internal staleness update path directly.
+func TestOnEvent_LockDance_NoLockUpgrade(t *testing.T) {
+	c, w, _ := newTestCompilerAndWatcher(t)
+	addArtifactSourceData(t, c, "mcp_memory")
+
+	w.mu.Lock()
+	w.loadArtifacts()
+	for _, a := range w.tracked {
+		a.SourceNodeIDs = []string{"user:alice:mem1"}
+	}
+	w.mu.Unlock()
+
+	// Read initial staleness
+	w.mu.RLock()
+	var initialStaleness float64
+	for _, a := range w.tracked {
+		initialStaleness = a.StalenessScore
+		break
+	}
+	w.mu.RUnlock()
+
+	// Send multiple events (each triggers the lock upgrade path)
+	for i := 0; i < 10; i++ {
+		w.OnEvent(engine.Event{
+			Type: "vector.add",
+			ID:   "user:alice:mem1",
+		})
+	}
+
+	// Verify staleness was incremented correctly (0.3 per event)
+	w.mu.RLock()
+	var finalStaleness float64
+	for _, a := range w.tracked {
+		finalStaleness = a.StalenessScore
+		break
+	}
+	w.mu.RUnlock()
+
+	expected := initialStaleness + float64(10)*stalenessIncrementOnChange
+	delta := finalStaleness - expected
+	if delta < 0 {
+		delta = -delta
+	}
+	if delta > 0.001 {
+		t.Errorf("staleness mismatch: initial=%.2f, final=%.2f, expected=%.2f",
+			initialStaleness, finalStaleness, expected)
+	}
+}
