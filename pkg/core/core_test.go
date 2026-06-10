@@ -604,3 +604,169 @@ func TestGetVectorsConcurrentWithAddMetadata(t *testing.T) {
 		t.Errorf("%d goroutines panicked", panicCount.Load())
 	}
 }
+
+// -------------------------------------------------------------------------
+// Tests for MUST FIX bug #1.4: Reentrant RLock deadlock in FindIDsByFilter
+// -------------------------------------------------------------------------
+
+// TestGetAllValidNodeIDs_NoReentrantLockDeadlock verifies that bug #1.4 is fixed:
+// Calling getAllValidNodeIDs (via FindIDsByFilter with != operator) must NOT
+// deadlock when a concurrent writer is waiting on s.mu.Lock.
+//
+// Root cause: getAllValidNodeIDs acquires s.mu.RLock() while FindIDsByFilter
+// already holds s.mu.RLock(). Go's RWMutex blocks reentrant RLocks when
+// a writer is pending → deadlock.
+func TestGetAllValidNodeIDs_NoReentrantLockDeadlock(t *testing.T) {
+	db := NewDB()
+	tmpDir := t.TempDir()
+	arenaDir := filepath.Join(tmpDir, "arenas", "test_reentrant")
+	if err := db.CreateVectorIndex("test_reentrant", distance.Cosine, 16, 100, distance.Float32, "", arenaDir); err != nil {
+		t.Fatal(err)
+	}
+
+	idx, _ := db.GetVectorIndex("test_reentrant")
+	internalID, _ := idx.Add("test1", make([]float32, 3))
+	db.AddMetadata("test_reentrant", internalID, map[string]any{"field": "value"})
+
+	// Simulate what FindIDsByFilter does: hold s.mu.RLock()
+	db.mu.RLock()
+
+	// Start a writer goroutine that will block on s.mu.Lock.
+	writerWaiting := make(chan struct{})
+	go func() {
+		close(writerWaiting)    // Signal we are about to try Lock
+		db.Lock()               // Will block until main goroutine releases RLock
+		db.Unlock()
+	}()
+	<-writerWaiting
+	time.Sleep(50 * time.Millisecond)
+
+	// Try getAllValidNodeIDs while a writer is pending on Lock.
+	// Before fix: tries s.mu.RLock() → blocks forever (deadlock).
+	// After fix:  no s.mu.RLock() → reads s.vectorIndexes under
+	//             caller's held RLock → succeeds.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = db.getAllValidNodeIDsLocked("test_reentrant")
+	}()
+
+	select {
+	case <-done:
+		// After fix: success!
+	case <-time.After(3 * time.Second):
+		t.Fatal("DEADLOCK CONFIRMED: getAllValidNodeIDs blocks on reentrant s.mu.RLock() while concurrent writer is pending")
+	}
+
+	db.mu.RUnlock()
+}
+
+// TestFindIDsByFilter_NEQNoDeadlock is a stress test that calls FindIDsByFilter
+// with != (NEQ) filter concurrently with heavy write load.
+// The != operator internally triggers getAllValidNodeIDs which used to deadlock
+// due to reentrant RLock (bug #1.4).
+func TestFindIDsByFilter_NEQNoDeadlock(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping stress test in short mode")
+	}
+
+	db := NewDB()
+	defer db.Close()
+
+	tmpDir := t.TempDir()
+	arenaDir := filepath.Join(tmpDir, "arenas", "test_neq_stress")
+	if err := db.CreateVectorIndex("test_neq_stress", distance.Cosine, 16, 100, distance.Float32, "", arenaDir); err != nil {
+		t.Fatal(err)
+	}
+
+	idx, _ := db.GetVectorIndex("test_neq_stress")
+
+	// Populate with many vectors to slow down filter processing,
+	// widening the deadlock window.
+	const N = 2000
+	for i := 0; i < N; i++ {
+		vec := make([]float32, 128)
+		for j := range vec {
+			vec[j] = float32(i+j) / float32(N)
+		}
+		internalID, _ := idx.Add(fmt.Sprintf("id_%d", i), vec)
+		status := "active"
+		if i%2 == 0 {
+			status = "deleted"
+		}
+		db.AddMetadata("test_neq_stress", internalID, map[string]any{
+			"status": status,
+			"count":  float64(i),
+		})
+	}
+
+	errCh := make(chan error, 1)
+	stopCh := make(chan struct{})
+	var wg sync.WaitGroup
+
+	// Writers: create s.mu.Lock contention via metadata writes
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(offset int) {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				select {
+				case <-stopCh:
+					return
+				default:
+				}
+				idxMu, exists := db.indexLocks["test_neq_stress"]
+				if !exists {
+					continue
+				}
+				idxMu.Lock()
+				db.metadataMap["test_neq_stress"][uint32(j%N)] = map[string]any{
+					"status": "updated",
+					"count":  float64(j + offset*1000),
+				}
+				idxMu.Unlock()
+			}
+		}(i)
+	}
+
+	// Readers: call FindIDsByFilter with != (triggers getAllValidNodeIDs)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				select {
+				case <-stopCh:
+					return
+				default:
+				}
+				_, err := db.FindIDsByFilter("test_neq_stress", "status != 'deleted' AND count > 0")
+				if err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+
+	// Wait for completion or timeout (deadlock detection)
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success: no deadlock
+	case <-time.After(10 * time.Second):
+		close(stopCh)
+		t.Fatal("DEADLOCK CONFIRMED: FindIDsByFilter with != blocks under concurrent write load")
+	case err := <-errCh:
+		close(stopCh)
+		t.Fatalf("unexpected filter error: %v", err)
+	}
+}

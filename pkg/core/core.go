@@ -1728,15 +1728,15 @@ func (s *DB) FindIDsByFilter(indexName string, filter string) (*roaring.Bitmap, 
 	return finalIDSet, nil
 }
 
-// getAllValidNodeIDs returns a bitmap of all non-deleted node internal IDs for an index.
-func (s *DB) getAllValidNodeIDs(indexName string) (*roaring.Bitmap, error) {
-	s.mu.RLock()
+// getAllValidNodeIDsLocked returns a bitmap of all non-deleted node internal IDs
+// for an index. The caller MUST hold s.mu.RLock() to protect s.vectorIndexes.
+// This function does NOT acquire any locks itself — it relies on the caller's lock
+// to avoid reentrant RLock deadlock (bug #1.4).
+func (s *DB) getAllValidNodeIDsLocked(indexName string) (*roaring.Bitmap, error) {
 	idx, exists := s.vectorIndexes[indexName]
 	if !exists {
-		s.mu.RUnlock()
 		return nil, fmt.Errorf("index not found")
 	}
-	s.mu.RUnlock()
 
 	hnswIdx, ok := idx.(*hnsw.Index)
 	if !ok {
@@ -1851,7 +1851,7 @@ func (s *DB) evaluateBooleanFilter(indexName string, filter string) (*roaring.Bi
 		return idSet, nil
 
 	case "!=":
-		allValidIDs, err := s.getAllValidNodeIDs(indexName)
+		allValidIDs, err := s.getAllValidNodeIDsLocked(indexName)
 		if err != nil {
 			return nil, err
 		}

@@ -2152,51 +2152,50 @@ func (s *Server) handleUIExplore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// FIX 1: Usa engine.GraphNode invece di GraphNode
-	var nodes []engine.GraphNode
-	count := 0
-
-	// 1. Iteriamo sui nodi dell'indice
+	// FIX: bug #4.1 — Deadlock in handleUIExplore.
+	// Do NOT call VGet or VGetLinks inside IterateRaw callback because
+	// IterateRaw holds metaMu.RLock(), and VGet → GetNodeData also tries
+	// metaMu.RLock(). Go's sync.RWMutex is not reentrant; a concurrent
+	// writer pending on metaMu.Lock() causes a deadlock.
+	//
+	// Solution: collect IDs inside the callback, then fetch data outside.
+	var collectedIDs []string
 	hnswIdx.IterateRaw(func(id string, _ interface{}) {
-		if count >= req.Limit {
-			return // Stop
-		}
-
-		// Recuperiamo i dati completi
-		vData, err := s.Engine.VGet(req.IndexName, id)
-		if err != nil {
+		if len(collectedIDs) >= req.Limit {
 			return
 		}
+		collectedIDs = append(collectedIDs, id)
+	})
 
-		// FIX 2: Usa engine.GraphNode
+	// Now fetch data outside the lock-protected callback.
+	var nodes []engine.GraphNode
+	for _, id := range collectedIDs {
+		vData, err := s.Engine.VGet(req.IndexName, id)
+		if err != nil {
+			continue
+		}
+
 		gNode := engine.GraphNode{VectorData: vData}
 		gNode.Connections = make(map[string][]engine.GraphNode)
 
 		relationsToCheck := []string{"next", "prev", "parent", "child", "mentions", "mentioned_in"}
 
-		// FIX 3: Rimossa variabile inutilizzata 'hasRelations'
-
 		for _, rel := range relationsToCheck {
 			targetIDs, found := s.Engine.VGetLinks(req.IndexName, id, rel)
 			if found && len(targetIDs) > 0 {
-
-				// FIX 4: Usa engine.GraphNode
 				var children []engine.GraphNode
 				for _, tid := range targetIDs {
-					// Fetch light metadata for target to display label
 					tData, _ := s.Engine.VGet(req.IndexName, tid)
 					if tData.ID == "" {
 						tData.ID = tid
-					} // Fallback if not found
+					}
 					children = append(children, engine.GraphNode{VectorData: tData})
 				}
 				gNode.Connections[rel] = children
 			}
 		}
-
 		nodes = append(nodes, gNode)
-		count++
-	})
+	}
 
 	// Apply compression if requested (clone metadata first to avoid mutating live index data)
 	if req.CompressContext {
