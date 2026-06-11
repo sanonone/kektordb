@@ -1435,3 +1435,12 @@ class KektorDBClient:
             Dict with "templates" and "names" keys.
         """
         return self._request("GET", "/compile/templates")
+
+    def embedder_status(self) -> Dict[str, Any]:
+        """
+        Returns the current embedder configuration and status.
+
+        Returns:
+            Dict with "mode", "model", "url", "available" keys.
+        """
+        return self._request("GET", "/system/embedder/status")

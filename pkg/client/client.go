@@ -1303,6 +1303,88 @@ type VectorEvolveResponse struct {
 	Message string `json:"message"`
 }
 
+// CompileRequest represents a request to compile a knowledge artifact.
+type CompileRequest struct {
+	Name      string                 `json:"name"`
+	Sources   CompileSources         `json:"sources"`
+	IndexName string                 `json:"index_name,omitempty"`
+	Template  string                 `json:"template,omitempty"`
+	LLMConfig map[string]interface{} `json:"llm_config,omitempty"`
+}
+
+// CompileSources specifies the data sources for compilation.
+type CompileSources struct {
+	Type   string    `json:"type"`
+	Entity EntityRef `json:"entity"`
+	Depth  int       `json:"depth,omitempty"`
+	Filter string    `json:"filter,omitempty"`
+	Text   string    `json:"text,omitempty"`
+}
+
+// EntityRef identifies an entity by type and ID.
+type EntityRef struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+}
+
+// CompileResponse is the result of a compilation request.
+type CompileResponse struct {
+	TaskID string `json:"task_id,omitempty"`
+	Status string `json:"status,omitempty"`
+	Poll   string `json:"poll,omitempty"`
+}
+
+// TaskStatus represents the status of an async compilation task.
+type TaskStatus struct {
+	TaskID          string                 `json:"task_id"`
+	Status          string                 `json:"status"`
+	ProgressMessage string                 `json:"progress_message,omitempty"`
+	Error           string                 `json:"error,omitempty"`
+	ArtifactName    string                 `json:"artifact_name,omitempty"`
+	Result          map[string]interface{} `json:"result,omitempty"`
+}
+
+// TemplateInfo holds information about a compilation template.
+type TemplateInfo struct {
+	Name        string                   `json:"name"`
+	EntityType  string                   `json:"entity_type"`
+	Description string                   `json:"description"`
+	Fields      []map[string]interface{} `json:"fields,omitempty"`
+	Enabled     bool                     `json:"enabled,omitempty"`
+}
+
+// TemplateListResponse is the response from listing compilation templates.
+type TemplateListResponse struct {
+	Templates []TemplateInfo `json:"templates"`
+	Names     []string       `json:"names"`
+}
+
+// ArtifactData contains a compiled artifact.
+type ArtifactData struct {
+	Name        string                 `json:"name"`
+	EntityType  string                 `json:"entity_type"`
+	EntityID    string                 `json:"entity_id"`
+	Version     int                    `json:"version"`
+	Data        map[string]interface{} `json:"data"`
+	IndexName   string                 `json:"index_name,omitempty"`
+	CompiledAt  string                 `json:"compiled_at,omitempty"`
+	CompileMode string                 `json:"compile_mode,omitempty"`
+}
+
+// ArtifactListResponse is the response from listing artifacts.
+type ArtifactListResponse struct {
+	Count     int            `json:"count"`
+	Artifacts []ArtifactData `json:"artifacts"`
+}
+
+// EmbedderStatusResponse represents the embedder configuration and status.
+type EmbedderStatusResponse struct {
+	Active    string `json:"active"`
+	Model     string `json:"model"`
+	Dimension int    `json:"dimension"`
+	Available bool   `json:"available"`
+}
+
 // InvalidateMemoryResponse represents the response from an invalidation operation.
 type InvalidateMemoryResponse struct {
 	Status  string `json:"status"`
@@ -1707,6 +1789,104 @@ func (c *Client) GetMemoryEvolution(indexName, memoryID string, direction string
 	var resp MemoryEvolutionResponse
 	if err := json.Unmarshal(respBody, &resp); err != nil {
 		return nil, fmt.Errorf("invalid JSON response for GetMemoryEvolution: %w", err)
+	}
+	return &resp, nil
+}
+
+// Compile sends a compilation request to the Knowledge Engine.
+// For synchronous compiles (no LLM), the artifact is returned directly.
+// For async compiles (LLM required), a task ID is returned for polling.
+func (c *Client) Compile(req CompileRequest) (map[string]interface{}, error) {
+	respBody, err := c.jsonRequest(http.MethodPost, "/compile", req)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for Compile: %w", err)
+	}
+	return result, nil
+}
+
+// GetCompileStatus polls the status of an async compilation task.
+func (c *Client) GetCompileStatus(taskID string) (*TaskStatus, error) {
+	respBody, err := c.jsonRequest(http.MethodGet, "/compile/status?task_id="+taskID, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp TaskStatus
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for CompileStatus: %w", err)
+	}
+	return &resp, nil
+}
+
+// ListCompileTemplates returns all built-in compilation templates.
+func (c *Client) ListCompileTemplates() (*TemplateListResponse, error) {
+	respBody, err := c.jsonRequest(http.MethodGet, "/compile/templates", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp TemplateListResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for ListTemplates: %w", err)
+	}
+	return &resp, nil
+}
+
+// ListArtifacts returns all compiled artifacts in the given index.
+func (c *Client) ListArtifacts(indexName string) (*ArtifactListResponse, error) {
+	path := "/artifacts"
+	if indexName != "" {
+		path += "?index=" + indexName
+	}
+	respBody, err := c.jsonRequest(http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp ArtifactListResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for ListArtifacts: %w", err)
+	}
+	return &resp, nil
+}
+
+// GetArtifact retrieves a compiled artifact by name, entity type, and entity ID.
+// If version is 0, returns the latest version.
+func (c *Client) GetArtifact(name, entityType, entityID, indexName string, version int) (*ArtifactData, error) {
+	path := fmt.Sprintf("/artifact/%s?entity_type=%s&entity_id=%s", name, entityType, entityID)
+	if indexName != "" {
+		path += "&index=" + indexName
+	}
+	if version > 0 {
+		path += fmt.Sprintf("&version=%d", version)
+	}
+	respBody, err := c.jsonRequest(http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp ArtifactData
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for GetArtifact: %w", err)
+	}
+	return &resp, nil
+}
+
+// EmbedderStatus returns the current embedder configuration and availability.
+func (c *Client) EmbedderStatus() (*EmbedderStatusResponse, error) {
+	respBody, err := c.jsonRequest(http.MethodGet, "/system/embedder/status", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp EmbedderStatusResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for EmbedderStatus: %w", err)
 	}
 	return &resp, nil
 }

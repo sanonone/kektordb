@@ -8,7 +8,7 @@ import (
 
 // compileTask represents an asynchronous compilation operation.
 type compileTask struct {
-	ID      string        `json:"id"`
+	ID      string         `json:"id"`
 	Request CompileRequest `json:"request"`
 	Status  CompileStatus  `json:"status"`
 	Result  *Artifact      `json:"result,omitempty"`

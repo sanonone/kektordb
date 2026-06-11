@@ -634,8 +634,8 @@ func TestGetAllValidNodeIDs_NoReentrantLockDeadlock(t *testing.T) {
 	// Start a writer goroutine that will block on s.mu.Lock.
 	writerWaiting := make(chan struct{})
 	go func() {
-		close(writerWaiting)    // Signal we are about to try Lock
-		db.Lock()               // Will block until main goroutine releases RLock
+		close(writerWaiting) // Signal we are about to try Lock
+		db.Lock()            // Will block until main goroutine releases RLock
 		db.Unlock()
 	}()
 	<-writerWaiting

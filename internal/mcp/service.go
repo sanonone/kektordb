@@ -1741,8 +1741,8 @@ func (s *Service) requestKnowledgeFallback(indexName, intent, entity, entityType
 	// If budget is too small, skip search
 	if budgetMs < 100 {
 		return nil, RequestKnowledgeResult{
-			Found:           false,
-			Status:          "not_found",
+			Found:  false,
+			Status: "not_found",
 		}, nil
 	}
 

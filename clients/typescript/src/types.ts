@@ -419,3 +419,78 @@ export interface GetMemoryEvolutionResult {
   evolution_chain: MemoryEvolutionStep[];
   total_steps: number;
 }
+
+// --- Knowledge Engine ---
+
+export interface CompileRequest {
+  name: string;
+  sources: CompileSources;
+  index_name?: string;
+  template?: string;
+  llm_config?: Record<string, any>;
+}
+
+export interface CompileSources {
+  type: string;
+  entity: EntityRef;
+  depth?: number;
+  filter?: string;
+  text?: string;
+}
+
+export interface EntityRef {
+  type: string;
+  id: string;
+}
+
+export interface CompileResponse {
+  task_id?: string;
+  status?: string;
+  poll?: string;
+  [key: string]: any; // artifact data when sync
+}
+
+export interface CompileTaskStatus {
+  task_id: string;
+  status: string;
+  progress_message?: string;
+  error?: string;
+  artifact_name?: string;
+  result?: Record<string, any>;
+}
+
+export interface TemplateInfo {
+  name: string;
+  entity_type: string;
+  description: string;
+  fields?: Record<string, any>[];
+  enabled?: boolean;
+}
+
+export interface TemplateListResponse {
+  templates: TemplateInfo[];
+  names: string[];
+}
+
+export interface ArtifactData {
+  name: string;
+  entity_type: string;
+  entity_id: string;
+  version: number;
+  data: Record<string, any>;
+  index_name?: string;
+  compiled_at?: string;
+  compile_mode?: string;
+}
+
+export interface ArtifactListResponse {
+  count: number;
+  artifacts: ArtifactData[];
+}
+
+export interface EmbedderStatusResponse {
+  active: string;
+  model: string;
+  dimension: number;
+  available: boolean;
+}

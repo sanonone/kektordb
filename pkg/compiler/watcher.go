@@ -44,18 +44,18 @@ type Watcher struct {
 	tracked map[string]*watchedArtifact // key: "index:name:entity_type:entity_id"
 	mu      sync.RWMutex
 
-	targetIndexes         []string
-	stalenessThreshold    float64
-	maxRecompilePerCycle  int
+	targetIndexes        []string
+	stalenessThreshold   float64
+	maxRecompilePerCycle int
 
 	recompileThisCycle int // reset per ScanArtifacts call
 }
 
 const (
-	defaultStalenessThreshold = 1.0
+	defaultStalenessThreshold   = 1.0
 	defaultMaxRecompilePerCycle = 3
-	stalenessIncrementOnChange = 0.3
-	stalenessDecayPerHour      = 0.05
+	stalenessIncrementOnChange  = 0.3
+	stalenessDecayPerHour       = 0.05
 )
 
 // NewWatcher creates a new Artifact Watcher and registers it
@@ -262,7 +262,7 @@ func (w *Watcher) loadArtifacts() error {
 				SourceNodeIDs:  sourceIDs,
 				CompiledAt:     compiledAt,
 				StalenessScore: staleness,
-				FieldStaleness:  make(map[string]float64),
+				FieldStaleness: make(map[string]float64),
 				RefreshPolicy: RefreshPolicy{
 					KeepHistory:    true,
 					MaxVersions:    20,
@@ -399,8 +399,8 @@ func (w *Watcher) manageLifecycle() {
 			Version: a.Version,
 		})
 		_ = w.eng.VSetMetadata(a.IndexName, nodeID, map[string]any{
-			"_archived":  true,
-			"_pinned":    false,
+			"_archived": true,
+			"_pinned":   false,
 		})
 
 		// Remove from tracking

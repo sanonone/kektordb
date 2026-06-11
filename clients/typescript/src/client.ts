@@ -8,9 +8,15 @@ import type {
   AdaptiveRetrieveParams,
   AdaptiveRetrieveResult,
   ApiKeyPolicy,
+  ArtifactData,
+  ArtifactListResponse,
   BeliefAssessmentParams,
   BeliefAssessmentResult,
+  CompileRequest,
+  CompileResponse,
+  CompileTaskStatus,
   CreateIndexParams,
+  EmbedderStatusResponse,
   EndSessionParams,
   EndSessionResult,
   GetMemoryEvolutionParams,
@@ -29,6 +35,7 @@ import type {
   StartSessionResult,
   SubgraphResult,
   TaskStatus,
+  TemplateListResponse,
   UserProfile,
   UserProfileItem,
   UserProfileList,
@@ -787,6 +794,55 @@ export class KektorDBClient {
       direction: params.direction ?? 'backward',
     };
     return this.request("POST", "/vector/actions/get-evolution", payload);
+  }
+
+  // --- Knowledge Engine ---
+
+  /**
+   * Sends a compilation request to the Knowledge Engine.
+   * Returns the artifact directly for sync compiles, or a task_id for async.
+   */
+  async compile(req: CompileRequest): Promise<CompileResponse> {
+    return this.request("POST", "/compile", req);
+  }
+
+  /**
+   * Polls the status of an async compilation task.
+   */
+  async getCompileStatus(taskId: string): Promise<CompileTaskStatus> {
+    return this.request("GET", `/compile/status?task_id=${encodeURIComponent(taskId)}`);
+  }
+
+  /**
+   * Lists all built-in compilation templates.
+   */
+  async listCompileTemplates(): Promise<TemplateListResponse> {
+    return this.request("GET", "/compile/templates");
+  }
+
+  /**
+   * Lists all compiled artifacts in the given index.
+   */
+  async listArtifacts(indexName?: string): Promise<ArtifactListResponse> {
+    const path = indexName ? `/artifacts?index=${encodeURIComponent(indexName)}` : "/artifacts";
+    return this.request("GET", path);
+  }
+
+  /**
+   * Retrieves a compiled artifact by name, entity type, and entity ID.
+   */
+  async getArtifact(name: string, entityType: string, entityId: string, indexName?: string, version?: number): Promise<ArtifactData> {
+    const params = new URLSearchParams({ entity_type: entityType, entity_id: entityId });
+    if (indexName) params.set("index", indexName);
+    if (version !== undefined && version > 0) params.set("version", String(version));
+    return this.request("GET", `/artifact/${encodeURIComponent(name)}?${params}`);
+  }
+
+  /**
+   * Returns the current embedder configuration and status.
+   */
+  async embedderStatus(): Promise<EmbedderStatusResponse> {
+    return this.request("GET", "/system/embedder/status");
   }
 
   // --- Static Utility Methods ---

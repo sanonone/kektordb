@@ -156,10 +156,10 @@ func main() {
 	// TUI mode: start server in background, launch terminal dashboard.
 	if *modeTUI {
 		embCfg := embeddings.EmbedderConfig{
-			Mode:       *embedderModeFlag,
-			OllamaURL:  "http://localhost:11434/api/embeddings",
+			Mode:        *embedderModeFlag,
+			OllamaURL:   "http://localhost:11434/api/embeddings",
 			OllamaModel: "nomic-embed-text",
-			ModelDir:   *embedderModelFlag,
+			ModelDir:    *embedderModelFlag,
 		}
 		emb, _ := embeddings.SelectEmbedder(embCfg, dataDir)
 		if emb == nil {
@@ -230,10 +230,10 @@ func main() {
 
 	// Select embedder for HTTP mode (shared with compiler)
 	embedderCfg := embeddings.EmbedderConfig{
-		Mode:       *embedderModeFlag,
-		OllamaURL:  getEnv("EMBEDDER_URL", "http://localhost:11434/api/embeddings"),
+		Mode:        *embedderModeFlag,
+		OllamaURL:   getEnv("EMBEDDER_URL", "http://localhost:11434/api/embeddings"),
 		OllamaModel: getEnv("EMBEDDER_MODEL", "nomic-embed-text"),
-		ModelDir:   *embedderModelFlag,
+		ModelDir:    *embedderModelFlag,
 	}
 	embedder, embedderErr := embeddings.SelectEmbedder(embedderCfg, dataDir)
 	if embedderErr != nil {

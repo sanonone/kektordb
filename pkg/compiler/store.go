@@ -300,14 +300,14 @@ func artifactNodeID(artifact *Artifact) string {
 // ArtifactFromMetadata reconstructs an Artifact from graph node metadata.
 func ArtifactFromMetadata(id string, md map[string]any) *Artifact {
 	a := &Artifact{
-		ID:              id,
-		Data:            make(map[string]any),
-		Provenance:      make(map[string][]Provenance),
-		Confidence:      make(map[string]float64),
-		StalenessScore:  0,
-		Status:          CompileStatusComplete,
-		CompileMode:     CompileModeDeterministic,
-		Version:         1,
+		ID:             id,
+		Data:           make(map[string]any),
+		Provenance:     make(map[string][]Provenance),
+		Confidence:     make(map[string]float64),
+		StalenessScore: 0,
+		Status:         CompileStatusComplete,
+		CompileMode:    CompileModeDeterministic,
+		Version:        1,
 	}
 
 	if v, ok := md["artifact_name"].(string); ok {

@@ -7,20 +7,20 @@ import (
 
 // OutputSchema defines the structure of compiled artifact output.
 type OutputSchema struct {
-	Type       string             `json:"type"`
+	Type       string              `json:"type"`
 	Properties map[string]FieldDef `json:"properties,omitempty"`
 	Required   []string            `json:"required,omitempty"`
 }
 
 // FieldDef describes a single field in the output schema.
 type FieldDef struct {
-	Type        string             `json:"type"`
-	Items       *FieldDef          `json:"items,omitempty"`
+	Type        string              `json:"type"`
+	Items       *FieldDef           `json:"items,omitempty"`
 	Properties  map[string]FieldDef `json:"properties,omitempty"`
-	Enum        []string           `json:"enum,omitempty"`
-	Description string             `json:"description,omitempty"`
-	Source      string             `json:"source,omitempty"` // "metadata", "graph", "llm", "computed", "graph+llm"
-	LLM         bool               `json:"llm,omitempty"`
+	Enum        []string            `json:"enum,omitempty"`
+	Description string              `json:"description,omitempty"`
+	Source      string              `json:"source,omitempty"` // "metadata", "graph", "llm", "computed", "graph+llm"
+	LLM         bool                `json:"llm,omitempty"`
 }
 
 // SchemaError represents a validation error for a compiled field.

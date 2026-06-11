@@ -40,9 +40,9 @@ func TestCompileEntityCard(t *testing.T) {
 		"_pinned":   true,
 	})
 	eng.VAdd(indexName, "user:alice:pref_1", make([]float32, 384), map[string]any{
-		"type":      "memory",
-		"entity_id": "alice",
-		"content":   "Alice prefers concise code reviews and hates verbose comments",
+		"type":       "memory",
+		"entity_id":  "alice",
+		"content":    "Alice prefers concise code reviews and hates verbose comments",
 		"_sentiment": "positive",
 	})
 	eng.VAdd(indexName, "user:alice:pref_2", make([]float32, 384), map[string]any{
@@ -352,9 +352,9 @@ func TestCompileWithTemplateLookup(t *testing.T) {
 
 	// Use template name in sources.entity.type to trigger template lookup
 	req := CompileRequest{
-		Name:    "project_summary",
+		Name:     "project_summary",
 		Template: "project_summary",
-		Sources: SourceSpec{Type: "graph_query", Entity: EntityRef{Type: "project", ID: "kektordb"}, Depth: 1},
+		Sources:  SourceSpec{Type: "graph_query", Entity: EntityRef{Type: "project", ID: "kektordb"}, Depth: 1},
 	}
 
 	artifact, err := c.Compile(req)

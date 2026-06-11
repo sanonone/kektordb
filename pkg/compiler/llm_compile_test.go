@@ -336,9 +336,9 @@ func TestBuildFieldPromptIncludesSchema(t *testing.T) {
 	}
 
 	fieldDef := FieldDef{
-		Type:  "string",
-		Enum:  []string{"a", "b"},
-		LLM:   true,
+		Type:        "string",
+		Enum:        []string{"a", "b"},
+		LLM:         true,
 		Description: "test field",
 	}
 

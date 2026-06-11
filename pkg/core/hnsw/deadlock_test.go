@@ -15,8 +15,9 @@ import (
 // AND a concurrent writer is waiting on metaMu.Lock() causes a deadlock.
 //
 // This is the exact scenario that handleUIExplore triggers:
-//   IterateRaw → metaMu.RLock()
-//     callback → VGet → GetNodeData → metaMu.RLock() (REENTRANT)
+//
+//	IterateRaw → metaMu.RLock()
+//	  callback → VGet → GetNodeData → metaMu.RLock() (REENTRANT)
 //
 // The fix for #4.1 removes VGet/GetNodeData calls from inside the
 // IterateRaw callback in handleUIExplore, avoiding this pattern.
