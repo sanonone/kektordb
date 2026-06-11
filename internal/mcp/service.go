@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -76,7 +78,13 @@ func (s *Service) ensureIndex(name string) {
 		}
 
 		// Create index with Memory Config
-		s.engine.VCreate(name, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, memConfig)
+		err := s.engine.VCreate(name, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, memConfig)
+		// Note: VCreate may fail if another goroutine created the index between
+		// IndexExists and VCreate (TOCTOU race). The engine returns "index already
+		// exists" in that case, which is benign. We log only non-duplicate errors.
+		if err != nil && !strings.Contains(err.Error(), "already exists") {
+			slog.Error("MCP: failed to ensure index exists", "index", name, "error", err)
+		}
 	}
 }
 
@@ -156,12 +164,16 @@ func (s *Service) SaveMemory(ctx context.Context, req *mcp.CallToolRequest, args
 		if len(parts) > 1 {
 			rel = parts[1]
 		}
-		s.engine.VLink(idx, id, targetID, rel, "", 1.0, nil)
+		if err := s.engine.VLink(idx, id, targetID, rel, "", 1.0, nil); err != nil {
+			slog.Warn("MCP: failed to create manual link", "source", id, "target", targetID, "error", err)
+		}
 	}
 
 	// 7. Auto-link to session if applicable
 	if args.SessionID != "" {
-		s.engine.VLink(idx, id, args.SessionID, "belongs_to", "", 1.0, nil)
+		if err := s.engine.VLink(idx, id, args.SessionID, "belongs_to", "", 1.0, nil); err != nil {
+			slog.Warn("MCP: failed to link memory to session", "memory", id, "session", args.SessionID, "error", err)
+		}
 	}
 
 	return nil, SaveMemoryResult{MemoryID: id, Status: "saved"}, nil
@@ -186,7 +198,7 @@ func (s *Service) CreateEntity(ctx context.Context, req *mcp.CallToolRequest, ar
 	// 2. BOOTSTRAP FALLBACK
 	// If the index is empty, VAdd fails because it doesn't know the vector dimension.
 	// In this case, we generate a real embedding from the description to "bootstrap" the index dimensions.
-	if err != nil && strings.Contains(err.Error(), "dimension unknown") {
+	if err != nil && errors.Is(err, engine.ErrDimensionUnknown) {
 		// Use ID and Description to generate a semantic vector for this first node
 		bootstrapContent := fmt.Sprintf("%s: %s", args.EntityID, args.Description)
 		vec, errEmbed := s.embedder.Embed(bootstrapContent)
@@ -232,6 +244,13 @@ func (s *Service) Connect(ctx context.Context, req *mcp.CallToolRequest, args Co
 	idx := args.IndexName
 	if idx == "" {
 		idx = "mcp_memory"
+	}
+
+	if args.SourceID == "" {
+		return nil, struct{}{}, fmt.Errorf("source_id is required for connect")
+	}
+	if args.TargetID == "" {
+		return nil, struct{}{}, fmt.Errorf("target_id is required for connect")
 	}
 
 	if err := s.engine.VLink(idx, args.SourceID, args.TargetID, args.Relation, "", 1.0, nil); err != nil {
@@ -285,7 +304,11 @@ func (s *Service) Recall(ctx context.Context, req *mcp.CallToolRequest, args Rec
 
 	// Apply layer weights if configured
 	if len(args.LayerWeights) > 0 && len(ids) > 0 {
-		ids = s.applyLayerWeights(idx, ids, args.LayerWeights, limit)
+		ids, err = s.applyLayerWeights(idx, ids, args.LayerWeights, limit)
+		if err != nil {
+			slog.Error("MCP: layer weight re-ranking failed", "error", err)
+			// Fall through with original ids
+		}
 	} else if len(ids) > limit {
 		ids = ids[:limit]
 	}
@@ -294,12 +317,13 @@ func (s *Service) Recall(ctx context.Context, req *mcp.CallToolRequest, args Rec
 		// Fire and forget reinforcement (non-blocking for the response)
 		go func() {
 			if err := s.engine.VReinforce(idx, ids); err != nil {
-				// Log error internally if needed
+				slog.Warn("MCP: background memory reinforcement failed", "index", idx, "count", len(ids), "error", err)
 			}
 		}()
 	}
 
-	return nil, s.formatResults(idx, ids), nil
+	res, err := s.formatResults(idx, ids)
+	return nil, res, err
 }
 
 func (s *Service) ScopedRecall(ctx context.Context, req *mcp.CallToolRequest, args ScopedRecallArgs) (*mcp.CallToolResult, RecallResult, error) {
@@ -339,7 +363,8 @@ func (s *Service) ScopedRecall(ctx context.Context, req *mcp.CallToolRequest, ar
 		return nil, RecallResult{}, err
 	}
 
-	return nil, s.formatResults(idx, ids), nil
+	res, err := s.formatResults(idx, ids)
+	return nil, res, err
 }
 
 func (s *Service) Traverse(ctx context.Context, req *mcp.CallToolRequest, args TraverseArgs) (*mcp.CallToolResult, TraverseResult, error) {
@@ -477,6 +502,13 @@ func (s *Service) FindConnection(ctx context.Context, req *mcp.CallToolRequest, 
 	idx := "mcp_memory"
 	if !s.engine.IndexExists(idx) {
 		return nil, FindConnectionResult{PathDescription: "No memory index found."}, nil
+	}
+
+	if args.SourceID == "" {
+		return nil, FindConnectionResult{}, fmt.Errorf("source_id is required for find_connection")
+	}
+	if args.TargetID == "" {
+		return nil, FindConnectionResult{}, fmt.Errorf("target_id is required for find_connection")
 	}
 
 	relations := args.Relations
@@ -627,7 +659,10 @@ func (s *Service) ListVectors(ctx context.Context, req *mcp.CallToolRequest, arg
 
 	// Safely fetch data in batch without holding the Index Read Lock
 	if len(idsToFetch) > 0 {
-		vectorDataList, _ := s.engine.VGetMany(idx, idsToFetch)
+		vectorDataList, err := s.engine.VGetMany(idx, idsToFetch)
+		if err != nil {
+			return nil, ListVectorsResult{}, fmt.Errorf("failed to fetch vector data: %w", err)
+		}
 		for _, vData := range vectorDataList {
 			vectors = append(vectors, struct {
 				ID       string         `json:"id"`
@@ -648,8 +683,11 @@ func (s *Service) ListVectors(ctx context.Context, req *mcp.CallToolRequest, arg
 }
 
 // formatResults hydrates the IDs into text strings
-func (s *Service) formatResults(idx string, ids []string) RecallResult {
-	data, _ := s.engine.VGetMany(idx, ids)
+func (s *Service) formatResults(idx string, ids []string) (RecallResult, error) {
+	data, err := s.engine.VGetMany(idx, ids)
+	if err != nil {
+		return RecallResult{}, fmt.Errorf("failed to fetch vector data: %w", err)
+	}
 	var res []string
 	for _, item := range data {
 		content := item.Metadata["content"]
@@ -665,16 +703,19 @@ func (s *Service) formatResults(idx string, ids []string) RecallResult {
 		}
 		res = append(res, fmt.Sprintf("%v", content))
 	}
-	return RecallResult{Results: res}
+	return RecallResult{Results: res}, nil
 }
 
 // applyLayerWeights re-ranks results based on per-layer weights.
 // Default weights: semantic=0.5, episodic=0.4, procedural=0.1
-func (s *Service) applyLayerWeights(idx string, ids []string, weights map[string]float64, limit int) []string {
+func (s *Service) applyLayerWeights(idx string, ids []string, weights map[string]float64, limit int) ([]string, error) {
 	// Fetch metadata for all IDs
-	data, _ := s.engine.VGetMany(idx, ids)
+	data, err := s.engine.VGetMany(idx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch layer weights: %w", err)
+	}
 	if len(data) == 0 {
-		return ids[:min(limit, len(ids))]
+		return ids[:min(limit, len(ids))], nil
 	}
 
 	// Default weights if not specified
@@ -738,7 +779,7 @@ func (s *Service) applyLayerWeights(idx string, ids []string, weights map[string
 	for i, r := range results {
 		ids[i] = r.id
 	}
-	return ids
+	return ids, nil
 }
 
 // CheckSubconscious retrieves unresolved reflections generated by the Gardener.
@@ -768,7 +809,10 @@ func (s *Service) CheckSubconscious(ctx context.Context, req *mcp.CallToolReques
 	}
 
 	// Recuperiamo i dati completi
-	data, _ := s.engine.VGetMany(idx, reflectionIDs)
+	data, err := s.engine.VGetMany(idx, reflectionIDs)
+	if err != nil {
+		return nil, CheckSubconsciousResult{}, fmt.Errorf("failed to fetch reflection data: %w", err)
+	}
 	var res []string
 
 	for _, item := range data {
@@ -836,11 +880,17 @@ func (s *Service) ResolveConflict(ctx context.Context, req *mcp.CallToolRequest,
 			"_archived":      true,
 			"invalidated_by": args.ReflectionID,
 		}
-		_ = s.engine.VSetMetadata(idx, args.DiscardID, discardProps)
+		if err := s.engine.VSetMetadata(idx, args.DiscardID, discardProps); err != nil {
+			slog.Error("MCP: failed to archive discarded memory in ResolveConflict",
+				"id", args.DiscardID, "error", err)
+		}
 
 		// In più, scolleghiamo eventuali archi attivi dal Grafo per pulizia topologica
 		// VDelete farà scattare il Cascade Delete sugli archi (Soft Delete).
-		_ = s.engine.VDelete(idx, args.DiscardID)
+		if err := s.engine.VDelete(idx, args.DiscardID); err != nil {
+			slog.Error("MCP: failed to delete discarded memory in ResolveConflict",
+				"id", args.DiscardID, "error", err)
+		}
 	}
 
 	return nil, ResolveConflictResult{Status: "Conflict resolved successfully. Memory consolidated."}, nil
@@ -885,9 +935,10 @@ func (s *Service) AskMetaQuestion(ctx context.Context, req *mcp.CallToolRequest,
 	}
 
 	// 4. Formattiamo i risultati
-	// Sfruttiamo l'helper formatResults che abbiamo già modificato per includere
-	// automaticamente il preambolo temporale "[Memoria del 18 Mar 2026]".
-	formatted := s.formatResults(idx, ids)
+	formatted, err := s.formatResults(idx, ids)
+	if err != nil {
+		return nil, AskMetaQuestionResult{}, err
+	}
 
 	return nil, AskMetaQuestionResult{Reflections: formatted.Results}, nil
 }
@@ -926,7 +977,7 @@ func (s *Service) StartSession(ctx context.Context, req *mcp.CallToolRequest, ar
 
 	// Try zero-vector insert first (bootstrap if needed)
 	err := s.engine.VAdd(idx, sessionID, nil, meta)
-	if err != nil && strings.Contains(err.Error(), "dimension unknown") {
+	if err != nil && errors.Is(err, engine.ErrDimensionUnknown) {
 		// Bootstrap: create with a dummy embedding from context
 		bootstrapContent := fmt.Sprintf("Session %s: %s", sessionID, args.Context)
 		vec, errEmbed := s.embedder.Embed(bootstrapContent)
@@ -1192,7 +1243,10 @@ func (s *Service) TransferMemory(ctx context.Context, req *mcp.CallToolRequest, 
 	}
 
 	// 5. Fetch source data
-	sourceData, _ := s.engine.VGetMany(args.SourceIndex, sourceIDs)
+	sourceData, err := s.engine.VGetMany(args.SourceIndex, sourceIDs)
+	if err != nil {
+		return nil, TransferMemoryResult{}, fmt.Errorf("failed to fetch source data: %w", err)
+	}
 
 	// 6. Get target dimension
 	targetDim := s.getIndexDimension(args.TargetIndex)
@@ -1337,7 +1391,10 @@ func (s *Service) transferGraphTopology(sourceIdx, targetIdx string, sourceIDs [
 					newSourceID := idMapping[sourceID]
 					newTargetID := idMapping[targetID]
 					if newSourceID != "" && newTargetID != "" {
-						s.engine.VLink(targetIdx, newSourceID, newTargetID, relType, "", 1.0, nil)
+						if err := s.engine.VLink(targetIdx, newSourceID, newTargetID, relType, "", 1.0, nil); err != nil {
+							slog.Warn("MCP: failed to copy graph link during transfer",
+								"source", newSourceID, "target", newTargetID, "error", err)
+						}
 					}
 				}
 			}
@@ -1356,12 +1413,16 @@ func (s *Service) createAgentProxyNode(targetIdx, agentID, sourceIdx string, tra
 			"agent_name":  sourceIdx,
 			"description": fmt.Sprintf("Proxy node representing agent %s", sourceIdx),
 		}
-		s.engine.VAdd(targetIdx, agentID, nil, meta)
+		if err := s.engine.VAdd(targetIdx, agentID, nil, meta); err != nil {
+			slog.Warn("MCP: failed to create agent proxy node during transfer", "agent", agentID, "error", err)
+		}
 	}
 
 	// Link all transferred nodes to this agent
 	for _, id := range transferredIDs {
-		s.engine.VLink(targetIdx, id, agentID, "transferred_from_agent", "", 1.0, nil)
+		if err := s.engine.VLink(targetIdx, id, agentID, "transferred_from_agent", "", 1.0, nil); err != nil {
+			slog.Warn("MCP: failed to link transferred node to agent proxy", "node", id, "agent", agentID, "error", err)
+		}
 	}
 }
 
@@ -1470,8 +1531,14 @@ func (s *Service) EvolveMemory(ctx context.Context, req *mcp.CallToolRequest, ar
 		newVector = vec
 	}
 
-	newMetadata := map[string]any{
-		"type": oldData.Metadata["type"],
+	newMetadata := make(map[string]any, len(oldData.Metadata)+3)
+	// Copy all existing metadata to preserve tags, source, user_id, session_id, etc.
+	for k, v := range oldData.Metadata {
+		newMetadata[k] = v
+	}
+	// Ensure type is always present
+	if newMetadata["type"] == nil {
+		newMetadata["type"] = oldData.Metadata["type"]
 	}
 	if args.NewContent != "" {
 		newMetadata["content"] = args.NewContent
@@ -1655,7 +1722,7 @@ func (s *Service) requestKnowledgeFallback(indexName, intent, entity, entityType
 	// Trigger async recompile in background for next request
 	if s.compiler != nil {
 		go func() {
-			_, _ = s.compiler.StartAsyncCompile(compiler.CompileRequest{
+			_, err := s.compiler.StartAsyncCompile(compiler.CompileRequest{
 				Name:     intent,
 				Template: intent,
 				Sources: compiler.SourceSpec{
@@ -1665,6 +1732,9 @@ func (s *Service) requestKnowledgeFallback(indexName, intent, entity, entityType
 				},
 				IndexName: indexName,
 			})
+			if err != nil {
+				slog.Warn("MCP: async knowledge compile failed", "template", intent, "entity", entity, "error", err)
+			}
 		}()
 	}
 
@@ -1683,7 +1753,10 @@ func (s *Service) requestKnowledgeFallback(indexName, intent, entity, entityType
 		if err == nil {
 			ids, err := s.engine.VSearch(indexName, vec, 5, "", "", 0, 0, nil)
 			if err == nil && len(ids) > 0 {
-				data, _ := s.engine.VGetMany(indexName, ids)
+				data, err := s.engine.VGetMany(indexName, ids)
+				if err != nil {
+					slog.Warn("MCP: fallback VGetMany failed", "error", err)
+				}
 				var results []string
 				for _, item := range data {
 					content := item.Metadata["content"]

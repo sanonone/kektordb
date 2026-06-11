@@ -27,6 +27,10 @@ import (
 	"github.com/sanonone/kektordb/pkg/persistence"
 )
 
+// ErrDimensionUnknown is returned when attempting to add an entity without
+// a vector to an empty index whose dimension cannot be inferred.
+var ErrDimensionUnknown = fmt.Errorf("cannot add entity without vector to an empty index (dimension unknown)")
+
 // getHNSWIndex extracts the concrete *hnsw.Index from a VectorIndex interface.
 // Returns an error if the index is not an HNSW implementation.
 func getHNSWIndex(idx core.VectorIndex) (*hnsw.Index, error) {
@@ -318,7 +322,7 @@ func (e *Engine) VAdd(indexName, id string, vector []float32, metadata map[strin
 		if hnswIdx, ok := idx.(*hnsw.Index); ok {
 			dim := hnswIdx.GetDimension()
 			if dim == 0 {
-				return fmt.Errorf("cannot add entity without vector to an empty index (dimension unknown)")
+				return fmt.Errorf("%w", ErrDimensionUnknown)
 			}
 			// Create a zero-vector of the correct size
 			vector = make([]float32, dim)
