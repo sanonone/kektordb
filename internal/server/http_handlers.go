@@ -240,6 +240,34 @@ func cloneMetadata(m map[string]any) map[string]any {
 	return c
 }
 
+// cloneGraphNode returns a deep copy of a GraphNode tree, recursively cloning
+// all nested Connections. Used to safely compress without mutating live data.
+// Fixes bug #4.2: the old manual clone only went one level deep, silently
+// dropping nested connections for paths with 3+ segments.
+func cloneGraphNode(src *engine.GraphNode) *engine.GraphNode {
+	if src == nil {
+		return nil
+	}
+	cloned := &engine.GraphNode{
+		VectorData: core.VectorData{
+			ID:       src.ID,
+			Vector:   append([]float32(nil), src.Vector...),
+			Metadata: cloneMetadata(src.Metadata),
+		},
+		Connections: make(map[string][]engine.GraphNode, len(src.Connections)),
+	}
+	for relType, children := range src.Connections {
+		clonedChildren := make([]engine.GraphNode, len(children))
+		for i := range children {
+			if child := cloneGraphNode(&children[i]); child != nil {
+				clonedChildren[i] = *child
+			}
+		}
+		cloned.Connections[relType] = clonedChildren
+	}
+	return cloned
+}
+
 // handleTransferMemory handles memory transfer between indexes
 func (s *Server) handleTransferMemory(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -947,29 +975,7 @@ func (s *Server) handleGraphTraverse(w http.ResponseWriter, r *http.Request) {
 	// Apply compression if requested (clone node first to avoid mutating live index data)
 	if req.CompressContext {
 		lang := s.Engine.GetIndexLanguage(req.IndexName)
-		// Deep-clone the result node metadata before compression
-		result = &engine.GraphNode{
-			VectorData: core.VectorData{
-				ID:       result.ID,
-				Vector:   append([]float32(nil), result.Vector...),
-				Metadata: cloneMetadata(result.Metadata),
-			},
-			Connections: make(map[string][]engine.GraphNode, len(result.Connections)),
-		}
-		for relType, children := range result.Connections {
-			cloned := make([]engine.GraphNode, len(children))
-			for i, child := range children {
-				cloned[i] = engine.GraphNode{
-					VectorData: core.VectorData{
-						ID:       child.ID,
-						Vector:   append([]float32(nil), child.Vector...),
-						Metadata: cloneMetadata(child.Metadata),
-					},
-					Connections: make(map[string][]engine.GraphNode, len(child.Connections)),
-				}
-			}
-			result.Connections[relType] = cloned
-		}
+		result = cloneGraphNode(result)
 		compressGraphNode(result, lang)
 	}
 
