@@ -1459,7 +1459,11 @@ func (g *Gardener) UpdateUserProfile(indexName, userID string) error {
 	slog.Info("[Cognitive Engine] Updating user profile", "index", indexName, "user", userID)
 
 	// 1. Get recent user_interaction memories
-	filter := fmt.Sprintf("user_id='%s' AND tags CONTAINS 'user_interaction'", userID)
+	// Uses '=' instead of CONTAINS because arrays are stored element-by-element
+	// in the inverted index: tags = 'user_interaction' matches any node with
+	// that value in its tags array. CONTAINS is only supported in VSearch (hybrid),
+	// not in VFilter (pure metadata).
+	filter := fmt.Sprintf("user_id='%s' AND tags = 'user_interaction'", userID)
 	ids, err := g.eng.VFilter(indexName, filter, g.cfg.ProfileUpdateThreshold)
 	if err != nil {
 		return fmt.Errorf("failed to get user interactions: %w", err)

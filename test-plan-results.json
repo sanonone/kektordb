@@ -3,8 +3,8 @@
   "base_url": "http://localhost:9090",
   "summary": {
     "total": 107,
-    "passed": 105,
-    "failed": 0,
+    "passed": 103,
+    "failed": 2,
     "warn": 1,
     "skipped": 1
   },
@@ -713,21 +713,21 @@
       "id": "4.5.1",
       "section": "4",
       "description": "Get user profile",
-      "status": "PASS",
-      "input": "GET /users/user-1/profile",
-      "expected": "Valid JSON",
-      "actual": "{'error': 'index_name query parameter is required'}",
-      "note": ""
+      "status": "FAIL",
+      "input": "GET /users/user-1/profile?index_name=qa_test",
+      "expected": "User profile with user_id and stats (num_memories, etc.)",
+      "actual": "HTTP 404: profile not found for user user-1",
+      "note": "FAIL: profile not created because Gardener's UpdateUserProfile uses CONTAINS filter on tags array which crashes with HTTP 500. Root cause: VFilter CONTAINS operator is broken for array metadata fields. 6 user_interaction memories with tags=['user_interaction'] were created and correctly detected by trackUserInteraction (EventBus), but UpdateUserProfile fails at the VFilter step."
     },
     {
       "id": "4.5.2",
       "section": "4",
       "description": "ListUserProfiles",
-      "status": "PASS",
-      "input": "GET /users",
-      "expected": "Valid JSON",
-      "actual": "{'error': 'index_name query parameter is required'}",
-      "note": ""
+      "status": "FAIL",
+      "input": "GET /users?index_name=qa_test",
+      "expected": "Non-empty profiles list with count > 0",
+      "actual": "HTTP 200: profiles=[], count=0",
+      "note": "FAIL: no profiles created (depends on 4.5.1). Same CONTAINS bug."
     },
     {
       "id": "5.1.1",
@@ -764,40 +764,40 @@
       "section": "5",
       "description": "List artifacts",
       "status": "PASS",
-      "input": "GET /artifacts",
-      "expected": "Valid JSON",
-      "actual": "{'error': 'Internal Server Error'}",
-      "note": ""
+      "input": "GET /artifacts?index=qa_test",
+      "expected": "Artifacts list with count matching actual, required fields (name, entity_type, entity_id, version, data)",
+      "actual": "HTTP 200: 1 artifact, count=1 matches actual, all required fields present",
+      "note": "Verified: count matches actual, artifact has name/entity_type/entity_id/version/data."
     },
     {
       "id": "5.4.2",
       "section": "5",
       "description": "Get artifact",
       "status": "PASS",
-      "input": "GET /artifact/entity_card",
-      "expected": "Valid JSON",
-      "actual": "{'id': '_artifact_entity_card_user_user-1_v1', 'name': 'entity_card', 'version': 1, 'entity_type': 'user', 'entity_id': 'user-1', 'data': {'connection_count': 0}, 'provenance': {'connection_count': [{",
-      "note": ""
+      "input": "GET /artifact/entity_card?entity_type=user&entity_id=user-1&index=qa_test",
+      "expected": "Artifact with name, entity_type, entity_id, version, data",
+      "actual": "HTTP 200: all required fields present",
+      "note": "Semantically verified."
     },
     {
       "id": "5.4.3",
       "section": "5",
       "description": "Artifact history",
       "status": "PASS",
-      "input": "GET /artifact/entity_card/history",
-      "expected": "Valid JSON",
-      "actual": "{'error': 'Internal Server Error'}",
-      "note": ""
+      "input": "GET /artifact/entity_card/history?entity_type=user&entity_id=user-1&index=qa_test",
+      "expected": "History with count matching actual",
+      "actual": "HTTP 200: count=1, history_length=1",
+      "note": "Verified: count matches actual history length."
     },
     {
       "id": "5.4.4",
       "section": "5",
       "description": "Artifact version",
       "status": "PASS",
-      "input": "GET /artifact/entity_card?version=1",
-      "expected": "Valid JSON",
-      "actual": "{'error': 'filter artifacts: invalid filter: index not found'}",
-      "note": ""
+      "input": "GET /artifact/entity_card?entity_type=user&entity_id=user-1&index=qa_test&version=1",
+      "expected": "Version 1 artifact",
+      "actual": "HTTP 200: version=1 returned correctly",
+      "note": "Verified specific version retrieval."
     },
     {
       "id": "5.4.5",
@@ -814,10 +814,10 @@
       "section": "5",
       "description": "Artifact staleness",
       "status": "PASS",
-      "input": "GET /artifact/entity_card/stale",
-      "expected": "Valid JSON",
-      "actual": "{'error': 'filter artifacts: invalid filter: index not found'}",
-      "note": ""
+      "input": "GET /artifact/entity_card/stale?entity_type=user&entity_id=user-1&index=qa_test",
+      "expected": "Staleness info with staleness_score",
+      "actual": "HTTP 200: staleness_score present, name present",
+      "note": "Verified: staleness_score field present in response."
     },
     {
       "id": "6.1.1",

@@ -501,6 +501,20 @@
       "description": "search-nodes MUST return nodes with id and properties for each node"
     },
     {
+      "name": "vfilter_array_tag_matches_equality",
+      "method": "POST",
+      "path": "/graph/actions/search-nodes",
+      "request": {
+        "index_name": "BUGFIX_TEST_IDX",
+        "property_filter": "tags = 'common'",
+        "limit": 50
+      },
+      "depends_on": ["vadd_duplicate_returns_409"],
+      "expected_status": 200,
+      "expected_response_fields": ["nodes"],
+      "description": "VFilter on array field (tags = 'value') must match nodes containing that value. CONTAINS is not supported by VFilter — use = instead."
+    },
+    {
       "name": "evolve_preserves_metadata",
       "method": "POST",
       "path": "/vector/actions/evolve",
