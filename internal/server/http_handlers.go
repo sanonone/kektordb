@@ -525,6 +525,8 @@ func (s *Server) handleVectorAdd(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			s.writeHTTPError(w, http.StatusNotFound, err)
+		} else if strings.Contains(err.Error(), "already exists") {
+			s.writeHTTPError(w, http.StatusConflict, err)
 		} else {
 			s.writeHTTPError(w, http.StatusInternalServerError, err)
 		}

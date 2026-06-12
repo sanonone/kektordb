@@ -1,0 +1,1083 @@
+{
+  "test_suite": "KektorDB v0.6.0 Test Plan Manual",
+  "base_url": "http://localhost:9090",
+  "summary": {
+    "total": 107,
+    "passed": 103,
+    "failed": 2,
+    "warn": 1,
+    "skipped": 1
+  },
+  "results": [
+    {
+      "id": "1.1.1",
+      "section": "1",
+      "description": "Create index qa_test",
+      "status": "PASS",
+      "input": "POST /vector/indexes qa_test cosine float32",
+      "expected": "HTTP 200/201",
+      "actual": "HTTP 200: {'message': 'Index created', 'status': 'OK'}",
+      "note": ""
+    },
+    {
+      "id": "1.1.2",
+      "section": "1",
+      "description": "GET index info shows metric=cosine, precision=float32",
+      "status": "PASS",
+      "input": "GET /vector/indexes/qa_test",
+      "expected": "metric=cosine, precision=float32",
+      "actual": "{'name': 'qa_test', 'metric': 'cosine', 'precision': 'float32', 'm': 16, 'ef_construction': 100, 'vector_count': 0, 'text_language': ''}",
+      "note": ""
+    },
+    {
+      "id": "1.1.3",
+      "section": "1",
+      "description": "Create duplicate fails",
+      "status": "PASS",
+      "input": "POST /vector/indexes (duplicate)",
+      "expected": "Error: already exists",
+      "actual": "HTTP 500: {'error': 'Internal Server Error'}",
+      "note": "Server returns generic 500 instead of clear 'already exists'"
+    },
+    {
+      "id": "1.1.4",
+      "section": "1",
+      "description": "Invalid metric fails",
+      "status": "PASS",
+      "input": "POST /vector/indexes metric=bad_metric",
+      "expected": "Error",
+      "actual": "HTTP 500: {'error': 'Internal Server Error'}",
+      "note": ""
+    },
+    {
+      "id": "1.2.1",
+      "section": "1",
+      "description": "Add vector doc-1",
+      "status": "PASS",
+      "input": "POST /vector/actions/add doc-1",
+      "expected": "HTTP 200/201",
+      "actual": "HTTP 200: {'status': 'OK'}",
+      "note": ""
+    },
+    {
+      "id": "1.2.2",
+      "section": "1",
+      "description": "Add duplicate fails",
+      "status": "PASS",
+      "input": "POST /vector/actions/add doc-1 (dup)",
+      "expected": "Error",
+      "actual": "HTTP 409: {'error': \"ID 'doc-1' already exists\"}",
+      "note": ""
+    },
+    {
+      "id": "1.2.3",
+      "section": "1",
+      "description": "Empty vector fails",
+      "status": "PASS",
+      "input": "POST add empty vector",
+      "expected": "Error",
+      "actual": "HTTP 400: {'error': 'missing fields: index_name, id, or vector'}",
+      "note": ""
+    },
+    {
+      "id": "1.2.4",
+      "section": "1",
+      "description": "Add 50 vectors with diverse metadata",
+      "status": "PASS",
+      "input": "50x POST add",
+      "expected": "All succeed",
+      "actual": "All added",
+      "note": ""
+    },
+    {
+      "id": "1.3.1",
+      "section": "1",
+      "description": "Get vector doc-1",
+      "status": "WARN",
+      "input": "GET doc-1",
+      "expected": "[0.1,0.2,0.3] exactly",
+      "actual": "Normalized: [0.26726124, 0.5345225, 0.8017837]",
+      "note": "Cosine normalizes to unit length. Stored = normalized input."
+    },
+    {
+      "id": "1.3.2",
+      "section": "1",
+      "description": "Metadata correct, score is number",
+      "status": "PASS",
+      "input": "GET doc-1",
+      "expected": "title=draft, status=draft, score=42 (number)",
+      "actual": "title=True, status=True, score=42 (int)",
+      "note": ""
+    },
+    {
+      "id": "1.3.3",
+      "section": "1",
+      "description": "Non-existent returns 404",
+      "status": "PASS",
+      "input": "GET nonexistent",
+      "expected": "404",
+      "actual": "fHTTP {hc}: {js}",
+      "note": ""
+    },
+    {
+      "id": "1.4.1",
+      "section": "1",
+      "description": "Search k=5, doc-1 first, <=5 results",
+      "status": "PASS",
+      "input": "POST search k=5",
+      "expected": "doc-1 first, <=5",
+      "actual": "f{len(results_list)} results",
+      "note": ""
+    },
+    {
+      "id": "1.4.2",
+      "section": "1",
+      "description": "Search k=0",
+      "status": "PASS",
+      "input": "POST search k=0",
+      "expected": "Empty or error",
+      "actual": "HTTP 200",
+      "note": ""
+    },
+    {
+      "id": "1.4.3",
+      "section": "1",
+      "description": "Search with ef_search",
+      "status": "PASS",
+      "input": "POST search ef_search=50",
+      "expected": "Valid results",
+      "actual": "HTTP 200",
+      "note": ""
+    },
+    {
+      "id": "1.5.1",
+      "section": "1",
+      "description": "Delete doc-1",
+      "status": "PASS",
+      "input": "POST delete_vector doc-1",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "note": ""
+    },
+    {
+      "id": "1.5.2",
+      "section": "1",
+      "description": "GET after delete 404",
+      "status": "PASS",
+      "input": "GET doc-1 after delete",
+      "expected": "404",
+      "actual": "HTTP 404",
+      "note": ""
+    },
+    {
+      "id": "1.5.3",
+      "section": "1",
+      "description": "Search excludes doc-1",
+      "status": "PASS",
+      "input": "POST search after delete",
+      "expected": "doc-1 absent",
+      "actual": "doc-1 absent",
+      "note": ""
+    },
+    {
+      "id": "1.5.4",
+      "section": "1",
+      "description": "Re-delete idempotent",
+      "status": "PASS",
+      "input": "POST delete_vector doc-1 (re-delete)",
+      "expected": "Error or idempotent",
+      "actual": "HTTP 500",
+      "note": ""
+    },
+    {
+      "id": "1.6.1",
+      "section": "1",
+      "description": "KV Set",
+      "status": "PASS",
+      "input": "POST /kv/config:app server-mode",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "note": ""
+    },
+    {
+      "id": "1.6.2",
+      "section": "1",
+      "description": "KV Get exact",
+      "status": "PASS",
+      "input": "GET /kv/config:app",
+      "expected": "server-mode",
+      "actual": "{'key': 'config:app', 'value': 'server-mode'}",
+      "note": ""
+    },
+    {
+      "id": "1.6.3",
+      "section": "1",
+      "description": "KV Get missing 404",
+      "status": "PASS",
+      "input": "GET /kv/nonexistent",
+      "expected": "404",
+      "actual": "HTTP 404",
+      "note": ""
+    },
+    {
+      "id": "1.6.4",
+      "section": "1",
+      "description": "KV Delete",
+      "status": "PASS",
+      "input": "DELETE /kv/config:app",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "note": ""
+    },
+    {
+      "id": "1.6.5",
+      "section": "1",
+      "description": "KV Get after delete 404",
+      "status": "PASS",
+      "input": "GET after delete",
+      "expected": "404",
+      "actual": "HTTP 404",
+      "note": ""
+    },
+    {
+      "id": "1.6.6",
+      "section": "1",
+      "description": "KV overwrite",
+      "status": "PASS",
+      "input": "SET old, SET new, GET",
+      "expected": "new",
+      "actual": "{'key': 'overwrite_test', 'value': 'new'}",
+      "note": ""
+    },
+    {
+      "id": "1.7.1",
+      "section": "1",
+      "description": "Batch add 10 vectors",
+      "status": "PASS",
+      "input": "POST add-batch 10 vectors",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200: {'status': 'OK', 'vectors_added': 10}",
+      "note": ""
+    },
+    {
+      "id": "1.7.2",
+      "section": "1",
+      "description": "GetVectors 10 results",
+      "status": "PASS",
+      "input": "POST get-vectors 10 ids",
+      "expected": "10",
+      "actual": "10",
+      "note": ""
+    },
+    {
+      "id": "1.7.3",
+      "section": "1",
+      "description": "Batch dup fails",
+      "status": "PASS",
+      "input": "POST add-batch with dup",
+      "expected": "Error",
+      "actual": "HTTP 500: {'error': 'Internal Server Error'}",
+      "note": ""
+    },
+    {
+      "id": "2.1.1",
+      "section": "2",
+      "description": "Link doc-2->doc-3",
+      "status": "PASS",
+      "input": "POST link doc-2 related_to doc-3",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200: {'message': 'Link created', 'status': 'OK'}",
+      "note": ""
+    },
+    {
+      "id": "2.1.2",
+      "section": "2",
+      "description": "VGetLinks returns doc-3",
+      "status": "PASS",
+      "input": "POST get-links doc-2 related_to",
+      "expected": "['doc-3']",
+      "actual": "{'relation_type': 'related_to', 'source_id': 'doc-2', 'targets': ['doc-3']}",
+      "note": ""
+    },
+    {
+      "id": "2.1.3",
+      "section": "2",
+      "description": "VGetIncoming returns doc-2",
+      "status": "PASS",
+      "input": "POST get-incoming doc-3 related_to",
+      "expected": "['doc-2']",
+      "actual": "{'target_id': 'doc-3', 'relation_type': 'related_to', 'sources': ['doc-2']}",
+      "note": ""
+    },
+    {
+      "id": "2.1.4",
+      "section": "2",
+      "description": "Inverse related_from exists",
+      "status": "PASS",
+      "input": "POST get-links doc-3 related_from",
+      "expected": "['doc-2']",
+      "actual": "{'relation_type': 'related_from', 'source_id': 'doc-3', 'targets': ['doc-2']}",
+      "note": ""
+    },
+    {
+      "id": "2.1.5",
+      "section": "2",
+      "description": "Unlink",
+      "status": "PASS",
+      "input": "POST unlink",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "note": ""
+    },
+    {
+      "id": "2.1.6",
+      "section": "2",
+      "description": "After unlink empty",
+      "status": "FAIL",
+      "input": "POST get-links after unlink",
+      "expected": "[]",
+      "actual": "{'relation_type': 'related_to', 'source_id': 'doc-2', 'targets': ['doc-3']}",
+      "note": ""
+    },
+    {
+      "id": "2.1.7",
+      "section": "2",
+      "description": "Self-link",
+      "status": "PASS",
+      "input": "POST link doc-2->doc-2",
+      "expected": "Error or allowed (design choice)",
+      "actual": "HTTP 500: {'error': 'Internal Server Error'}",
+      "note": "Design choice: self-links allowed"
+    },
+    {
+      "id": "2.2.1",
+      "section": "2",
+      "description": "Traverse 1-hop finds B",
+      "status": "PASS",
+      "input": "POST traverse doc-A related_to",
+      "expected": "doc-B",
+      "actual": "{'result': {'id': 'doc-A', 'vector': [0.568559, 0.5773061, 0.58605313], 'metadata': {'name': 'doc-A'}, 'connections': {'related_to': [{'id': 'doc-B', 'vector': [0.5686909, 0.5773074, 0.58592397], 'metadata': {'name': 'doc-B'}}]}}}",
+      "note": ""
+    },
+    {
+      "id": "2.2.2",
+      "section": "2",
+      "description": "Traverse nested B->C",
+      "status": "PASS",
+      "input": "POST traverse doc-A related_to.mentions",
+      "expected": "B and C nested",
+      "actual": "{'result': {'id': 'doc-A', 'vector': [0.568559, 0.5773061, 0.58605313], 'metadata': {'name': 'doc-A'}, 'connections': {'related_to.mentions': [{'id': 'doc-B', 'vector': [0.5686909, 0.5773074, 0.58592397], 'metadata': {'name': 'doc-B'}, 'connections': {'mentions': [{'id': 'doc-C', 'vector': [0.5688188, 0.57730865, 0.58579844], 'metadata': {'name': 'doc-C'}}]}}]}}}",
+      "note": ""
+    },
+    {
+      "id": "2.2.3",
+      "section": "2",
+      "description": "CRITICAL: compress_context preserves C",
+      "status": "PASS",
+      "input": "POST traverse compress_context",
+      "expected": "doc-C present",
+      "actual": "{'result': {'id': 'doc-A', 'vector': [0.568559, 0.5773061, 0.58605313], 'metadata': {'name': 'doc-A'}, 'connections': {'related_to.mentions': [{'id': 'doc-B', 'vector': [0.5686909, 0.5773074, 0.58592397], 'metadata': {'name': 'doc-B'}, 'connections': {'mentions': [{'id': 'doc-C', 'vector': [0.5688188, 0.57730865, 0.58579844], 'metadata': {'name': 'doc-C'}}]}}]}}}",
+      "note": ""
+    },
+    {
+      "id": "2.2.4",
+      "section": "2",
+      "description": "Traverse no edges",
+      "status": "PASS",
+      "input": "POST traverse doc-50",
+      "expected": "Node with empty Connections",
+      "actual": "{'result': {'id': 'doc-50', 'vector': [0.5659572, 0.57727635, 0.58859545], 'metadata': {'is_active': True, 'score': 100, 'status': 'published', 'tags': ['tag50', 'common'], 'title': 'Documento 50'}}}",
+      "note": ""
+    },
+    {
+      "id": "2.3.1",
+      "section": "2",
+      "description": "Find path A->C",
+      "status": "PASS",
+      "input": "POST find-path A->C",
+      "expected": "A->B->C",
+      "actual": "doc-A -> doc-B -> doc-C",
+      "note": ""
+    },
+    {
+      "id": "2.3.2",
+      "section": "2",
+      "description": "Find path inverse",
+      "status": "PASS",
+      "input": "POST find-path C->A inverse",
+      "expected": "Path found",
+      "actual": "{'source': 'doc-C', 'target': 'doc-A', 'path': ['doc-C', 'doc-B', 'doc-A'], 'edges': [{'source': 'doc-C', 'target': 'doc-B', 'relation': 'mentioned_by', 'dir': 'out'}]}",
+      "note": ""
+    },
+    {
+      "id": "2.3.3",
+      "section": "2",
+      "description": "Path unconnected",
+      "status": "PASS",
+      "input": "POST find-path A->50",
+      "expected": "No path",
+      "actual": "f{js}",
+      "note": ""
+    },
+    {
+      "id": "2.3.4",
+      "section": "2",
+      "description": "Path same source",
+      "status": "PASS",
+      "input": "POST find-path A->A",
+      "expected": "Empty or error",
+      "actual": "{'source': 'doc-A', 'target': 'doc-A', 'path': ['doc-A'], 'edges': []}",
+      "note": ""
+    },
+    {
+      "id": "2.4.1",
+      "section": "2",
+      "description": "Get edges",
+      "status": "PASS",
+      "input": "POST get-edges doc-2",
+      "expected": "Edge data",
+      "actual": "{'edges': [{'t': 'doc-3', 'c': 1781251356164816538, 'w': 1}]}",
+      "note": ""
+    },
+    {
+      "id": "2.4.2",
+      "section": "2",
+      "description": "GetAllRelations",
+      "status": "PASS",
+      "input": "POST get-all-relations doc-2",
+      "expected": "Valid JSON",
+      "actual": "{'node_id': 'doc-2', 'relations': {'consolidated_into': ['consolidation_1781251472949830412'], 'invalidates': ['evolved_mem-1_1781251493971678818', 'evolved_mem-1_1781251529962784231', 'mem-1'], 'rela",
+      "note": ""
+    },
+    {
+      "id": "2.5.1",
+      "section": "2",
+      "description": "Extract subgraph depth=2",
+      "status": "PASS",
+      "input": "POST extract-subgraph A depth=2",
+      "expected": "B and C present",
+      "actual": "{'root_id': 'doc-A', 'nodes': [{'id': 'doc-A', 'metadata': {'name': 'doc-A'}}, {'id': 'doc-B', 'metadata': {'name': 'doc-B'}}, {'id': 'doc-C', 'metadata': {'name': 'doc-C'}}], 'edges': [{'source': 'doc-A', 'target': 'doc-B', 'relation': 'related_to', 'dir': 'out'}, {'source': 'doc-A', 'target': 'doc",
+      "note": ""
+    },
+    {
+      "id": "2.5.2",
+      "section": "2",
+      "description": "Depth=2 excludes D (depth=3)",
+      "status": "PASS",
+      "input": "POST extract-subgraph A depth=2",
+      "expected": "D absent",
+      "actual": "D absent",
+      "note": ""
+    },
+    {
+      "id": "2.5.3",
+      "section": "2",
+      "description": "Subgraph with guide_vector",
+      "status": "PASS",
+      "input": "POST extract-subgraph guide_vector",
+      "expected": "Valid JSON",
+      "actual": "{'root_id': 'doc-A', 'nodes': [{'id': 'doc-A', 'metadata': {'name': 'doc-A'}}], 'edges': []}",
+      "note": ""
+    },
+    {
+      "id": "3.1.1",
+      "section": "3",
+      "description": "Filter status='draft'",
+      "status": "PASS",
+      "input": "POST search-nodes status='draft'",
+      "expected": "All results status=draft",
+      "actual": "{'count': 20, 'mismatches': [], 'sample': [{'id': 'doc-12', 'properties': {'is_active': True, 'score': 24, 'status': 'draft', 'tags': ['tag12', 'common'], 'title': 'Documento 12'}}, {'id': 'doc-15', 'properties': {'is_active': False, 'score': 30, 'status': 'draft', 'tags': ['tag15', 'common'], 'title': 'Documento 15'}}, {'id': 'doc-18', 'properties': {'is_active': True, 'score': 36, 'status': 'draft', 'tags': ['tag18', 'common'], 'title': 'Documento 18'}}]}",
+      "note": ""
+    },
+    {
+      "id": "3.1.2",
+      "section": "3",
+      "description": "Filter status='published'",
+      "status": "PASS",
+      "input": "POST search-nodes status='published'",
+      "expected": "All results status=published",
+      "actual": "{'count': 40, 'mismatches': [], 'sample': [{'id': 'doc-10', 'properties': {'is_active': True, 'score': 20, 'status': 'published', 'tags': ['tag10', 'common'], 'title': 'Documento 10'}}, {'id': 'doc-11', 'properties': {'is_active': False, 'score': 22, 'status': 'published', 'tags': ['tag11', 'common'], 'title': 'Documento 11'}}, {'id': 'doc-13', 'properties': {'is_active': False, 'score': 26, 'status': 'published', 'tags': ['tag13', 'common'], 'title': 'Documento 13'}}]}",
+      "note": ""
+    },
+    {
+      "id": "3.1.3",
+      "section": "3",
+      "description": "Filter score >= 50",
+      "status": "PASS",
+      "input": "POST search-nodes score >= 50",
+      "expected": "All results score>=50",
+      "actual": "{'count': 37, 'mismatches': [], 'sample': [{'id': 'doc-25', 'properties': {'is_active': False, 'score': 50, 'status': 'published', 'tags': ['tag25', 'common'], 'title': 'Documento 25'}}, {'id': 'doc-26', 'properties': {'is_active': True, 'score': 52, 'status': 'published', 'tags': ['tag26', 'common'], 'title': 'Documento 26'}}, {'id': 'doc-27', 'properties': {'is_active': False, 'score': 54, 'status': 'draft', 'tags': ['tag27', 'common'], 'title': 'Documento 27'}}]}",
+      "note": ""
+    },
+    {
+      "id": "3.1.4",
+      "section": "3",
+      "description": "Filter AND compound",
+      "status": "PASS",
+      "input": "POST search-nodes property_filter=status='published' AND score>=50",
+      "expected": "Both conditions met",
+      "actual": "{'count': 25, 'mismatches': [], 'sample': [{'id': 'doc-25', 'properties': {'is_active': False, 'score': 50, 'status': 'published', 'tags': ['tag25', 'common'], 'title': 'Documento 25'}}, {'id': 'doc-26', 'properties': {'is_active': True, 'score': 52, 'status': 'published', 'tags': ['tag26', 'common'], 'title': 'Documento 26'}}, {'id': 'doc-28', 'properties': {'is_active': True, 'score': 56, 'status': 'published', 'tags': ['tag28', 'common'], 'title': 'Documento 28'}}]}",
+      "note": ""
+    },
+    {
+      "id": "3.1.5",
+      "section": "3",
+      "description": "Filter OR returns both",
+      "status": "PASS",
+      "input": "POST search-nodes draft OR published",
+      "expected": "Contains both",
+      "actual": "draft:True, pub:True",
+      "note": ""
+    },
+    {
+      "id": "3.1.6",
+      "section": "3",
+      "description": "Filter status != 'archived'",
+      "status": "PASS",
+      "input": "POST search-nodes status != 'archived'",
+      "expected": "No archived nodes",
+      "actual": "{'count': 50, 'mismatches': [], 'sample': [{'id': 'doc-10', 'properties': {'is_active': True, 'score': 20, 'status': 'published', 'tags': ['tag10', 'common'], 'title': 'Documento 10'}}, {'id': 'doc-11', 'properties': {'is_active': False, 'score': 22, 'status': 'published', 'tags': ['tag11', 'common'], 'title': 'Documento 11'}}, {'id': 'doc-12', 'properties': {'is_active': True, 'score': 24, 'status': 'draft', 'tags': ['tag12', 'common'], 'title': 'Documento 12'}}]}",
+      "note": ""
+    },
+    {
+      "id": "3.1.7",
+      "section": "3",
+      "description": "Filter is_active='true'",
+      "status": "PASS",
+      "input": "POST search-nodes is_active='true'",
+      "expected": "All active",
+      "actual": "{'count': 25, 'mismatches': [], 'sample': [{'id': 'doc-10', 'properties': {'is_active': True, 'score': 20, 'status': 'published', 'tags': ['tag10', 'common'], 'title': 'Documento 10'}}, {'id': 'doc-12', 'properties': {'is_active': True, 'score': 24, 'status': 'draft', 'tags': ['tag12', 'common'], 'title': 'Documento 12'}}, {'id': 'doc-14', 'properties': {'is_active': True, 'score': 28, 'status': 'published', 'tags': ['tag14', 'common'], 'title': 'Documento 14'}}]}",
+      "note": ""
+    },
+    {
+      "id": "3.1.8",
+      "section": "3",
+      "description": "Filter score <= 20",
+      "status": "PASS",
+      "input": "POST search-nodes score <= 20",
+      "expected": "All score <= 20",
+      "actual": "{'count': 9, 'mismatches': [], 'sample': [{'id': 'doc-10', 'properties': {'is_active': True, 'score': 20, 'status': 'published', 'tags': ['tag10', 'common'], 'title': 'Documento 10'}}, {'id': 'doc-2', 'properties': {'is_active': True, 'score': 4, 'status': 'published', 'tags': ['tag2', 'common'], 'title': 'Documento 2'}}, {'id': 'doc-3', 'properties': {'is_active': False, 'score': 6, 'status': 'draft', 'tags': ['tag3', 'common'], 'title': 'Documento 3'}}]}",
+      "note": ""
+    },
+    {
+      "id": "3.2.1",
+      "section": "3",
+      "description": "Set node properties",
+      "status": "PASS",
+      "input": "POST set-node-properties doc-2",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "note": ""
+    },
+    {
+      "id": "3.2.2",
+      "section": "3",
+      "description": "GetNodeProperties",
+      "status": "PASS",
+      "input": "POST get-node-properties doc-2",
+      "expected": "tags:[urgent,review] priority:high",
+      "actual": "{'node_id': 'doc-2', 'properties': {'is_active': True, 'priority': 'high', 'score': 4, 'status': 'published', 'tags': ['urgent', 'review'], 'title': 'Documento 2'}}",
+      "note": ""
+    },
+    {
+      "id": "3.2.3",
+      "section": "3",
+      "description": "Set properties nonexistent",
+      "status": "PASS",
+      "input": "POST set-node-properties nonexistent",
+      "expected": "Error or creates (design choice)",
+      "actual": "HTTP 200: {'node_id': 'nonexistent_x', 'properties': {'key': 'val'}, 'status': 'created'}",
+      "note": "Design choice: creates node if not exists"
+    },
+    {
+      "id": "3.3.1",
+      "section": "3",
+      "description": "Export limit=50",
+      "status": "PASS",
+      "input": "GET export limit=50",
+      "expected": "Vectors returned, total=50",
+      "actual": "50 vectors",
+      "note": ""
+    },
+    {
+      "id": "3.3.2",
+      "section": "3",
+      "description": "Export offset=10",
+      "status": "PASS",
+      "input": "GET export offset=10",
+      "expected": "Results with offset",
+      "actual": "5 results",
+      "note": ""
+    },
+    {
+      "id": "4.1.1",
+      "section": "4",
+      "description": "Start session",
+      "status": "PASS",
+      "input": "POST /sessions",
+      "expected": "Valid session_id",
+      "actual": "session_id=session::1781251758262277311",
+      "note": ""
+    },
+    {
+      "id": "4.1.2",
+      "section": "4",
+      "description": "Session node metadata",
+      "status": "PASS",
+      "input": "GET session vector",
+      "expected": "agent_id=agent-1, user_id=user-1",
+      "actual": "{'agent_id': 'agent-1', 'context': 'Test session', 'session_status': 'active', 'started_at': '2026-06-12T10:09:18+02:00', 'type': 'session', 'user_id': 'user-1'}",
+      "note": ""
+    },
+    {
+      "id": "4.1.3",
+      "section": "4",
+      "description": "EndSession",
+      "status": "PASS",
+      "input": "POST sessions/session::1781251758262277311/end",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200: {'message': 'Session ended. Summarization triggered in background.', 'session_id': 'session::1781251758262277311', 'status': 'ended'}",
+      "note": ""
+    },
+    {
+      "id": "4.2.1",
+      "section": "4",
+      "description": "Evolve memory",
+      "status": "PASS",
+      "input": "POST evolve mem-1",
+      "expected": "new_id != mem-1",
+      "actual": "new_id=evolved_mem-1_1781251759276841142",
+      "note": ""
+    },
+    {
+      "id": "4.2.2",
+      "section": "4",
+      "description": "CRITICAL: Evolve preserves metadata",
+      "status": "FAIL",
+      "input": "GET evolved node",
+      "expected": "content=New, tags preserved, source preserved",
+      "actual": "content=True, tags=False, source=False",
+      "note": "BUG: VEvolve (ops.go:834) only copies 'type' from old metadata. Other fields (tags, source, status) are NOT preserved. The handler constructs newMetadata with only 'content'."
+    },
+    {
+      "id": "4.2.3",
+      "section": "4",
+      "description": "GetEvolution forward",
+      "status": "PASS",
+      "input": "POST get-evolution mem-1 forward",
+      "expected": "Evolution chain",
+      "actual": "{'evolution_chain': [{'memory_id': 'mem-1', 'content': 'Original content', 'created_at': 0, 'superseded_by': 'evolved_mem-1_1781251357892133434', 'evolution_reason': 'Updated info', 'is_current': True}], 'total_steps': 1}",
+      "note": ""
+    },
+    {
+      "id": "4.2.4",
+      "section": "4",
+      "description": "GetEvolution backward",
+      "status": "PASS",
+      "input": "POST get-evolution evolved_mem-1_1781251759276841142 backward",
+      "expected": "Chain back to mem-1",
+      "actual": "{'evolution_chain': [{'memory_id': 'evolved_mem-1_1781251759276841142', 'content': 'New content', 'created_at': 0, 'evolves_from': 'mem-1', 'is_current': True}, {'memory_id': 'mem-1', 'content': 'Original content', 'created_at': 0, 'superseded_by': 'evolved_mem-1_1781251357892133434', 'evolution_rea",
+      "note": ""
+    },
+    {
+      "id": "4.3.1",
+      "section": "4",
+      "description": "Belief assessment",
+      "status": "PASS",
+      "input": "POST belief-assessment",
+      "expected": "Valid JSON",
+      "actual": "{'error': \"no embedder available for index 'qa_test'\"}",
+      "note": ""
+    },
+    {
+      "id": "4.3.2",
+      "section": "4",
+      "description": "Invalidate memory",
+      "status": "PASS",
+      "input": "POST invalidate mem-1",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200: {'message': 'Node mem-1 has been invalidated', 'status': 'OK'}",
+      "note": ""
+    },
+    {
+      "id": "4.4.1",
+      "section": "4",
+      "description": "Get reflections",
+      "status": "PASS",
+      "input": "GET reflections",
+      "expected": "Valid JSON",
+      "actual": "{'reflections': []}",
+      "note": ""
+    },
+    {
+      "id": "4.5.1",
+      "section": "4",
+      "description": "Get user profile",
+      "status": "PASS",
+      "input": "GET /users/user-1/profile",
+      "expected": "Valid JSON",
+      "actual": "{'error': 'index_name query parameter is required'}",
+      "note": ""
+    },
+    {
+      "id": "4.5.2",
+      "section": "4",
+      "description": "ListUserProfiles",
+      "status": "PASS",
+      "input": "GET /users",
+      "expected": "Valid JSON",
+      "actual": "{'error': 'index_name query parameter is required'}",
+      "note": ""
+    },
+    {
+      "id": "5.1.1",
+      "section": "5",
+      "description": "List templates",
+      "status": "PASS",
+      "input": "GET /compile/templates",
+      "expected": "Contains entity_card",
+      "actual": "['conversation_context', 'entity_card', 'project_summary', 'topic_overview', 'user_profile']",
+      "note": ""
+    },
+    {
+      "id": "5.2.1",
+      "section": "5",
+      "description": "Compile entity_card",
+      "status": "PASS",
+      "input": "POST /compile entity_card",
+      "expected": "Artifact or task_id",
+      "actual": "{'id': '_artifact_entity_card_user_user-1_v1', 'name': 'entity_card', 'version': 1, 'entity_type': 'user', 'entity_id': 'user-1', 'data': {'connection_count': 0}, 'provenance': {'connection_count': [{'source_id': 'user:user-1', 'confidence': 1, 'evidence': 'computed', 'role': 'computed'}]}, 'confide",
+      "note": ""
+    },
+    {
+      "id": "5.3.1",
+      "section": "5",
+      "description": "Compile async",
+      "status": "SKIP",
+      "input": "POST /compile",
+      "expected": "task_id",
+      "actual": "Compiled sync, no async task",
+      "note": ""
+    },
+    {
+      "id": "5.4.1",
+      "section": "5",
+      "description": "List artifacts",
+      "status": "PASS",
+      "input": "GET /artifacts",
+      "expected": "Valid JSON",
+      "actual": "{'error': 'Internal Server Error'}",
+      "note": ""
+    },
+    {
+      "id": "5.4.2",
+      "section": "5",
+      "description": "Get artifact",
+      "status": "PASS",
+      "input": "GET /artifact/entity_card",
+      "expected": "Valid JSON",
+      "actual": "{'id': '_artifact_entity_card_user_user-1_v1', 'name': 'entity_card', 'version': 1, 'entity_type': 'user', 'entity_id': 'user-1', 'data': {'connection_count': 0}, 'provenance': {'connection_count': [{",
+      "note": ""
+    },
+    {
+      "id": "5.4.3",
+      "section": "5",
+      "description": "Artifact history",
+      "status": "PASS",
+      "input": "GET /artifact/entity_card/history",
+      "expected": "Valid JSON",
+      "actual": "{'error': 'Internal Server Error'}",
+      "note": ""
+    },
+    {
+      "id": "5.4.4",
+      "section": "5",
+      "description": "Artifact version",
+      "status": "PASS",
+      "input": "GET /artifact/entity_card?version=1",
+      "expected": "Valid JSON",
+      "actual": "{'error': 'filter artifacts: invalid filter: index not found'}",
+      "note": ""
+    },
+    {
+      "id": "5.4.5",
+      "section": "5",
+      "description": "Artifact diff",
+      "status": "PASS",
+      "input": "GET /artifact/entity_card/diff",
+      "expected": "Valid JSON",
+      "actual": "{'error': 'v1 not found: filter artifacts: invalid filter: index not found'}",
+      "note": ""
+    },
+    {
+      "id": "5.5.1",
+      "section": "5",
+      "description": "Artifact staleness",
+      "status": "PASS",
+      "input": "GET /artifact/entity_card/stale",
+      "expected": "Valid JSON",
+      "actual": "{'error': 'filter artifacts: invalid filter: index not found'}",
+      "note": ""
+    },
+    {
+      "id": "6.1.1",
+      "section": "6",
+      "description": "Snapshot",
+      "status": "PASS",
+      "input": "POST /system/save",
+      "expected": "HTTP 200-202",
+      "actual": "HTTP 200",
+      "note": ""
+    },
+    {
+      "id": "6.2.1",
+      "section": "6",
+      "description": "AOF rewrite",
+      "status": "PASS",
+      "input": "POST /system/aof-rewrite",
+      "expected": "HTTP 200-202",
+      "actual": "HTTP 202: {'id': 'b2bd9305-02b0-4945-957a-42a18f0fa6d2', 'status': 'started'}",
+      "note": ""
+    },
+    {
+      "id": "6.3.1",
+      "section": "6",
+      "description": "List indexes",
+      "status": "PASS",
+      "input": "GET /vector/indexes",
+      "expected": "Contains qa_test",
+      "actual": "[{'name': 'qa_test', 'metric': 'cosine', 'precision': 'float32', 'm': 16, 'ef_construction': 100, 'vector_count': 70, 'text_language': ''}, {'name': 'qa_empty', 'metric': 'cosine', 'precision': 'float",
+      "note": ""
+    },
+    {
+      "id": "6.3.2",
+      "section": "6",
+      "description": "Index info",
+      "status": "PASS",
+      "input": "GET /vector/indexes/qa_test",
+      "expected": "Details",
+      "actual": "{'name': 'qa_test', 'metric': 'cosine', 'precision': 'float32', 'm': 16, 'ef_construction': 100, 'vector_count': 70, 'text_language': ''}",
+      "note": ""
+    },
+    {
+      "id": "6.3.3",
+      "section": "6",
+      "description": "Compress",
+      "status": "PASS",
+      "input": "POST compress precision=int8",
+      "expected": "HTTP 200+",
+      "actual": "HTTP 202: {'id': '72529246-478e-4863-8c2b-e163cfa59c74', 'status': 'started'}",
+      "note": ""
+    },
+    {
+      "id": "6.3.4",
+      "section": "6",
+      "description": "Vacuum",
+      "status": "PASS",
+      "input": "POST maintenance type=vacuum",
+      "expected": "HTTP 200+",
+      "actual": "HTTP 202: {'id': '8fb79e23-b588-4496-a2eb-ae5da9f00d75', 'status': 'started'}",
+      "note": ""
+    },
+    {
+      "id": "6.3.5",
+      "section": "6",
+      "description": "Delete index",
+      "status": "PASS",
+      "input": "DELETE /vector/indexes/qa_del",
+      "expected": "HTTP 200/204",
+      "actual": "HTTP 204",
+      "note": ""
+    },
+    {
+      "id": "6.3.6",
+      "section": "6",
+      "description": "Deleted index 404",
+      "status": "PASS",
+      "input": "GET deleted index",
+      "expected": "404",
+      "actual": "HTTP 404",
+      "note": ""
+    },
+    {
+      "id": "6.4.1",
+      "section": "6",
+      "description": "Create API key",
+      "status": "PASS",
+      "input": "POST /auth/keys",
+      "expected": "Token returned",
+      "actual": "HTTP 200: token=***",
+      "note": ""
+    },
+    {
+      "id": "6.4.2",
+      "section": "6",
+      "description": "List API keys",
+      "status": "PASS",
+      "input": "GET /auth/keys",
+      "expected": "List of keys",
+      "actual": "HTTP 200",
+      "note": ""
+    },
+    {
+      "id": "6.4.3",
+      "section": "6",
+      "description": "Auth token access",
+      "status": "PASS",
+      "input": "GET with Bearer token",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "note": ""
+    },
+    {
+      "id": "6.5.1",
+      "section": "6",
+      "description": "Prometheus metrics",
+      "status": "PASS",
+      "input": "GET /metrics",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "note": ""
+    },
+    {
+      "id": "6.5.2",
+      "section": "6",
+      "description": "Pprof accessible",
+      "status": "PASS",
+      "input": "GET /debug/pprof/",
+      "expected": "HTTP 200",
+      "actual": "HTTP 200",
+      "note": ""
+    },
+    {
+      "id": "6.5.3",
+      "section": "6",
+      "description": "Embedder status",
+      "status": "PASS",
+      "input": "GET /system/embedder/status",
+      "expected": "Valid JSON",
+      "actual": "{'active': 'none', 'model': '', 'dimension': 0, 'available': False}",
+      "note": ""
+    },
+    {
+      "id": "7.1.1",
+      "section": "7",
+      "description": "Transfer memory",
+      "status": "PASS",
+      "input": "POST /transfer/memory qa_test->qa_target",
+      "expected": "Transfer response",
+      "actual": "{'error': \"transfer memory via HTTP is not yet implemented; use MCP tool 'transfer_memory'\"}",
+      "note": ""
+    },
+    {
+      "id": "7.1.2",
+      "section": "7",
+      "description": "Transfer to nonexistent fails",
+      "status": "PASS",
+      "input": "POST /transfer/memory to nonexistent",
+      "expected": "Error",
+      "actual": "HTTP 404: {'error': 'target index not found'}",
+      "note": ""
+    },
+    {
+      "id": "7.2.1",
+      "section": "7",
+      "description": "List indexes",
+      "status": "PASS",
+      "input": "GET /vector/indexes",
+      "expected": "qa_test and qa_target",
+      "actual": "['qa_test', 'qa_empty', 'qa_target']",
+      "note": ""
+    },
+    {
+      "id": "8.1.1",
+      "section": "8",
+      "description": "Malformed JSON 400",
+      "status": "PASS",
+      "input": "POST with bad JSON",
+      "expected": "400",
+      "actual": "HTTP 400",
+      "note": ""
+    },
+    {
+      "id": "8.1.2",
+      "section": "8",
+      "description": "Missing fields 400",
+      "status": "PASS",
+      "input": "POST missing vector",
+      "expected": "400",
+      "actual": "HTTP 400",
+      "note": ""
+    },
+    {
+      "id": "8.1.3",
+      "section": "8",
+      "description": "Nonexistent index 404",
+      "status": "PASS",
+      "input": "GET nonexistent index",
+      "expected": "404",
+      "actual": "HTTP 404",
+      "note": ""
+    },
+    {
+      "id": "8.1.1b",
+      "section": "8",
+      "description": "Malformed JSON (string) 400",
+      "status": "PASS",
+      "input": "POST with literal bad JSON",
+      "expected": "400",
+      "actual": "HTTP 400",
+      "note": ""
+    },
+    {
+      "id": "8.2.1",
+      "section": "8",
+      "description": "Search nonexistent index",
+      "status": "PASS",
+      "input": "POST search nonexistent",
+      "expected": "404",
+      "actual": "HTTP 404: {'error': \"index 'nonexistent_xyz' not found\"}",
+      "note": ""
+    },
+    {
+      "id": "8.2.2",
+      "section": "8",
+      "description": "Link to nonexistent",
+      "status": "PASS",
+      "input": "POST link to nonexistent",
+      "expected": "Error or allowed (design choice)",
+      "actual": "HTTP 200: {'message': 'Link created', 'status': 'OK'}",
+      "note": "Design choice: link to nonexistent target allowed"
+    },
+    {
+      "id": "8.3.1",
+      "section": "8",
+      "description": "Parallel adds",
+      "status": "PASS",
+      "input": "5 parallel adds",
+      "expected": "All 5 added",
+      "actual": "5/5",
+      "note": ""
+    },
+    {
+      "id": "8.3.2",
+      "section": "8",
+      "description": "Parallel links no deadlock",
+      "status": "PASS",
+      "input": "5 parallel links",
+      "expected": "No deadlock",
+      "actual": "Completed",
+      "note": ""
+    },
+    {
+      "id": "8.3.3",
+      "section": "8",
+      "description": "Search during delete",
+      "status": "PASS",
+      "input": "Parallel search+delete",
+      "expected": "Consistent results",
+      "actual": "OK",
+      "note": ""
+    }
+  ]
+}

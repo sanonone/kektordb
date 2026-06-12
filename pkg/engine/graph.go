@@ -63,6 +63,9 @@ func validateProps(props map[string]any) error {
 
 // VLink creates a rich directed edge between two nodes and automatically updates the reverse index.
 func (e *Engine) VLink(indexName, sourceID, targetID, relationType, inverseRelationType string, weight float32, props map[string]any) error {
+	if sourceID == targetID {
+		return fmt.Errorf("cannot link a node to itself (source_id equals target_id)")
+	}
 	internalSource := buildGraphID(indexName, sourceID)
 	internalTarget := buildGraphID(indexName, targetID)
 
