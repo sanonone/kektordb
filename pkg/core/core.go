@@ -1313,6 +1313,23 @@ func (s *DB) removeOldIndexEntries(indexName string, nodeID uint32, key string, 
 				}
 			}
 		}
+	case []interface{}:
+		if invIdx, ok := s.invertedIndex[indexName]; ok {
+			if keyMap, ok := invIdx[key]; ok {
+				for _, elem := range old {
+					elemStr := fmt.Sprint(elem)
+					if bitmap, ok := keyMap[elemStr]; ok {
+						bitmap.Remove(nodeID)
+						if bitmap.IsEmpty() {
+							delete(keyMap, elemStr)
+						}
+					}
+				}
+				if len(keyMap) == 0 {
+					delete(invIdx, key)
+				}
+			}
+		}
 	default:
 		if numVal, isNum := toFloat64Ok(oldValue); isNum {
 			if btreeMap, ok := s.bTreeIndex[indexName]; ok {
@@ -1475,6 +1492,22 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 				indexMetadata[key][strValue] = roaring.New()
 			}
 			indexMetadata[key][strValue].Add(nodeID)
+
+		case []interface{}:
+			indexArr, ok := s.invertedIndex[indexName]
+			if !ok {
+				continue
+			}
+			if _, ok := indexArr[key]; !ok {
+				indexArr[key] = make(map[string]*roaring.Bitmap)
+			}
+			for _, elem := range v {
+				elemStr := fmt.Sprint(elem)
+				if _, ok := indexArr[key][elemStr]; !ok {
+					indexArr[key][elemStr] = roaring.New()
+				}
+				indexArr[key][elemStr].Add(nodeID)
+			}
 
 		default:
 			continue
