@@ -484,7 +484,11 @@ func (s *Server) handleVectorCreate(w http.ResponseWriter, r *http.Request) {
 
 	err := s.Engine.VCreate(req.IndexName, metric, req.M, req.EfConstruction, prec, req.TextLanguage, req.Maintenance, req.AutoLinks, req.MemoryConfig)
 	if err != nil {
-		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		if strings.Contains(err.Error(), "already exists") {
+			s.writeHTTPError(w, http.StatusConflict, err)
+		} else {
+			s.writeHTTPError(w, http.StatusInternalServerError, err)
+		}
 		return
 	}
 	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "OK", "message": "Index created"})

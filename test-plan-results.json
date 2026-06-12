@@ -3,8 +3,8 @@
   "base_url": "http://localhost:9090",
   "summary": {
     "total": 107,
-    "passed": 103,
-    "failed": 2,
+    "passed": 105,
+    "failed": 0,
     "warn": 1,
     "skipped": 1
   },
@@ -333,10 +333,10 @@
       "id": "2.1.6",
       "section": "2",
       "description": "After unlink empty",
-      "status": "FAIL",
+      "status": "PASS",
       "input": "POST get-links after unlink",
       "expected": "[]",
-      "actual": "{'relation_type': 'related_to', 'source_id': 'doc-2', 'targets': ['doc-3']}",
+      "actual": "{'relation_type': 'related_to', 'source_id': 'doc-2', 'targets': []}",
       "note": ""
     },
     {
@@ -436,7 +436,7 @@
       "status": "PASS",
       "input": "POST get-edges doc-2",
       "expected": "Edge data",
-      "actual": "{'edges': [{'t': 'doc-3', 'c': 1781251356164816538, 'w': 1}]}",
+      "actual": "{'edges': [{'t': 'doc-3', 'c': 1781258407819019143, 'w': 1}]}",
       "note": ""
     },
     {
@@ -446,7 +446,7 @@
       "status": "PASS",
       "input": "POST get-all-relations doc-2",
       "expected": "Valid JSON",
-      "actual": "{'node_id': 'doc-2', 'relations': {'consolidated_into': ['consolidation_1781251472949830412'], 'invalidates': ['evolved_mem-1_1781251493971678818', 'evolved_mem-1_1781251529962784231', 'mem-1'], 'rela",
+      "actual": "{'node_id': 'doc-2', 'relations': {'related_to': ['doc-3']}}",
       "note": ""
     },
     {
@@ -616,7 +616,7 @@
       "status": "PASS",
       "input": "POST /sessions",
       "expected": "Valid session_id",
-      "actual": "session_id=session::1781251758262277311",
+      "actual": "session_id=session::1781258408477290048",
       "note": ""
     },
     {
@@ -626,7 +626,7 @@
       "status": "PASS",
       "input": "GET session vector",
       "expected": "agent_id=agent-1, user_id=user-1",
-      "actual": "{'agent_id': 'agent-1', 'context': 'Test session', 'session_status': 'active', 'started_at': '2026-06-12T10:09:18+02:00', 'type': 'session', 'user_id': 'user-1'}",
+      "actual": "{'agent_id': 'agent-1', 'context': 'Test session', 'session_status': 'active', 'started_at': '2026-06-12T12:00:08+02:00', 'type': 'session', 'user_id': 'user-1'}",
       "note": ""
     },
     {
@@ -634,9 +634,9 @@
       "section": "4",
       "description": "EndSession",
       "status": "PASS",
-      "input": "POST sessions/session::1781251758262277311/end",
+      "input": "POST sessions/session::1781258408477290048/end",
       "expected": "HTTP 200",
-      "actual": "HTTP 200: {'message': 'Session ended. Summarization triggered in background.', 'session_id': 'session::1781251758262277311', 'status': 'ended'}",
+      "actual": "HTTP 200: {'message': 'Session ended. Summarization triggered in background.', 'session_id': 'session::1781258408477290048', 'status': 'ended'}",
       "note": ""
     },
     {
@@ -646,18 +646,18 @@
       "status": "PASS",
       "input": "POST evolve mem-1",
       "expected": "new_id != mem-1",
-      "actual": "new_id=evolved_mem-1_1781251759276841142",
+      "actual": "new_id=evolved_mem-1_1781258409603111683",
       "note": ""
     },
     {
       "id": "4.2.2",
       "section": "4",
       "description": "CRITICAL: Evolve preserves metadata",
-      "status": "FAIL",
+      "status": "PASS",
       "input": "GET evolved node",
       "expected": "content=New, tags preserved, source preserved",
-      "actual": "content=True, tags=False, source=False",
-      "note": "BUG: VEvolve (ops.go:834) only copies 'type' from old metadata. Other fields (tags, source, status) are NOT preserved. The handler constructs newMetadata with only 'content'."
+      "actual": "content=True, tags=True, source=True",
+      "note": ""
     },
     {
       "id": "4.2.3",
@@ -666,7 +666,7 @@
       "status": "PASS",
       "input": "POST get-evolution mem-1 forward",
       "expected": "Evolution chain",
-      "actual": "{'evolution_chain': [{'memory_id': 'mem-1', 'content': 'Original content', 'created_at': 0, 'superseded_by': 'evolved_mem-1_1781251357892133434', 'evolution_reason': 'Updated info', 'is_current': True}], 'total_steps': 1}",
+      "actual": "{'evolution_chain': [{'memory_id': 'mem-1', 'content': 'Original content', 'created_at': 0, 'superseded_by': 'evolved_mem-1_1781258409603111683', 'evolution_reason': 'Updated info', 'is_current': False}, {'memory_id': 'evolved_mem-1_1781258409603111683', 'content': 'New content', 'created_at': 0, 'e",
       "note": ""
     },
     {
@@ -674,9 +674,9 @@
       "section": "4",
       "description": "GetEvolution backward",
       "status": "PASS",
-      "input": "POST get-evolution evolved_mem-1_1781251759276841142 backward",
+      "input": "POST get-evolution evolved_mem-1_1781258409603111683 backward",
       "expected": "Chain back to mem-1",
-      "actual": "{'evolution_chain': [{'memory_id': 'evolved_mem-1_1781251759276841142', 'content': 'New content', 'created_at': 0, 'evolves_from': 'mem-1', 'is_current': True}, {'memory_id': 'mem-1', 'content': 'Original content', 'created_at': 0, 'superseded_by': 'evolved_mem-1_1781251357892133434', 'evolution_rea",
+      "actual": "{'evolution_chain': [{'memory_id': 'evolved_mem-1_1781258409603111683', 'content': 'New content', 'created_at': 0, 'evolves_from': 'mem-1', 'is_current': True}, {'memory_id': 'mem-1', 'content': 'Original content', 'created_at': 0, 'superseded_by': 'evolved_mem-1_1781258409603111683', 'evolution_rea",
       "note": ""
     },
     {
@@ -686,7 +686,7 @@
       "status": "PASS",
       "input": "POST belief-assessment",
       "expected": "Valid JSON",
-      "actual": "{'error': \"no embedder available for index 'qa_test'\"}",
+      "actual": "{'error': 'Internal Server Error'}",
       "note": ""
     },
     {
@@ -836,7 +836,7 @@
       "status": "PASS",
       "input": "POST /system/aof-rewrite",
       "expected": "HTTP 200-202",
-      "actual": "HTTP 202: {'id': 'b2bd9305-02b0-4945-957a-42a18f0fa6d2', 'status': 'started'}",
+      "actual": "HTTP 202: {'id': 'af298851-0dab-4387-9829-f25c4c03f920', 'status': 'started'}",
       "note": ""
     },
     {
@@ -866,7 +866,7 @@
       "status": "PASS",
       "input": "POST compress precision=int8",
       "expected": "HTTP 200+",
-      "actual": "HTTP 202: {'id': '72529246-478e-4863-8c2b-e163cfa59c74', 'status': 'started'}",
+      "actual": "HTTP 202: {'id': 'a1361cac-d0ef-442d-811d-2a5f06d0cb2b', 'status': 'started'}",
       "note": ""
     },
     {
@@ -876,7 +876,7 @@
       "status": "PASS",
       "input": "POST maintenance type=vacuum",
       "expected": "HTTP 200+",
-      "actual": "HTTP 202: {'id': '8fb79e23-b588-4496-a2eb-ae5da9f00d75', 'status': 'started'}",
+      "actual": "HTTP 202: {'id': '3dd42a34-f166-48b0-8f0c-ac104640e42b', 'status': 'started'}",
       "note": ""
     },
     {
@@ -956,7 +956,7 @@
       "status": "PASS",
       "input": "GET /system/embedder/status",
       "expected": "Valid JSON",
-      "actual": "{'active': 'none', 'model': '', 'dimension': 0, 'available': False}",
+      "actual": "{'active': 'ollama_api', 'model': 'nomic-embed-text-v2-moe:latest', 'dimension': 768, 'available': True}",
       "note": ""
     },
     {
@@ -986,7 +986,7 @@
       "status": "PASS",
       "input": "GET /vector/indexes",
       "expected": "qa_test and qa_target",
-      "actual": "['qa_test', 'qa_empty', 'qa_target']",
+      "actual": "['qa_target', 'qa_test', 'qa_empty']",
       "note": ""
     },
     {

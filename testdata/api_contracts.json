@@ -27,6 +27,21 @@
       "expected_status": 200
     },
     {
+      "name": "create_duplicate_index_returns_409",
+      "method": "POST",
+      "path": "/vector/actions/create",
+      "request": {
+        "index_name": "CONTRACT_TEST_IDX",
+        "metric": "cosine",
+        "precision": "float32",
+        "m": 16,
+        "ef_construction": 200
+      },
+      "depends_on": ["create_index"],
+      "expected_status": 409,
+      "description": "Duplicate index creation MUST return 409 Conflict, not 500"
+    },
+    {
       "name": "list_indexes",
       "method": "GET",
       "path": "/vector/indexes",
