@@ -873,6 +873,11 @@ func (s *Server) handleGraphLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.SourceID == req.TargetID {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("cannot link a node to itself (source_id equals target_id)"))
+		return
+	}
+
 	// Default weight logic
 	weight := req.Weight
 	if weight == 0 {
@@ -2659,13 +2664,17 @@ func (s *Server) handleVEvolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Merge new metadata with content if provided
-	newMetadata := req.NewMetadata
-	if newMetadata == nil {
-		newMetadata = make(map[string]any)
-	}
-	if req.NewContent != "" && newMetadata["content"] == nil {
+	// Build overrides: only pass fields that should change. The engine copies
+	// all old metadata and applies these as overrides (bug #fix-vevolve-metadata).
+	newMetadata := make(map[string]any)
+	if req.NewContent != "" {
 		newMetadata["content"] = req.NewContent
+	}
+	// Merge any extra metadata the client explicitly sent
+	if req.NewMetadata != nil {
+		for k, v := range req.NewMetadata {
+			newMetadata[k] = v
+		}
 	}
 
 	// Call the engine's VEvolve

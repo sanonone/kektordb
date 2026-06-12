@@ -831,12 +831,16 @@ func (e *Engine) VEvolve(indexName, oldID string, newVector []float32, newMetada
 
 	newID := fmt.Sprintf("evolved_%s_%d", oldID, time.Now().UnixNano())
 
-	if newMetadata == nil {
-		newMetadata = make(map[string]any)
+	// Merge: start with ALL old metadata, apply overrides from newMetadata.
+	// This preserves tags, source, user_id, session_id and other fields.
+	mergedMeta := make(map[string]any, len(oldData.Metadata)+len(newMetadata)+2)
+	for k, v := range oldData.Metadata {
+		mergedMeta[k] = v
 	}
-
-	if newMetadata["type"] == nil {
-		newMetadata["type"] = oldData.Metadata["type"]
+	if newMetadata != nil {
+		for k, v := range newMetadata {
+			mergedMeta[k] = v
+		}
 	}
 
 	inRels := e.VGetIncomingRelations(indexName, oldID)
@@ -857,7 +861,7 @@ func (e *Engine) VEvolve(indexName, oldID string, newVector []float32, newMetada
 
 	// FIX: Create new node BEFORE marking old as historical to prevent data loss on failure
 	// If VAdd fails, the old node remains visible and accessible
-	if err := e.VAdd(indexName, newID, newVector, newMetadata); err != nil {
+	if err := e.VAdd(indexName, newID, newVector, mergedMeta); err != nil {
 		return "", fmt.Errorf("failed to create new node: %w", err)
 	}
 
