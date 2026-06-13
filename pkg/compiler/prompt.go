@@ -18,10 +18,11 @@ You MUST respond with valid JSON in this exact format:
 }
 
 Rules:
-- Extract ONLY information that is present in the source nodes. Do NOT hallucinate.
-- If you cannot find relevant information, set value to null and confidence to 0.
+- Base your extraction on information present in the source nodes. Make reasonable inferences when the information is implicit.
+- Always produce your best output. If the information is unclear or implicit, use a lower confidence (e.g., 0.3–0.6) rather than returning null.
+- Only return null with confidence 0 when the source nodes contain absolutely no usable information for the field.
 - Always cite the source node IDs from which you extracted information.
-- Confidence should reflect how certain you are that the extracted value is accurate.
+- Confidence should reflect how certain you are that the extracted value is accurate: 0.9+ for explicit quotes, 0.5-0.8 for clear inference, 0.2-0.5 for reasonable guess.
 - If the field schema specifies an enum, your value MUST be one of the enum values.
 - If the field type is "array", your value MUST be a JSON array.
 - If the field type is "number", your value MUST be a JSON number.

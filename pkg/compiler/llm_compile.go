@@ -3,6 +3,7 @@ package compiler
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 )
 
 // compileFieldLLM compiles a single field using the configured LLM.
@@ -37,6 +38,11 @@ func (c *Compiler) compileFieldLLM(
 	}
 
 	if len(result.Value) == 0 || string(result.Value) == "null" {
+		slog.Warn("LLM returned null for field",
+			"field", fieldName,
+			"template", template.Name,
+			"nodes_count", len(nodes),
+		)
 		return nil, nil, 0, nil
 	}
 
