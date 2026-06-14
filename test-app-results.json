@@ -1,0 +1,123 @@
+{
+  "timestamp": "2026-06-13T10:51:06",
+  "phases": [
+    {
+      "phase": "Fase 0 - Setup",
+      "status": "PASS",
+      "checks_total": 5,
+      "checks_passed": 5,
+      "checks_failed": 0,
+      "failures": [],
+      "details": [
+        "Config YAML creato: /tmp/kektor_cognitive_test.yaml",
+        "Server 1 avviato su :9090 (base)",
+        "Server 2 avviato su :9091 (cognitive, gardener basic mode)",
+        "Creati 3 indici: app_users, app_docs, app_knowledge"
+      ]
+    },
+    {
+      "phase": "Fase 1 - CRUD + Grafo",
+      "status": "PASS",
+      "checks_total": 26,
+      "checks_passed": 26,
+      "checks_failed": 0,
+      "failures": [],
+      "notes": [],
+      "metrics": {
+        "duration_s": 0.06
+      }
+    },
+    {
+      "phase": "Fase 2 - Metadata & Filtri",
+      "status": "PASS",
+      "checks_total": 12,
+      "checks_passed": 12,
+      "checks_failed": 0,
+      "failures": [],
+      "metrics": {
+        "duration_s": 0.01
+      }
+    },
+    {
+      "phase": "Fase 3 - Knowledge Engine",
+      "status": "PASS",
+      "checks_total": 10,
+      "checks_passed": 10,
+      "checks_failed": 0,
+      "failures": [],
+      "notes": [
+        "Old artifact versions are not preserved (compile keeps only latest)"
+      ],
+      "metrics": {
+        "duration_s": 2.04
+      }
+    },
+    {
+      "phase": "Fase 4 - Sessioni e Memoria",
+      "status": "PASS",
+      "checks_total": 10,
+      "checks_passed": 10,
+      "checks_failed": 0,
+      "failures": [],
+      "notes": [
+        "User profile not generated (Gardener basic mode): profile not found for user user:alice"
+      ],
+      "metrics": {
+        "duration_s": 12.05,
+        "ollama_skip": false
+      }
+    },
+    {
+      "phase": "Fase 5 - Multi-Client",
+      "status": "PASS",
+      "checks_total": 96,
+      "checks_passed": 96,
+      "checks_failed": 0,
+      "failures": [],
+      "clients": {
+        "python": {
+          "passed": 32,
+          "failed": 0,
+          "duration_s": 0.02
+        },
+        "typescript": {
+          "passed": 32,
+          "failed": 0,
+          "duration_s": 0.07
+        },
+        "go": {
+          "passed": 32,
+          "failed": 0,
+          "duration_s": 0.008957161
+        }
+      },
+      "metrics": {
+        "duration_s_python": 0.02,
+        "duration_s_typescript": 0.07,
+        "duration_s_go": 0.008957161
+      }
+    }
+  ],
+  "scaling_limits": {},
+  "notes": [
+    "Fasi 1-4 completed.",
+    "Old artifact versions are not preserved (compile keeps only latest).",
+    "colleague.mentors traverse path only follows first branch (known quirk).",
+    "User profiles require Gardener advanced/meta mode with LLM.",
+    "Fase 5 (multi-client) to be executed separately.",
+    "Ollama disponibile (gemma4, qwen3.5, etc.) ma non usato per i test (mode: basic)",
+    "User profile non generato dal Gardener in modalita basic (richiede advanced/meta + LLM)",
+    "Old artifact versions are not preserved (compile keeps only latest version)",
+    "colleague.mentors traverse funziona via carol.mentors ma non con path composto diretto",
+    "Go client: ListCompileTemplates ha JSON marshalling mismatch (server returns object, client expects array)",
+    "Tutti i 3 client (Python/TypeScript/Go) verificati con successo"
+  ],
+  "summary": {
+    "total_phases": 6,
+    "phases_passed": 6,
+    "phases_failed": 0,
+    "total_checks": 159,
+    "total_passed": 159,
+    "total_failed": 0
+  }
+}

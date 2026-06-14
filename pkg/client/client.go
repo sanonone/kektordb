@@ -1355,8 +1355,8 @@ type TemplateInfo struct {
 
 // TemplateListResponse is the response from listing compilation templates.
 type TemplateListResponse struct {
-	Templates []TemplateInfo `json:"templates"`
-	Names     []string       `json:"names"`
+	Templates map[string]TemplateInfo `json:"templates"`
+	Names     []string                `json:"names"`
 }
 
 // ArtifactData contains a compiled artifact.
