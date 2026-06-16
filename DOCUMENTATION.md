@@ -141,6 +141,11 @@ KektorDB uses a layered configuration approach:
 1.  **CLI Flags / Env Vars:** For the core server settings.
 2.  **YAML Files:** For the advanced modules (RAG Pipeline and AI Proxy).
 
+All embedder creation (CLI globals, vectorizer pipelines, proxy, MCP) now routes through a single unified `SelectEmbedder` factory. This means:
+- All modes (`auto`, `ollama`, `ollama_api`, `openai`, `openai_compatible`, `local`) work everywhere.
+- `ollama_api` and `openai_compatible` are aliases for YAML backward compatibility.
+- Embedder timeout, URL, model, and API key are resolved consistently across all entry points.
+
 ### 3.1 Core Server Flags
 
 These control the database engine itself.
@@ -158,7 +163,7 @@ These control the database engine itself.
 | `-proxy-config` | - | `""` | Path to `proxy.yaml`. Enables Proxy if set. |
 | `-vectorizers-config` | - | `""` | Path to `vectorizers.yaml`. Enables RAG if set. |
 | `-cognitive-config` | - | `""` | Path to cognitive YAML config. Enables Gardener with memory layers, decay, etc. |
-| `--embedder` | - | `auto` | Embedder mode: `auto`, `ollama`, `openai`, `local`. ONNX model needed for `local`. |
+| `--embedder` | - | `auto` | Embedder mode: `auto`, `ollama`, `ollama_api`, `openai`, `openai_compatible`, `local`. ONNX model needed for `local`. `ollama_api` and `openai_compatible` are aliases for YAML compatibility. |
 | `--embedder-model` | - | `""` | Directory with `model.onnx` and `tokenizer.json` (local mode only). |
 | `--tools` | - | `all` | MCP tool profile: `agent` (17 tools), `admin` (6), `all` (23), or comma-separated. |
 | `--tui` | - | `false` | Launch terminal dashboard. Experimental -- see section 4.10. |
@@ -216,10 +221,11 @@ vectorizers:
 
     # Embedding Provider (Ollama or OpenAI-compatible)
     embedder:
-      type: "ollama_api"
+      type: "ollama_api"        # ollama_api, ollama, openai, openai_compatible, local, auto
       url: "http://localhost:11434/api/embeddings"
       model: "nomic-embed-text"
       timeout: "120s"
+      api_key: ""               # Only for openai / openai_compatible
 
     # Index Creation Settings (Applied if index doesn't exist)
     index_config:
@@ -320,7 +326,7 @@ rag_grounded_hyde_prompt: "Write a hypothetical answer based on these snippets..
 | `asset_base_url` | string | `http://localhost:{port}` | Base URL for rewriting RAG asset references (e.g., images from PDFs). |
 | `fast_llm` | object | - | Fast LLM config for Query Rewriting (CQR). |
 | `llm` | object | - | Smart LLM config for HyDe reasoning. |
-| `embedder_type` | string | `ollama_api` | Embedder type: `ollama_api`, `openai`. |
+| `embedder_type` | string | `ollama_api` | Embedder type: `ollama_api`, `ollama`, `openai`, `openai_compatible`, `local`, `auto`. |
 | `embedder_url` | string | - | Embedder API URL. |
 | `embedder_model` | string | - | Embedder model name. |
 | `firewall_enabled` | bool | `false` | Enable semantic firewall. |

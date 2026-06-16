@@ -14,62 +14,99 @@ import (
 
 // EmbedderConfig configures the embedder selection.
 type EmbedderConfig struct {
-	// Mode: "auto", "ollama", "openai", "local"
+	// Mode: "auto", "ollama", "ollama_api", "openai", "openai_compatible", "local"
 	// "auto" (default): auto-detect Ollama → local → error with guidance
 	Mode string
 
-	// Ollama settings
-	OllamaURL   string // default "http://localhost:11434/api/embeddings"
-	OllamaModel string // default "nomic-embed-text"
-
-	// OpenAI settings
-	OpenAIURL   string
-	OpenAIModel string
-	OpenAIKey   string
+	// Generic settings (preferred). Used by both Ollama and OpenAI providers.
+	// These override the provider-specific fields below if set.
+	URL     string        // Embedder API URL (e.g. "http://localhost:11434/api/embeddings")
+	Model   string        // Embedder model name (e.g. "nomic-embed-text")
+	APIKey  string        // API key for OpenAI-compatible providers
+	Timeout time.Duration // Request timeout (0 = default 30s)
 
 	// Local ONNX settings
 	ModelDir string // path to directory containing .onnx and tokenizer.json
+
+	// DEPRECATED: Provider-specific fields. Use the generic fields above instead.
+	// Kept for backward compatibility with existing callers (main.go, MCP mode).
+	// Merged at call time: cfg.URL takes precedence over cfg.OllamaURL/OpenAIURL.
+	OllamaURL   string // default "http://localhost:11434/api/embeddings"
+	OllamaModel string // default "nomic-embed-text"
+	OpenAIURL   string
+	OpenAIModel string
+	OpenAIKey   string
+}
+
+// mergeDefaults resolves generic vs provider-specific fields for backward compatibility.
+func mergeDefaults(cfg EmbedderConfig) (ollamaURL, ollamaModel, openaiURL, openaiModel, openaiKey string) {
+	ollamaURL = firstNonEmpty(cfg.URL, cfg.OllamaURL, "http://localhost:11434/api/embeddings")
+	ollamaModel = firstNonEmpty(cfg.Model, cfg.OllamaModel, "nomic-embed-text")
+	openaiURL = firstNonEmpty(cfg.URL, cfg.OpenAIURL, "https://api.openai.com/v1/embeddings")
+	openaiModel = firstNonEmpty(cfg.Model, cfg.OpenAIModel)
+	openaiKey = firstNonEmpty(cfg.APIKey, cfg.OpenAIKey)
+	return
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// timeoutOrDefault returns cfg.Timeout if > 0, otherwise 30s.
+func timeoutOrDefault(cfg EmbedderConfig) time.Duration {
+	if cfg.Timeout > 0 {
+		return cfg.Timeout
+	}
+	return 30 * time.Second
+}
+
+// normalizeMode maps YAML type strings to SelectEmbedder modes.
+func normalizeMode(mode string) string {
+	switch mode {
+	case "ollama_api":
+		return "ollama"
+	case "openai_compatible":
+		return "openai"
+	default:
+		return mode
+	}
 }
 
 // SelectEmbedder selects the best available embedder based on configuration
 // and runtime detection. dataDir is used for model storage (download + cache).
+//
+// Mode aliases (for YAML config compatibility):
+//   "ollama_api" → "ollama"
+//   "openai_compatible" → "openai"
+//
+// Generic fields (URL, Model, APIKey, Timeout) take precedence over deprecated
+// provider-specific fields (OllamaURL, OpenAIURL, etc.).
 func SelectEmbedder(cfg EmbedderConfig, dataDir string) (Embedder, error) {
+	cfg.Mode = normalizeMode(cfg.Mode)
+	ollamaURL, ollamaModel, openaiURL, openaiModel, openaiKey := mergeDefaults(cfg)
+	timeout := timeoutOrDefault(cfg)
+
 	// 1. Explicit mode from flag/config
 	switch cfg.Mode {
 	case "openai":
-		url := cfg.OpenAIURL
-		if url == "" {
-			url = "https://api.openai.com/v1/embeddings"
-		}
-		return NewOpenAIEmbedder(url, cfg.OpenAIModel, cfg.OpenAIKey, 30*time.Second), nil
+		return NewOpenAIEmbedder(openaiURL, openaiModel, openaiKey, timeout), nil
 
 	case "ollama":
-		url := cfg.OllamaURL
-		if url == "" {
-			url = "http://localhost:11434/api/embeddings"
-		}
-		model := cfg.OllamaModel
-		if model == "" {
-			model = "nomic-embed-text"
-		}
-		return NewOllamaEmbedder(url, model, 30*time.Second), nil
+		return NewOllamaEmbedder(ollamaURL, ollamaModel, timeout), nil
 
 	case "local":
 		return tryLocalEmbedder(dataDir, cfg.ModelDir)
 	}
 
 	// 2. Auto-detect: Ollama already running?
-	ollamaURL := cfg.OllamaURL
-	if ollamaURL == "" {
-		ollamaURL = "http://localhost:11434/api/embeddings"
-	}
 	if isOllamaRunning(ollamaURL) {
-		model := cfg.OllamaModel
-		if model == "" {
-			model = "nomic-embed-text"
-		}
-		slog.Info("Embedder: Ollama detected", "url", ollamaURL, "model", model)
-		return NewOllamaEmbedder(ollamaURL, model, 30*time.Second), nil
+		slog.Info("Embedder: Ollama detected", "url", ollamaURL, "model", ollamaModel)
+		return NewOllamaEmbedder(ollamaURL, ollamaModel, timeout), nil
 	}
 
 	// 3. Auto-detect: local embedder available?
@@ -81,11 +118,11 @@ func SelectEmbedder(cfg EmbedderConfig, dataDir string) (Embedder, error) {
 
 	// 4. Nothing available — error with guidance
 	return nil, fmt.Errorf(
-		"no embedder available.\n\n" +
-			"  Option A (recommended): Install Ollama\n" +
-			"    curl -fsSL https://ollama.com/install.sh | sh\n" +
-			"    ollama pull nomic-embed-text && ollama serve\n\n" +
-			"  Option B: Rebuild with built-in embedding\n" +
+		"no embedder available.\n\n"+
+			"  Option A (recommended): Install Ollama\n"+
+			"    curl -fsSL https://ollama.com/install.sh | sh\n"+
+			"    ollama pull nomic-embed-text && ollama serve\n\n"+
+			"  Option B: Rebuild with built-in embedding\n"+
 			"    go build -tags rust ./cmd/kektordb\n",
 	)
 }

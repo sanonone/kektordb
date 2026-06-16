@@ -1,123 +1,484 @@
 {
-  "timestamp": "2026-06-13T10:51:06",
+  "timestamp": "2026-06-14T13:46:54",
   "phases": [
     {
-      "phase": "Fase 0 - Setup",
+      "phase": "Step 22 - 50 thread × 1000 ops",
+      "checks_total": 2,
+      "checks_passed": 2,
+      "checks_failed": 0,
+      "failures": [],
+      "metrics": {
+        "total_ops": 50000,
+        "total_time_s": 31.16,
+        "throughput_ops_per_s": 1605.0,
+        "error_count": 0,
+        "error_rate_percent": 0.0,
+        "latency_stats": {
+          "search": {
+            "count": 19895,
+            "p50_ms": 5.3,
+            "p95_ms": 8.7,
+            "p99_ms": 10.7,
+            "avg_ms": 5.5,
+            "max_ms": 15.4
+          },
+          "get": {
+            "count": 14946,
+            "p50_ms": 4.8,
+            "p95_ms": 8.1,
+            "p99_ms": 10.0,
+            "avg_ms": 5.0,
+            "max_ms": 15.4
+          },
+          "add": {
+            "count": 10125,
+            "p50_ms": 49.9,
+            "p95_ms": 57.3,
+            "p99_ms": 60.6,
+            "avg_ms": 49.5,
+            "max_ms": 102.7
+          }
+        }
+      },
+      "status": "PASS"
+    },
+    {
+      "phase": "Step 23 - 1000 nodi + 5000 edge",
+      "checks_total": 2,
+      "checks_passed": 2,
+      "checks_failed": 0,
+      "failures": [],
+      "metrics": {
+        "nodes_created": 1000,
+        "edges_created": 4995,
+        "edge_errors": 5,
+        "node_creation_time_s": 0.58,
+        "edge_creation_time_s": 3.1,
+        "total_time_s": 3.78,
+        "traverse_avg_ms": 9.3,
+        "traverse_errors": 0,
+        "findpath_avg_ms": 7.1,
+        "findpath_errors": 0
+      },
+      "status": "PASS"
+    },
+    {
+      "phase": "Step 27 - Memory leak 1 ora",
+      "checks_total": 3,
+      "checks_passed": 3,
+      "checks_failed": 0,
+      "failures": [],
+      "metrics": {
+        "duration_s": 3600.37,
+        "initial_rss_mb": 76.94140625,
+        "final_rss_mb": 70.2,
+        "rss_change_mb": -6.7,
+        "initial_vector_count": 0,
+        "final_vector_count": 21310,
+        "goroutines": 1,
+        "background_errors": 29,
+        "monitor_data": [
+          {
+            "elapsed_min": 0,
+            "rss_mb": 77.0,
+            "rss_growth_mb": 0.1,
+            "search_ok": "0/10",
+            "vector_count": -1
+          },
+          {
+            "elapsed_min": 5,
+            "rss_mb": 68.8,
+            "rss_growth_mb": -8.1,
+            "search_ok": "10/10",
+            "vector_count": 20219
+          },
+          {
+            "elapsed_min": 10,
+            "rss_mb": 68.9,
+            "rss_growth_mb": -8.0,
+            "search_ok": "10/10",
+            "vector_count": 20316
+          },
+          {
+            "elapsed_min": 15,
+            "rss_mb": 69.0,
+            "rss_growth_mb": -7.9,
+            "search_ok": "10/10",
+            "vector_count": 20413
+          },
+          {
+            "elapsed_min": 20,
+            "rss_mb": 69.1,
+            "rss_growth_mb": -7.8,
+            "search_ok": "10/10",
+            "vector_count": 20512
+          },
+          {
+            "elapsed_min": 25,
+            "rss_mb": 69.2,
+            "rss_growth_mb": -7.7,
+            "search_ok": "10/10",
+            "vector_count": 20611
+          },
+          {
+            "elapsed_min": 30,
+            "rss_mb": 69.2,
+            "rss_growth_mb": -7.7,
+            "search_ok": "10/10",
+            "vector_count": 20714
+          },
+          {
+            "elapsed_min": 35,
+            "rss_mb": 69.3,
+            "rss_growth_mb": -7.6,
+            "search_ok": "10/10",
+            "vector_count": 20813
+          },
+          {
+            "elapsed_min": 40,
+            "rss_mb": 69.4,
+            "rss_growth_mb": -7.5,
+            "search_ok": "10/10",
+            "vector_count": 20911
+          },
+          {
+            "elapsed_min": 45,
+            "rss_mb": 69.5,
+            "rss_growth_mb": -7.4,
+            "search_ok": "10/10",
+            "vector_count": 21013
+          },
+          {
+            "elapsed_min": 50,
+            "rss_mb": 69.5,
+            "rss_growth_mb": -7.4,
+            "search_ok": "10/10",
+            "vector_count": 21112
+          },
+          {
+            "elapsed_min": 55,
+            "rss_mb": 69.7,
+            "rss_growth_mb": -7.2,
+            "search_ok": "10/10",
+            "vector_count": 21212
+          }
+        ]
+      },
+      "status": "PASS"
+    },
+    {
+      "phase": "Step 21 - Popola 10K vettori",
+      "status": "PASS",
+      "checks_total": 3,
+      "checks_passed": 3,
+      "checks_failed": 0,
+      "failures": [],
+      "metrics": {
+        "vectors_loaded": 10000,
+        "total_time_s": 2.37,
+        "throughput_vec_per_s": 4219.0,
+        "search_avg_ms": 1.0,
+        "search_max_ms": 1.1,
+        "rss_memory_mb": 67.3,
+        "get_verification": "20/20"
+      }
+    },
+    {
+      "phase": "Step 24 - Persistenza (kill -9 + restart)",
+      "status": "PASS",
+      "checks_total": 2,
+      "checks_passed": 2,
+      "checks_failed": 0,
+      "failures": [],
+      "metrics": {
+        "vector_count_after_restart": 9994,
+        "spot_check_found": 50,
+        "spot_check_total": 50,
+        "pid_killed": 66971
+      }
+    },
+    {
+      "phase": "Step 25 - Scaling vettori 10K→1M",
+      "status": "PASS",
+      "checks_total": 6,
+      "checks_passed": 6,
+      "checks_failed": 0,
+      "failures": [],
+      "metrics": {
+        "max_vectors_reached": 1000000,
+        "stop_reason": "Completed all targets up to 1,000,000",
+        "scaling_data": [
+          {
+            "vectors": 10000,
+            "load_time_s": 2.35,
+            "throughput_vec_per_s": 4255.0,
+            "rss_memory_mb": 91.8,
+            "ram_percent": 0.3,
+            "disk_usage_mb": 158.7,
+            "search_avg_ms": 1.0,
+            "search_max_ms": 1.3
+          },
+          {
+            "vectors": 50000,
+            "load_time_s": 23.05,
+            "throughput_vec_per_s": 1735.0,
+            "rss_memory_mb": 175.3,
+            "ram_percent": 0.5,
+            "disk_usage_mb": 219.8,
+            "search_avg_ms": 1.1,
+            "search_max_ms": 1.4
+          },
+          {
+            "vectors": 100000,
+            "load_time_s": 52.5,
+            "throughput_vec_per_s": 952.0,
+            "rss_memory_mb": 287.6,
+            "ram_percent": 0.9,
+            "disk_usage_mb": 297.0,
+            "search_avg_ms": 1.0,
+            "search_max_ms": 1.3
+          },
+          {
+            "vectors": 200000,
+            "load_time_s": 137.38,
+            "throughput_vec_per_s": 728.0,
+            "rss_memory_mb": 500.5,
+            "ram_percent": 1.6,
+            "disk_usage_mb": 514.7,
+            "search_avg_ms": 1.1,
+            "search_max_ms": 1.5
+          },
+          {
+            "vectors": 500000,
+            "load_time_s": 497.35,
+            "throughput_vec_per_s": 603.0,
+            "rss_memory_mb": 1196.6,
+            "ram_percent": 3.8,
+            "disk_usage_mb": 1103.8,
+            "search_avg_ms": 1.1,
+            "search_max_ms": 1.5
+          },
+          {
+            "vectors": 1000000,
+            "load_time_s": 927.24,
+            "throughput_vec_per_s": 539.0,
+            "rss_memory_mb": 2362.6,
+            "ram_percent": 7.4,
+            "disk_usage_mb": 2128.4,
+            "search_avg_ms": 1.1,
+            "search_max_ms": 1.3
+          }
+        ]
+      }
+    },
+    {
+      "phase": "Step 26 - Scaling concorrenza",
       "status": "PASS",
       "checks_total": 5,
       "checks_passed": 5,
       "checks_failed": 0,
       "failures": [],
-      "details": [
-        "Config YAML creato: /tmp/kektor_cognitive_test.yaml",
-        "Server 1 avviato su :9090 (base)",
-        "Server 2 avviato su :9091 (cognitive, gardener basic mode)",
-        "Creati 3 indici: app_users, app_docs, app_knowledge"
-      ]
-    },
-    {
-      "phase": "Fase 1 - CRUD + Grafo",
-      "status": "PASS",
-      "checks_total": 26,
-      "checks_passed": 26,
-      "checks_failed": 0,
-      "failures": [],
-      "notes": [],
       "metrics": {
-        "duration_s": 0.06
-      }
-    },
-    {
-      "phase": "Fase 2 - Metadata & Filtri",
-      "status": "PASS",
-      "checks_total": 12,
-      "checks_passed": 12,
-      "checks_failed": 0,
-      "failures": [],
-      "metrics": {
-        "duration_s": 0.01
-      }
-    },
-    {
-      "phase": "Fase 3 - Knowledge Engine",
-      "status": "PASS",
-      "checks_total": 10,
-      "checks_passed": 10,
-      "checks_failed": 0,
-      "failures": [],
-      "notes": [
-        "Old artifact versions are not preserved (compile keeps only latest)"
-      ],
-      "metrics": {
-        "duration_s": 2.04
-      }
-    },
-    {
-      "phase": "Fase 4 - Sessioni e Memoria",
-      "status": "PASS",
-      "checks_total": 10,
-      "checks_passed": 10,
-      "checks_failed": 0,
-      "failures": [],
-      "notes": [
-        "User profile not generated (Gardener basic mode): profile not found for user user:alice"
-      ],
-      "metrics": {
-        "duration_s": 12.05,
-        "ollama_skip": false
-      }
-    },
-    {
-      "phase": "Fase 5 - Multi-Client",
-      "status": "PASS",
-      "checks_total": 96,
-      "checks_passed": 96,
-      "checks_failed": 0,
-      "failures": [],
-      "clients": {
-        "python": {
-          "passed": 32,
-          "failed": 0,
-          "duration_s": 0.02
-        },
-        "typescript": {
-          "passed": 32,
-          "failed": 0,
-          "duration_s": 0.07
-        },
-        "go": {
-          "passed": 32,
-          "failed": 0,
-          "duration_s": 0.008957161
-        }
-      },
-      "metrics": {
-        "duration_s_python": 0.02,
-        "duration_s_typescript": 0.07,
-        "duration_s_go": 0.008957161
+        "concurrency_data": [
+          {
+            "threads": 10,
+            "total_ops": 30,
+            "duration_s": 0.02,
+            "throughput_ops_per_s": 1500.0,
+            "errors": 0,
+            "error_rate_percent": 0.0,
+            "p50_ms": 5.5,
+            "p95_ms": 8.2,
+            "p99_ms": 8.4
+          },
+          {
+            "threads": 50,
+            "total_ops": 150,
+            "duration_s": 0.11,
+            "throughput_ops_per_s": 1364.0,
+            "errors": 0,
+            "error_rate_percent": 0.0,
+            "p50_ms": 12.2,
+            "p95_ms": 37.6,
+            "p99_ms": 39.7
+          },
+          {
+            "threads": 100,
+            "total_ops": 300,
+            "duration_s": 0.22,
+            "throughput_ops_per_s": 1364.0,
+            "errors": 0,
+            "error_rate_percent": 0.0,
+            "p50_ms": 29.9,
+            "p95_ms": 74.7,
+            "p99_ms": 80.7
+          },
+          {
+            "threads": 200,
+            "total_ops": 600,
+            "duration_s": 0.43,
+            "throughput_ops_per_s": 1395.0,
+            "errors": 0,
+            "error_rate_percent": 0.0,
+            "p50_ms": 53.5,
+            "p95_ms": 148.4,
+            "p99_ms": 156.3
+          },
+          {
+            "threads": 500,
+            "total_ops": 1500,
+            "duration_s": 1.08,
+            "throughput_ops_per_s": 1389.0,
+            "errors": 1,
+            "error_rate_percent": 0.07,
+            "p50_ms": 143.4,
+            "p95_ms": 375.3,
+            "p99_ms": 394.5
+          }
+        ],
+        "stop_reason": "Completed up to 500 threads"
       }
     }
   ],
-  "scaling_limits": {},
-  "notes": [
-    "Fasi 1-4 completed.",
-    "Old artifact versions are not preserved (compile keeps only latest).",
-    "colleague.mentors traverse path only follows first branch (known quirk).",
-    "User profiles require Gardener advanced/meta mode with LLM.",
-    "Fase 5 (multi-client) to be executed separately.",
-    "Ollama disponibile (gemma4, qwen3.5, etc.) ma non usato per i test (mode: basic)",
-    "User profile non generato dal Gardener in modalita basic (richiede advanced/meta + LLM)",
-    "Old artifact versions are not preserved (compile keeps only latest version)",
-    "colleague.mentors traverse funziona via carol.mentors ma non con path composto diretto",
-    "Go client: ListCompileTemplates ha JSON marshalling mismatch (server returns object, client expects array)",
-    "Tutti i 3 client (Python/TypeScript/Go) verificati con successo"
-  ],
+  "scaling_limits": {
+    "max_vectors": 1000000,
+    "stop_reason": "Batch insert failed at 0: HTTPConnectionPool(host='localhost', port=9090): Max retries exceeded with url: /vector/actions/add-batch (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7865a592a930>: Failed to establish a new connection: [Errno 111] Connection refused'))",
+    "scaling_data": [],
+    "bottleneck": "Batch insert failed at 0: HTTPConnectionPool(host='localhost', port=9090): Max retries exceeded with url: /vector/actions/add-batch (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7865a592a930>: Failed to establish a new connection: [Errno 111] Connection refused'))",
+    "max_concurrent_threads": 500,
+    "concurrency_data": [
+      {
+        "threads": 10,
+        "total_ops": 30,
+        "duration_s": 0.02,
+        "throughput_ops_per_s": 1500.0,
+        "errors": 0,
+        "error_rate_percent": 0.0,
+        "p50_ms": 5.5,
+        "p95_ms": 8.2,
+        "p99_ms": 8.4
+      },
+      {
+        "threads": 50,
+        "total_ops": 150,
+        "duration_s": 0.11,
+        "throughput_ops_per_s": 1364.0,
+        "errors": 0,
+        "error_rate_percent": 0.0,
+        "p50_ms": 12.2,
+        "p95_ms": 37.6,
+        "p99_ms": 39.7
+      },
+      {
+        "threads": 100,
+        "total_ops": 300,
+        "duration_s": 0.22,
+        "throughput_ops_per_s": 1364.0,
+        "errors": 0,
+        "error_rate_percent": 0.0,
+        "p50_ms": 29.9,
+        "p95_ms": 74.7,
+        "p99_ms": 80.7
+      },
+      {
+        "threads": 200,
+        "total_ops": 600,
+        "duration_s": 0.43,
+        "throughput_ops_per_s": 1395.0,
+        "errors": 0,
+        "error_rate_percent": 0.0,
+        "p50_ms": 53.5,
+        "p95_ms": 148.4,
+        "p99_ms": 156.3
+      },
+      {
+        "threads": 500,
+        "total_ops": 1500,
+        "duration_s": 1.08,
+        "throughput_ops_per_s": 1389.0,
+        "errors": 1,
+        "error_rate_percent": 0.07,
+        "p50_ms": 143.4,
+        "p95_ms": 375.3,
+        "p99_ms": 394.5
+      }
+    ],
+    "vector_scaling_stop_reason": "Completed all targets up to 1,000,000",
+    "vector_scaling_data": [
+      {
+        "vectors": 10000,
+        "load_time_s": 2.35,
+        "throughput_vec_per_s": 4255.0,
+        "rss_memory_mb": 91.8,
+        "ram_percent": 0.3,
+        "disk_usage_mb": 158.7,
+        "search_avg_ms": 1.0,
+        "search_max_ms": 1.3
+      },
+      {
+        "vectors": 50000,
+        "load_time_s": 23.05,
+        "throughput_vec_per_s": 1735.0,
+        "rss_memory_mb": 175.3,
+        "ram_percent": 0.5,
+        "disk_usage_mb": 219.8,
+        "search_avg_ms": 1.1,
+        "search_max_ms": 1.4
+      },
+      {
+        "vectors": 100000,
+        "load_time_s": 52.5,
+        "throughput_vec_per_s": 952.0,
+        "rss_memory_mb": 287.6,
+        "ram_percent": 0.9,
+        "disk_usage_mb": 297.0,
+        "search_avg_ms": 1.0,
+        "search_max_ms": 1.3
+      },
+      {
+        "vectors": 200000,
+        "load_time_s": 137.38,
+        "throughput_vec_per_s": 728.0,
+        "rss_memory_mb": 500.5,
+        "ram_percent": 1.6,
+        "disk_usage_mb": 514.7,
+        "search_avg_ms": 1.1,
+        "search_max_ms": 1.5
+      },
+      {
+        "vectors": 500000,
+        "load_time_s": 497.35,
+        "throughput_vec_per_s": 603.0,
+        "rss_memory_mb": 1196.6,
+        "ram_percent": 3.8,
+        "disk_usage_mb": 1103.8,
+        "search_avg_ms": 1.1,
+        "search_max_ms": 1.5
+      },
+      {
+        "vectors": 1000000,
+        "load_time_s": 927.24,
+        "throughput_vec_per_s": 539.0,
+        "rss_memory_mb": 2362.6,
+        "ram_percent": 7.4,
+        "disk_usage_mb": 2128.4,
+        "search_avg_ms": 1.1,
+        "search_max_ms": 1.3
+      }
+    ],
+    "concurrency_stop_reason": "Completed up to 500 threads"
+  },
+  "environment": {
+    "cpu_cores": 12,
+    "total_ram_gb": 31.13,
+    "available_ram_gb": 22.72
+  },
   "summary": {
-    "total_phases": 6,
-    "phases_passed": 6,
+    "total_phases": 7,
+    "phases_passed": 7,
     "phases_failed": 0,
-    "total_checks": 159,
-    "total_passed": 159,
+    "total_checks": 23,
+    "total_passed": 23,
     "total_failed": 0
   }
 }

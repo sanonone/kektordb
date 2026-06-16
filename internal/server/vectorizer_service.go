@@ -117,28 +117,14 @@ func NewVectorizerService(server *Server, assetsDir string) (*VectorizerService,
 		// 4. Create Dependencies
 		storeAdapter := rag.NewKektorAdapter(server.Engine)
 
-		// Pass the timeout to the Embedder constructor
-		var embedder embeddings.Embedder
-
-		switch cfg.Embedder.Type {
-		case "openai", "openai_compatible":
-			embedder = embeddings.NewOpenAIEmbedder(
-				ragConfig.EmbedderURL,
-				ragConfig.EmbedderModel,
-				cfg.Embedder.APIKey,
-				ragConfig.EmbedderTimeout,
-			)
-			log.Printf("   -> Using OpenAI-compatible embedder for '%s'", cfg.Name)
-
-		case "ollama", "ollama_api":
-			fallthrough // Se il tipo è ollama o non specificato (default)
-		default:
-			embedder = embeddings.NewOllamaEmbedder(
-				ragConfig.EmbedderURL,
-				ragConfig.EmbedderModel,
-				ragConfig.EmbedderTimeout,
-			)
+		// Create embedder using the unified SelectEmbedder factory.
+		embCfg := cfg.Embedder.ToEmbeddingsConfig(ragConfig.EmbedderTimeout)
+		embedder, err := embeddings.SelectEmbedder(embCfg, "")
+		if err != nil {
+			log.Printf("WARNING: Failed to create embedder for vectorizer '%s': %v", cfg.Name, err)
+			continue
 		}
+		log.Printf("   -> Embedder configured for '%s' (mode: %s, model: %s)", cfg.Name, embCfg.Mode, embCfg.Model)
 
 		// --- Init Client LLM ---
 		var llmClient llm.Client

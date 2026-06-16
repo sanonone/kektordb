@@ -9,10 +9,13 @@ package server
 
 import (
 	"fmt"
+
+	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/llm"
 	"gopkg.in/yaml.v3"
 	"os"
 	"strings"
+	"time"
 )
 
 // Config represents the top-level structure of the vectorizers configuration file.
@@ -63,6 +66,18 @@ type EmbedderConfig struct {
 	Model   string `yaml:"model"`
 	Timeout string `yaml:"timeout"`
 	APIKey  string `yaml:"api_key"`
+}
+
+// ToEmbeddingsConfig converts the YAML embedder config to the unified
+// embeddings.EmbedderConfig used by SelectEmbedder.
+func (ec EmbedderConfig) ToEmbeddingsConfig(timeout time.Duration) embeddings.EmbedderConfig {
+	return embeddings.EmbedderConfig{
+		Mode:    ec.Type, // SelectEmbedder normalizes "ollama_api" → "ollama", etc.
+		URL:     ec.URL,
+		Model:   ec.Model,
+		APIKey:  ec.APIKey,
+		Timeout: timeout,
+	}
 }
 
 // ParserConfig defines how raw text is extracted from files.

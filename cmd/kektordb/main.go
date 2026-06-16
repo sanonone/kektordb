@@ -280,25 +280,17 @@ func main() {
 		}
 
 		if proxyCfg.Embedder == nil {
-			slog.Info("Initializing Proxy Embedder",
-				"type", proxyCfg.EmbedderType,
-				"url", proxyCfg.EmbedderURL,
-				"model", proxyCfg.EmbedderModel,
-			)
-
-			switch proxyCfg.EmbedderType {
-			case "openai", "openai_compatible":
-				proxyCfg.Embedder = embeddings.NewOllamaEmbedder(
-					proxyCfg.EmbedderURL,
-					proxyCfg.EmbedderModel,
-					proxyCfg.EmbedderTimeout,
-				)
-			default:
-				proxyCfg.Embedder = embeddings.NewOllamaEmbedder(
-					proxyCfg.EmbedderURL,
-					proxyCfg.EmbedderModel,
-					proxyCfg.EmbedderTimeout,
-				)
+			embCfg := embeddings.EmbedderConfig{
+				Mode:    proxyCfg.EmbedderType,
+				URL:     proxyCfg.EmbedderURL,
+				Model:   proxyCfg.EmbedderModel,
+				Timeout: proxyCfg.EmbedderTimeout,
+			}
+			var err error
+			proxyCfg.Embedder, err = embeddings.SelectEmbedder(embCfg, dataDir)
+			if err != nil {
+				slog.Warn("Proxy embedder creation failed, continuing without embedder", "err", err)
+				proxyCfg.Embedder = embeddings.NoopEmbedder{}
 			}
 		}
 

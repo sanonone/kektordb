@@ -317,8 +317,8 @@ Il modello ONNX (~90 MB) viene scaricato automaticamente da HuggingFace al primo
 | Modalita' | Descrizione |
 |-----------|-------------|
 | `auto` | Rilevamento automatico: Ollama se disponibile, ONNX locale come fallback (default) |
-| `ollama` | Usa API embedding di Ollama |
-| `openai` | Usa API embedding compatibile OpenAI |
+| `ollama` / `ollama_api` | Usa API embedding di Ollama |
+| `openai` / `openai_compatible` | Usa API embedding compatibile OpenAI |
 | `local` | Modello ONNX integrato (richiede build con `-tags rust`) |
 
 ---
