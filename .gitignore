@@ -19,6 +19,9 @@ kektordb-test
 *.kdb
 arenas/
 
+# Embedder Local
+models/
+
 # File MCP Log
 *.log
 
