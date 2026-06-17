@@ -26,7 +26,7 @@ type Server struct {
 	vectorizerService *VectorizerService
 
 	// Auth
-	authToken   string           // Master Root Token
+	authToken   string             // Master Root Token
 	authService auth.TokenVerifier // Verifies tokens (JWT or OIDC)
 	keyManager  auth.KeyManager    // Issues and revokes keys (JWT only; nil in OIDC mode)
 
