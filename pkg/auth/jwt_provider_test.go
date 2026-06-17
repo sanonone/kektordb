@@ -96,8 +96,17 @@ func TestVerifyToken_Tampered(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Flip the last character of the signature to invalidate it.
-	tampered := token[:len(token)-1] + "X"
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 JWT segments, got %d", len(parts))
+	}
+
+	// Corrupt the signature segment: replace every character with 'A'.
+	// This guarantees the ECDSA signature no longer matches the header+payload,
+	// regardless of base64url padding edge cases.
+	parts[2] = strings.Repeat("A", len(parts[2]))
+	tampered := strings.Join(parts, ".")
+
 	if _, err := p.VerifyToken(tampered); err == nil {
 		t.Fatal("expected error for tampered token, got nil")
 	}
