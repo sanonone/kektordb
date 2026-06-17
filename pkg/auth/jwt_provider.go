@@ -108,25 +108,45 @@ func (j *JWTProvider) PublicKeyJWKS() ([]byte, error) {
 	return json.Marshal(jwks)
 }
 
-func (j *JWTProvider) VerifyToken(token string) (*APIKeyPolicy, error) {
+// VerifyToken parses and validates a JWT, checks the revocation denylist,
+// and maps the embedded KektorClaims into an APIKeyPolicy for the middleware.
+// exp/nbf/iat are validated automatically by jwt.ParseWithClaims.
+func (j *JWTProvider) VerifyToken(tokenStr string) (*APIKeyPolicy, error) {
+	parsed, err := jwt.ParseWithClaims(tokenStr, &KektorClaims{}, func(t *jwt.Token) (any, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodECDSA); !ok {
+			return nil, fmt.Errorf("auth: unexpected signing method: %v", t.Header["alg"])
+		}
+		return j.signer.PublicKey(), nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("auth: invalid token: %w", err)
+	}
 
-	const kvKey = "_sys_auth::ecdsa_private_key"
+	claims, ok := parsed.Claims.(*KektorClaims)
+	if !ok || !parsed.Valid {
+		return nil, fmt.Errorf("auth: malformed token claims")
+	}
+
+	// Denylist check — only KV lookup on the hot path; absent for valid tokens.
+	if _, revoked := j.kvStore.Get("_sys_auth::revoked::" + claims.ID); revoked {
+		return nil, fmt.Errorf("auth: token has been revoked")
+	}
+
+	return &APIKeyPolicy{
+		ID:          claims.ID,
+		Description: claims.Description,
+		Role:        claims.Role,
+		Namespaces:  claims.Namespaces,
+		CreatedAt:   claims.IssuedAt.Unix(),
+	}, nil
 }
 
-	// Hash the incoming token
-	hash := sha256.Sum256([]byte(clearToken))
-	hashedKey := hex.EncodeToString(hash[:])
-	storageKey := "_sys_auth::" + hashedKey
-
-	// Lookup in KV Store
-	policyBytes, found := s.kvStore.Get(storageKey)
-	if !found {
-		return nil, fmt.Errorf("invalid or revoked API key")
+// RevokeKey adds a token's jti to the denylist. VerifyToken will reject it
+// on all subsequent requests regardless of its exp claim.
+func (j *JWTProvider) RevokeKey(jti string) error {
+	if jti == "" {
+		return fmt.Errorf("auth: jti must not be empty")
 	}
-
-	var policy APIKeyPolicy
-	if err := json.Unmarshal(policyBytes, &policy); err != nil {
-		return nil, fmt.Errorf("corrupted API key policy")
-	}
-
-	return &policy, nil
+	j.kvStore.Set("_sys_auth::revoked::"+jti, []byte("1"))
+	return nil
+}

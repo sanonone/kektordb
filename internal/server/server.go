@@ -26,8 +26,9 @@ type Server struct {
 	vectorizerService *VectorizerService
 
 	// Auth
-	authToken   string            // Master Root Token
-	authService *auth.AuthService // RBAC Manager
+	authToken   string           // Master Root Token
+	authService auth.TokenVerifier // Verifies tokens (JWT or OIDC)
+	keyManager  auth.KeyManager    // Issues and revokes keys (JWT only; nil in OIDC mode)
 
 	gardener *cognitive.Gardener
 }
@@ -50,12 +51,18 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 		return nil, fmt.Errorf("failed to create assets dir: %w", err)
 	}
 
+	jwtProvider, err := auth.NewJWTProvider(eng.DB.GetKVStore())
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize auth provider: %w", err)
+	}
+
 	s := &Server{
 		Engine:           eng,
 		taskManager:      NewTaskManager(),
 		vectorizerConfig: vecConfig,
 		authToken:        authToken,
-		authService:      auth.NewAuthService(eng.DB.GetKVStore()),
+		authService:      jwtProvider,
+		keyManager:       jwtProvider,
 	}
 
 	// Load cognitive engine config (from YAML or defaults)
@@ -108,6 +115,8 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 
 	rootMux := http.NewServeMux()
 	rootMux.HandleFunc("GET /healthz", s.handleHealthz)
+	// JWKS is unauthenticated — clients and gateways fetch the public key to verify tokens locally.
+	rootMux.HandleFunc("GET /.well-known/jwks.json", s.handleJWKS)
 	rootMux.Handle("/", handler)
 	s.httpServer = &http.Server{
 		Addr:           httpAddr,
