@@ -89,17 +89,28 @@ func (s *Service) ensureIndex(name string) {
 }
 
 // defaultRelationsForNode probes the actual relation types present on the given
-// graph node. If the node has no relations, falls back to a hardcoded set of
-// common relation types (RAG links, auto-linking, standard MCP connections).
+// graph node (both outgoing and incoming). If the node has no relations, falls
+// back to a hardcoded set of common relation types.
 func (s *Service) defaultRelationsForNode(indexName, nodeID string) []string {
 	if nodeID == "" {
 		return hardcodedDefaultRelations()
 	}
 
-	relMap := s.engine.VGetRelations(indexName, nodeID)
-	if len(relMap) > 0 {
-		relations := make([]string, 0, len(relMap))
-		for rel := range relMap {
+	// Collect unique relation types from both directions.
+	seen := make(map[string]bool)
+
+	// Outgoing
+	for rel := range s.engine.VGetRelations(indexName, nodeID) {
+		seen[rel] = true
+	}
+	// Incoming
+	for rel := range s.engine.VGetIncomingRelations(indexName, nodeID) {
+		seen[rel] = true
+	}
+
+	if len(seen) > 0 {
+		relations := make([]string, 0, len(seen))
+		for rel := range seen {
 			relations = append(relations, rel)
 		}
 		return relations
@@ -112,7 +123,44 @@ func hardcodedDefaultRelations() []string {
 	return []string{
 		"related_to", "about", "mentions", // Standard MCP links
 		"parent", "child", "next", "prev", // RAG links
-		"belongs_to", "authored_by", // Metadata Auto-linking
+		"belongs_to", "authored_by",       // Metadata Auto-linking
+		"contains", "evolves_from", "superseded_by", "consolidated_into", // Cognitive / evolution
+	}
+}
+
+// normalizeTags converts the Tags field (which may be a JSON array, a comma-separated
+// string, or nil) into a clean []string suitable for storing in metadata.
+func normalizeTags(raw any) []string {
+	if raw == nil {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []interface{}:
+		result := make([]string, 0, len(v))
+		for _, item := range v {
+			result = append(result, fmt.Sprint(item))
+		}
+		return result
+	case []string:
+		return v
+	case string:
+		if v == "" {
+			return nil
+		}
+		parts := strings.Split(v, ",")
+		result := make([]string, 0, len(parts))
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				result = append(result, p)
+			}
+		}
+		if len(result) == 0 {
+			return nil
+		}
+		return result
+	default:
+		return nil
 	}
 }
 
@@ -150,8 +198,8 @@ func (s *Service) SaveMemory(ctx context.Context, req *mcp.CallToolRequest, args
 		"type":         "memory",
 		"memory_layer": layer, // Store the layer
 	}
-	if len(args.Tags) > 0 {
-		meta["tags"] = args.Tags
+	if tags := normalizeTags(args.Tags); len(tags) > 0 {
+		meta["tags"] = tags
 	}
 
 	// Handle Pinning (ExplicitPinned overrides everything)
@@ -381,7 +429,7 @@ func (s *Service) ScopedRecall(ctx context.Context, req *mcp.CallToolRequest, ar
 		Relations: s.defaultRelationsForNode(idx, args.RootID),
 	}
 	if filter.Direction == "" {
-		filter.Direction = "out"
+		filter.Direction = "both"
 	}
 	if filter.MaxDepth == 0 {
 		filter.MaxDepth = 2
@@ -1683,7 +1731,7 @@ func (s *Service) GetMemoryEvolution(ctx context.Context, req *mcp.CallToolReque
 		direction = "backward"
 	}
 
-	var chain []MemoryEvolutionStep
+	chain := make([]MemoryEvolutionStep, 0)
 	currentID := args.MemoryID
 	visited := make(map[string]bool)
 

@@ -1,10 +1,5 @@
 package mcp
 
-import (
-	"encoding/json"
-	"strings"
-)
-
 // --- Tool Arguments ---
 
 type SaveMemoryArgs struct {
@@ -12,8 +7,10 @@ type SaveMemoryArgs struct {
 	IndexName string   `json:"index_name,omitempty" jsonschema:"The index to store data in. Defaults to 'mcp_memory'"`
 	Layer     string   `json:"layer,omitempty" jsonschema:"Memory layer: 'episodic' (events, default), 'semantic' (facts), or 'procedural' (rules)."`
 	Links     []string `json:"links,omitempty" jsonschema:"List of existing Entity IDs to link this memory to (e.g. 'project_alpha', 'user_mario')"`
-	Tags      []string `json:"tags,omitempty" jsonschema:"Optional tags or categories (as JSON array). If a comma-separated string is passed, it will be split automatically."`
-	Pin       bool     `json:"pin,omitempty" jsonschema:"If true, this memory will never decay over time (e.g. core rules, birthdays)."`
+	// Tags uses any instead of []string so the MCP schema doesn't force type: array.
+	// LLMs frequently send comma-separated strings; normalizeTags() handles both formats.
+	Tags any `json:"tags,omitempty" jsonschema:"Optional search tags — JSON array [\"tag1\",\"tag2\"] or comma-separated string \"tag1,tag2\""`
+	Pin  bool `json:"pin,omitempty" jsonschema:"If true, this memory will never decay over time (e.g. core rules, birthdays)."`
 	// ExplicitPinned allows overriding the layer's pinned_by_default setting.
 	// If nil, uses layer default. If set, overrides Pin and layer default.
 	ExplicitPinned *bool `json:"_pinned,omitempty" jsonschema:"Explicitly set pinned status (overrides Pin and layer defaults)"`
@@ -23,42 +20,6 @@ type SaveMemoryArgs struct {
 	// UserID explicitly sets the user for this memory (for profiling).
 	// If empty and session_id is provided, user_id is propagated from session.
 	UserID string `json:"user_id,omitempty" jsonschema:"User ID for profiling. Auto-propagated from session if not set."`
-}
-
-// UnmarshalJSON normalizes the Tags field: LLMs often send comma-separated strings
-// instead of proper JSON arrays. We accept both formats transparently.
-func (a *SaveMemoryArgs) UnmarshalJSON(data []byte) error {
-	type Alias SaveMemoryArgs
-	aux := struct {
-		Tags json.RawMessage `json:"tags,omitempty"`
-		*Alias
-	}{
-		Alias: (*Alias)(a),
-	}
-	if err := json.Unmarshal(data, &aux); err != nil {
-		return err
-	}
-
-	// Try parsing as JSON array first (correct behavior)
-	var arr []string
-	if err := json.Unmarshal(aux.Tags, &arr); err == nil {
-		a.Tags = arr
-		return nil
-	}
-
-	// Fallback: parse as comma-separated string
-	var str string
-	if err := json.Unmarshal(aux.Tags, &str); err == nil {
-		if str != "" {
-			parts := strings.Split(str, ",")
-			for i := range parts {
-				parts[i] = strings.TrimSpace(parts[i])
-			}
-			a.Tags = parts
-		}
-	}
-
-	return nil
 }
 
 type SaveMemoryResult struct {
