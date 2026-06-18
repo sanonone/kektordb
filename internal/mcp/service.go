@@ -88,6 +88,34 @@ func (s *Service) ensureIndex(name string) {
 	}
 }
 
+// defaultRelationsForNode probes the actual relation types present on the given
+// graph node. If the node has no relations, falls back to a hardcoded set of
+// common relation types (RAG links, auto-linking, standard MCP connections).
+func (s *Service) defaultRelationsForNode(indexName, nodeID string) []string {
+	if nodeID == "" {
+		return hardcodedDefaultRelations()
+	}
+
+	relMap := s.engine.VGetRelations(indexName, nodeID)
+	if len(relMap) > 0 {
+		relations := make([]string, 0, len(relMap))
+		for rel := range relMap {
+			relations = append(relations, rel)
+		}
+		return relations
+	}
+
+	return hardcodedDefaultRelations()
+}
+
+func hardcodedDefaultRelations() []string {
+	return []string{
+		"related_to", "about", "mentions", // Standard MCP links
+		"parent", "child", "next", "prev", // RAG links
+		"belongs_to", "authored_by", // Metadata Auto-linking
+	}
+}
+
 // --- Tool Handlers ---
 
 func (s *Service) SaveMemory(ctx context.Context, req *mcp.CallToolRequest, args SaveMemoryArgs) (*mcp.CallToolResult, SaveMemoryResult, error) {
@@ -350,6 +378,7 @@ func (s *Service) ScopedRecall(ctx context.Context, req *mcp.CallToolRequest, ar
 		RootID:    args.RootID,
 		Direction: args.Direction,
 		MaxDepth:  args.Depth,
+		Relations: s.defaultRelationsForNode(idx, args.RootID),
 	}
 	if filter.Direction == "" {
 		filter.Direction = "out"
@@ -379,11 +408,7 @@ func (s *Service) Traverse(ctx context.Context, req *mcp.CallToolRequest, args T
 	// This ensures "explore" actually finds something without needing perfect knowledge of the schema.
 	relations := args.Relations
 	if len(relations) == 0 {
-		relations = []string{
-			"related_to", "about", "mentions", // Standard MCP links
-			"parent", "child", "next", "prev", // RAG links
-			"belongs_to", "authored_by", // Metadata Auto-linking
-		}
+		relations = s.defaultRelationsForNode(idx, args.RootID)
 	}
 
 	// Semantic Navigation Setup
@@ -513,8 +538,21 @@ func (s *Service) FindConnection(ctx context.Context, req *mcp.CallToolRequest, 
 
 	relations := args.Relations
 	if len(relations) == 0 {
-		// Default relations to traverse if user didn't specify
-		relations = []string{"related_to", "about", "mentions", "parent", "child", "next", "prev", "belongs_to", "authored_by"}
+		relations = s.defaultRelationsForNode(idx, args.SourceID)
+
+		// Also merge relations found on the target node
+		for _, rel := range s.defaultRelationsForNode(idx, args.TargetID) {
+			found := false
+			for _, r := range relations {
+				if r == rel {
+					found = true
+					break
+				}
+			}
+			if !found {
+				relations = append(relations, rel)
+			}
+		}
 	}
 
 	// Call Engine.FindPath
@@ -1011,7 +1049,6 @@ func (s *Service) StartSession(ctx context.Context, req *mcp.CallToolRequest, ar
 }
 
 // EndSession closes a session and triggers summarization.
-// Note: The actual summarization is done by the Gardener via HTTP API.
 func (s *Service) EndSession(ctx context.Context, req *mcp.CallToolRequest, args EndSessionArgs) (*mcp.CallToolResult, EndSessionResult, error) {
 	idx := args.IndexName
 	if idx == "" {
@@ -1049,11 +1086,83 @@ func (s *Service) EndSession(ctx context.Context, req *mcp.CallToolRequest, args
 	// Remove from active sessions
 	s.removeSession(sessionID)
 
+	// Try inline deterministic summarization (no LLM needed).
+	// This makes end_session actually useful in MCP mode.
+	summaryMsg := ""
+	if summaryText := s.buildDeterministicSessionSummary(idx, sessionID); summaryText != "" {
+		summaryMsg = " Session summary saved."
+	}
+
 	return nil, EndSessionResult{
 		SessionID: sessionID,
 		Status:    "ended",
-		Message:   fmt.Sprintf("Session %s ended. Summarization triggered in background.", sessionID),
+		Message:   fmt.Sprintf("Session %s ended.%s", sessionID, summaryMsg),
 	}, nil
+}
+
+// buildDeterministicSessionSummary collects up to 10 memories from the session
+// and generates a bullet-point summary (no LLM required). The summary is stored
+// as a new memory node linked to the session. Returns the summary text, or ""
+// if no memories were found.
+func (s *Service) buildDeterministicSessionSummary(indexName, sessionID string) string {
+	// Fetch memories linked to this session
+	filter := fmt.Sprintf("session_id='%s'", sessionID)
+	memoryIDs, err := s.engine.VFilter(indexName, filter, 50)
+	if err != nil || len(memoryIDs) == 0 {
+		return ""
+	}
+
+	// Limit to 10 items (summary should be concise)
+	if len(memoryIDs) > 10 {
+		memoryIDs = memoryIDs[:10]
+	}
+
+	data, err := s.engine.VGetMany(indexName, memoryIDs)
+	if err != nil {
+		return ""
+	}
+
+	// Build summary
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Session Summary (%s):\n\n", sessionID))
+	sb.WriteString("Key Points:\n")
+	contents := 0
+	for _, item := range data {
+		content, _ := item.Metadata["content"].(string)
+		if content == "" {
+			continue
+		}
+		// Truncate long content
+		if len(content) > 120 {
+			content = content[:120] + "..."
+		}
+		sb.WriteString(fmt.Sprintf("- %s\n", content))
+		contents++
+	}
+
+	if contents == 0 {
+		return ""
+	}
+
+	summaryText := sb.String()
+
+	// Save summary as a new memory node
+	zeroVec := make([]float32, 384) // default dimension for local ONNX embedder
+	meta := map[string]any{
+		"content":    summaryText,
+		"type":       "session_summary",
+		"session_id": sessionID,
+		"timestamp":  time.Now().Format(time.RFC3339),
+		"source":     "mcp",
+	}
+	summaryID := fmt.Sprintf("summary_%d", time.Now().UnixNano())
+	if err := s.engine.VAdd(indexName, summaryID, zeroVec, meta); err != nil {
+		slog.Warn("MCP: failed to save session summary", "session", sessionID, "error", err)
+		return "" // summary was built but couldn't be saved; still return text for the message
+	}
+
+	slog.Info("MCP: session summary saved", "session", sessionID, "summary", summaryID, "memories", contents)
+	return summaryText
 }
 
 // --- User Profile Tools ---
@@ -1682,37 +1791,32 @@ func (s *Service) RequestKnowledge(ctx context.Context, req *mcp.CallToolRequest
 
 	artifact, err := s.compiler.GetArtifact(args.Intent, entityType, args.Entity, idx, 0)
 	if err == nil && artifact != nil {
-		status := "complete"
-		if artifact.StalenessScore > 0.1 {
-			status = "stale"
-		}
+		return nil, buildRequestKnowledgeResult(artifact, includeProv), nil
+	}
 
-		result := RequestKnowledgeResult{
-			Found:          true,
-			ArtifactName:   artifact.Name,
-			Version:        artifact.Version,
-			Data:           artifact.Data,
-			Confidence:     artifact.Confidence,
-			StalenessScore: artifact.StalenessScore,
-			CompileMode:    string(artifact.CompileMode),
-			Status:         status,
-		}
-		if !artifact.CompiledAt.IsZero() {
-			result.CompiledAt = artifact.CompiledAt.Format(time.RFC3339)
-		}
-		if includeProv {
-			prov := make(map[string][]interface{})
-			for k, v := range artifact.Provenance {
-				provEntries := make([]interface{}, len(v))
-				for i, p := range v {
-					provEntries[i] = p
-				}
-				prov[k] = provEntries
+	// Cache miss — try synchronous compile for deterministic templates
+	// (e.g. entity_card, which requires no LLM and completes in <50ms).
+	// Hybrid templates that need LLM are not sync-compiled here; they fall
+	// through to the async+fallback path instead.
+	compileReq := compiler.CompileRequest{
+		Name:     args.Intent,
+		Template: args.Intent,
+		Sources: compiler.SourceSpec{
+			Type:   "graph_query",
+			Entity: compiler.EntityRef{Type: entityType, ID: args.Entity},
+			Depth:  2,
+		},
+		IndexName: idx,
+	}
+	if !s.compiler.NeedsAsync(compileReq) {
+		if artifact, err := s.compiler.Compile(compileReq); err == nil && artifact != nil {
+			// Only return the artifact if the template is genuinely deterministic
+			// (e.g. entity_card). If the compile degraded to best-effort because
+			// LLM is unavailable, fall through to the async+fallback path.
+			if artifact.CompileMode == compiler.CompileModeDeterministic {
+				return nil, buildRequestKnowledgeResult(artifact, includeProv), nil
 			}
-			result.Provenance = prov
 		}
-
-		return nil, result, nil
 	}
 
 	return s.requestKnowledgeFallback(idx, args.Intent, args.Entity, entityType, budgetMs)
@@ -1778,4 +1882,36 @@ func (s *Service) requestKnowledgeFallback(indexName, intent, entity, entityType
 		Found:  false,
 		Status: "not_found",
 	}, nil
+}
+
+func buildRequestKnowledgeResult(artifact *compiler.Artifact, includeProv bool) RequestKnowledgeResult {
+	status := "complete"
+	if artifact.StalenessScore > 0.1 {
+		status = "stale"
+	}
+	result := RequestKnowledgeResult{
+		Found:          true,
+		ArtifactName:   artifact.Name,
+		Version:        artifact.Version,
+		Data:           artifact.Data,
+		Confidence:     artifact.Confidence,
+		StalenessScore: artifact.StalenessScore,
+		CompileMode:    string(artifact.CompileMode),
+		Status:         status,
+	}
+	if !artifact.CompiledAt.IsZero() {
+		result.CompiledAt = artifact.CompiledAt.Format(time.RFC3339)
+	}
+	if includeProv {
+		prov := make(map[string][]interface{})
+		for k, v := range artifact.Provenance {
+			provEntries := make([]interface{}, len(v))
+			for i, p := range v {
+				provEntries[i] = p
+			}
+			prov[k] = provEntries
+		}
+		result.Provenance = prov
+	}
+	return result
 }

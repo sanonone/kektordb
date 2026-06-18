@@ -8,7 +8,7 @@ RELEASE_DIR=release
 PROTOC := $(shell which protoc 2>/dev/null || echo /tmp/protoc/bin/protoc)
 
 # --- Main Targets ---
-.PHONY: all test test-rust bench bench-rust clean release ensure-protoc fmt
+.PHONY: all test test-rust bench bench-rust build-go build-rust clean release ensure-protoc fmt
 
 # The default target is a quick test of the pure Go build
 all: test
@@ -78,6 +78,22 @@ build-rust-target: ensure-protoc
 generate-avo:
 	@echo "==> Generating Assembly code with AVO..."
 	@go generate ./pkg/core/distance/avo_gen.go
+
+
+# --- Local Build Targets ---
+build-go:
+	@echo "==> Building KektorDB (pure Go)..."
+	@mkdir -p $(RELEASE_DIR)
+	@CGO_ENABLED=0 go build -ldflags="-s -w" -o "$(RELEASE_DIR)/$(BINARY_NAME)" ./cmd/kektordb
+	@echo "==> Binary: $(RELEASE_DIR)/$(BINARY_NAME)"
+
+build-rust: build-rust-native
+	@echo "==> Building KektorDB (Rust CGO)..."
+	@mkdir -p $(RELEASE_DIR)
+	@CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/release -lkektordb_compute -lm -ldl -lstdc++" \
+	CGO_ENABLED=1 \
+	go build -tags "rust netgo" -ldflags="-s -w" -o "$(RELEASE_DIR)/$(BINARY_NAME)" ./cmd/kektordb
+	@echo "==> Binary: $(RELEASE_DIR)/$(BINARY_NAME)"
 
 
 # --- Release Target ---

@@ -144,10 +144,10 @@ func registerTools(s *mcp.Server, service *Service, allowlist map[string]bool) {
 	}
 
 	if shouldRegister(ToolEndSession, allowlist) {
-		mcp.AddTool(s, &mcp.Tool{
-			Name:        ToolEndSession,
-			Description: "End a session and trigger automatic summarization. The Gardener will create a semantic summary of all session memories and archive the episodic ones.",
-		}, service.EndSession)
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        ToolEndSession,
+		Description: "End a session and generate a deterministic bullet-point summary of its memories (supports up to ~10 memories). If the Cognitive Engine (Gardener) is active, it will augment this with deeper semantic summarization.",
+	}, service.EndSession)
 	}
 
 	if shouldRegister(ToolGetUserProfile, allowlist) {
