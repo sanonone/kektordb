@@ -70,7 +70,8 @@ func SupportedAgents() []Agent {
 }
 
 // Install runs the setup for the named agent. Returns a Result or an error.
-func Install(agentName string) (*Result, error) {
+// embedderMode is passed through to the agent-specific install (e.g. opencode MCP entry).
+func Install(agentName, embedderMode string) (*Result, error) {
 	switch agentName {
 	case "claude-code":
 		return installClaudeCode()
@@ -81,7 +82,7 @@ func Install(agentName string) (*Result, error) {
 	case "codex":
 		return installCodex()
 	case "opencode":
-		return installOpenCode()
+		return installOpenCode(embedderMode)
 	default:
 		return nil, fmt.Errorf("unknown agent: %q (supported: claude-code, cursor, gemini-cli, codex, opencode)", agentName)
 	}

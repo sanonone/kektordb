@@ -37,7 +37,7 @@ func openCodeConfigPath() string {
 	return filepath.Join(dir, "opencode.json")
 }
 
-func installOpenCode() (*Result, error) {
+func installOpenCode(embedderMode string) (*Result, error) {
 	dir := openCodePluginDir()
 	if err := mkdirAllFn(dir, 0755); err != nil {
 		return nil, fmt.Errorf("create plugin dir: %w", err)
@@ -61,10 +61,14 @@ func installOpenCode() (*Result, error) {
 	files := 1
 
 	// Inject MCP registration in opencode.json.
-	if err := injectOpenCodeMCP(); err != nil {
+	if err := injectOpenCodeMCP(embedderMode); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not auto-register MCP in opencode.json: %v\n", err)
+		args := []string{"--mcp", "--tools=agent"}
+		if embedderMode != "" && embedderMode != "auto" {
+			args = append(args, "--embedder="+embedderMode)
+		}
 		fmt.Fprintf(os.Stderr, "  Add manually to opencode.json MCP section:\n")
-		fmt.Fprintf(os.Stderr, "  %q, \"--mcp\", \"--tools=agent\"\n", resolveKektordbCommand())
+		fmt.Fprintf(os.Stderr, "  %q, %s\n", resolveKektordbCommand(), strings.Join(quoteStrings(args), ", "))
 	} else {
 		files++
 	}
@@ -92,13 +96,18 @@ func patchKektordbBINLine(src []byte, absBin string) []byte {
 }
 
 // injectOpenCodeMCP adds the KektorDB MCP entry to opencode.json.
-func injectOpenCodeMCP() error {
+func injectOpenCodeMCP(embedderMode string) error {
 	path := openCodeConfigPath()
+
+	command := []string{resolveKektordbCommand(), "--mcp", "--tools=agent"}
+	if embedderMode != "" && embedderMode != "auto" {
+		command = append(command, "--embedder="+embedderMode)
+	}
 
 	// OpenCode uses a different MCP format: command is an array of strings.
 	entry := map[string]any{
 		"type":    "local",
-		"command": []string{resolveKektordbCommand(), "--mcp", "--tools=agent"},
+		"command": command,
 		"enabled": true,
 	}
 
@@ -106,4 +115,12 @@ func injectOpenCodeMCP() error {
 		return fmt.Errorf("inject MCP: %w", err)
 	}
 	return nil
+}
+
+func quoteStrings(ss []string) []string {
+	out := make([]string, len(ss))
+	for i, s := range ss {
+		out[i] = fmt.Sprintf("%q", s)
+	}
+	return out
 }

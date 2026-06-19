@@ -103,27 +103,28 @@ func SelectEmbedder(cfg EmbedderConfig, dataDir string) (Embedder, error) {
 		return tryLocalEmbedder(dataDir, cfg.ModelDir)
 	}
 
-	// 2. Auto-detect: Ollama already running?
-	if isOllamaRunning(ollamaURL) {
-		slog.Info("Embedder: Ollama detected", "url", ollamaURL, "model", ollamaModel)
-		return NewOllamaEmbedder(ollamaURL, ollamaModel, timeout), nil
-	}
-
-	// 3. Auto-detect: local embedder available?
+	// 2. Auto-detect: try local embedder first (Rust build, models cached or download).
+	//    Local is preferred because it's deterministic and requires no external service.
 	emb, err := tryLocalEmbedder(dataDir, cfg.ModelDir)
 	if err == nil {
-		slog.Info("Embedder: local built-in", "model", "all-MiniLM-L6-v2", "dim", 384)
+		slog.Info("Embedder: using built-in ONNX", "model", defaultModelName, "dim", defaultModelDim)
 		return emb, nil
 	}
 
-	// 4. Nothing available — error with guidance
+	// 3. Auto-detect: fallback to Ollama if local is unavailable.
+	if isOllamaRunning(ollamaURL) {
+		slog.Info("Embedder: using Ollama", "url", ollamaURL, "model", ollamaModel)
+		return NewOllamaEmbedder(ollamaURL, ollamaModel, timeout), nil
+	}
+
+	// 4. Nothing available — error with guidance (local is preferred).
 	return nil, fmt.Errorf(
 		"no embedder available.\n\n"+
-			"  Option A (recommended): Install Ollama\n"+
+			"  Option A (recommended): Rebuild with built-in embedding\n"+
+			"    go build -tags rust ./cmd/kektordb\n\n"+
+			"  Option B: Install Ollama\n"+
 			"    curl -fsSL https://ollama.com/install.sh | sh\n"+
-			"    ollama pull nomic-embed-text && ollama serve\n\n"+
-			"  Option B: Rebuild with built-in embedding\n"+
-			"    go build -tags rust ./cmd/kektordb\n",
+			"    ollama pull nomic-embed-text && ollama serve\n",
 	)
 }
 

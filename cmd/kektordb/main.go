@@ -358,7 +358,20 @@ func main() {
 func cmdSetup() {
 	agents := setup.SupportedAgents()
 
-	// Non-interactive: kektordb setup <agent>
+	// Extract optional --embedder= flag from remaining args (after agent name)
+	embedderMode := ""
+	for i := 3; i < len(os.Args); i++ {
+		if strings.HasPrefix(os.Args[i], "--embedder=") {
+			embedderMode = strings.TrimPrefix(os.Args[i], "--embedder=")
+			break
+		}
+		if os.Args[i] == "--embedder" && i+1 < len(os.Args) {
+			embedderMode = os.Args[i+1]
+			break
+		}
+	}
+
+	// Non-interactive: kektordb setup <agent> [--embedder=<mode>]
 	if len(os.Args) > 2 && !strings.HasPrefix(os.Args[2], "-") {
 		agentName := os.Args[2]
 		switch agentName {
@@ -372,7 +385,7 @@ func cmdSetup() {
 			cmdSetupStatus(agents)
 			return
 		default:
-			result, err := setup.Install(agentName)
+			result, err := setup.Install(agentName, embedderMode)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "setup failed: %v\n", err)
 				os.Exit(1)
@@ -404,7 +417,7 @@ func cmdSetup() {
 	}
 
 	selected := agents[choice-1]
-	result, err := setup.Install(selected.Name)
+	result, err := setup.Install(selected.Name, embedderMode)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "setup failed: %v\n", err)
 		os.Exit(1)

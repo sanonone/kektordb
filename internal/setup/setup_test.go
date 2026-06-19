@@ -60,7 +60,7 @@ func TestSupportedAgentsHaveDescriptions(t *testing.T) {
 // ─── Install ─────────────────────────────────────────────────────────────────
 
 func TestInstallUnknownAgent(t *testing.T) {
-	_, err := Install("nonexistent-agent-xyz")
+	_, err := Install("nonexistent-agent-xyz", "")
 	if err == nil {
 		t.Fatal("expected error for unknown agent")
 	}
@@ -117,7 +117,7 @@ func TestInstallAllKnownAgents(t *testing.T) {
 
 	for _, agent := range SupportedAgents() {
 		t.Run(agent.Name, func(t *testing.T) {
-			result, err := Install(agent.Name)
+			result, err := Install(agent.Name, "")
 			if err != nil {
 				t.Fatalf("Install(%q): %v", agent.Name, err)
 			}
@@ -137,7 +137,7 @@ func TestInstallAllKnownAgents(t *testing.T) {
 	// Idempotency: run each install again — should not fail.
 	for _, agent := range SupportedAgents() {
 		t.Run(agent.Name+"-idempotent", func(t *testing.T) {
-			_, err := Install(agent.Name)
+			_, err := Install(agent.Name, "")
 			if err != nil {
 				t.Fatalf("Install(%q) second time: %v", agent.Name, err)
 			}
