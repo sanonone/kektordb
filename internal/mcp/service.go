@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/sanonone/kektordb/pkg/cognitive"
 	"github.com/sanonone/kektordb/pkg/compiler"
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
@@ -24,6 +25,7 @@ type Service struct {
 	engine   *engine.Engine
 	embedder embeddings.Embedder
 	compiler *compiler.Compiler
+	gardener *cognitive.Gardener
 
 	// Session management (per-connection)
 	sessions   map[string]*SessionContext // key: connection ID or session ID
@@ -32,11 +34,12 @@ type Service struct {
 
 const defaultMemoryFilter = "_is_historical != 'true' AND _archived != 'true'"
 
-func NewService(eng *engine.Engine, emb embeddings.Embedder, comp *compiler.Compiler) *Service {
+func NewService(eng *engine.Engine, emb embeddings.Embedder, comp *compiler.Compiler, gardener *cognitive.Gardener) *Service {
 	return &Service{
 		engine:   eng,
 		embedder: emb,
 		compiler: comp,
+		gardener: gardener,
 		sessions: make(map[string]*SessionContext),
 	}
 }
@@ -1134,11 +1137,19 @@ func (s *Service) EndSession(ctx context.Context, req *mcp.CallToolRequest, args
 	// Remove from active sessions
 	s.removeSession(sessionID)
 
-	// Try inline deterministic summarization (no LLM needed).
-	// This makes end_session actually useful in MCP mode.
+	// Try deterministic summarization (always available, no LLM needed).
 	summaryMsg := ""
 	if summaryText := s.buildDeterministicSessionSummary(idx, sessionID); summaryText != "" {
 		summaryMsg = " Session summary saved."
+	}
+
+	// Trigger richer LLM summarization via Gardener if available (async).
+	if s.gardener != nil {
+		go func() {
+			if err := s.gardener.SummarizeSession(idx, sessionID); err != nil {
+				slog.Warn("MCP: Gardener session summarization failed", "session", sessionID, "error", err)
+			}
+		}()
 	}
 
 	return nil, EndSessionResult{

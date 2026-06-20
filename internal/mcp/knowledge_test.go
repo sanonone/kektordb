@@ -24,7 +24,7 @@ func newTestServiceWithCompiler(t *testing.T) (*Service, *engine.Engine, *compil
 
 	embedder := &mockEmbedder{}
 	comp := compiler.NewCompiler(eng, nil, embedder)
-	svc := NewService(eng, embedder, comp)
+	svc := NewService(eng, embedder, comp, nil)
 
 	return svc, eng, comp
 }
@@ -127,7 +127,7 @@ func TestRequestKnowledgeNoCompiler(t *testing.T) {
 
 	eng.VCreate("mcp_memory", distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
 
-	svc := NewService(eng, &mockEmbedder{}, nil) // no compiler
+	svc := NewService(eng, &mockEmbedder{}, nil, nil) // no compiler
 
 	eng.VAdd("mcp_memory", "user:alice", make([]float32, 384), map[string]any{
 		"type": "user", "entity_id": "alice", "_pinned": true,

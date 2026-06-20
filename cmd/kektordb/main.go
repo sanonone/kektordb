@@ -22,9 +22,11 @@ import (
 	"github.com/sanonone/kektordb/internal/server"
 	"github.com/sanonone/kektordb/internal/setup"
 	"github.com/sanonone/kektordb/internal/tui"
+	"github.com/sanonone/kektordb/pkg/cognitive"
 	"github.com/sanonone/kektordb/pkg/compiler"
 	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/engine"
+	"github.com/sanonone/kektordb/pkg/llm"
 	"github.com/sanonone/kektordb/pkg/proxy"
 )
 
@@ -201,10 +203,54 @@ func main() {
 			embedder = embeddings.NoopEmbedder{}
 		}
 
-		// Init MCP Server (with compiler for request_knowledge)
+		// --- Cognitive Engine & LLM setup ---
+		// Load from cognitive.yaml first (if available), then override with env vars.
+		gardenerCfg, llmCfg, cfgErr := cognitive.LoadConfig(*cognitiveConfig)
+		if cfgErr != nil {
+			slog.Warn("Cognitive config load failed, using defaults", "err", cfgErr)
+		}
+
+		// Env var overrides for LLM settings (MCP_LLM_*)
+		if url := getEnv("MCP_LLM_URL", ""); url != "" {
+			llmCfg.BaseURL = url
+			llmCfg.Model = getEnv("MCP_LLM_MODEL", llmCfg.Model)
+			llmCfg.APIKey = getEnv("MCP_LLM_API_KEY", llmCfg.APIKey)
+			// Implicitly enable Gardener if LLM env vars are set without YAML
+			if !gardenerCfg.Enabled {
+				gardenerCfg = cognitive.DefaultConfig()
+				gardenerCfg.Enabled = true
+			}
+		}
+
+		// Create LLM client if advanced/meta mode and LLM is configured
+		var brain llm.Client
+		var gardener *cognitive.Gardener
+		if gardenerCfg.Enabled {
+			if gardenerCfg.Mode == "advanced" || gardenerCfg.Mode == "meta" {
+				if llmCfg.BaseURL == "" {
+					slog.Warn("Cognitive Engine: advanced/meta mode requires an LLM, falling back to basic")
+					gardenerCfg.Mode = "basic"
+				} else {
+					brain = llm.NewClient(llmCfg)
+				}
+			}
+			gardener = cognitive.NewGardener(eng, brain, gardenerCfg)
+			gardener.Start()
+			defer gardener.Stop()
+			slog.Info("Cognitive Engine: Gardener started", "mode", gardenerCfg.Mode, "interval", gardenerCfg.Interval)
+		}
+
+		// Init Compiler (with LLM, or nil if no LLM configured)
+		comp := compiler.NewCompiler(eng, brain, embedder)
+
+		// Init Artifact Watcher (requires Gardener lifecycle hooks)
+		if gardener != nil {
+			compiler.NewWatcher(comp, eng, &gardenerCfg, gardenerCfg.TargetIndexes)
+		}
+
+		// Init MCP Server
 		allowlist := mcpi.ResolveTools(*toolsFlag)
-		comp := compiler.NewCompiler(eng, nil, embedder) // no LLM in MCP mode
-		mcpSrv := mcpi.NewMCPServer(eng, embedder, allowlist, comp)
+		mcpSrv := mcpi.NewMCPServer(eng, embedder, allowlist, comp, gardener)
 
 		// Create a Stdio transport
 		// Note from docs/server.md: "The server will have the 'tools' capability if any tool is added..."

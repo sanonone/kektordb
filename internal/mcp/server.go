@@ -8,6 +8,7 @@ package mcp
 
 import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/sanonone/kektordb/pkg/cognitive"
 	"github.com/sanonone/kektordb/pkg/compiler"
 	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/engine"
@@ -16,8 +17,9 @@ import (
 // NewMCPServer creates an MCP server with the given engine, embedder, compiler, and tool allowlist.
 // allowlist is a set of tool names to register. If nil or empty, all tools are registered.
 // compiler may be nil — the request_knowledge tool falls back gracefully.
-func NewMCPServer(eng *engine.Engine, embedder embeddings.Embedder, allowlist map[string]bool, comp *compiler.Compiler) *mcp.Server {
-	service := NewService(eng, embedder, comp)
+// gardener may be nil — end_session uses deterministic summarization as fallback.
+func NewMCPServer(eng *engine.Engine, embedder embeddings.Embedder, allowlist map[string]bool, comp *compiler.Compiler, gardener *cognitive.Gardener) *mcp.Server {
+	service := NewService(eng, embedder, comp, gardener)
 
 	s := mcp.NewServer(&mcp.Implementation{
 		Name:    "KektorDB Memory",
