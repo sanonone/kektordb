@@ -38,6 +38,21 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
+// logEmbedderDimension probes the embedder to discover and log its vector dimension.
+// Makes dimension mismatches immediately visible at boot, preventing the
+// silent data corruption that occurs when switching embedders mid-session.
+func logEmbedderDimension(emb embeddings.Embedder) {
+	if _, ok := emb.(embeddings.NoopEmbedder); ok {
+		return
+	}
+	probe, err := emb.Embed("kektor-dim-probe")
+	if err != nil {
+		slog.Warn("Embedder probe failed", "error", err)
+		return
+	}
+	slog.Info("Embedder ready", "dim", len(probe))
+}
+
 // setupLogger configures the global slog logger based on the level.
 func setupLogger(levelStr string) {
 	var level slog.Level
@@ -202,6 +217,7 @@ func main() {
 			slog.Warn("Install Ollama or rebuild with -tags rust for built-in embedding.")
 			embedder = embeddings.NoopEmbedder{}
 		}
+		logEmbedderDimension(embedder)
 
 		// --- Cognitive Engine & LLM setup ---
 		// Load from cognitive.yaml first (if available), then override with env vars.
@@ -232,12 +248,16 @@ func main() {
 					gardenerCfg.Mode = "basic"
 				} else {
 					brain = llm.NewClient(llmCfg)
+					slog.Info("Cognitive Engine: LLM client created", "url", llmCfg.BaseURL, "model", llmCfg.Model)
 				}
 			}
 			gardener = cognitive.NewGardener(eng, brain, gardenerCfg)
 			gardener.Start()
 			defer gardener.Stop()
 			slog.Info("Cognitive Engine: Gardener started", "mode", gardenerCfg.Mode, "interval", gardenerCfg.Interval)
+		} else {
+			slog.Info("Cognitive Engine: Gardener NOT started (no config). " +
+				"Pass --cognitive-config=<path> or set MCP_LLM_URL to enable cognitive features.")
 		}
 
 		// Init Compiler (with LLM, or nil if no LLM configured)
@@ -287,6 +307,7 @@ func main() {
 			"err", embedderErr, "hint", "Install Ollama or rebuild with -tags rust")
 		embedder = embeddings.NoopEmbedder{}
 	}
+	logEmbedderDimension(embedder)
 
 	// Starting HTTP Server
 	srv, err := server.NewServer(eng, *httpAddr, *vectorizersConfig, *authToken, dataDir, *cognitiveConfig, embedder)

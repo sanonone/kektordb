@@ -48,6 +48,9 @@ gardener:
   # Minimum time between adaptive wakes (prevents rapid-fire analysis)
   adaptive_min_interval: "90s"
 
+  enable_user_profiling: true
+  profile_update_threshold: 5
+
 # Auto-resolve: let the Gardener autonomously act on whitelisted reflection types.
 # The LLM already made its decision during detection. The Resolver just executes it.
 auto_resolve:

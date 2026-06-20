@@ -284,3 +284,190 @@ func TestThinkChannelSerialization(t *testing.T) {
 	gardener.Stop()
 	t.Log("Channel serialization test passed without races")
 }
+
+// TestProfileUpdateDebouncer verifies that rapid scheduleProfileUpdate calls
+// are coalesced into a single deferred fire, not N concurrent goroutines.
+func TestProfileUpdateDebouncer(t *testing.T) {
+	tempDir := t.TempDir()
+	opts := engine.DefaultOptions(tempDir)
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	defer eng.Close()
+
+	indexName := "test_profile"
+	if err := eng.VCreate(indexName, distance.Cosine, 8, 100, distance.Float32, "english", nil, nil, nil); err != nil {
+		t.Fatalf("Failed to create index: %v", err)
+	}
+
+	// Use a short debounce (50ms) so the test runs fast.
+	cfg := Config{
+		Enabled:                 true,
+		Interval:                1 * time.Hour, // prevent auto-think
+		Mode:                    "basic",
+		TargetIndexes:           []string{indexName},
+		AdaptiveThreshold:       100,
+		AdaptiveMinInterval:     1 * time.Hour,
+		EnableUserProfiling:     true,
+		ProfileUpdateThreshold:  3,
+	}
+	gardener := NewGardener(eng, nil, cfg)
+	gardener.profileDebounce = 50 * time.Millisecond
+
+	// Simulate 10 rapid scheduleProfileUpdate calls (e.g. 10 quick save_memory
+	// in 10ms). They should all reset the same timer, NOT start 10 goroutines.
+	for i := 0; i < 10; i++ {
+		gardener.scheduleProfileUpdate(indexName, "dash", i+3)
+		// Small sleep to simulate real-world delay between saves
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	// After the debounce period, only one timer should be active.
+	gardener.profileTimerMu.Lock()
+	if gardener.profileTimer == nil {
+		t.Fatal("Profile timer should be active immediately after scheduling")
+	}
+	pendingCount := len(gardener.profilePendingUsers)
+	gardener.profileTimerMu.Unlock()
+
+	if pendingCount != 1 {
+		t.Errorf("Expected 1 pending user, got %d", pendingCount)
+	}
+
+	// Wait for the debounce to fire.
+	time.Sleep(200 * time.Millisecond)
+
+	// After firing, the timer should be cleared and pending map empty.
+	gardener.profileTimerMu.Lock()
+	timerActive := gardener.profileTimer != nil
+	pendingCount = len(gardener.profilePendingUsers)
+	gardener.profileTimerMu.Unlock()
+
+	if timerActive {
+		t.Error("Profile timer should be nil after debounce fired")
+	}
+	if pendingCount != 0 {
+		t.Errorf("Expected 0 pending users after debounce fired, got %d", pendingCount)
+	}
+
+	t.Log("Debouncer correctly coalesced 10 rapid calls into 1 timer reset")
+}
+
+// TestProfileUpdateDebouncerMultipleUsers verifies that the debouncer
+// correctly accumulates multiple distinct userIDs and processes each
+// exactly once when the timer fires.
+func TestProfileUpdateDebouncerMultipleUsers(t *testing.T) {
+	tempDir := t.TempDir()
+	opts := engine.DefaultOptions(tempDir)
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	defer eng.Close()
+
+	indexName := "test_profile"
+	if err := eng.VCreate(indexName, distance.Cosine, 8, 100, distance.Float32, "english", nil, nil, nil); err != nil {
+		t.Fatalf("Failed to create index: %v", err)
+	}
+
+	cfg := Config{
+		Enabled:                true,
+		Interval:               1 * time.Hour,
+		Mode:                   "basic",
+		TargetIndexes:          []string{indexName},
+		AdaptiveThreshold:      100,
+		AdaptiveMinInterval:    1 * time.Hour,
+		EnableUserProfiling:    true,
+		ProfileUpdateThreshold: 3,
+	}
+	gardener := NewGardener(eng, nil, cfg)
+	gardener.profileDebounce = 50 * time.Millisecond
+
+	// Schedule updates for 3 different users interleaved.
+	gardener.scheduleProfileUpdate(indexName, "alice", 3)
+	time.Sleep(5 * time.Millisecond)
+	gardener.scheduleProfileUpdate(indexName, "bob", 3)
+	time.Sleep(5 * time.Millisecond)
+	gardener.scheduleProfileUpdate(indexName, "charlie", 3)
+
+	// All 3 users should be pending under one timer.
+	gardener.profileTimerMu.Lock()
+	pendingCount := len(gardener.profilePendingUsers)
+	gardener.profileTimerMu.Unlock()
+
+	if pendingCount != 3 {
+		t.Errorf("Expected 3 pending users, got %d", pendingCount)
+	}
+
+	// Wait for debounce to fire and flush.
+	time.Sleep(200 * time.Millisecond)
+
+	gardener.profileTimerMu.Lock()
+	pendingCount = len(gardener.profilePendingUsers)
+	gardener.profileTimerMu.Unlock()
+
+	if pendingCount != 0 {
+		t.Errorf("Expected 0 pending users after debounce fired, got %d", pendingCount)
+	}
+
+	t.Log("Debouncer correctly accumulated 3 distinct users and flushed them")
+}
+
+// TestProfileUpdateDebouncerConcurrent ensures the debouncer is thread-safe
+// under concurrent scheduleProfileUpdate calls (race detector would catch
+// any unprotected access).
+func TestProfileUpdateDebouncerConcurrent(t *testing.T) {
+	tempDir := t.TempDir()
+	opts := engine.DefaultOptions(tempDir)
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	defer eng.Close()
+
+	indexName := "test_profile"
+	if err := eng.VCreate(indexName, distance.Cosine, 8, 100, distance.Float32, "english", nil, nil, nil); err != nil {
+		t.Fatalf("Failed to create index: %v", err)
+	}
+
+	cfg := Config{
+		Enabled:                true,
+		Interval:               1 * time.Hour,
+		Mode:                   "basic",
+		TargetIndexes:          []string{indexName},
+		AdaptiveThreshold:      100,
+		AdaptiveMinInterval:    1 * time.Hour,
+		EnableUserProfiling:    true,
+		ProfileUpdateThreshold: 3,
+	}
+	gardener := NewGardener(eng, nil, cfg)
+	gardener.profileDebounce = 100 * time.Millisecond
+
+	// 20 concurrent goroutines all calling scheduleProfileUpdate for
+	// the same userID. The debouncer should keep resetting the same timer
+	// without panicking or racing.
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			gardener.scheduleProfileUpdate(indexName, "dash", i+3)
+		}(i)
+	}
+	wg.Wait()
+
+	// After all 20 finish, only 1 timer should be active for 1 user.
+	gardener.profileTimerMu.Lock()
+	pendingCount := len(gardener.profilePendingUsers)
+	gardener.profileTimerMu.Unlock()
+
+	if pendingCount != 1 {
+		t.Errorf("Expected 1 pending user, got %d", pendingCount)
+	}
+
+	// Wait for the debounce to fire.
+	time.Sleep(250 * time.Millisecond)
+
+	t.Log("Debouncer handled 20 concurrent calls without race")
+}

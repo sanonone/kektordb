@@ -1695,3 +1695,77 @@ func TestContradictionSkipsMetaNodes(t *testing.T) {
 
 	t.Log("detectContradictions correctly skips meta-nodes")
 }
+
+// TestCleanLLMJSONResponse tests the JSON cleanup helper used to handle
+// markdown code fences and surrounding prose that small local LLMs
+// (e.g. gemma4, llama3) often produce.
+func TestCleanLLMJSONResponse(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "raw JSON no fences",
+			input:    `{"user_id": "dash", "language": "it"}`,
+			expected: `{"user_id": "dash", "language": "it"}`,
+		},
+		{
+			name:     "JSON wrapped in json code fence",
+			input:    "```json\n{\"user_id\": \"dash\", \"language\": \"it\"}\n```",
+			expected: `{"user_id": "dash", "language": "it"}`,
+		},
+		{
+			name:     "JSON wrapped in plain code fence",
+			input:    "```\n{\"user_id\": \"dash\"}\n```",
+			expected: `{"user_id": "dash"}`,
+		},
+		{
+			name:     "JSON with leading prose",
+			input:    "Here is the profile:\n{\"user_id\": \"dash\"}\nDone!",
+			expected: `{"user_id": "dash"}`,
+		},
+		{
+			name:     "JSON with leading and trailing whitespace",
+			input:    "  \n  {\"a\": 1}  \n  ",
+			expected: `{"a": 1}`,
+		},
+		{
+			name:     "truncated response with no closing brace",
+			input:    "```json\n{\"a\": 1",
+			expected: "",
+		},
+		{
+			name:     "no JSON at all",
+			input:    "I cannot help with that request.",
+			expected: "",
+		},
+		{
+			name:     "nested JSON with code fence",
+			input:    "```json\n{\"a\": {\"b\": 2}, \"c\": [1, 2]}\n```",
+			expected: `{"a": {"b": 2}, "c": [1, 2]}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cleanLLMJSONResponse(tc.input)
+			if got != tc.expected {
+				t.Errorf("cleanLLMJSONResponse(%q) = %q, want %q", tc.input, got, tc.expected)
+			}
+		})
+	}
+}
+
+// TestPreviewForLog tests the safe string preview helper.
+func TestPreviewForLog(t *testing.T) {
+	if got := previewForLog("short", 100); got != "short" {
+		t.Errorf("short string should not be truncated, got %q", got)
+	}
+	if got := previewForLog("this is a long string that exceeds the max length", 10); got != "this is a ..." {
+		t.Errorf("expected truncated preview, got %q", got)
+	}
+	if got := previewForLog("exact", 5); got != "exact" {
+		t.Errorf("string at exact max length should not be truncated, got %q", got)
+	}
+}

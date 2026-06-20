@@ -331,6 +331,21 @@ func (e *Engine) VAdd(indexName, id string, vector []float32, metadata map[strin
 		}
 	}
 
+	// --- DIMENSION VALIDATION ---
+	// Reject vectors whose dimension doesn't match the index's existing entries.
+	// This prevents data corruption when the embedder model changes mid-session
+	// (e.g., switching from Ollama 768-dim to local ONNX 384-dim).
+	if hnswIdx, ok := idx.(*hnsw.Index); ok {
+		idxDim := hnswIdx.GetDimension()
+		if idxDim > 0 && len(vector) > 0 && len(vector) != idxDim {
+			return fmt.Errorf(
+				"vector dimension mismatch: index '%s' expects %d-dim vectors (current embedder produces %d-dim). "+
+					"The embedder model has changed. To fix: delete the index (DELETE /vector/indexes/%s) and recreate it with the current embedder.",
+				indexName, idxDim, len(vector), indexName,
+			)
+		}
+	}
+
 	// 1. Memory Add
 	internalID, err := idx.Add(id, vector)
 	if err != nil {

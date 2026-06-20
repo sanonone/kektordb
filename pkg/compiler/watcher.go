@@ -78,6 +78,10 @@ func NewWatcher(comp *Compiler, eng *engine.Engine, cfg *cognitive.Config, targe
 		for _, idx := range all {
 			info, err := eng.DB.GetSingleVectorIndexInfoAPI(idx)
 			if err != nil || info.VectorCount < 10 {
+				slog.Debug("ArtifactWatcher: skipping index (below min vectors for auto-discover)",
+					"index", idx,
+					"vectors", info.VectorCount,
+				)
 				continue
 			}
 			w.targetIndexes = append(w.targetIndexes, idx)
@@ -93,6 +97,15 @@ func NewWatcher(comp *Compiler, eng *engine.Engine, cfg *cognitive.Config, targe
 	// Register callbacks with Gardener
 	cfg.ArtifactScan = w.ScanArtifacts
 	cfg.ArtifactEvent = w.OnEvent
+
+	if len(w.targetIndexes) == 0 {
+		slog.Warn("ArtifactWatcher initialized with NO target indexes",
+			"requested", targetIndexes,
+			"hint", "no indexes have enough vectors yet (min 10 for auto-discover). Watcher will scan mcp_memory once it has artifacts.",
+		)
+		// Still set up the default so the watcher becomes active when mcp_memory is created
+		w.targetIndexes = []string{"mcp_memory"}
+	}
 
 	slog.Info("ArtifactWatcher initialized",
 		"target_indexes", w.targetIndexes,
