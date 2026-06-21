@@ -54,12 +54,17 @@ type ChatRequest struct {
 type Message struct {
 	Role    string `json:"role"`    // "system", "user", "assistant"
 	Content string `json:"content"` // The actual text
+	// ReasoningContent holds the chain-of-thought output from reasoning models
+	// (e.g. deepseek-v4, deepseek-r1). When the model exhausts its token budget
+	// on reasoning, Content is empty and the actual output lands here.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 // ChatResponse represents the standard response from OpenAI-compatible APIs.
 type ChatResponse struct {
 	Choices []struct {
-		Message Message `json:"message"`
+		Message      Message `json:"message"`
+		FinishReason string  `json:"finish_reason,omitempty"`
 	} `json:"choices"`
 	Error *APIError `json:"error,omitempty"`
 }

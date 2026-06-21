@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -199,5 +200,47 @@ func (c *OpenAIClient) sendRequest(payload interface{}) (string, error) {
 		return "", fmt.Errorf("empty response from llm")
 	}
 
-	return chatResp.Choices[0].Message.Content, nil
+	msg := chatResp.Choices[0].Message
+
+	// Reasoning models (deepseek-v4, deepseek-r1) may put their output in
+	// reasoning_content instead of content when the token budget is consumed
+	// by chain-of-thought. Fall back to reasoning_content if content is empty.
+	if msg.Content == "" && msg.ReasoningContent != "" {
+		slog.Debug("[LLM] content empty, falling back to reasoning_content",
+			"reasoning_len", len(msg.ReasoningContent),
+			"reasoning_preview", truncate(msg.ReasoningContent, 200),
+		)
+		return msg.ReasoningContent, nil
+	}
+
+	// Debug: log raw response when both content and reasoning_content are empty.
+	// This helps diagnose API issues (wrong model name, rate limiting, etc.)
+	if msg.Content == "" && msg.ReasoningContent == "" {
+		rawBody := string(bodyBytes)
+		if len(rawBody) < 500 {
+			// Short empty response is suspicious — likely an API error body
+			// returned with 200 status. Log the FULL body at Error level.
+			slog.Error("[LLM] Empty response with suspiciously short body (possible API error)",
+				"raw_body", rawBody,
+				"body_len", len(rawBody),
+				"finish_reason", chatResp.Choices[0].FinishReason,
+			)
+		} else {
+			slog.Warn("[LLM] Both content and reasoning_content are empty",
+				"raw_response_preview", truncate(rawBody, 500),
+				"body_len", len(rawBody),
+				"finish_reason", chatResp.Choices[0].FinishReason,
+			)
+		}
+	}
+
+	return msg.Content, nil
+}
+
+// truncate returns the first n characters of s, with "..." appended if truncated.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }

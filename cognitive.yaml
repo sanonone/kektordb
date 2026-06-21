@@ -85,4 +85,6 @@ llm:
   temperature: 0.5
 
   # Max response tokens
-  max_tokens: 500
+  # Reasoning models (deepseek-v4, deepseek-r1) consume tokens for thinking;
+  # 8000+ recommended so the model has budget for both reasoning and output.
+  max_tokens: 8000
