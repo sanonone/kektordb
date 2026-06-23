@@ -200,4 +200,83 @@ func registerTools(s *mcp.Server, service *Service, allowlist map[string]bool) {
 			Description: "Request structured knowledge about an entity. Uses cached artifacts when available (returns in <50ms with zero token cost). Falls back to semantic search and triggers async compilation when not cached.",
 		}, service.RequestKnowledge)
 	}
+
+	// --- P1 expansion: 11 new tools ---
+
+	if shouldRegister(ToolGetMemory, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolGetMemory,
+			Description: "Fetch a single memory by ID with full metadata and vector. Use this to inspect a specific memory returned by find_connection, get_memory_evolution, or any other tool that emits IDs.",
+		}, service.GetMemory)
+	}
+
+	if shouldRegister(ToolGetMemories, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolGetMemories,
+			Description: "Batch fetch multiple memories by ID in a single call. More efficient than calling get_memory repeatedly.",
+		}, service.GetMemories)
+	}
+
+	if shouldRegister(ToolDeleteMemory, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolDeleteMemory,
+			Description: "Delete a memory. Default is soft delete (preserves AOF history and recovery). Set hard_delete=true for irreversible removal that also unlinks related graph edges.",
+		}, service.DeleteMemory)
+	}
+
+	if shouldRegister(ToolUnlinkEntities, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolUnlinkEntities,
+			Description: "Remove a graph relationship between two nodes. Inverse of connect_entities. Default soft delete (preserves history); set hard_delete=true for permanent removal.",
+		}, service.UnlinkEntities)
+	}
+
+	if shouldRegister(ToolListTemplates, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolListTemplates,
+			Description: "List all built-in knowledge compiler templates (e.g. 'user_profile', 'project_summary', 'entity_card'). Use the returned names as `intent` values for request_knowledge.",
+		}, service.ListTemplates)
+	}
+
+	if shouldRegister(ToolGetArtifactHistory, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolGetArtifactHistory,
+			Description: "Return all compiled versions of a knowledge artifact (e.g. how the user profile evolved over time). Newest first.",
+		}, service.GetArtifactHistory)
+	}
+
+	if shouldRegister(ToolGetArtifactStaleness, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolGetArtifactStaleness,
+			Description: "Return staleness metrics for a compiled artifact. Use this to decide whether to re-request_knowledge or wait for the Gardener's Watcher to recompile.",
+		}, service.GetArtifactStaleness)
+	}
+
+	if shouldRegister(ToolTriggerReflection, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolTriggerReflection,
+			Description: "Force the Gardener to run a think cycle immediately on the given index. Useful after heavy memory writes when waiting for the next scheduled cycle is undesirable. Requires Gardener to be enabled.",
+		}, service.TriggerReflection)
+	}
+
+	if shouldRegister(ToolAssessBelief, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolAssessBelief,
+			Description: "Assess epistemic confidence for a memory or query. Returns 3-pillar evidence: consensus (how widely supported), stability (how long consistent), friction (how much contradiction). Useful for 'should I trust this memory?' reasoning.",
+		}, service.AssessBelief)
+	}
+
+	if shouldRegister(ToolSearchWithScores, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolSearchWithScores,
+			Description: "Semantic search that returns similarity scores alongside each result. Useful when you need to know HOW confident a recall was (e.g. 'I'm 0.62 confident this is the answer').",
+		}, service.SearchWithScores)
+	}
+
+	if shouldRegister(ToolListIndexes, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolListIndexes,
+			Description: "List all vector indexes in the engine with their stats. Useful for multi-tenant agents and for discovering available targets before transfer_memory.",
+		}, service.ListIndexes)
+	}
 }

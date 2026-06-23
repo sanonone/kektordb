@@ -30,56 +30,91 @@ const (
 	ToolUnpinMemory        = "unpin_memory"
 	ToolConfigureAutoLinks = "configure_auto_links"
 	ToolRequestKnowledge   = "request_knowledge"
+	// P1 expansion: 11 new tools to close the gap between MCP and core engine.
+	ToolGetMemory            = "get_memory"
+	ToolGetMemories          = "get_memories"
+	ToolDeleteMemory         = "delete_memory"
+	ToolUnlinkEntities       = "unlink_entities"
+	ToolListTemplates         = "list_templates"
+	ToolGetArtifactHistory    = "get_artifact_history"
+	ToolGetArtifactStaleness  = "get_artifact_staleness"
+	ToolTriggerReflection     = "trigger_reflection"
+	ToolAssessBelief          = "assess_belief"
+	ToolSearchWithScores      = "search_with_scores"
+	ToolListIndexes           = "list_indexes"
 )
 
 // allToolNames maps every known MCP tool name for validation.
 var allToolNames = map[string]bool{
-	ToolSaveMemory:         true,
-	ToolRecallMemory:       true,
-	ToolScopedRecall:       true,
-	ToolCreateEntity:       true,
-	ToolConnectEntities:    true,
-	ToolExploreConnections: true,
-	ToolFindConnection:     true,
-	ToolStartSession:       true,
-	ToolEndSession:         true,
-	ToolGetUserProfile:     true,
-	ToolListUserProfiles:   true,
-	ToolTransferMemory:     true,
-	ToolAdaptiveRetrieve:   true,
-	ToolFilterVectors:      true,
-	ToolListVectors:        true,
-	ToolCheckSubconscious:  true,
-	ToolResolveConflict:    true,
-	ToolAskMetaQuestion:    true,
-	ToolEvolveMemory:       true,
-	ToolGetMemoryEvolution: true,
-	ToolUnpinMemory:        true,
-	ToolConfigureAutoLinks: true,
-	ToolRequestKnowledge:   true,
+	ToolSaveMemory:            true,
+	ToolRecallMemory:          true,
+	ToolScopedRecall:          true,
+	ToolCreateEntity:          true,
+	ToolConnectEntities:       true,
+	ToolExploreConnections:    true,
+	ToolFindConnection:        true,
+	ToolStartSession:          true,
+	ToolEndSession:            true,
+	ToolGetUserProfile:        true,
+	ToolListUserProfiles:      true,
+	ToolTransferMemory:        true,
+	ToolAdaptiveRetrieve:      true,
+	ToolFilterVectors:         true,
+	ToolListVectors:           true,
+	ToolCheckSubconscious:     true,
+	ToolResolveConflict:       true,
+	ToolAskMetaQuestion:       true,
+	ToolEvolveMemory:          true,
+	ToolGetMemoryEvolution:    true,
+	ToolUnpinMemory:           true,
+	ToolConfigureAutoLinks:    true,
+	ToolRequestKnowledge:      true,
+	ToolGetMemory:             true,
+	ToolGetMemories:           true,
+	ToolDeleteMemory:          true,
+	ToolUnlinkEntities:        true,
+	ToolListTemplates:         true,
+	ToolGetArtifactHistory:    true,
+	ToolGetArtifactStaleness:  true,
+	ToolTriggerReflection:     true,
+	ToolAssessBelief:          true,
+	ToolSearchWithScores:      true,
+	ToolListIndexes:           true,
 }
 
 // ProfileAgent contains tools useful for AI coding agents.
 // Filters out admin-only tools (list_vectors, filter_vectors, transfer_memory, etc.)
 // to reduce token usage in the agent's context.
 var ProfileAgent = map[string]bool{
-	ToolSaveMemory:         true,
-	ToolRecallMemory:       true,
-	ToolScopedRecall:       true,
-	ToolCreateEntity:       true,
-	ToolConnectEntities:    true,
-	ToolExploreConnections: true,
-	ToolFindConnection:     true,
-	ToolStartSession:       true,
-	ToolEndSession:         true,
-	ToolGetUserProfile:     true,
-	ToolAdaptiveRetrieve:   true,
-	ToolCheckSubconscious:  true,
-	ToolResolveConflict:    true,
-	ToolAskMetaQuestion:    true,
-	ToolEvolveMemory:       true,
-	ToolGetMemoryEvolution: true,
-	ToolRequestKnowledge:   true,
+	ToolSaveMemory:            true,
+	ToolRecallMemory:          true,
+	ToolScopedRecall:          true,
+	ToolCreateEntity:          true,
+	ToolConnectEntities:       true,
+	ToolExploreConnections:    true,
+	ToolFindConnection:        true,
+	ToolStartSession:          true,
+	ToolEndSession:            true,
+	ToolGetUserProfile:        true,
+	ToolAdaptiveRetrieve:      true,
+	ToolCheckSubconscious:     true,
+	ToolResolveConflict:       true,
+	ToolAskMetaQuestion:       true,
+	ToolEvolveMemory:          true,
+	ToolGetMemoryEvolution:    true,
+	ToolRequestKnowledge:      true,
+	// P1 expansion tools (all useful for memory agents)
+	ToolGetMemory:             true,
+	ToolGetMemories:           true,
+	ToolDeleteMemory:          true,
+	ToolUnlinkEntities:        true,
+	ToolListTemplates:         true,
+	ToolGetArtifactHistory:    true,
+	ToolGetArtifactStaleness:  true,
+	ToolTriggerReflection:     true,
+	ToolAssessBelief:          true,
+	ToolSearchWithScores:      true,
+	ToolListIndexes:           true,
 }
 
 // ProfileAdmin contains tools for administrative tasks and data curation.

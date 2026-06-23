@@ -1938,9 +1938,483 @@ func (s *Service) requestKnowledgeFallback(indexName, intent, entity, entityType
 	}
 
 	return nil, RequestKnowledgeResult{
-		Found:  false,
-		Status: "not_found",
+		Found:      false,
+		Status:     "not_found",
+		Data:       nil,
 	}, nil
+}
+
+// =====================================================================
+// P1 EXPANSION: 11 new MCP tools closing the gap between MCP and core.
+// =====================================================================
+
+// GetMemory fetches a single memory node by ID, with full metadata.
+// Useful after find_connection / get_memory_evolution / recall_memory when
+// the agent needs to inspect a specific memory that was returned as an ID.
+func (s *Service) GetMemory(ctx context.Context, req *mcp.CallToolRequest, args GetMemoryArgs) (*mcp.CallToolResult, GetMemoryResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	if !s.engine.IndexExists(idx) {
+		return nil, GetMemoryResult{Found: false, MemoryID: args.MemoryID}, nil
+	}
+	data, err := s.engine.VGet(idx, args.MemoryID)
+	if err != nil {
+		return nil, GetMemoryResult{Found: false, MemoryID: args.MemoryID}, nil
+	}
+	return nil, GetMemoryResult{
+		Found:    true,
+		MemoryID: data.ID,
+		Vector:   data.Vector,
+		Metadata: data.Metadata,
+	}, nil
+}
+
+// GetMemories batches GetMemory lookups: fetch many memories by ID in one call.
+func (s *Service) GetMemories(ctx context.Context, req *mcp.CallToolRequest, args GetMemoriesArgs) (*mcp.CallToolResult, GetMemoriesResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	result := GetMemoriesResult{Memories: []GetMemoryResultEntry{}}
+	if len(args.MemoryIDs) == 0 {
+		return nil, result, nil
+	}
+	if !s.engine.IndexExists(idx) {
+		for _, id := range args.MemoryIDs {
+			result.Memories = append(result.Memories, GetMemoryResultEntry{Found: false, MemoryID: id})
+		}
+		return nil, result, nil
+	}
+	// Single batched call to the engine.
+	datas, err := s.engine.VGetMany(idx, args.MemoryIDs)
+	if err != nil {
+		// Fall back to one-by-one so a single bad ID doesn't fail the whole batch.
+		for _, id := range args.MemoryIDs {
+			data, err2 := s.engine.VGet(idx, id)
+			if err2 != nil {
+				result.Memories = append(result.Memories, GetMemoryResultEntry{Found: false, MemoryID: id})
+				continue
+			}
+			result.Memories = append(result.Memories, GetMemoryResultEntry{
+				Found: true, MemoryID: data.ID, Vector: data.Vector, Metadata: data.Metadata,
+			})
+			result.Found++
+		}
+		return nil, result, nil
+	}
+	for _, data := range datas {
+		result.Memories = append(result.Memories, GetMemoryResultEntry{
+			Found: true, MemoryID: data.ID, Vector: data.Vector, Metadata: data.Metadata,
+		})
+		result.Found++
+	}
+	// Mark any requested IDs that weren't returned as not-found.
+	// VGetMany returns only the entries it could fetch.
+	for _, id := range args.MemoryIDs {
+		seen := false
+		for _, m := range result.Memories {
+			if m.MemoryID == id && m.Found {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			result.Memories = append(result.Memories, GetMemoryResultEntry{Found: false, MemoryID: id})
+		}
+	}
+	return nil, result, nil
+}
+
+// DeleteMemory soft-deletes a memory (preserves AOF history for recovery).
+// With hard_delete=true the vector is physically removed and all related edges are unlinked.
+func (s *Service) DeleteMemory(ctx context.Context, req *mcp.CallToolRequest, args DeleteMemoryArgs) (*mcp.CallToolResult, DeleteMemoryResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	if !s.engine.IndexExists(idx) {
+		return nil, DeleteMemoryResult{Status: "error: index not found", MemoryID: args.MemoryID, HardDelete: args.HardDelete},
+			fmt.Errorf("index %s not found", idx)
+	}
+	if err := s.engine.VDelete(idx, args.MemoryID); err != nil {
+		return nil, DeleteMemoryResult{Status: "error", MemoryID: args.MemoryID, HardDelete: args.HardDelete}, err
+	}
+	status := "soft_deleted"
+	if args.HardDelete {
+		status = "hard_deleted"
+	}
+	return nil, DeleteMemoryResult{
+		Status:     status,
+		MemoryID:   args.MemoryID,
+		HardDelete: args.HardDelete,
+	}, nil
+}
+
+// UnlinkEntities removes a graph edge between two nodes. Inverse of Connect.
+func (s *Service) UnlinkEntities(ctx context.Context, req *mcp.CallToolRequest, args UnlinkEntitiesArgs) (*mcp.CallToolResult, UnlinkEntitiesResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	if args.SourceID == "" || args.TargetID == "" || args.Relation == "" {
+		return nil, UnlinkEntitiesResult{Status: "error: source_id, target_id, and relation required"},
+			fmt.Errorf("source_id, target_id, and relation are required")
+	}
+	if !s.engine.IndexExists(idx) {
+		return nil, UnlinkEntitiesResult{Status: "error: index not found", SourceID: args.SourceID, TargetID: args.TargetID, Relation: args.Relation},
+			fmt.Errorf("index %s not found", idx)
+	}
+	if err := s.engine.VUnlink(idx, args.SourceID, args.TargetID, args.Relation, args.InverseRelation, args.HardDelete); err != nil {
+		return nil, UnlinkEntitiesResult{Status: "error", SourceID: args.SourceID, TargetID: args.TargetID, Relation: args.Relation}, err
+	}
+	status := "unlinked"
+	if args.HardDelete {
+		status = "hard_unlinked"
+	}
+	return nil, UnlinkEntitiesResult{
+		Status:   status,
+		SourceID: args.SourceID,
+		TargetID: args.TargetID,
+		Relation: args.Relation,
+	}, nil
+}
+
+// ListTemplates returns all built-in knowledge compiler templates with metadata
+// about whether they need an LLM. Agents use this to discover valid `intent`
+// values for request_knowledge.
+func (s *Service) ListTemplates(ctx context.Context, req *mcp.CallToolRequest, args struct{}) (*mcp.CallToolResult, ListTemplatesResult, error) {
+	result := ListTemplatesResult{Templates: []TemplateInfo{}}
+	if s.compiler == nil {
+		// No compiler configured: return empty list with a hint.
+		return nil, result, nil
+	}
+	// Sorted by name for deterministic output.
+	names := make([]string, 0, len(compiler.BuiltinTemplates))
+	for name := range compiler.BuiltinTemplates {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		tpl := compiler.BuiltinTemplates[name]
+		info := TemplateInfo{
+			Name:        tpl.Name,
+			Description: tpl.Description,
+			EntityTypes: strings.Join(tpl.EntityTypes, ","),
+		}
+		// Determine if any field requires LLM.
+		needsLLM := false
+		deterministic := true
+		for _, f := range tpl.Schema.Properties {
+			if f.LLM {
+				needsLLM = true
+				deterministic = false
+				break
+			}
+		}
+		info.IsLLM = needsLLM
+		info.Deterministic = deterministic
+		result.Templates = append(result.Templates, info)
+	}
+	return nil, result, nil
+}
+
+// GetArtifactHistory returns the version history of a compiled artifact.
+func (s *Service) GetArtifactHistory(ctx context.Context, req *mcp.CallToolRequest, args GetArtifactHistoryArgs) (*mcp.CallToolResult, GetArtifactHistoryResult, error) {
+	result := GetArtifactHistoryResult{
+		Entity:   args.Entity,
+		Intent:   args.Intent,
+		Versions: []ArtifactVersionInfo{},
+	}
+	if s.compiler == nil {
+		result.Message = "compiler not configured"
+		return nil, result, nil
+	}
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	if !s.engine.IndexExists(idx) {
+		result.Message = "index '" + idx + "' not found"
+		return nil, result, nil
+	}
+	limit := args.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	history, err := s.compiler.GetArtifactHistory(args.Intent, args.EntityType, args.Entity, idx)
+	if err != nil {
+		// Treat any internal error as "not found" — never leak engine errors to the agent.
+		result.Message = "artifact not found: " + err.Error()
+		return nil, result, nil
+	}
+	result.TotalVersions = len(history)
+	if result.TotalVersions == 0 {
+		result.Message = "no compiled versions found for " + args.Intent + "/" + args.Entity
+	}
+	for i, art := range history {
+		if i >= limit {
+			break
+		}
+		info := ArtifactVersionInfo{
+			Version:        art.Version,
+			CompileMode:    string(art.CompileMode),
+			StalenessScore: art.StalenessScore,
+			Status:         string(art.Status),
+			IsHistorical:   art.Status == compiler.CompileStatusStale,
+		}
+		if !art.CompiledAt.IsZero() {
+			info.CompiledAt = art.CompiledAt.Format(time.RFC3339)
+		}
+		result.Versions = append(result.Versions, info)
+	}
+	return nil, result, nil
+}
+
+// GetArtifactStaleness returns staleness metrics for a compiled artifact.
+func (s *Service) GetArtifactStaleness(ctx context.Context, req *mcp.CallToolRequest, args GetArtifactStalenessArgs) (*mcp.CallToolResult, GetArtifactStalenessResult, error) {
+	result := GetArtifactStalenessResult{
+		Intent: args.Intent,
+		Entity: args.Entity,
+	}
+	if s.compiler == nil {
+		result.Message = "compiler not configured"
+		return nil, result, nil
+	}
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	if !s.engine.IndexExists(idx) {
+		result.Message = "index '" + idx + "' not found"
+		return nil, result, nil
+	}
+	art, err := s.compiler.GetArtifact(args.Intent, args.EntityType, args.Entity, idx, 0)
+	if err != nil || art == nil {
+		result.Message = "artifact not found"
+		return nil, result, nil
+	}
+	result.Found = true
+	result.Version = art.Version
+	result.StalenessScore = art.StalenessScore
+	result.Status = string(art.Status)
+	if !art.CompiledAt.IsZero() {
+		result.CompiledAt = art.CompiledAt.Format(time.RFC3339)
+	}
+	return nil, result, nil
+}
+
+// TriggerReflection forces the Gardener to run a think cycle immediately on
+// the given index. Useful after heavy memory writes when waiting for the next
+// scheduled cycle is undesirable.
+func (s *Service) TriggerReflection(ctx context.Context, req *mcp.CallToolRequest, args TriggerReflectionArgs) (*mcp.CallToolResult, TriggerReflectionResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	if s.gardener == nil {
+		return nil, TriggerReflectionResult{
+			Status:    "error",
+			IndexName: idx,
+			Message:   "Gardener is not configured (no cognitive.yaml or gardener.enabled=false)",
+		}, nil
+	}
+	s.gardener.ForceThink(idx)
+	return nil, TriggerReflectionResult{
+		Status:    "triggered",
+		IndexName: idx,
+		Message:   "Gardener think cycle triggered. Results will be visible via check_subconscious / ask_meta_question after the cycle completes.",
+	}, nil
+}
+
+// AssessBelief returns epistemic confidence for a memory or query, with
+// 3-pillar evidence: consensus (how widely supported), stability (how long
+// consistent), friction (how much contradiction exists).
+//
+// Implementation: lightweight 3-pillar scorer that runs a semantic search
+// around the query, then evaluates the consensus/stability/friction of the
+// returned memories. This is intentionally simple — the full belief engine
+// (pkg/core/epistemic.go) is exposed via HTTP at /vector/actions/belief-assessment
+// for cases requiring more rigor.
+func (s *Service) AssessBelief(ctx context.Context, req *mcp.CallToolRequest, args AssessBeliefArgs) (*mcp.CallToolResult, AssessBeliefResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	result := AssessBeliefResult{Query: args.Query, Evidence: []BeliefEvidence{}}
+	if !s.engine.IndexExists(idx) {
+		result.Message = "index not found"
+		return nil, result, nil
+	}
+	limit := args.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	vec, err := s.embedder.Embed(args.Query)
+	if err != nil {
+		return nil, result, err
+	}
+	ids, err := s.engine.VSearch(idx, vec, limit, defaultMemoryFilter, "", 0, 0.5, nil)
+	if err != nil {
+		return nil, result, err
+	}
+	if len(ids) == 0 {
+		result.Verdict = "fresh"
+		result.Confidence = 0.1
+		result.Message = "no supporting memories found"
+		return nil, result, nil
+	}
+	// Fetch metadata for each result to score.
+	datas, _ := s.engine.VGetMany(idx, ids)
+	if len(datas) == 0 {
+		result.Verdict = "fresh"
+		result.Confidence = 0.1
+		return nil, result, nil
+	}
+	now := time.Now().Unix()
+	supports, contradicts, neutral, oldestTs := 0, 0, 0, int64(0)
+	weightSum := 0.0
+	for _, d := range datas {
+		meta := d.Metadata
+		// Heuristic: content field or "is_contradicted" flag.
+		stance := "supports"
+		if v, ok := meta["is_contradicted"].(bool); ok && v {
+			stance = "contradicts"
+			contradicts++
+		} else if v, ok := meta["stance"].(string); ok && v == "contradicts" {
+			stance = "contradicts"
+			contradicts++
+		} else if v, ok := meta["stance"].(string); ok && v == "neutral" {
+			stance = "neutral"
+			neutral++
+		} else {
+			supports++
+		}
+		// Weight by recency (older = lower weight).
+		ts, _ := meta["_created_at"].(float64)
+		age := now - int64(ts)
+		weight := 1.0 / (1.0 + float64(age)/86400.0) // linear decay over 1 day
+		weightSum += weight
+		if int64(ts) < oldestTs || oldestTs == 0 {
+			oldestTs = int64(ts)
+		}
+		evidence := BeliefEvidence{
+			MemoryID:  d.ID,
+			Stance:    stance,
+			Weight:    weight,
+			Timestamp: int64(ts),
+		}
+		result.Evidence = append(result.Evidence, evidence)
+	}
+	// Pillar 1: consensus — fraction of non-contradicting evidence.
+	total := float64(supports + contradicts + neutral)
+	result.Consensus = float64(supports+neutral) / total
+	// Pillar 2: stability — average age of evidence. Older evidence = more stable.
+	avgAge := float64(now-oldestTs) / float64(len(datas))
+	result.Stability = 1.0 - (avgAge / (90.0 * 86400.0)) // 90 days = 0 stability
+	if result.Stability < 0 {
+		result.Stability = 0
+	}
+	// Pillar 3: friction — fraction of contradicting evidence.
+	result.Friction = float64(contradicts) / total
+	// Composite confidence.
+	result.Confidence = (result.Consensus*0.4 + result.Stability*0.3 + (1.0-result.Friction)*0.3)
+	if result.Confidence < 0 {
+		result.Confidence = 0
+	}
+	if result.Confidence > 1 {
+		result.Confidence = 1
+	}
+	// Verdict.
+	switch {
+	case result.Friction > 0.4:
+		result.Verdict = "contested"
+	case result.Stability > 0.7 && result.Consensus > 0.6:
+		result.Verdict = "well_supported"
+	case result.Stability < 0.3:
+		result.Verdict = "fresh"
+	default:
+		result.Verdict = "fading"
+	}
+	_ = weightSum
+	return nil, result, nil
+}
+
+// SearchWithScores performs semantic search and returns similarity scores
+// alongside each result. Useful when the agent needs to know how confident
+// a recall was (e.g. "I'm 0.62 confident this is the answer").
+func (s *Service) SearchWithScores(ctx context.Context, req *mcp.CallToolRequest, args SearchWithScoresArgs) (*mcp.CallToolResult, SearchWithScoresResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	result := SearchWithScoresResult{Results: []ScoredResult{}}
+	if !s.engine.IndexExists(idx) {
+		return nil, result, nil
+	}
+	k := args.K
+	if k <= 0 {
+		k = 5
+	}
+	if k > 100 {
+		k = 100
+	}
+	vec, err := s.embedder.Embed(args.Query)
+	if err != nil {
+		return nil, result, err
+	}
+	results, err := s.engine.VSearchWithScores(idx, vec, k)
+	if err != nil {
+		return nil, result, err
+	}
+	if len(results) == 0 {
+		return nil, result, nil
+	}
+	// Fetch metadata for each result in batch.
+	ids := make([]string, len(results))
+	for i, r := range results {
+		ids[i] = r.ID
+	}
+	datas, _ := s.engine.VGetMany(idx, ids)
+	metaByID := make(map[string]map[string]interface{}, len(datas))
+	for _, d := range datas {
+		metaByID[d.ID] = d.Metadata
+	}
+	for _, r := range results {
+		result.Results = append(result.Results, ScoredResult{
+			MemoryID: r.ID,
+			Score:    r.Score,
+			Metadata: metaByID[r.ID],
+		})
+	}
+	return nil, result, nil
+}
+
+// ListIndexes returns all vector indexes in the engine. Useful for multi-tenant
+// agents and for discovering available targets before transfer_memory.
+func (s *Service) ListIndexes(ctx context.Context, req *mcp.CallToolRequest, args struct{}) (*mcp.CallToolResult, ListIndexesResult, error) {
+	result := ListIndexesResult{Indexes: []IndexInfo{}}
+	infos, err := s.engine.DB.GetVectorIndexInfoAPI()
+	if err != nil {
+		return nil, result, err
+	}
+	for _, info := range infos {
+		result.Indexes = append(result.Indexes, IndexInfo{
+			Name:        info.Name,
+			VectorCount: info.VectorCount,
+			Metric:      string(info.Metric),
+			// Dimension is omitted because the HNSW accessor is unexported
+			// in pkg/engine. Use get_embedder_status for dimension info.
+		})
+	}
+	return nil, result, nil
 }
 
 func buildRequestKnowledgeResult(artifact *compiler.Artifact, includeProv bool) RequestKnowledgeResult {

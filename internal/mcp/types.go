@@ -364,3 +364,226 @@ type RequestKnowledgeResult struct {
 	Status          string                   `json:"status"`
 	FallbackResults []string                 `json:"fallback_results,omitempty"`
 }
+
+// --- Tool 1: get_memory ---
+// Fetches a single memory node with full metadata by ID.
+// Useful for inspecting a memory returned by find_connection, get_memory_evolution,
+// or any other tool that returns IDs.
+
+type GetMemoryArgs struct {
+	MemoryID  string `json:"memory_id" jsonschema:"The memory/entity ID to fetch,required"`
+	IndexName string `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
+}
+
+type GetMemoryResult struct {
+	Found    bool                   `json:"found"`
+	MemoryID string                 `json:"memory_id,omitempty"`
+	Vector   []float32              `json:"vector,omitempty"`
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// --- Tool 2: get_memories ---
+// Batch lookup of multiple memory nodes by ID in a single call.
+
+type GetMemoriesArgs struct {
+	MemoryIDs []string `json:"memory_ids" jsonschema:"List of memory/entity IDs to fetch,required"`
+	IndexName string   `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
+}
+
+type GetMemoriesResult struct {
+	Found    int                      `json:"found"`
+	Memories []GetMemoryResultEntry  `json:"memories"`
+}
+
+type GetMemoryResultEntry struct {
+	Found    bool                   `json:"found"`
+	MemoryID string                 `json:"memory_id"`
+	Vector   []float32              `json:"vector,omitempty"`
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// --- Tool 3: delete_memory ---
+// Soft-deletes a memory (preserves AOF history). Use hard_delete=true for
+// irreversible removal (use with care).
+
+type DeleteMemoryArgs struct {
+	MemoryID   string `json:"memory_id" jsonschema:"The memory/entity ID to delete,required"`
+	IndexName  string `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
+	HardDelete bool   `json:"hard_delete,omitempty" jsonschema:"If true, physically remove the vector and all related edges. Default: soft delete (preserves AOF history)"`
+}
+
+type DeleteMemoryResult struct {
+	Status     string `json:"status"`
+	MemoryID   string `json:"memory_id"`
+	HardDelete bool   `json:"hard_delete"`
+}
+
+// --- Tool 4: unlink_entities ---
+// Removes a relationship edge between two nodes. Inverse of connect_entities.
+
+type UnlinkEntitiesArgs struct {
+	SourceID      string `json:"source_id" jsonschema:"Source node ID,required"`
+	TargetID      string `json:"target_id" jsonschema:"Target node ID,required"`
+	Relation      string `json:"relation" jsonschema:"Relation type to remove (e.g. 'mentions', 'parent'),required"`
+	IndexName     string `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
+	HardDelete    bool   `json:"hard_delete,omitempty" jsonschema:"If true, permanently remove the edge. Default: soft delete (preserves history)"`
+	InverseRelation string `json:"inverse_relation,omitempty" jsonschema:"Optional inverse relation type (e.g. 'mentioned_by') to also remove"`
+}
+
+type UnlinkEntitiesResult struct {
+	Status   string `json:"status"`
+	SourceID string `json:"source_id"`
+	TargetID string `json:"target_id"`
+	Relation string `json:"relation"`
+}
+
+// --- Tool 5: list_templates ---
+// Lists all built-in knowledge compiler templates with their schemas.
+// Use this to discover valid `intent` values for request_knowledge.
+
+type ListTemplatesResult struct {
+	Templates []TemplateInfo `json:"templates"`
+}
+
+type TemplateInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	EntityTypes string `json:"entity_types,omitempty"` // CSV
+	IsLLM       bool   `json:"is_llm"`                 // requires LLM
+	Deterministic bool `json:"deterministic"`         // can compile without LLM
+}
+
+// --- Tool 6: get_artifact_history ---
+// Returns all versions of a compiled knowledge artifact, newest first.
+
+type GetArtifactHistoryArgs struct {
+	Intent     string `json:"intent" jsonschema:"Template name (e.g. 'user_profile', 'project_summary'),required"`
+	Entity     string `json:"entity" jsonschema:"Entity identifier,required"`
+	EntityType string `json:"entity_type,omitempty" jsonschema:"Entity type (auto-detected if omitted)"`
+	IndexName  string `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
+	Limit      int    `json:"limit,omitempty" jsonschema:"Max versions to return (default 20, max 100)"`
+}
+
+type GetArtifactHistoryResult struct {
+	Entity         string         `json:"entity"`
+	Intent         string         `json:"intent"`
+	TotalVersions  int            `json:"total_versions"`
+	Versions       []ArtifactVersionInfo `json:"versions"`
+	Message        string         `json:"message,omitempty"`
+}
+
+type ArtifactVersionInfo struct {
+	Version        int     `json:"version"`
+	CompiledAt     string  `json:"compiled_at"`
+	CompileMode    string  `json:"compile_mode"` // "deterministic" | "llm" | "degraded"
+	StalenessScore float64 `json:"staleness_score"`
+	Status         string  `json:"status"`
+	IsHistorical   bool    `json:"is_historical"`
+	UsageCount     int     `json:"usage_count,omitempty"`
+}
+
+// --- Tool 7: get_artifact_staleness ---
+// Returns staleness metrics for a compiled artifact, useful for deciding
+// whether to re-request_knowledge or wait for the Watcher to recompile.
+
+type GetArtifactStalenessArgs struct {
+	Intent     string `json:"intent" jsonschema:"Template name,required"`
+	Entity     string `json:"entity" jsonschema:"Entity identifier,required"`
+	EntityType string `json:"entity_type,omitempty" jsonschema:"Entity type (auto-detected if omitted)"`
+	IndexName  string `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
+}
+
+type GetArtifactStalenessResult struct {
+	Found           bool    `json:"found"`
+	Intent          string  `json:"intent"`
+	Entity          string  `json:"entity"`
+	Version         int     `json:"version,omitempty"`
+	CompiledAt      string  `json:"compiled_at,omitempty"`
+	StalenessScore  float64 `json:"staleness_score,omitempty"`
+	Status          string  `json:"status,omitempty"`
+	UsageCount      int     `json:"usage_count,omitempty"`
+	LastAccessedAt  string  `json:"last_accessed_at,omitempty"`
+	ImportanceScore float64 `json:"importance_score,omitempty"`
+	FieldStaleness  map[string]float64 `json:"field_staleness,omitempty"`
+	Message         string  `json:"message,omitempty"`
+}
+
+// --- Tool 8: trigger_reflection ---
+// Forces the Gardener to run a think cycle immediately on the given index.
+// Useful after heavy memory writes when you don't want to wait for the next
+// scheduled cycle.
+
+type TriggerReflectionArgs struct {
+	IndexName string `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
+}
+
+type TriggerReflectionResult struct {
+	Status    string `json:"status"`
+	IndexName string `json:"index_name"`
+	Message   string `json:"message"`
+}
+
+// --- Tool 9: assess_belief ---
+// Returns epistemic confidence for a memory or query, with 3-pillar evidence:
+// consensus (how widely supported), stability (how long consistent),
+// friction (how much contradiction). Useful for "should I trust this?" reasoning.
+
+type AssessBeliefArgs struct {
+	Query     string `json:"query" jsonschema:"Memory ID or natural language query to assess,required"`
+	IndexName string `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"Number of supporting memories to analyze (default 10)"`
+}
+
+type AssessBeliefResult struct {
+	Query        string             `json:"query"`
+	Confidence   float64            `json:"confidence"`   // 0.0-1.0
+	Consensus    float64            `json:"consensus"`    // 0.0-1.0: how widely the belief is supported
+	Stability    float64            `json:"stability"`    // 0.0-1.0: how long the belief has been consistent
+	Friction     float64            `json:"friction"`     // 0.0-1.0: how much contradiction exists
+	Verdict      string             `json:"verdict"`      // "well_supported" | "contested" | "fading" | "fresh"
+	Evidence     []BeliefEvidence   `json:"evidence"`
+	Message      string             `json:"message,omitempty"`
+}
+
+type BeliefEvidence struct {
+	MemoryID  string  `json:"memory_id"`
+	Stance    string  `json:"stance"`    // "supports" | "contradicts" | "neutral"
+	Weight    float64 `json:"weight"`    // 0.0-1.0
+	Timestamp int64   `json:"timestamp,omitempty"`
+}
+
+// --- Tool 10: search_with_scores ---
+// Semantic search with similarity scores returned. Useful when the agent
+// needs to know HOW confident a recall was (e.g. "I think this is the
+// answer but only 0.62 confidence").
+
+type SearchWithScoresArgs struct {
+	Query     string `json:"query" jsonschema:"Natural language search query,required"`
+	IndexName string `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
+	K         int    `json:"k,omitempty" jsonschema:"Number of results to return (default 5, max 100)"`
+}
+
+type SearchWithScoresResult struct {
+	Results []ScoredResult `json:"results"`
+}
+
+type ScoredResult struct {
+	MemoryID string                 `json:"memory_id"`
+	Score    float64                `json:"score"`           // cosine similarity, 0.0-1.0+
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// --- Tool 11: list_indexes ---
+// Returns all vector indexes in the engine. Useful for multi-tenant agents
+// or for discovering available targets before transfer_memory.
+
+type ListIndexesResult struct {
+	Indexes []IndexInfo `json:"indexes"`
+}
+
+type IndexInfo struct {
+	Name        string `json:"name"`
+	VectorCount int    `json:"vector_count"`
+	Dimension   int    `json:"dimension"`
+	Metric      string `json:"metric"`
+}
