@@ -1,6 +1,6 @@
 // Package mcp implements the Model Context Protocol server for KektorDB.
 //
-// It exposes 45 tools across agent (40 tools) and admin (6 tools) profiles,
+// It exposes 51 tools across agent (43 tools) and admin (8 tools) profiles,
 // including memory management, graph traversal, knowledge compilation,
 // and agent lifecycle commands. Also provides MCP setup/installer commands
 // for Claude Code, Cursor, Gemini CLI, Codex, and OpenCode.
@@ -405,5 +405,49 @@ func registerTools(s *mcp.Server, service *Service, allowlist map[string]bool) {
 			Name:        ToolSummarizeMemories,
 			Description: "Generate a bullet-point summary of a custom set of memories. The summary is stored as a new memory node for later retrieval. Differs from end_session (which is session-scoped).",
 		}, service.SummarizeMemories)
+	}
+
+	// --- Fase 3 P2 expansion: 6 final tools closing the MCP interface ---
+
+	if shouldRegister(ToolFindPath, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolFindPath,
+			Description: "Find a structured path between two nodes in the graph. Returns the ordered list of node IDs and the edges traversed. Configurable max_depth (default 4, max 10). Complement to find_connection which returns prose.",
+		}, service.FindPath)
+	}
+
+	if shouldRegister(ToolReinforceMemory, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolReinforceMemory,
+			Description: "Explicitly mark memories as accessed. Updates _last_accessed timestamp and increments _access_count for each valid ID. Returns which IDs were skipped (not found). Used to boost important memories' relevance over time.",
+		}, service.ReinforceMemory)
+	}
+
+	if shouldRegister(ToolListSessions, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolListSessions,
+			Description: "List all active sessions tracked in the current MCP server process. Optionally filter by user_id. Note: session list is in-memory only and is lost on server restart; for persistent session data, query memories with session_id filter.",
+		}, service.ListSessions)
+	}
+
+	if shouldRegister(ToolCreateIndex, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolCreateIndex,
+			Description: "Create a new vector index. Admin tool. Supports full HNSW configuration (M, ef_construction), metric (cosine/euclidean), precision (float32/float16/int8), text language, auto-linking rules, and memory/maintenance configs. Validates dimension against the active embedder.",
+		}, service.CreateIndex)
+	}
+
+	if shouldRegister(ToolDeleteIndex, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolDeleteIndex,
+			Description: "Delete an existing index. Admin tool. IRREVERSIBLE: removes all vectors, metadata, and graph data. Two-step safety: call without confirm=true for a preview (vector count, arena path); pass confirm=true to actually delete. Arena file removal is asynchronous.",
+		}, service.DeleteIndex)
+	}
+
+	if shouldRegister(ToolExtractSubgraph, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolExtractSubgraph,
+			Description: "Extract a subgraph centered on a root node via BFS traversal. Returns structured nodes and edges as JSON (vs. traverse which returns prose). Configurable depth (default 2, max 5). Useful for inspecting the local neighborhood of any node.",
+		}, service.ExtractSubgraph)
 	}
 }

@@ -297,8 +297,8 @@ func (e *Engine) VExtractSubgraph(indexName, rootID string, relations []string, 
 	if maxDepth <= 0 {
 		maxDepth = 1
 	}
-	if maxDepth > 3 {
-		maxDepth = 3
+	if maxDepth > 5 {
+		maxDepth = 5
 	}
 
 	visited := make(map[string]bool)

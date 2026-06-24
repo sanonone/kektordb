@@ -224,6 +224,11 @@ func (e *Engine) AOFPath() string {
 	return e.aofPath
 }
 
+// DataDir returns the root data directory used by the engine.
+func (e *Engine) DataDir() string {
+	return e.opts.DataDir
+}
+
 // Close performs a clean shutdown of the Engine.
 //
 // It stops background maintenance tasks and closes the AOF file.

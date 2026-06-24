@@ -877,3 +877,172 @@ type SummarizeMemoriesResult struct {
 	ContentCount  int    `json:"content_count"`
 	Message       string `json:"message,omitempty"`
 }
+
+// --- Fase 3 P2 expansion: 6 final tools closing MCP interface ---
+
+// FindPath: returns a structured path between two nodes with configurable
+// max_depth. Complement to find_connection (which returns prose).
+type FindPathArgs struct {
+	SourceID  string   `json:"source_id" jsonschema:"Start node ID,required"`
+	TargetID  string   `json:"target_id" jsonschema:"End node ID,required"`
+	Relations []string `json:"relations,omitempty" jsonschema:"Allowed relation types to traverse (auto-derived if empty)"`
+	MaxDepth  int      `json:"max_depth,omitempty" jsonschema:"Max BFS depth (default 4, max 10)"`
+	AtTime    int64    `json:"at_time,omitempty" jsonschema:"Unix nanoseconds timestamp to query historical data (0 = current time)"`
+	IndexName string   `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
+}
+
+type FindPathResult struct {
+	SourceID  string             `json:"source_id"`
+	TargetID  string             `json:"target_id"`
+	Path      []string           `json:"path"`            // sequence of node IDs from source to target
+	Edges     []PathEdge         `json:"edges,omitempty"` // edges traversed in order
+	StepCount int                `json:"step_count"`
+	Found     bool               `json:"found"`
+	Message   string             `json:"message,omitempty"`
+}
+
+// PathEdge: one edge along a path, mirroring engine.SubgraphEdge.
+type PathEdge struct {
+	Source   string `json:"source"`
+	Target   string `json:"target"`
+	Relation string `json:"relation"`
+	Dir      string `json:"dir"` // "out" | "in"
+}
+
+// ReinforceMemory: explicitly mark memories as accessed (updates _last_accessed
+// and _access_count metadata). Returns which IDs were actually found.
+type ReinforceMemoryArgs struct {
+	MemoryIDs []string `json:"memory_ids" jsonschema:"List of memory node IDs to reinforce,required"`
+	IndexName string   `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
+}
+
+type ReinforceMemoryResult struct {
+	IndexName  string   `json:"index_name"`
+	Requested  int      `json:"requested"`
+	Reinforced int      `json:"reinforced"`
+	Skipped    []string `json:"skipped,omitempty"`
+	Message    string   `json:"message,omitempty"`
+}
+
+// ListSessions: enumerates active sessions tracked in the MCP server process.
+// Optional user_id filter. Note: in-memory only (lost on restart).
+type ListSessionsArgs struct {
+	UserID string `json:"user_id,omitempty" jsonschema:"Filter sessions by user_id (empty = all)"`
+}
+
+type ListSessionsResult struct {
+	Sessions []SessionInfo `json:"sessions"`
+	Total    int           `json:"total"`
+	Message  string        `json:"message,omitempty"`
+}
+
+type SessionInfo struct {
+	ID        string `json:"id"`
+	IndexName string `json:"index_name"`
+	StartTime int64  `json:"start_time"` // Unix nanoseconds
+	UserID    string `json:"user_id,omitempty"`
+	AgentID   string `json:"agent_id,omitempty"`
+	Context   string `json:"context,omitempty"`
+}
+
+// CreateIndex: creates a new vector index with full HNSW configuration.
+// Admin tool. Validates dimension against the active embedder.
+type CreateIndexArgs struct {
+	Name          string             `json:"name" jsonschema:"Index name (alphanumeric, underscore, dash),required"`
+	Metric        string             `json:"metric,omitempty" jsonschema:"Distance metric: 'cosine' or 'euclidean' (default cosine)"`
+	Dimension     int                `json:"dimension" jsonschema:"Vector dimension (must match embedder if active),required"`
+	Precision     string             `json:"precision,omitempty" jsonschema:"Precision: 'float32' (default), 'float16', 'int8'"`
+	M             int                `json:"m,omitempty" jsonschema:"HNSW M parameter (default 16)"`
+	EfConstruction int               `json:"ef_construction,omitempty" jsonschema:"HNSW efConstruction parameter (default 200)"`
+	TextLanguage  string             `json:"text_language,omitempty" jsonschema:"Text language for hybrid search: 'english', 'italian', '' (default empty)"`
+	AutoLinks     []AutoLinkRuleInput `json:"auto_links,omitempty" jsonschema:"Auto-linking rules (optional)"`
+	MemoryConfig  *MemoryConfigInput  `json:"memory_config,omitempty" jsonschema:"Memory decay/pinning configuration (optional)"`
+	Maintenance   *MaintenanceInput   `json:"maintenance,omitempty" jsonschema:"Maintenance configuration (optional)"`
+}
+
+type AutoLinkRuleInput struct {
+	Field       string `json:"field" jsonschema:"Metadata field to extract,required"`
+	Relation    string `json:"relation" jsonschema:"Relation type for auto-link,required"`
+	CreateNode  bool   `json:"create_node,omitempty" jsonschema:"If true, create a new node when the field is non-empty"`
+}
+
+type MemoryConfigInput struct {
+	Enabled      bool          `json:"enabled,omitempty" jsonschema:"Enable memory decay/pinning"`
+	DecayModel   string        `json:"decay_model,omitempty" jsonschema:"Decay model: 'exponential', 'linear', 'step', 'ebbinghaus' (default exponential)"`
+	HalfLifeDays float64       `json:"half_life_days,omitempty" jsonschema:"Half-life in days (default 30)"`
+	Layers       []LayerInput  `json:"layers,omitempty" jsonschema:"Per-layer decay configuration"`
+}
+
+type LayerInput struct {
+	Name         string  `json:"name" jsonschema:"Layer name: 'episodic', 'semantic', 'procedural',required"`
+	HalfLifeDays float64 `json:"half_life_days,omitempty" jsonschema:"Half-life in days (default 30)"`
+	Strength     float64 `json:"strength,omitempty" jsonschema:"Layer strength multiplier (default 1.0)"`
+}
+
+type MaintenanceInput struct {
+	Vacuum           *IntervalInput `json:"vacuum,omitempty"`
+	Refine           *IntervalInput `json:"refine,omitempty"`
+	GraphRetention   *IntervalInput `json:"graph_retention,omitempty"`
+	ArenaCompaction  *IntervalInput `json:"arena_compaction,omitempty"`
+}
+
+type IntervalInput struct {
+	Enabled  bool `json:"enabled,omitempty"`
+	IntervalSec int `json:"interval_sec,omitempty" jsonschema:"Interval in seconds"`
+}
+
+type CreateIndexResult struct {
+	Status      string `json:"status"`
+	Name        string `json:"name"`
+	Metric      string `json:"metric"`
+	Precision   string `json:"precision"`
+	Dimension   int    `json:"dimension"`
+	TextLanguage string `json:"text_language,omitempty"`
+	Message     string `json:"message,omitempty"`
+}
+
+// DeleteIndex: deletes an existing index. Two-step safety: without confirm=true
+// returns a preview; with confirm=true performs the deletion.
+type DeleteIndexArgs struct {
+	Name    string `json:"name" jsonschema:"Index name to delete,required"`
+	Confirm bool   `json:"confirm,omitempty" jsonschema:"Must be true to actually delete. Without confirm=true, returns a preview only."`
+}
+
+type DeleteIndexResult struct {
+	Status      string `json:"status"` // "preview" | "deleted" | "not_found" | "error"
+	Name        string `json:"name"`
+	VectorCount int64  `json:"vector_count,omitempty"`
+	ArenaPath   string `json:"arena_path,omitempty"`
+	Message     string `json:"message,omitempty"`
+}
+
+// ExtractSubgraph: BFS traversal returning structured nodes/edges JSON.
+type ExtractSubgraphArgs struct {
+	RootID    string   `json:"root_id" jsonschema:"Root node ID for BFS,required"`
+	Relations []string `json:"relations,omitempty" jsonschema:"Relation types to traverse (auto-derived if empty)"`
+	Depth     int      `json:"depth,omitempty" jsonschema:"BFS depth (default 2, max 5)"`
+	AtTime    int64    `json:"at_time,omitempty" jsonschema:"Unix nanoseconds timestamp for time-travel (0 = latest)"`
+	IndexName string   `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
+}
+
+type ExtractSubgraphResult struct {
+	RootID    string             `json:"root_id"`
+	Depth     int                `json:"depth"`
+	NodeCount int                `json:"node_count"`
+	EdgeCount int                `json:"edge_count"`
+	Nodes     []SubgraphNodeJSON `json:"nodes"`
+	Edges     []SubgraphEdgeJSON `json:"edges"`
+	Message   string             `json:"message,omitempty"`
+}
+
+type SubgraphNodeJSON struct {
+	ID       string         `json:"id"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+type SubgraphEdgeJSON struct {
+	Source   string `json:"source"`
+	Target   string `json:"target"`
+	Relation string `json:"relation"`
+	Dir      string `json:"dir"`
+}

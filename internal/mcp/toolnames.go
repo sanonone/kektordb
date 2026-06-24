@@ -63,6 +63,13 @@ const (
 	ToolGetEdgeDetails           = "get_edge_details"
 	ToolDiffArtifactVersions     = "diff_artifact_versions"
 	ToolSummarizeMemories        = "summarize_memories"
+	// Fase 3 P2 expansion: 6 final tools closing the MCP interface
+	ToolFindPath                 = "find_path"
+	ToolReinforceMemory          = "reinforce_memory"
+	ToolListSessions             = "list_sessions"
+	ToolCreateIndex              = "create_index"
+	ToolDeleteIndex              = "delete_index"
+	ToolExtractSubgraph          = "extract_subgraph"
 )
 
 // allToolNames maps every known MCP tool name for validation.
@@ -118,6 +125,12 @@ var allToolNames = map[string]bool{
 	ToolGetEdgeDetails:        true,
 	ToolDiffArtifactVersions:  true,
 	ToolSummarizeMemories:     true,
+	ToolFindPath:              true,
+	ToolReinforceMemory:       true,
+	ToolListSessions:          true,
+	ToolCreateIndex:           true,
+	ToolDeleteIndex:           true,
+	ToolExtractSubgraph:       true,
 }
 
 // ProfileAgent contains tools useful for AI coding agents.
@@ -173,6 +186,11 @@ var ProfileAgent = map[string]bool{
 	ToolGetEdgeDetails:        true,
 	ToolDiffArtifactVersions:  true,
 	ToolSummarizeMemories:     true,
+	// Fase 3 P2 tools (closing MCP interface)
+	ToolFindPath:              true,
+	ToolReinforceMemory:       true,
+	ToolListSessions:          true,
+	ToolExtractSubgraph:       true,
 }
 
 // ProfileAdmin contains tools for administrative tasks and data curation.
@@ -183,6 +201,9 @@ var ProfileAdmin = map[string]bool{
 	ToolUnpinMemory:        true,
 	ToolConfigureAutoLinks: true,
 	ToolListUserProfiles:   true,
+	// Fase 3 P2: index lifecycle
+	ToolCreateIndex:        true,
+	ToolDeleteIndex:        true,
 }
 
 var profiles = map[string]map[string]bool{

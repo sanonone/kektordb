@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -132,6 +135,15 @@ func hardcodedDefaultRelations() []string {
 		"belongs_to", "authored_by",       // Metadata Auto-linking
 		"contains", "evolves_from", "superseded_by", "consolidated_into", // Cognitive / evolution
 	}
+}
+
+var indexNameRE = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+// isValidIndexName returns true if the name contains only safe characters
+// (alphanumeric, underscore, dash). Used by CreateIndex/DeleteIndex to prevent
+// path injection or invalid filesystem names.
+func isValidIndexName(name string) bool {
+	return indexNameRE.MatchString(name)
 }
 
 // normalizeTags converts the Tags field (which may be a JSON array, a comma-separated
@@ -3199,5 +3211,457 @@ func (s *Service) SummarizeMemories(ctx context.Context, req *mcp.CallToolReques
 		return nil, result, nil
 	}
 	result.SummaryID = summaryID
+	return nil, result, nil
+}
+
+// --- Fase 3 P2 expansion: 6 final tools closing MCP interface ---
+
+// FindPath returns a structured path between two nodes with configurable
+// max_depth. Complement to FindConnection (which returns prose).
+func (s *Service) FindPath(ctx context.Context, req *mcp.CallToolRequest, args FindPathArgs) (*mcp.CallToolResult, FindPathResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	result := FindPathResult{
+		SourceID: args.SourceID,
+		TargetID: args.TargetID,
+		Path:     []string{},
+		Edges:    []PathEdge{},
+	}
+	if args.SourceID == "" {
+		result.Message = "source_id is required"
+		return nil, result, nil
+	}
+	if args.TargetID == "" {
+		result.Message = "target_id is required"
+		return nil, result, nil
+	}
+	if !s.engine.IndexExists(idx) {
+		result.Message = "index '" + idx + "' not found"
+		return nil, result, nil
+	}
+	maxDepth := args.MaxDepth
+	if maxDepth <= 0 {
+		maxDepth = 4
+	}
+	if maxDepth > 10 {
+		maxDepth = 10
+	}
+	// Handle source == target early (no relations needed).
+	if args.SourceID == args.TargetID {
+		result.Path = []string{args.SourceID}
+		result.Found = true
+		result.StepCount = 0
+		result.Message = "source equals target"
+		return nil, result, nil
+	}
+	// Derive relations from source and target nodes if not provided.
+	relations := args.Relations
+	if len(relations) == 0 {
+		seen := map[string]bool{}
+		if rels := s.engine.VGetRelations(idx, args.SourceID); rels != nil {
+			for r := range rels {
+				seen[r] = true
+			}
+		}
+		if rels := s.engine.VGetIncomingRelations(idx, args.SourceID); rels != nil {
+			for r := range rels {
+				seen[r] = true
+			}
+		}
+		if rels := s.engine.VGetRelations(idx, args.TargetID); rels != nil {
+			for r := range rels {
+				seen[r] = true
+			}
+		}
+		if rels := s.engine.VGetIncomingRelations(idx, args.TargetID); rels != nil {
+			for r := range rels {
+				seen[r] = true
+			}
+		}
+		for r := range seen {
+			relations = append(relations, r)
+		}
+		if len(relations) == 0 {
+			result.Message = "no relations found in graph; specify relations explicitly"
+			return nil, result, nil
+		}
+	}
+	res, err := s.engine.FindPath(idx, args.SourceID, args.TargetID, relations, maxDepth, args.AtTime)
+	if err != nil {
+		result.Message = "find_path error: " + err.Error()
+		return nil, result, nil
+	}
+	if res == nil || len(res.Path) == 0 {
+		result.Message = "no path found within max_depth=" + strconv.Itoa(maxDepth)
+		return nil, result, nil
+	}
+	result.Path = res.Path
+	result.StepCount = len(res.Path) - 1
+	result.Found = true
+	for _, e := range res.Edges {
+		result.Edges = append(result.Edges, PathEdge{
+			Source:   e.Source,
+			Target:   e.Target,
+			Relation: e.Relation,
+			Dir:      e.Dir,
+		})
+	}
+	return nil, result, nil
+}
+
+// ReinforceMemory marks memories as explicitly accessed. Updates _last_accessed
+// and _access_count metadata for each valid ID; reports skipped IDs.
+func (s *Service) ReinforceMemory(ctx context.Context, req *mcp.CallToolRequest, args ReinforceMemoryArgs) (*mcp.CallToolResult, ReinforceMemoryResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	result := ReinforceMemoryResult{
+		IndexName: idx,
+		Skipped:   []string{},
+	}
+	if len(args.MemoryIDs) == 0 {
+		result.Message = "memory_ids is required (non-empty list)"
+		return nil, result, nil
+	}
+	if !s.engine.IndexExists(idx) {
+		result.Message = "index '" + idx + "' not found"
+		return nil, result, nil
+	}
+	// Dedupe input IDs while preserving order.
+	seen := map[string]bool{}
+	unique := make([]string, 0, len(args.MemoryIDs))
+	for _, id := range args.MemoryIDs {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		unique = append(unique, id)
+	}
+	result.Requested = len(unique)
+	// Pre-validate existence: VReinforce silently skips unknown IDs, so
+	// we check with VGet to give the agent a precise report.
+	for _, id := range unique {
+		if _, err := s.engine.VGet(idx, id); err != nil {
+			result.Skipped = append(result.Skipped, id)
+		}
+	}
+	toReinforce := make([]string, 0, len(unique)-len(result.Skipped))
+	for _, id := range unique {
+		found := true
+		for _, s := range result.Skipped {
+			if id == s {
+				found = false
+				break
+			}
+		}
+		if found {
+			toReinforce = append(toReinforce, id)
+		}
+	}
+	if len(toReinforce) > 0 {
+		if err := s.engine.VReinforce(idx, toReinforce); err != nil {
+			result.Message = "reinforce failed: " + err.Error()
+			return nil, result, nil
+		}
+	}
+	result.Reinforced = len(toReinforce)
+	if len(result.Skipped) > 0 {
+		result.Message = "reinforced " + strconv.Itoa(result.Reinforced) + "/" + strconv.Itoa(result.Requested) + " (skipped " + strconv.Itoa(len(result.Skipped)) + " not found)"
+	} else {
+		result.Message = "reinforced " + strconv.Itoa(result.Reinforced) + "/" + strconv.Itoa(result.Requested)
+	}
+	return nil, result, nil
+}
+
+// ListSessions returns the list of active sessions in the current MCP server
+// process, optionally filtered by user_id. In-memory only.
+func (s *Service) ListSessions(ctx context.Context, req *mcp.CallToolRequest, args ListSessionsArgs) (*mcp.CallToolResult, ListSessionsResult, error) {
+	result := ListSessionsResult{
+		Sessions: []SessionInfo{},
+	}
+	s.sessionsMu.RLock()
+	defer s.sessionsMu.RUnlock()
+	for _, sess := range s.sessions {
+		if args.UserID != "" {
+			uid, _ := sess.Metadata["user_id"].(string)
+			if uid != args.UserID {
+				continue
+			}
+		}
+		uid, _ := sess.Metadata["user_id"].(string)
+		agentID, _ := sess.Metadata["agent_id"].(string)
+		ctxStr, _ := sess.Metadata["context"].(string)
+		result.Sessions = append(result.Sessions, SessionInfo{
+			ID:        sess.ID,
+			IndexName: sess.IndexName,
+			StartTime: sess.StartTime,
+			UserID:    uid,
+			AgentID:   agentID,
+			Context:   ctxStr,
+		})
+	}
+	result.Total = len(result.Sessions)
+	if result.Total == 0 {
+		if args.UserID != "" {
+			result.Message = "no active sessions for user_id='" + args.UserID + "'"
+		} else {
+			result.Message = "no active sessions"
+		}
+	}
+	return nil, result, nil
+}
+
+// CreateIndex creates a new vector index with full HNSW configuration.
+// Validates name format, metric, precision, and dimension against the embedder.
+func (s *Service) CreateIndex(ctx context.Context, req *mcp.CallToolRequest, args CreateIndexArgs) (*mcp.CallToolResult, CreateIndexResult, error) {
+	result := CreateIndexResult{
+		Status:    "error",
+		Name:      args.Name,
+		Dimension: args.Dimension,
+	}
+	// Validate name format.
+	if args.Name == "" {
+		result.Message = "name is required"
+		return nil, result, nil
+	}
+	if !isValidIndexName(args.Name) {
+		result.Message = "invalid name: must match [a-zA-Z0-9_-]+"
+		return nil, result, nil
+	}
+	// Default + validate metric.
+	metricStr := args.Metric
+	if metricStr == "" {
+		metricStr = string(distance.Cosine)
+	}
+	var metric distance.DistanceMetric
+	switch metricStr {
+	case string(distance.Cosine):
+		metric = distance.Cosine
+	case string(distance.Euclidean):
+		metric = distance.Euclidean
+	default:
+		result.Message = "invalid metric: must be 'cosine' or 'euclidean'"
+		return nil, result, nil
+	}
+	// Default + validate precision.
+	precStr := args.Precision
+	if precStr == "" {
+		precStr = string(distance.Float32)
+	}
+	var prec distance.PrecisionType
+	switch precStr {
+	case string(distance.Float32):
+		prec = distance.Float32
+	case string(distance.Float16):
+		prec = distance.Float16
+	case string(distance.Int8):
+		prec = distance.Int8
+	default:
+		result.Message = "invalid precision: must be 'float32', 'float16', or 'int8'"
+		return nil, result, nil
+	}
+	// Validate dimension.
+	if args.Dimension <= 0 || args.Dimension > 4096 {
+		result.Message = "dimension must be in [1, 4096]"
+		return nil, result, nil
+	}
+	// Validate dimension against embedder if active.
+	if s.embedder != nil {
+		if _, ok := s.embedder.(*embeddings.NoopEmbedder); !ok {
+			testVec, err := s.embedder.Embed("test")
+			if err == nil && len(testVec) != args.Dimension {
+				result.Message = "dimension " + strconv.Itoa(args.Dimension) + " conflicts with embedder dimension " + strconv.Itoa(len(testVec))
+				return nil, result, nil
+			}
+		}
+	}
+	// Default HNSW params.
+	m := args.M
+	if m <= 0 {
+		m = 16
+	}
+	efC := args.EfConstruction
+	if efC <= 0 {
+		efC = 200
+	}
+	// Check if already exists.
+	if s.engine.IndexExists(args.Name) {
+		result.Status = "exists"
+		result.Metric = metricStr
+		result.Precision = precStr
+		result.Message = "index '" + args.Name + "' already exists"
+		return nil, result, nil
+	}
+	// Build auto-link rules.
+	var autoLinks []hnsw.AutoLinkRule
+	for _, r := range args.AutoLinks {
+		if r.Field == "" || r.Relation == "" {
+			result.Message = "auto_link rule missing field or relation"
+			return nil, result, nil
+		}
+		autoLinks = append(autoLinks, hnsw.AutoLinkRule{
+			MetadataField: r.Field,
+			RelationType:  r.Relation,
+			CreateNode:    r.CreateNode,
+		})
+	}
+	// Build memory config.
+	var memCfg *hnsw.MemoryConfig
+	if args.MemoryConfig != nil {
+		memCfg = &hnsw.MemoryConfig{
+			Enabled: args.MemoryConfig.Enabled,
+		}
+		if args.MemoryConfig.DecayModel != "" {
+			if !hnsw.ValidateDecayModel(hnsw.DecayModel(args.MemoryConfig.DecayModel)) {
+				result.Message = "invalid decay_model: must be 'exponential', 'linear', 'step', or 'ebbinghaus'"
+				return nil, result, nil
+			}
+			memCfg.DecayModel = hnsw.DecayModel(args.MemoryConfig.DecayModel)
+		}
+		if args.MemoryConfig.HalfLifeDays > 0 {
+			memCfg.DecayHalfLife = hnsw.Duration(args.MemoryConfig.HalfLifeDays * 24 * float64(time.Hour))
+		}
+		for _, l := range args.MemoryConfig.Layers {
+			if l.Name == "" {
+				result.Message = "layer name is required"
+				return nil, result, nil
+			}
+			if memCfg.Layers == nil {
+				memCfg.Layers = make(map[string]hnsw.LayerConfig)
+			}
+			lc := hnsw.LayerConfig{}
+			if l.HalfLifeDays > 0 {
+				lc.DecayHalfLife = hnsw.Duration(l.HalfLifeDays * 24 * float64(time.Hour))
+			}
+			memCfg.Layers[l.Name] = lc
+		}
+	}
+	// Build maintenance config.
+	var maintCfg *hnsw.AutoMaintenanceConfig
+	if args.Maintenance != nil {
+		maintCfg = &hnsw.AutoMaintenanceConfig{}
+		if args.Maintenance.Vacuum != nil {
+			maintCfg.VacuumInterval = hnsw.Duration(args.Maintenance.Vacuum.IntervalSec) * hnsw.Duration(time.Second)
+		}
+		if args.Maintenance.Refine != nil {
+			maintCfg.RefineEnabled = args.Maintenance.Refine.Enabled
+			maintCfg.RefineInterval = hnsw.Duration(args.Maintenance.Refine.IntervalSec) * hnsw.Duration(time.Second)
+		}
+	}
+	if err := s.engine.VCreate(args.Name, metric, m, efC, prec, args.TextLanguage, maintCfg, autoLinks, memCfg); err != nil {
+		result.Message = "create failed: " + err.Error()
+		return nil, result, nil
+	}
+	result.Status = "created"
+	result.Metric = metricStr
+	result.Precision = precStr
+	result.TextLanguage = args.TextLanguage
+	result.Message = "index '" + args.Name + "' created"
+	return nil, result, nil
+}
+
+// DeleteIndex removes an existing index. Two-step safety: without confirm=true
+// returns a preview; with confirm=true performs the deletion.
+func (s *Service) DeleteIndex(ctx context.Context, req *mcp.CallToolRequest, args DeleteIndexArgs) (*mcp.CallToolResult, DeleteIndexResult, error) {
+	result := DeleteIndexResult{
+		Status: "error",
+		Name:   args.Name,
+	}
+	if args.Name == "" {
+		result.Message = "name is required"
+		return nil, result, nil
+	}
+	if !s.engine.IndexExists(args.Name) {
+		result.Status = "not_found"
+		result.Message = "index '" + args.Name + "' not found"
+		return nil, result, nil
+	}
+	// Gather preview info: vector count and arena path.
+	ids, _, err := s.engine.VGetIDsByCursor(args.Name, 0, 1<<20)
+	if err == nil {
+		result.VectorCount = int64(len(ids))
+	}
+	result.ArenaPath = filepath.Join(s.engine.DataDir(), "arenas", args.Name)
+	if !args.Confirm {
+		result.Status = "preview"
+		result.Message = "preview: index '" + args.Name + "' has " + strconv.FormatInt(result.VectorCount, 10) + " vectors. Pass confirm=true to delete."
+		return nil, result, nil
+	}
+	if err := s.engine.VDeleteIndex(args.Name); err != nil {
+		result.Message = "delete failed: " + err.Error()
+		return nil, result, nil
+	}
+	result.Status = "deleted"
+	result.Message = "index '" + args.Name + "' deleted (arena cleanup async)"
+	return nil, result, nil
+}
+
+// ExtractSubgraph performs BFS from a root node and returns the visited
+// nodes/edges as structured JSON. Configurable depth (default 2, max 5).
+func (s *Service) ExtractSubgraph(ctx context.Context, req *mcp.CallToolRequest, args ExtractSubgraphArgs) (*mcp.CallToolResult, ExtractSubgraphResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	result := ExtractSubgraphResult{
+		RootID: args.RootID,
+		Depth:  args.Depth,
+		Nodes:  []SubgraphNodeJSON{},
+		Edges:  []SubgraphEdgeJSON{},
+	}
+	if args.RootID == "" {
+		result.Message = "root_id is required"
+		return nil, result, nil
+	}
+	if !s.engine.IndexExists(idx) {
+		result.Message = "index '" + idx + "' not found"
+		return nil, result, nil
+	}
+	depth := args.Depth
+	if depth <= 0 {
+		depth = 2
+	}
+	if depth > 5 {
+		depth = 5
+	}
+	relations := args.Relations
+	if len(relations) == 0 {
+		relations = s.defaultRelationsForNode(idx, args.RootID)
+		if len(relations) == 0 {
+			result.Message = "no relations found for root_id; specify relations explicitly"
+			return nil, result, nil
+		}
+	}
+	sub, err := s.engine.VExtractSubgraph(idx, args.RootID, relations, depth, args.AtTime, nil, 0)
+	if err != nil {
+		result.Message = "extract_subgraph error: " + err.Error()
+		return nil, result, nil
+	}
+	if sub == nil {
+		result.Message = "root_id not found or no reachable nodes"
+		return nil, result, nil
+	}
+	for _, n := range sub.Nodes {
+		result.Nodes = append(result.Nodes, SubgraphNodeJSON{
+			ID:       n.ID,
+			Metadata: n.Metadata,
+		})
+	}
+	for _, e := range sub.Edges {
+		result.Edges = append(result.Edges, SubgraphEdgeJSON{
+			Source:   e.Source,
+			Target:   e.Target,
+			Relation: e.Relation,
+			Dir:      e.Dir,
+		})
+	}
+	result.NodeCount = len(result.Nodes)
+	result.EdgeCount = len(result.Edges)
+	if result.NodeCount == 0 {
+		result.Message = "no nodes found in subgraph"
+	}
 	return nil, result, nil
 }
