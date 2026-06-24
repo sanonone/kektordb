@@ -48,6 +48,21 @@ const (
 	ToolListArtifacts        = "list_artifacts"
 	ToolListReflections      = "list_reflections"
 	ToolForceRecompile       = "force_recompile"
+	// Fase 2 P2 expansion Batch 1: wrapper semplici
+	ToolSaveSnapshot         = "save_snapshot"
+	ToolCompactAOF           = "compact_aof"
+	ToolGetEmbedderStatus    = "get_embedder_status"
+	ToolKVGet                = "kv_get"
+	ToolKVSet                = "kv_set"
+	ToolKVDelete             = "kv_delete"
+	// Fase 2 P2 expansion Batch 2: engine stats + profile refresh
+	ToolGetStats             = "get_stats"
+	ToolGetPersistenceStatus = "get_persistence_status"
+	ToolRefreshUserProfile   = "refresh_user_profile"
+	// Fase 2 P2 expansion Batch 3: graph edges + artifact diff + summarize
+	ToolGetEdgeDetails           = "get_edge_details"
+	ToolDiffArtifactVersions     = "diff_artifact_versions"
+	ToolSummarizeMemories        = "summarize_memories"
 )
 
 // allToolNames maps every known MCP tool name for validation.
@@ -91,6 +106,18 @@ var allToolNames = map[string]bool{
 	ToolListArtifacts:         true,
 	ToolListReflections:       true,
 	ToolForceRecompile:        true,
+	ToolSaveSnapshot:          true,
+	ToolCompactAOF:            true,
+	ToolGetEmbedderStatus:     true,
+	ToolKVGet:                 true,
+	ToolKVSet:                 true,
+	ToolKVDelete:              true,
+	ToolGetStats:              true,
+	ToolGetPersistenceStatus:  true,
+	ToolRefreshUserProfile:    true,
+	ToolGetEdgeDetails:        true,
+	ToolDiffArtifactVersions:  true,
+	ToolSummarizeMemories:     true,
 }
 
 // ProfileAgent contains tools useful for AI coding agents.
@@ -132,6 +159,20 @@ var ProfileAgent = map[string]bool{
 	ToolListArtifacts:         true,
 	ToolListReflections:       true,
 	ToolForceRecompile:        true,
+	// Fase 2 P2 tools (Batch 1)
+	ToolSaveSnapshot:          true,
+	ToolCompactAOF:            true,
+	ToolGetEmbedderStatus:     true,
+	ToolKVGet:                 true,
+	ToolKVSet:                 true,
+	ToolKVDelete:              true,
+	// Fase 2 P2 tools (Batch 2)
+	ToolGetStats:              true,
+	ToolGetPersistenceStatus:  true,
+	ToolRefreshUserProfile:    true,
+	ToolGetEdgeDetails:        true,
+	ToolDiffArtifactVersions:  true,
+	ToolSummarizeMemories:     true,
 }
 
 // ProfileAdmin contains tools for administrative tasks and data curation.

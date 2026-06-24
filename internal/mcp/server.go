@@ -1,6 +1,6 @@
 // Package mcp implements the Model Context Protocol server for KektorDB.
 //
-// It exposes 33 tools across agent (28 tools) and admin (6 tools) profiles,
+// It exposes 45 tools across agent (40 tools) and admin (6 tools) profiles,
 // including memory management, graph traversal, knowledge compilation,
 // and agent lifecycle commands. Also provides MCP setup/installer commands
 // for Claude Code, Cursor, Gemini CLI, Codex, and OpenCode.
@@ -315,5 +315,95 @@ func registerTools(s *mcp.Server, service *Service, allowlist map[string]bool) {
 			Name:        ToolForceRecompile,
 			Description: "Synchronously trigger (re)compilation of a knowledge artifact. Use after a reflection cycle or when an artifact is stale. Blocks the agent until done (typically a few seconds).",
 		}, service.ForceRecompile)
+	}
+
+	// --- Fase 2 P2 expansion: Batch 1 — wrapper semplici ---
+
+	if shouldRegister(ToolSaveSnapshot, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolSaveSnapshot,
+			Description: "Force a snapshot of the engine state to disk. Useful before risky operations or at logical checkpoints.",
+		}, service.SaveSnapshot)
+	}
+
+	if shouldRegister(ToolCompactAOF, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolCompactAOF,
+			Description: "Trigger an asynchronous AOF rewrite to reclaim disk space. Runs in the background; check log for completion.",
+		}, service.CompactAOF)
+	}
+
+	if shouldRegister(ToolGetEmbedderStatus, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolGetEmbedderStatus,
+			Description: "Introspect the active embedder: model name, output dimension, and availability. Useful for diagnosing semantic tool failures.",
+		}, service.GetEmbedderStatus)
+	}
+
+	if shouldRegister(ToolKVGet, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolKVGet,
+			Description: "Read a value from the engine's key-value store. Binary values are base64-encoded. Useful for agent scratch state (counters, last cursor).",
+		}, service.KVGet)
+	}
+
+	if shouldRegister(ToolKVSet, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolKVSet,
+			Description: "Write a string value to the engine's key-value store. Useful for storing small agent state without polluting the vector space.",
+		}, service.KVSet)
+	}
+
+	if shouldRegister(ToolKVDelete, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolKVDelete,
+			Description: "Delete a key from the engine's key-value store.",
+		}, service.KVDelete)
+	}
+
+	// --- Fase 2 P2 expansion: Batch 2 — engine stats + profile refresh ---
+
+	if shouldRegister(ToolGetStats, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolGetStats,
+			Description: "Self-diagnostics: total vectors, indexes, embedder status. If index_name is given, returns stats for that index; otherwise aggregate.",
+		}, service.GetStats)
+	}
+
+	if shouldRegister(ToolGetPersistenceStatus, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolGetPersistenceStatus,
+			Description: "AOF file stats (path, size in bytes). Useful for monitoring disk usage.",
+		}, service.GetPersistenceStatus)
+	}
+
+	if shouldRegister(ToolRefreshUserProfile, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolRefreshUserProfile,
+			Description: "Force the Gardener to re-process a user profile now, bypassing the threshold check. Useful after a heavy interaction session.",
+		}, service.RefreshUserProfile)
+	}
+
+	// --- Fase 2 P2 expansion: Batch 3 — graph edges + artifact diff + summarize ---
+
+	if shouldRegister(ToolGetEdgeDetails, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolGetEdgeDetails,
+			Description: "Return full edge details (timestamps, weight, props) for outgoing edges of a source node, optionally filtered by relation type. Useful for auditing graph history.",
+		}, service.GetEdgeDetails)
+	}
+
+	if shouldRegister(ToolDiffArtifactVersions, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolDiffArtifactVersions,
+			Description: "Compare two versions of a knowledge artifact and report added, removed, and modified fields. Useful for auditing profile or project summary drift.",
+		}, service.DiffArtifactVersions)
+	}
+
+	if shouldRegister(ToolSummarizeMemories, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolSummarizeMemories,
+			Description: "Generate a bullet-point summary of a custom set of memories. The summary is stored as a new memory node for later retrieval. Differs from end_session (which is session-scoped).",
+		}, service.SummarizeMemories)
 	}
 }

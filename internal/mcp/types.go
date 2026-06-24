@@ -692,3 +692,188 @@ type ForceRecompileResult struct {
 	Message    string `json:"message,omitempty"`
 	DurationMs int64  `json:"duration_ms"`
 }
+
+// --- Fase 2 P2: Batch 1 — wrapper semplici ---
+
+// SaveSnapshot: force a snapshot of the engine to disk.
+// Useful before risky operations or at logical checkpoints.
+type SaveSnapshotArgs struct{}
+
+type SaveSnapshotResult struct {
+	Status     string `json:"status"`
+	Path       string `json:"path,omitempty"`
+	Message    string `json:"message,omitempty"`
+	DurationMs int64  `json:"duration_ms"`
+}
+
+// CompactAOF: trigger an AOF rewrite to reclaim disk space.
+// Runs asynchronously in the background.
+type CompactAOFArgs struct{}
+
+type CompactAOFResult struct {
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+	TaskID  string `json:"task_id,omitempty"`
+}
+
+// GetEmbedderStatus: introspect the active embedder (model, dimension, availability).
+type GetEmbedderStatusResult struct {
+	Active    bool   `json:"active"`
+	Model     string `json:"model,omitempty"`
+	Dimension int    `json:"dimension"`
+	Mode      string `json:"mode,omitempty"`
+	Message   string `json:"message,omitempty"`
+}
+
+// KVGet: read a value from the engine's key-value store.
+type KVGetArgs struct {
+	Key string `json:"key" jsonschema:"The key to read,required"`
+}
+
+type KVGetResult struct {
+	Key     string `json:"key"`
+	Found   bool   `json:"found"`
+	Value   string `json:"value,omitempty"` // base64-encoded for binary safety
+	Message string `json:"message,omitempty"`
+}
+
+// KVSet: write a value to the engine's key-value store.
+type KVSetArgs struct {
+	Key   string `json:"key" jsonschema:"The key to write,required"`
+	Value string `json:"value" jsonschema:"The value to write (string).required"`
+}
+
+type KVSetResult struct {
+	Status  string `json:"status"`
+	Key     string `json:"key"`
+	Message string `json:"message,omitempty"`
+}
+
+// KVDelete: delete a key from the engine's key-value store.
+type KVDeleteArgs struct {
+	Key string `json:"key" jsonschema:"The key to delete,required"`
+}
+
+type KVDeleteResult struct {
+	Status  string `json:"status"`
+	Key     string `json:"key"`
+	Message string `json:"message,omitempty"`
+}
+
+// --- Fase 2 P2: Batch 2 — engine stats + profile refresh ---
+
+// GetStats: self-diagnostics of the engine. Returns aggregate stats useful
+// for monitoring and debugging.
+type GetStatsArgs struct {
+	IndexName string `json:"index_name,omitempty" jsonschema:"Index name (default: aggregate across all indexes)"`
+}
+
+type GetStatsResult struct {
+	IndexName    string         `json:"index_name,omitempty"`
+	TotalVectors int            `json:"total_vectors"`
+	TotalIndexes int            `json:"total_indexes"`
+	Indexes      []IndexSummary `json:"indexes,omitempty"`
+	Embedder     string         `json:"embedder,omitempty"` // "active" | "noop" | "error"
+	Message      string         `json:"message,omitempty"`
+}
+
+type IndexSummary struct {
+	Name        string `json:"name"`
+	VectorCount int    `json:"vector_count"`
+	Dimension   int    `json:"dimension"`
+	Metric      string `json:"metric"`
+}
+
+// GetPersistenceStatus: AOF stats for monitoring disk usage and durability.
+type GetPersistenceStatusResult struct {
+	AOFPath         string `json:"aof_path"`
+	AOFSizeBytes     int64  `json:"aof_size_bytes"`
+	WriteQueueDepth  int    `json:"write_queue_depth,omitempty"`
+	LastSyncAgoMs    int64  `json:"last_sync_ago_ms,omitempty"`
+	FlushIntervalMs  int    `json:"flush_interval_ms,omitempty"`
+	ForceSyncIntvMs  int    `json:"force_sync_interval_ms,omitempty"`
+	Message          string `json:"message,omitempty"`
+}
+
+// RefreshUserProfile: force the Gardener to re-process a user profile now.
+// Useful after a heavy interaction session when the threshold hasn't been
+// reached yet but the agent wants the profile updated immediately.
+type RefreshUserProfileArgs struct {
+	UserID    string `json:"user_id" jsonschema:"The user ID to refresh,required"`
+	IndexName string `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
+}
+
+type RefreshUserProfileResult struct {
+	Status     string `json:"status"`
+	UserID     string `json:"user_id"`
+	IndexName  string `json:"index_name"`
+	Confidence float64 `json:"confidence,omitempty"`
+	InteractionCount int   `json:"interaction_count,omitempty"`
+	Message    string `json:"message,omitempty"`
+}
+
+// --- Fase 2 P2: Batch 3 — graph edges + artifact diff + summarize ---
+
+// GetEdgeDetails: returns full edge details (timestamps, weight, props) for
+// all outgoing edges of a source node, optionally filtered by relation type.
+type GetEdgeDetailsArgs struct {
+	SourceID     string `json:"source_id" jsonschema:"The source node ID,required"`
+	RelationType string `json:"relation_type,omitempty" jsonschema:"Filter by relation type (e.g. 'mentions', 'parent'). Empty = all relations"`
+	IndexName    string `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
+	AtTime       int64  `json:"at_time,omitempty" jsonschema:"Unix timestamp for time-travel queries (0 = latest)"`
+}
+
+type GetEdgeDetailsResult struct {
+	SourceID      string         `json:"source_id"`
+	RelationType  string         `json:"relation_type,omitempty"`
+	EdgeCount     int            `json:"edge_count"`
+	Edges         []EdgeDetail    `json:"edges"`
+	Message       string         `json:"message,omitempty"`
+}
+
+type EdgeDetail struct {
+	TargetID  string  `json:"target_id"`
+	Weight    float32 `json:"weight"`
+	CreatedAt int64   `json:"created_at"`           // Unix nano
+	DeletedAt int64   `json:"deleted_at,omitempty"`  // 0 = active
+	Active    bool    `json:"active"`
+	Props     string  `json:"props,omitempty"` // raw JSON props
+}
+
+// DiffArtifactVersions: compares two versions of a knowledge artifact and
+// reports added, removed, and modified fields.
+type DiffArtifactVersionsArgs struct {
+	Intent     string `json:"intent" jsonschema:"Template name,required"`
+	Entity     string `json:"entity" jsonschema:"Entity identifier,required"`
+	EntityType string `json:"entity_type,omitempty" jsonschema:"Entity type (auto-detected if omitted)"`
+	IndexName  string `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
+	V1         int    `json:"v1" jsonschema:"First version to compare,required"`
+	V2         int    `json:"v2" jsonschema:"Second version to compare,required"`
+}
+
+type DiffArtifactVersionsResult struct {
+	Intent     string         `json:"intent"`
+	Entity     string         `json:"entity"`
+	V1         int            `json:"v1"`
+	V2         int            `json:"v2"`
+	Added      map[string]any `json:"added"`
+	Removed    map[string]any `json:"removed"`
+	Modified   map[string]any `json:"modified"` // field -> {v1, v2}
+	Message    string         `json:"message,omitempty"`
+}
+
+// SummarizeMemories: generates a bullet-point summary of a custom set of
+// memories (vs end_session which is session-specific).
+type SummarizeMemoriesArgs struct {
+	MemoryIDs []string `json:"memory_ids" jsonschema:"List of memory IDs to summarize,required"`
+	IndexName string   `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
+	Title     string   `json:"title,omitempty" jsonschema:"Optional title for the summary (default 'Memories Summary')"`
+}
+
+type SummarizeMemoriesResult struct {
+	Title         string `json:"title"`
+	SummaryID     string `json:"summary_id"`
+	Summary       string `json:"summary"`
+	ContentCount  int    `json:"content_count"`
+	Message       string `json:"message,omitempty"`
+}

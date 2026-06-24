@@ -2,9 +2,11 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -2816,4 +2818,386 @@ func extractTimestamp(meta map[string]any) int64 {
 		return int64(v)
 	}
 	return 0
+}
+
+// =====================================================================
+// FASE 2 P2 EXPANSION: Batch 1 — wrapper semplici
+// =====================================================================
+
+// SaveSnapshot forces a snapshot of the engine state to disk.
+// Useful before risky operations or at logical checkpoints.
+func (s *Service) SaveSnapshot(ctx context.Context, req *mcp.CallToolRequest, args SaveSnapshotArgs) (*mcp.CallToolResult, SaveSnapshotResult, error) {
+	start := time.Now()
+	if err := s.engine.SaveSnapshot(); err != nil {
+		return nil, SaveSnapshotResult{
+			Status:     "error",
+			Message:    err.Error(),
+			DurationMs: time.Since(start).Milliseconds(),
+		}, nil
+	}
+	return nil, SaveSnapshotResult{
+		Status:     "saved",
+		Message:    "snapshot written successfully",
+		DurationMs: time.Since(start).Milliseconds(),
+	}, nil
+}
+
+// CompactAOF triggers an asynchronous AOF rewrite to reclaim disk space.
+// The rewrite runs in a background task managed by the engine.
+func (s *Service) CompactAOF(ctx context.Context, req *mcp.CallToolRequest, args CompactAOFArgs) (*mcp.CallToolResult, CompactAOFResult, error) {
+	if err := s.engine.RewriteAOF(); err != nil {
+		return nil, CompactAOFResult{
+			Status:  "error",
+			Message: err.Error(),
+		}, nil
+	}
+	return nil, CompactAOFResult{
+		Status:  "triggered",
+		Message: "AOF rewrite started in background. Check log for completion.",
+	}, nil
+}
+
+// GetEmbedderStatus introspects the active embedder. Returns model name,
+// output dimension (via type assertion + test embed), and availability.
+// If the embedder is a NoopEmbedder, reports unavailable.
+func (s *Service) GetEmbedderStatus(ctx context.Context, req *mcp.CallToolRequest, args struct{}) (*mcp.CallToolResult, GetEmbedderStatusResult, error) {
+	result := GetEmbedderStatusResult{Dimension: 0}
+	// Check if it's a NoopEmbedder (unavailable)
+	if _, isNoop := s.embedder.(embeddings.NoopEmbedder); isNoop {
+		result.Active = false
+		result.Message = "embedder is NoopEmbedder — semantic tools will not work. Configure --embedder or install Ollama."
+		return nil, result, nil
+	}
+	result.Active = true
+	// Detect dimension by running a test embed (cheap operation).
+	vec, err := s.embedder.Embed("test")
+	if err == nil {
+		result.Dimension = len(vec)
+	} else {
+		result.Message = "embedder error: " + err.Error()
+	}
+	return nil, result, nil
+}
+
+// KVGet reads a value from the engine's key-value store.
+// Binary values are base64-encoded for safe transport.
+func (s *Service) KVGet(ctx context.Context, req *mcp.CallToolRequest, args KVGetArgs) (*mcp.CallToolResult, KVGetResult, error) {
+	result := KVGetResult{Key: args.Key}
+	if args.Key == "" {
+		result.Message = "key is required"
+		return nil, result, nil
+	}
+	value, found := s.engine.KVGet(args.Key)
+	if !found {
+		result.Found = false
+		result.Message = "key not found"
+		return nil, result, nil
+	}
+	result.Found = true
+	result.Value = base64.StdEncoding.EncodeToString(value)
+	return nil, result, nil
+}
+
+// KVSet writes a string value to the engine's key-value store.
+func (s *Service) KVSet(ctx context.Context, req *mcp.CallToolRequest, args KVSetArgs) (*mcp.CallToolResult, KVSetResult, error) {
+	result := KVSetResult{Key: args.Key}
+	if args.Key == "" {
+		result.Message = "key is required"
+		result.Status = "error"
+		return nil, result, nil
+	}
+	if err := s.engine.KVSet(args.Key, []byte(args.Value)); err != nil {
+		result.Status = "error"
+		result.Message = err.Error()
+		return nil, result, nil
+	}
+	result.Status = "ok"
+	return nil, result, nil
+}
+
+// KVDelete removes a key from the engine's key-value store.
+func (s *Service) KVDelete(ctx context.Context, req *mcp.CallToolRequest, args KVDeleteArgs) (*mcp.CallToolResult, KVDeleteResult, error) {
+	result := KVDeleteResult{Key: args.Key}
+	if args.Key == "" {
+		result.Message = "key is required"
+		result.Status = "error"
+		return nil, result, nil
+	}
+	if err := s.engine.KVDelete(args.Key); err != nil {
+		result.Status = "error"
+		result.Message = err.Error()
+		return nil, result, nil
+	}
+	result.Status = "ok"
+	return nil, result, nil
+}
+
+// =====================================================================
+// FASE 2 P2 EXPANSION: Batch 2 — engine stats + profile refresh
+// =====================================================================
+
+// GetStats returns self-diagnostics: total vectors, indexes, embedder status.
+// If index_name is given, returns stats for that specific index.
+// If empty, returns aggregate stats across all indexes.
+func (s *Service) GetStats(ctx context.Context, req *mcp.CallToolRequest, args GetStatsArgs) (*mcp.CallToolResult, GetStatsResult, error) {
+	result := GetStatsResult{Indexes: []IndexSummary{}}
+	// Detect embedder
+	if _, isNoop := s.embedder.(embeddings.NoopEmbedder); isNoop {
+		result.Embedder = "noop"
+	} else {
+		result.Embedder = "active"
+	}
+	infos, err := s.engine.DB.GetVectorIndexInfoAPI()
+	if err != nil {
+		result.Message = "stats error: " + err.Error()
+		return nil, result, nil
+	}
+	// Filter by index_name if provided
+	for _, info := range infos {
+		if args.IndexName != "" && info.Name != args.IndexName {
+			continue
+		}
+		result.Indexes = append(result.Indexes, IndexSummary{
+			Name:        info.Name,
+			VectorCount: info.VectorCount,
+			Metric:      string(info.Metric),
+		})
+		result.TotalVectors += info.VectorCount
+	}
+	result.TotalIndexes = len(result.Indexes)
+	if args.IndexName != "" {
+		result.IndexName = args.IndexName
+	}
+	return nil, result, nil
+}
+
+// GetPersistenceStatus returns AOF file stats for monitoring disk usage.
+func (s *Service) GetPersistenceStatus(ctx context.Context, req *mcp.CallToolRequest, args struct{}) (*mcp.CallToolResult, GetPersistenceStatusResult, error) {
+	result := GetPersistenceStatusResult{
+		AOFPath: s.engine.AOFPath(),
+	}
+	// Get AOF file size via os.Stat
+	if fi, err := os.Stat(s.engine.AOFPath()); err == nil {
+		result.AOFSizeBytes = fi.Size()
+	} else {
+		result.Message = "AOF stat error: " + err.Error()
+	}
+	return nil, result, nil
+}
+
+// RefreshUserProfile forces the Gardener to re-process a user profile now,
+// bypassing the threshold check. Useful after a heavy interaction session
+// when the agent wants the profile updated immediately.
+func (s *Service) RefreshUserProfile(ctx context.Context, req *mcp.CallToolRequest, args RefreshUserProfileArgs) (*mcp.CallToolResult, RefreshUserProfileResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	result := RefreshUserProfileResult{
+		UserID:    args.UserID,
+		IndexName: idx,
+		Status:    "error",
+	}
+	if args.UserID == "" {
+		result.Message = "user_id is required"
+		return nil, result, nil
+	}
+	if s.gardener == nil {
+		result.Message = "Gardener not configured (no cognitive.yaml or gardener.enabled=false)"
+		return nil, result, nil
+	}
+	if err := s.gardener.UpdateUserProfile(idx, args.UserID); err != nil {
+		result.Message = "refresh failed: " + err.Error()
+		return nil, result, nil
+	}
+	result.Status = "refreshed"
+	result.Message = "user profile refreshed"
+	return nil, result, nil
+}
+
+// =====================================================================
+// FASE 2 P2 EXPANSION: Batch 3 — graph edges + artifact diff + summarize
+// =====================================================================
+
+// GetEdgeDetails returns full edge details (timestamps, weight, props) for
+// outgoing edges of a source node, optionally filtered by relation type.
+func (s *Service) GetEdgeDetails(ctx context.Context, req *mcp.CallToolRequest, args GetEdgeDetailsArgs) (*mcp.CallToolResult, GetEdgeDetailsResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	result := GetEdgeDetailsResult{
+		SourceID: args.SourceID,
+		Edges:    []EdgeDetail{},
+	}
+	if args.SourceID == "" {
+		result.Message = "source_id is required"
+		return nil, result, nil
+	}
+	if !s.engine.IndexExists(idx) {
+		result.Message = "index '" + idx + "' not found"
+		return nil, result, nil
+	}
+	// If no relation type specified, iterate all relations for this node.
+	// This works around the engine's quirk where VGetEdges with empty
+	// relation_type returns no results.
+	relations := []string{args.RelationType}
+	if args.RelationType == "" {
+		allRels := s.engine.VGetRelations(idx, args.SourceID)
+		for rel := range allRels {
+			relations = append(relations, rel)
+		}
+	}
+	for _, rel := range relations {
+		edges, found := s.engine.VGetEdges(idx, args.SourceID, rel, args.AtTime)
+		if !found {
+			continue
+		}
+		for _, e := range edges {
+			detail := EdgeDetail{
+				TargetID:  e.TargetID,
+				Weight:    e.Weight,
+				CreatedAt: e.CreatedAt,
+				DeletedAt: e.DeletedAt,
+				Active:    e.DeletedAt == 0,
+			}
+			if len(e.Props) > 0 {
+				detail.Props = string(e.Props)
+			}
+			result.Edges = append(result.Edges, detail)
+		}
+	}
+	result.EdgeCount = len(result.Edges)
+	if result.EdgeCount == 0 {
+		result.Message = "no edges found"
+	}
+	return nil, result, nil
+}
+
+// DiffArtifactVersions compares two versions of a knowledge artifact and
+// reports added, removed, and modified fields.
+func (s *Service) DiffArtifactVersions(ctx context.Context, req *mcp.CallToolRequest, args DiffArtifactVersionsArgs) (*mcp.CallToolResult, DiffArtifactVersionsResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	result := DiffArtifactVersionsResult{
+		Intent:   args.Intent,
+		Entity:   args.Entity,
+		V1:       args.V1,
+		V2:       args.V2,
+		Added:    map[string]any{},
+		Removed:  map[string]any{},
+		Modified: map[string]any{},
+	}
+	if s.compiler == nil {
+		result.Message = "compiler not configured"
+		return nil, result, nil
+	}
+	if !s.engine.IndexExists(idx) {
+		result.Message = "index '" + idx + "' not found"
+		return nil, result, nil
+	}
+	a1, err := s.compiler.GetArtifact(args.Intent, args.EntityType, args.Entity, idx, args.V1)
+	if err != nil {
+		result.Message = "v1 not found: " + err.Error()
+		return nil, result, nil
+	}
+	a2, err := s.compiler.GetArtifact(args.Intent, args.EntityType, args.Entity, idx, args.V2)
+	if err != nil {
+		result.Message = "v2 not found: " + err.Error()
+		return nil, result, nil
+	}
+	// Compare fields
+	for k, v := range a2.Data {
+		if v1, ok := a1.Data[k]; !ok {
+			result.Added[k] = v
+		} else if fmt.Sprintf("%v", v1) != fmt.Sprintf("%v", v) {
+			result.Modified[k] = map[string]any{
+				"v1": v1,
+				"v2": v,
+			}
+		}
+	}
+	for k, v := range a1.Data {
+		if _, ok := a2.Data[k]; !ok {
+			result.Removed[k] = v
+		}
+	}
+	return nil, result, nil
+}
+
+// SummarizeMemories generates a bullet-point summary of a custom set of
+// memories. The summary is stored as a new memory node for later retrieval.
+func (s *Service) SummarizeMemories(ctx context.Context, req *mcp.CallToolRequest, args SummarizeMemoriesArgs) (*mcp.CallToolResult, SummarizeMemoriesResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	result := SummarizeMemoriesResult{Title: args.Title}
+	if len(args.MemoryIDs) == 0 {
+		result.Message = "memory_ids is required (non-empty list)"
+		return nil, result, nil
+	}
+	if !s.engine.IndexExists(idx) {
+		result.Message = "index '" + idx + "' not found"
+		return nil, result, nil
+	}
+	// Fetch memories by IDs
+	datas, _ := s.engine.VGetMany(idx, args.MemoryIDs)
+	if len(datas) == 0 {
+		result.Message = "no memories found for the given IDs"
+		return nil, result, nil
+	}
+	// Build summary
+	if result.Title == "" {
+		result.Title = "Memories Summary"
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%s (%d items):\n\n", result.Title, len(datas)))
+	sb.WriteString("Key Points:\n")
+	contentCount := 0
+	for _, d := range datas {
+		content := getString(d.Metadata, "content")
+		if content == "" {
+			continue
+		}
+		if len(content) > 200 {
+			content = content[:200] + "..."
+		}
+		sb.WriteString(fmt.Sprintf("- %s\n", content))
+		contentCount++
+	}
+	if contentCount == 0 {
+		result.Message = "no content found in provided memories"
+		return nil, result, nil
+	}
+	summaryText := sb.String()
+	result.Summary = summaryText
+	result.ContentCount = contentCount
+
+	// Save summary as a new memory node
+	summaryID := fmt.Sprintf("summary::%d", time.Now().UnixNano())
+	meta := map[string]any{
+		"content":   summaryText,
+		"type":      "memories_summary",
+		"timestamp": time.Now().Format(time.RFC3339),
+		"source":    "mcp",
+	}
+	for i, id := range args.MemoryIDs {
+		if i >= 5 {
+			break
+		}
+		meta[fmt.Sprintf("source_%d", i)] = id
+	}
+	// zeroVec is used because summary doesn't need a real embedding.
+	// The vectorizer will use a default dimension; for now we use zeros.
+	zeroVec := make([]float32, 384)
+	if err := s.engine.VAdd(idx, summaryID, zeroVec, meta); err != nil {
+		result.Message = "summary generated but failed to save: " + err.Error()
+		result.SummaryID = ""
+		return nil, result, nil
+	}
+	result.SummaryID = summaryID
+	return nil, result, nil
 }
