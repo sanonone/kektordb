@@ -42,6 +42,12 @@ const (
 	ToolAssessBelief          = "assess_belief"
 	ToolSearchWithScores      = "search_with_scores"
 	ToolListIndexes           = "list_indexes"
+	// Fase 1 P2 expansion: 5 more tools for agent visibility
+	ToolGetRelations         = "get_relations"
+	ToolGetGardenerStatus    = "get_gardener_status"
+	ToolListArtifacts        = "list_artifacts"
+	ToolListReflections      = "list_reflections"
+	ToolForceRecompile       = "force_recompile"
 )
 
 // allToolNames maps every known MCP tool name for validation.
@@ -80,6 +86,11 @@ var allToolNames = map[string]bool{
 	ToolAssessBelief:          true,
 	ToolSearchWithScores:      true,
 	ToolListIndexes:           true,
+	ToolGetRelations:          true,
+	ToolGetGardenerStatus:     true,
+	ToolListArtifacts:         true,
+	ToolListReflections:       true,
+	ToolForceRecompile:        true,
 }
 
 // ProfileAgent contains tools useful for AI coding agents.
@@ -115,6 +126,12 @@ var ProfileAgent = map[string]bool{
 	ToolAssessBelief:          true,
 	ToolSearchWithScores:      true,
 	ToolListIndexes:           true,
+	// Fase 1 P2 tools
+	ToolGetRelations:          true,
+	ToolGetGardenerStatus:     true,
+	ToolListArtifacts:         true,
+	ToolListReflections:       true,
+	ToolForceRecompile:        true,
 }
 
 // ProfileAdmin contains tools for administrative tasks and data curation.

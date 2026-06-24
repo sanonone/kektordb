@@ -587,3 +587,108 @@ type IndexInfo struct {
 	Dimension   int    `json:"dimension"`
 	Metric      string `json:"metric"`
 }
+
+// --- Fase 1 P2: 5 nuovi tool per chiudere gap visibilità agent ---
+
+// GetRelations: ritorna la mappa delle relazioni (outgoing + incoming) di un nodo.
+// Utile per inspection strutturata del grafo (oggi solo prose via explore_connections).
+type GetRelationsArgs struct {
+	NodeID    string `json:"node_id" jsonschema:"The node ID to inspect,required"`
+	IndexName string `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
+}
+
+type GetRelationsResult struct {
+	NodeID    string              `json:"node_id"`
+	Outgoing  map[string][]string `json:"outgoing"`  // relation_type -> [target_id]
+	Incoming  map[string][]string `json:"incoming"`  // relation_type -> [source_id]
+	OutCount  int                 `json:"out_count"`
+	InCount   int                 `json:"in_count"`
+	Message   string              `json:"message,omitempty"`
+}
+
+// GetGardenerStatus: introspection del Gardener (mode, interval, last think, totals).
+// Self-diagnostics: l'agent sa se il Gardener è in salute senza chiederlo all'utente.
+type GetGardenerStatusArgs struct{}
+
+type GetGardenerStatusResult struct {
+	Enabled            bool     `json:"enabled"`
+	Mode               string   `json:"mode"` // "basic" | "advanced" | "meta"
+	IntervalSeconds    int      `json:"interval_seconds"`
+	TargetIndexes      []string `json:"target_indexes"`
+	LastThinkAgo       string   `json:"last_think_ago,omitempty"` // human-readable
+	LastThinkUnix      int64    `json:"last_think_unix"`
+	TotalReflections   int64    `json:"total_reflections"`
+	TotalContradictions int64   `json:"total_contradictions"`
+	TotalDecayed       int64    `json:"total_decayed"`
+	Message            string   `json:"message,omitempty"`
+}
+
+// ListArtifacts: lista tutti i knowledge artifacts compilati con status/versione.
+type ListArtifactsArgs struct {
+	IndexName string `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"Max artifacts to return (default 50, max 200)"`
+}
+
+type ListArtifactsResult struct {
+	IndexName string             `json:"index_name"`
+	Total     int                `json:"total"`
+	Artifacts []ArtifactSummary  `json:"artifacts"`
+	Message   string             `json:"message,omitempty"`
+}
+
+type ArtifactSummary struct {
+	ID             string  `json:"id"`
+	Name           string  `json:"name"`
+	Version        int     `json:"version"`
+	EntityType     string  `json:"entity_type"`
+	EntityID       string  `json:"entity_id"`
+	Status         string  `json:"status"`
+	CompileMode    string  `json:"compile_mode"`
+	StalenessScore float64 `json:"staleness_score"`
+	CompiledAt     string  `json:"compiled_at,omitempty"`
+}
+
+// ListReflections: lista contraddizioni/insights generati dal Gardener, filtrabili per status.
+type ListReflectionsArgs struct {
+	IndexName string `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
+	Status    string `json:"status,omitempty" jsonschema:"Filter by status: 'unresolved', 'resolved', or empty for all"`
+	Limit     int    `json:"limit,omitempty" jsonschema:"Max reflections to return (default 20, max 100)"`
+}
+
+type ListReflectionsResult struct {
+	IndexName   string               `json:"index_name"`
+	Status      string               `json:"status,omitempty"`
+	Total       int                  `json:"total"`
+	Reflections []ReflectionSummary  `json:"reflections"`
+	Message     string               `json:"message,omitempty"`
+}
+
+type ReflectionSummary struct {
+	ID          string   `json:"id"`
+	Type        string   `json:"type"`     // contradiction, consolidation, importance, core_fact
+	Content     string   `json:"content"`
+	Confidence  float64  `json:"confidence"`
+	Status      string   `json:"status"`
+	DerivedFrom []string `json:"derived_from,omitempty"`
+	CreatedAt   string   `json:"created_at,omitempty"`
+}
+
+// ForceRecompile: trigger sincrono di (re)compilazione di un artifact.
+// Complementare a trigger_reflection (forza think cycle del Gardener).
+type ForceRecompileArgs struct {
+	Intent     string `json:"intent" jsonschema:"Template name (e.g. 'user_profile', 'project_summary'),required"`
+	Entity     string `json:"entity" jsonschema:"Entity identifier,required"`
+	EntityType string `json:"entity_type,omitempty" jsonschema:"Entity type (auto-detected if omitted)"`
+	IndexName  string `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
+	TimeoutMs  int    `json:"timeout_ms,omitempty" jsonschema:"Max time to wait (default 30000, max 120000)"`
+}
+
+type ForceRecompileResult struct {
+	Status     string `json:"status"` // "compiled" | "failed"
+	Intent     string `json:"intent"`
+	Entity     string `json:"entity"`
+	Version    int    `json:"version,omitempty"`
+	Stale      bool   `json:"stale,omitempty"`
+	Message    string `json:"message,omitempty"`
+	DurationMs int64  `json:"duration_ms"`
+}

@@ -13,6 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sanonone/kektordb/pkg/cognitive"
 	"github.com/sanonone/kektordb/pkg/compiler"
+	"github.com/sanonone/kektordb/pkg/core"
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/core/types"
@@ -2121,6 +2122,11 @@ func (s *Service) ListTemplates(ctx context.Context, req *mcp.CallToolRequest, a
 }
 
 // GetArtifactHistory returns the version history of a compiled artifact.
+//
+// If entity_type is empty, falls back to a broad query (matching all entity
+// types for the given artifact_name + entity_id) and filters in-memory by
+// entity_id. This handles the common case where the agent doesn't know the
+// entity_type ahead of time.
 func (s *Service) GetArtifactHistory(ctx context.Context, req *mcp.CallToolRequest, args GetArtifactHistoryArgs) (*mcp.CallToolResult, GetArtifactHistoryResult, error) {
 	result := GetArtifactHistoryResult{
 		Entity:   args.Entity,
@@ -2146,7 +2152,7 @@ func (s *Service) GetArtifactHistory(ctx context.Context, req *mcp.CallToolReque
 	if limit > 100 {
 		limit = 100
 	}
-	history, err := s.compiler.GetArtifactHistory(args.Intent, args.EntityType, args.Entity, idx)
+	history, err := s.getArtifactHistoryWithFallback(args.Intent, args.EntityType, args.Entity, idx)
 	if err != nil {
 		// Treat any internal error as "not found" — never leak engine errors to the agent.
 		result.Message = "artifact not found: " + err.Error()
@@ -2154,7 +2160,9 @@ func (s *Service) GetArtifactHistory(ctx context.Context, req *mcp.CallToolReque
 	}
 	result.TotalVersions = len(history)
 	if result.TotalVersions == 0 {
-		result.Message = "no compiled versions found for " + args.Intent + "/" + args.Entity
+		// Diagnose why: is the index empty of knowledge_artifacts, or just no match?
+		diagnostic, _ := s.diagnoseEmptyArtifactHistory(idx, args.Intent, args.EntityType, args.Entity)
+		result.Message = "no compiled versions found for " + args.Intent + "/" + args.Entity + diagnostic
 	}
 	for i, art := range history {
 		if i >= limit {
@@ -2173,6 +2181,81 @@ func (s *Service) GetArtifactHistory(ctx context.Context, req *mcp.CallToolReque
 		result.Versions = append(result.Versions, info)
 	}
 	return nil, result, nil
+}
+
+// getArtifactHistoryWithFallback is the lookup logic for GetArtifactHistory.
+// If entity_type is empty, the engine's VFilter would never match
+// (entity_type='' vs stored value like "user" or "project"). We work around
+// this by using a broader filter without entity_type, then filtering the
+// result in-memory by entity_id. This handles the common case where the
+// agent knows the artifact name and entity but not the entity_type.
+func (s *Service) getArtifactHistoryWithFallback(intent, entityType, entityID, indexName string) ([]*compiler.Artifact, error) {
+	// If entity_type is provided, use the standard (strict) path.
+	if entityType != "" {
+		return s.compiler.GetArtifactHistory(intent, entityType, entityID, indexName)
+	}
+	// Fallback: query without entity_type filter, then filter by entity_id
+	// in-memory (artifact_name + entity_id should uniquely identify an
+	// artifact in most cases).
+	filter := fmt.Sprintf(
+		"type='knowledge_artifact' AND artifact_name='%s' AND entity_id='%s'",
+		intent, entityID,
+	)
+	ids, err := s.engine.VFilter(indexName, filter, 200)
+	if err != nil {
+		return nil, fmt.Errorf("fallback filter: %w", err)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	datas, _ := s.engine.VGetMany(indexName, ids)
+	var artifacts []*compiler.Artifact
+	for _, d := range datas {
+		// Defensive: re-verify entity_id (in case of weird edge cases).
+		art := compiler.ArtifactFromMetadata(d.ID, d.Metadata)
+		if art.EntityID != entityID {
+			continue
+		}
+		artifacts = append(artifacts, art)
+	}
+	sort.Slice(artifacts, func(i, j int) bool {
+		return artifacts[i].Version > artifacts[j].Version
+	})
+	return artifacts, nil
+}
+
+// diagnoseEmptyArtifactHistory returns diagnostic info when no history is
+// found, to help the agent understand whether the index is empty of any
+// knowledge_artifacts, or just doesn't have a match for the specific entity.
+func (s *Service) diagnoseEmptyArtifactHistory(indexName, intent, entityType, entityID string) (string, error) {
+	allIDs, err := s.engine.VFilter(indexName, "type='knowledge_artifact'", 200)
+	if err != nil {
+		return " (index query failed)", err
+	}
+	if len(allIDs) == 0 {
+		return " (index has no knowledge_artifacts — try force_recompile first)", nil
+	}
+	// Index has artifacts but none match this entity. List available entity IDs.
+	datas, _ := s.engine.VGetMany(indexName, allIDs)
+	var available []string
+	seen := make(map[string]bool)
+	for _, d := range datas {
+		entity := ""
+		if v, ok := d.Metadata["entity_id"].(string); ok {
+			entity = v
+		}
+		if entity != "" && !seen[entity] {
+			seen[entity] = true
+			available = append(available, entity)
+			if len(available) >= 5 {
+				break
+			}
+		}
+	}
+	if len(available) > 0 {
+		return fmt.Sprintf(" (available entities with this intent: %v — try with entity_type if there are conflicts)", available), nil
+	}
+	return " (artifact_name not found in index)", nil
 }
 
 // GetArtifactStaleness returns staleness metrics for a compiled artifact.
@@ -2417,6 +2500,283 @@ func (s *Service) ListIndexes(ctx context.Context, req *mcp.CallToolRequest, arg
 	return nil, result, nil
 }
 
+// =====================================================================
+// FASE 1 P2 EXPANSION: 5 more tools for agent visibility
+// =====================================================================
+
+// GetRelations returns a structured map of a node's relationships:
+// outgoing (relation_type -> [target_id]) and incoming (relation_type -> [source_id]).
+// Useful for programmatic graph inspection (vs prose from explore_connections).
+func (s *Service) GetRelations(ctx context.Context, req *mcp.CallToolRequest, args GetRelationsArgs) (*mcp.CallToolResult, GetRelationsResult, error) {
+	result := GetRelationsResult{
+		NodeID:   args.NodeID,
+		Outgoing: map[string][]string{},
+		Incoming: map[string][]string{},
+	}
+	if args.NodeID == "" {
+		result.Message = "node_id is required"
+		return nil, result, nil
+	}
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	if !s.engine.IndexExists(idx) {
+		result.Message = "index '" + idx + "' not found"
+		return nil, result, nil
+	}
+	out := s.engine.VGetRelations(idx, args.NodeID)
+	if out != nil {
+		result.Outgoing = out
+		for _, ts := range out {
+			result.OutCount += len(ts)
+		}
+	}
+	in := s.engine.VGetIncomingRelations(idx, args.NodeID)
+	if in != nil {
+		result.Incoming = in
+		for _, ts := range in {
+			result.InCount += len(ts)
+		}
+	}
+	return nil, result, nil
+}
+
+// GetGardenerStatus returns introspection of the Gardener: mode, interval,
+// last think time, totals. Enables self-diagnostics for the agent.
+func (s *Service) GetGardenerStatus(ctx context.Context, req *mcp.CallToolRequest, args GetGardenerStatusArgs) (*mcp.CallToolResult, GetGardenerStatusResult, error) {
+	if s.gardener == nil {
+		return nil, GetGardenerStatusResult{
+			Enabled: false,
+			Message: "Gardener not configured (no cognitive.yaml or gardener.enabled=false)",
+		}, nil
+	}
+	last := s.gardener.LastThinkTime()
+	result := GetGardenerStatusResult{
+		Enabled:             s.gardener.IsEnabled(),
+		Mode:                s.gardener.Mode(),
+		IntervalSeconds:     int(s.gardener.Interval().Seconds()),
+		TargetIndexes:       s.gardener.TargetIndexes(),
+		TotalReflections:    int64(s.gardener.TotalReflections()),
+		TotalContradictions: int64(s.gardener.TotalContradictions()),
+		TotalDecayed:        int64(s.gardener.TotalDecayed()),
+		LastThinkUnix:       last.Unix(),
+	}
+	if !last.IsZero() {
+		ago := time.Since(last)
+		result.LastThinkAgo = ago.Truncate(time.Second).String()
+	}
+	return nil, result, nil
+}
+
+// ListArtifacts returns all non-historical compiled knowledge artifacts in the
+// given index. Enables discovery of what has been compiled.
+func (s *Service) ListArtifacts(ctx context.Context, req *mcp.CallToolRequest, args ListArtifactsArgs) (*mcp.CallToolResult, ListArtifactsResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	result := ListArtifactsResult{IndexName: idx, Artifacts: []ArtifactSummary{}}
+	if !s.engine.IndexExists(idx) {
+		result.Message = "index '" + idx + "' not found"
+		return nil, result, nil
+	}
+	if s.compiler == nil {
+		result.Message = "compiler not configured"
+		return nil, result, nil
+	}
+	limit := args.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	arts, err := s.compiler.ListArtifacts(idx)
+	if err != nil {
+		result.Message = "list artifacts: " + err.Error()
+		return nil, result, nil
+	}
+	for _, a := range arts {
+		if len(result.Artifacts) >= limit {
+			break
+		}
+		summary := ArtifactSummary{
+			ID:             a.ID,
+			Name:           a.Name,
+			Version:        a.Version,
+			EntityType:     a.EntityType,
+			EntityID:       a.EntityID,
+			Status:         string(a.Status),
+			CompileMode:    string(a.CompileMode),
+			StalenessScore: a.StalenessScore,
+		}
+		if !a.CompiledAt.IsZero() {
+			summary.CompiledAt = a.CompiledAt.Format(time.RFC3339)
+		}
+		result.Artifacts = append(result.Artifacts, summary)
+	}
+	result.Total = len(result.Artifacts)
+	return nil, result, nil
+}
+
+// ListReflections returns Gardener-generated reflections (contradictions,
+// consolidations, importance shifts), filterable by status.
+// Complement to check_subconscious: returns structured data, not prose.
+func (s *Service) ListReflections(ctx context.Context, req *mcp.CallToolRequest, args ListReflectionsArgs) (*mcp.CallToolResult, ListReflectionsResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	result := ListReflectionsResult{IndexName: idx, Reflections: []ReflectionSummary{}}
+	if !s.engine.IndexExists(idx) {
+		result.Message = "index '" + idx + "' not found"
+		return nil, result, nil
+	}
+	limit := args.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	// Build filter for reflection types. VFilter's parser does not support
+	// parentheses, so we use a flat OR. The status and historical filters
+	// are applied in-memory below to avoid generating a complex multi-AND
+	// expression.
+	filter := "type='reflection' OR type='user_profile_insight' OR type='failure_pattern' OR type='knowledge_evolution'"
+
+	ids, err := s.engine.VFilter(idx, filter, limit)
+	if err != nil {
+		result.Message = "filter reflections: " + err.Error()
+		return nil, result, nil
+	}
+	if len(ids) == 0 {
+		result.Message = "no reflections found"
+		return nil, result, nil
+	}
+	datas, _ := s.engine.VGetMany(idx, ids)
+	// Apply status + historical filters in-memory (VFilter doesn't support
+	// parens for complex AND; OR has lower precedence than AND so we can't
+	// combine type IN (...) AND historical!=true in a single expression).
+	filtered := make([]core.VectorData, 0, len(datas))
+	for _, d := range datas {
+		meta := d.Metadata
+		// Skip historical/archived.
+		if hist, _ := meta["_is_historical"].(bool); hist {
+			continue
+		}
+		if arch, _ := meta["_archived"].(bool); arch {
+			continue
+		}
+		// Apply status filter if requested.
+		if args.Status != "" && getString(meta, "status") != args.Status {
+			continue
+		}
+		filtered = append(filtered, d)
+	}
+	datas = filtered
+	// Sort by created_at desc (newest first).
+	sort.Slice(datas, func(i, j int) bool {
+		return extractTimestamp(datas[i].Metadata) > extractTimestamp(datas[j].Metadata)
+	})
+	for _, d := range datas {
+		meta := d.Metadata
+		summary := ReflectionSummary{
+			ID:         d.ID,
+			Content:    getString(meta, "content"),
+			Status:     getString(meta, "status"),
+			Confidence: getFloat(meta, "confidence"),
+		}
+		if t, ok := meta["type"].(string); ok {
+			summary.Type = t
+		}
+		if ts, ok := meta["_created_at"].(float64); ok {
+			summary.CreatedAt = time.Unix(int64(ts), 0).Format(time.RFC3339)
+		}
+		if derived, ok := meta["derived_from"].([]interface{}); ok {
+			for _, d := range derived {
+				if s, ok := d.(string); ok {
+					summary.DerivedFrom = append(summary.DerivedFrom, s)
+				}
+			}
+		}
+		result.Reflections = append(result.Reflections, summary)
+	}
+	result.Total = len(result.Reflections)
+	return nil, result, nil
+}
+
+// ForceRecompile triggers a synchronous (re)compilation of a knowledge artifact.
+// Use after a reflection cycle or when an artifact is stale.
+func (s *Service) ForceRecompile(ctx context.Context, req *mcp.CallToolRequest, args ForceRecompileArgs) (*mcp.CallToolResult, ForceRecompileResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	result := ForceRecompileResult{
+		Intent:  args.Intent,
+		Entity:  args.Entity,
+		Status:  "failed",
+	}
+	if args.Intent == "" || args.Entity == "" {
+		result.Message = "intent and entity are required"
+		return nil, result, nil
+	}
+	if !s.engine.IndexExists(idx) {
+		result.Message = "index '" + idx + "' not found"
+		return nil, result, nil
+	}
+	if s.compiler == nil {
+		result.Message = "compiler not configured (LLM required for LLM-mode templates, or LLM client not initialized)"
+		return nil, result, nil
+	}
+	timeout := time.Duration(args.TimeoutMs) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	if timeout > 120*time.Second {
+		timeout = 120 * time.Second
+	}
+
+	// Run compilation synchronously with a timeout. The MCP call will block
+	// the agent until the artifact is recompiled (typically a few seconds).
+	start := time.Now()
+	done := make(chan struct{})
+	var art *compiler.Artifact
+	var compileErr error
+	go func() {
+		defer close(done)
+		art, compileErr = s.compiler.Compile(compiler.CompileRequest{
+			Name:     args.Intent,
+			Template: args.Intent,
+			Sources: compiler.SourceSpec{
+				Type:   "graph_query",
+				Entity: compiler.EntityRef{Type: args.EntityType, ID: args.Entity},
+				Depth:  2,
+			},
+			IndexName: idx,
+		})
+	}()
+	select {
+	case <-done:
+		// Compilation finished within timeout (or completed already).
+	case <-time.After(timeout):
+		result.Message = "compilation timed out after " + timeout.String()
+		return nil, result, nil
+	}
+	result.DurationMs = time.Since(start).Milliseconds()
+	if compileErr != nil {
+		result.Message = "compilation failed: " + compileErr.Error()
+		return nil, result, nil
+	}
+	result.Status = "compiled"
+	result.Version = art.Version
+	result.Stale = art.Status == compiler.CompileStatusStale
+	result.Message = "artifact recompiled successfully (v" + fmt.Sprint(art.Version) + ")"
+	return nil, result, nil
+}
+
 func buildRequestKnowledgeResult(artifact *compiler.Artifact, includeProv bool) RequestKnowledgeResult {
 	status := "complete"
 	if artifact.StalenessScore > 0.1 {
@@ -2447,4 +2807,13 @@ func buildRequestKnowledgeResult(artifact *compiler.Artifact, includeProv bool) 
 		result.Provenance = prov
 	}
 	return result
+}
+
+// extractTimestamp pulls the _created_at field from metadata, returning
+// it as a Unix timestamp. Returns 0 if absent.
+func extractTimestamp(meta map[string]any) int64 {
+	if v, ok := meta["_created_at"].(float64); ok {
+		return int64(v)
+	}
+	return 0
 }

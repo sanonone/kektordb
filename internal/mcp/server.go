@@ -1,6 +1,6 @@
 // Package mcp implements the Model Context Protocol server for KektorDB.
 //
-// It exposes 23 tools across agent (17 tools) and admin (6 tools) profiles,
+// It exposes 33 tools across agent (28 tools) and admin (6 tools) profiles,
 // including memory management, graph traversal, knowledge compilation,
 // and agent lifecycle commands. Also provides MCP setup/installer commands
 // for Claude Code, Cursor, Gemini CLI, Codex, and OpenCode.
@@ -278,5 +278,42 @@ func registerTools(s *mcp.Server, service *Service, allowlist map[string]bool) {
 			Name:        ToolListIndexes,
 			Description: "List all vector indexes in the engine with their stats. Useful for multi-tenant agents and for discovering available targets before transfer_memory.",
 		}, service.ListIndexes)
+	}
+
+	// --- Fase 1 P2 expansion: 5 more tools for agent visibility ---
+
+	if shouldRegister(ToolGetRelations, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolGetRelations,
+			Description: "Return a structured map of a node's outgoing and incoming relationships ({relation_type: [target_id]}). Useful for programmatic graph inspection (vs prose from explore_connections).",
+		}, service.GetRelations)
+	}
+
+	if shouldRegister(ToolGetGardenerStatus, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolGetGardenerStatus,
+			Description: "Introspect the Gardener: mode, interval, last think time, total reflections, contradictions, and decayed memories. Enables self-diagnostics.",
+		}, service.GetGardenerStatus)
+	}
+
+	if shouldRegister(ToolListArtifacts, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolListArtifacts,
+			Description: "List all compiled knowledge artifacts in an index with name, version, status, and staleness score. Enables discovery of what's been compiled.",
+		}, service.ListArtifacts)
+	}
+
+	if shouldRegister(ToolListReflections, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolListReflections,
+			Description: "List Gardener-generated reflections (contradictions, consolidations, importance shifts), filterable by status. Complement to check_subconscious but returns structured data.",
+		}, service.ListReflections)
+	}
+
+	if shouldRegister(ToolForceRecompile, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolForceRecompile,
+			Description: "Synchronously trigger (re)compilation of a knowledge artifact. Use after a reflection cycle or when an artifact is stale. Blocks the agent until done (typically a few seconds).",
+		}, service.ForceRecompile)
 	}
 }
