@@ -23,7 +23,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sanonone/kektordb/internal/server/ui"
-	"github.com/sanonone/kektordb/pkg/auth"
 	"github.com/sanonone/kektordb/pkg/core"
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
@@ -2277,18 +2276,22 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.Namespaces) == 0 {
-		req.Namespaces = []string{"*"} // Default a tutti i namespace
+	if s.keyManager == nil {
+		s.writeHTTPError(w, http.StatusNotImplemented, fmt.Errorf("key management not available in OIDC mode"))
+		return
 	}
 
-	clearToken, policy, err := s.authService.GenerateKey(req.Description, req.Role, req.Namespaces)
+	if len(req.Namespaces) == 0 {
+		req.Namespaces = []string{"*"}
+	}
+
+	clearToken, policy, err := s.keyManager.GenerateKey(req.Description, req.Role, req.Namespaces)
 	if err != nil {
 		s.writeHTTPError(w, http.StatusInternalServerError, err)
 		return
 	}
 
-	// Ritorniamo il token in chiaro SOLO in questo momento.
-	// Dopo questa risposta, non sarà mai più recuperabile.
+	// Return the token in clear ONLY at this moment. It is never stored and cannot be recovered.
 	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
 		"token":   clearToken,
 		"policy":  policy,
@@ -2297,32 +2300,56 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
-	// Questo richiede una scansione del KV store per le chiavi che iniziano con "_sys_auth::"
-	keys := s.Engine.DB.GetKVStore().GetKeysWithPrefix("_sys_auth::", 0)
-
-	var policies []*auth.APIKeyPolicy
-	for _, key := range keys {
-		if val, found := s.Engine.DB.GetKVStore().Get(key); found {
-			var policy auth.APIKeyPolicy
-			if err := json.Unmarshal(val, &policy); err == nil {
-				policies = append(policies, &policy)
-			}
-		}
+	// JWT tokens are self-contained and not stored server-side.
+	// Only revoked token IDs (jti denylist) are tracked in KV.
+	revokedKeys := s.Engine.DB.GetKVStore().GetKeysWithPrefix("_sys_auth::revoked::", 0)
+	jtis := make([]string, 0, len(revokedKeys))
+	for _, k := range revokedKeys {
+		jtis = append(jtis, strings.TrimPrefix(k, "_sys_auth::revoked::"))
 	}
-
-	s.writeHTTPResponse(w, http.StatusOK, policies)
+	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
+		"revoked_token_ids": jtis,
+		"note":              "Active JWT tokens are self-contained and not listed server-side.",
+	})
 }
 
 func (s *Server) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request) {
-	// L'ID nell'URL è in realtà l'hash (che si può recuperare da GET /auth/keys)
-	hashedKey := r.PathValue("id")
-	if hashedKey == "" {
-		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("key id missing"))
+	// The id in the URL is the jti (from the policy returned at key creation time).
+	jti := r.PathValue("id")
+	if jti == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("key id (jti) missing"))
 		return
 	}
 
-	s.authService.RevokeKey(hashedKey)
-	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "revoked"})
+	if s.keyManager == nil {
+		s.writeHTTPError(w, http.StatusNotImplemented, fmt.Errorf("key revocation not available in OIDC mode"))
+		return
+	}
+
+	if err := s.keyManager.RevokeKey(jti); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, err)
+		return
+	}
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "revoked", "jti": jti})
+}
+
+// handleJWKS serves the public key as a JWKS document at /.well-known/jwks.json.
+// This endpoint is unauthenticated so gateways and external services can fetch
+// the public key and verify KektorDB JWTs locally without calling the server on
+// every request.
+func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
+	if s.keyManager == nil {
+		s.writeHTTPError(w, http.StatusNotImplemented, fmt.Errorf("JWKS not available in OIDC mode; fetch from your IDP's /.well-known/openid-configuration"))
+		return
+	}
+	jwks, err := s.keyManager.PublicKeyJWKS()
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(jwks) //nolint:errcheck
 }
 
 /*

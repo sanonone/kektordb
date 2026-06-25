@@ -1194,8 +1194,6 @@ func TestAuth(t *testing.T) {
 	})
 
 	t.Run("ListApiKeys", func(t *testing.T) {
-		c.CreateApiKey("read", "")
-
 		keys, err := c.ListApiKeys()
 		if err != nil {
 			t.Fatalf("ListApiKeys failed: %v", err)
@@ -1206,25 +1204,16 @@ func TestAuth(t *testing.T) {
 	})
 
 	t.Run("RevokeApiKey", func(t *testing.T) {
-		keys, err := c.ListApiKeys()
+		// Get the jti from CreateApiKeyWithPolicy so we have something to revoke.
+		jti, _, err := c.CreateApiKeyWithPolicy("read", "")
 		if err != nil {
-			t.Fatalf("ListApiKeys failed: %v", err)
+			t.Fatalf("CreateApiKeyWithPolicy failed: %v", err)
 		}
-
-		if len(keys) > 0 {
-			keyID := ""
-			if id, ok := keys[0]["id"].(string); ok {
-				keyID = id
-			} else if key, ok := keys[0]["key"].(string); ok {
-				keyID = key
-			}
-
-			if keyID != "" {
-				err = c.RevokeApiKey(keyID)
-				if err != nil {
-					t.Fatalf("RevokeApiKey failed: %v", err)
-				}
-			}
+		if jti == "" {
+			t.Fatal("Expected jti to be returned in policy")
+		}
+		if err := c.RevokeApiKey(jti); err != nil {
+			t.Fatalf("RevokeApiKey failed: %v", err)
 		}
 	})
 }
