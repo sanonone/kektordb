@@ -230,3 +230,87 @@ func TestRBACAndNamespaces(t *testing.T) {
 		}
 	})
 }
+
+func TestJWKSEndpoint(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := engine.DefaultOptions(tmpDir)
+	opts.AutoSaveInterval = 0
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+
+	srv, err := NewServer(eng, ":0", "", "master", tmpDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The JWKS endpoint is registered on rootMux (unauthenticated).
+	// Reproduce that mux here to test the handler directly.
+	rootMux := http.NewServeMux()
+	rootMux.HandleFunc("GET /.well-known/jwks.json", srv.handleJWKS)
+
+	t.Run("Returns 200 with application/json content-type", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
+		w := httptest.NewRecorder()
+		rootMux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		ct := w.Header().Get("Content-Type")
+		if ct != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", ct)
+		}
+	})
+
+	t.Run("Returns valid JWKS with EC P-256 key", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
+		w := httptest.NewRecorder()
+		rootMux.ServeHTTP(w, req)
+
+		var jwks struct {
+			Keys []map[string]string `json:"keys"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &jwks); err != nil {
+			t.Fatalf("invalid JWKS JSON: %v", err)
+		}
+		if len(jwks.Keys) != 1 {
+			t.Fatalf("expected 1 key, got %d", len(jwks.Keys))
+		}
+		key := jwks.Keys[0]
+		for _, field := range []string{"kty", "crv", "use", "alg", "x", "y"} {
+			if key[field] == "" {
+				t.Errorf("JWKS missing field %q", field)
+			}
+		}
+		if key["kty"] != "EC" || key["crv"] != "P-256" || key["alg"] != "ES256" {
+			t.Errorf("unexpected key parameters: %v", key)
+		}
+	})
+
+	t.Run("Accessible without Authorization header", func(t *testing.T) {
+		// No token — must succeed because JWKS is on the unauthenticated rootMux.
+		req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
+		w := httptest.NewRecorder()
+		rootMux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("JWKS must be unauthenticated, got %d", w.Code)
+		}
+	})
+
+	t.Run("Same public key across two requests", func(t *testing.T) {
+		fetch := func() []byte {
+			req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
+			w := httptest.NewRecorder()
+			rootMux.ServeHTTP(w, req)
+			return w.Body.Bytes()
+		}
+		r1, r2 := fetch(), fetch()
+		if string(r1) != string(r2) {
+			t.Error("JWKS response changed between requests — key should be stable")
+		}
+	})
+}

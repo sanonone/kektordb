@@ -1191,7 +1191,8 @@ type apiKeyRequest struct {
 }
 
 type apiKeyResponse struct {
-	Token string `json:"token"`
+	Token  string                 `json:"token"`
+	Policy map[string]interface{} `json:"policy"`
 }
 
 type exportResponse struct {
@@ -1479,33 +1480,52 @@ func (c *Client) Save() error {
 // --- Auth ---
 
 // CreateApiKey creates a new API key with RBAC permissions.
+// Returns the compact JWT token string and the policy (which contains the jti in "id").
 func (c *Client) CreateApiKey(role, namespace string) (string, error) {
+	_, token, err := c.CreateApiKeyWithPolicy(role, namespace)
+	return token, err
+}
+
+// CreateApiKeyWithPolicy creates a new API key and returns both the jti and the token.
+func (c *Client) CreateApiKeyWithPolicy(role, namespace string) (jti string, token string, err error) {
 	req := apiKeyRequest{
 		Role:      role,
 		Namespace: namespace,
 	}
 	respBody, err := c.jsonRequest(http.MethodPost, "/auth/keys", req)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var resp apiKeyResponse
 	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return "", fmt.Errorf("invalid JSON: %w", err)
+		return "", "", fmt.Errorf("invalid JSON: %w", err)
 	}
-	return resp.Token, nil
+	if id, ok := resp.Policy["id"].(string); ok {
+		jti = id
+	}
+	return jti, resp.Token, nil
 }
 
-// ListApiKeys lists all API key policies.
+// ListApiKeys returns the list of revoked token IDs (jti denylist).
+// Active JWT tokens are self-contained and not stored server-side, so only
+// revoked token IDs are tracked.
 func (c *Client) ListApiKeys() ([]map[string]interface{}, error) {
 	respBody, err := c.jsonRequest(http.MethodGet, "/auth/keys", nil)
 	if err != nil {
 		return nil, err
 	}
-	var resp []map[string]interface{}
+	var resp struct {
+		RevokedTokenIDs []string `json:"revoked_token_ids"`
+	}
 	if err := json.Unmarshal(respBody, &resp); err != nil {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
-	return resp, nil
+	// Convert to the existing return type for backward compatibility with callers.
+	result := make([]map[string]interface{}, 0, len(resp.RevokedTokenIDs))
+	for _, jti := range resp.RevokedTokenIDs {
+		result = append(result, map[string]interface{}{"id": jti})
+	}
+	return result, nil
 }
 
 // RevokeApiKey revokes an API key.
