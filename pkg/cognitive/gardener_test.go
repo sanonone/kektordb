@@ -1991,9 +1991,9 @@ func TestUpdateUserProfilePerUserLock(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		vec := []float32{float32(i), 0, 0, 0, 0, 0, 0, 0}
 		meta := map[string]any{
-			"content":    "test interaction",
-			"user_id":    "dash",
-			"type":       "memory",
+			"content":     "test interaction",
+			"user_id":     "dash",
+			"type":        "memory",
 			"_created_at": float64(time.Now().Unix()),
 		}
 		if err := eng.VAdd(indexName, fmt.Sprintf("seed-%d", i), vec, meta); err != nil {
@@ -2129,7 +2129,7 @@ func TestLLMProfileUpdateRetry(t *testing.T) {
 	// Mock LLM: first call returns invalid (prose only), second call returns valid JSON.
 	mock := &MockLLM{
 		Responses: []string{
-			"I cannot produce valid JSON right now. Let me think...", // first: invalid
+			"I cannot produce valid JSON right now. Let me think...",                                                         // first: invalid
 			`{"user_id":"dash","language":"it","communication_style":"concise","response_length":"short","confidence":0.85}`, // second: valid
 		},
 	}

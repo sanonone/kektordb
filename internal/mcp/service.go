@@ -132,7 +132,7 @@ func hardcodedDefaultRelations() []string {
 	return []string{
 		"related_to", "about", "mentions", // Standard MCP links
 		"parent", "child", "next", "prev", // RAG links
-		"belongs_to", "authored_by",       // Metadata Auto-linking
+		"belongs_to", "authored_by", // Metadata Auto-linking
 		"contains", "evolves_from", "superseded_by", "consolidated_into", // Cognitive / evolution
 	}
 }
@@ -1953,9 +1953,9 @@ func (s *Service) requestKnowledgeFallback(indexName, intent, entity, entityType
 	}
 
 	return nil, RequestKnowledgeResult{
-		Found:      false,
-		Status:     "not_found",
-		Data:       nil,
+		Found:  false,
+		Status: "not_found",
+		Data:   nil,
 	}, nil
 }
 
@@ -2199,7 +2199,7 @@ func (s *Service) GetArtifactHistory(ctx context.Context, req *mcp.CallToolReque
 
 // getArtifactHistoryWithFallback is the lookup logic for GetArtifactHistory.
 // If entity_type is empty, the engine's VFilter would never match
-// (entity_type='' vs stored value like "user" or "project"). We work around
+// (entity_type=” vs stored value like "user" or "project"). We work around
 // this by using a broader filter without entity_type, then filtering the
 // result in-memory by entity_id. This handles the common case where the
 // agent knows the artifact name and entity but not the entity_type.
@@ -2729,9 +2729,9 @@ func (s *Service) ForceRecompile(ctx context.Context, req *mcp.CallToolRequest, 
 		idx = "mcp_memory"
 	}
 	result := ForceRecompileResult{
-		Intent:  args.Intent,
-		Entity:  args.Entity,
-		Status:  "failed",
+		Intent: args.Intent,
+		Entity: args.Entity,
+		Status: "failed",
 	}
 	if args.Intent == "" || args.Entity == "" {
 		result.Message = "intent and entity are required"

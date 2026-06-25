@@ -303,14 +303,14 @@ func TestProfileUpdateDebouncer(t *testing.T) {
 
 	// Use a short debounce (50ms) so the test runs fast.
 	cfg := Config{
-		Enabled:                 true,
-		Interval:                1 * time.Hour, // prevent auto-think
-		Mode:                    "basic",
-		TargetIndexes:           []string{indexName},
-		AdaptiveThreshold:       100,
-		AdaptiveMinInterval:     1 * time.Hour,
-		EnableUserProfiling:     true,
-		ProfileUpdateThreshold:  3,
+		Enabled:                true,
+		Interval:               1 * time.Hour, // prevent auto-think
+		Mode:                   "basic",
+		TargetIndexes:          []string{indexName},
+		AdaptiveThreshold:      100,
+		AdaptiveMinInterval:    1 * time.Hour,
+		EnableUserProfiling:    true,
+		ProfileUpdateThreshold: 3,
 	}
 	gardener := NewGardener(eng, nil, cfg)
 	gardener.profileDebounce = 50 * time.Millisecond

@@ -217,9 +217,9 @@ func TestListReflectionsHistoricalExcluded(t *testing.T) {
 
 	// Add a historical reflection — should be excluded
 	eng.VAdd(idx, "refl:old", make([]float32, 384), map[string]any{
-		"type":          "reflection",
-		"content":       "old reflection",
-		"status":        "unresolved",
+		"type":           "reflection",
+		"content":        "old reflection",
+		"status":         "unresolved",
 		"_is_historical": true,
 	})
 

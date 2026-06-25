@@ -219,10 +219,10 @@ type Gardener struct {
 	//   - Rate-limit issues with cloud LLM providers
 	//   - Wasted tokens (each call would include the same prior interactions)
 	//   - Race conditions on the profile node (concurrent writes)
-	profileDebounce      time.Duration     // Quiet period required (default: 5s)
-	profileTimer         *time.Timer       // Active debounce timer (nil when not pending)
-	profilePendingUsers  map[string]string // userID -> indexName, accumulated since last fire
-	profileTimerMu       sync.Mutex        // Protects profileTimer and profilePendingUsers
+	profileDebounce     time.Duration     // Quiet period required (default: 5s)
+	profileTimer        *time.Timer       // Active debounce timer (nil when not pending)
+	profilePendingUsers map[string]string // userID -> indexName, accumulated since last fire
+	profileTimerMu      sync.Mutex        // Protects profileTimer and profilePendingUsers
 
 	// Per-user locks for UpdateUserProfile. Prevents concurrent updates for the
 	// same userID from racing on the profile node (stale reads + overwrites).
@@ -449,7 +449,7 @@ func NewGardener(eng *engine.Engine, llmClient llm.Client, cfg Config) *Gardener
 		// User profiling
 		unassimilatedInteractions: make(map[string]int),
 		profileDebounce:           5 * time.Second,
-		profilePendingUsers:      make(map[string]string),
+		profilePendingUsers:       make(map[string]string),
 	}
 }
 
@@ -1887,7 +1887,7 @@ func (g *Gardener) generateLLMProfileUpdate(current UserProfile, interactions, t
 		currentJSON = "{}"
 	}
 
-		sysPrompt := `You are a user behavior analyst. Update the user profile based on recent interactions.
+	sysPrompt := `You are a user behavior analyst. Update the user profile based on recent interactions.
 
 IMPORTANT INSTRUCTIONS:
 1. If recent interactions contradict old preferences, the NEW preferences MUST override
@@ -2148,8 +2148,8 @@ func (g *Gardener) generateDeterministicProfileUpdate(current UserProfile, inter
 		dislikeSet[d] = true
 	}
 	dislikePatterns := []struct {
-		keyword  string
-		label    string
+		keyword string
+		label   string
 	}{
 		{"non usare", "custom dislike detected"},
 		{"no markdown", "no markdown"},

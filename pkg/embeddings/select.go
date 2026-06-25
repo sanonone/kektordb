@@ -81,8 +81,9 @@ func normalizeMode(mode string) string {
 // and runtime detection. dataDir is used for model storage (download + cache).
 //
 // Mode aliases (for YAML config compatibility):
-//   "ollama_api" → "ollama"
-//   "openai_compatible" → "openai"
+//
+//	"ollama_api" → "ollama"
+//	"openai_compatible" → "openai"
 //
 // Generic fields (URL, Model, APIKey, Timeout) take precedence over deprecated
 // provider-specific fields (OllamaURL, OpenAIURL, etc.).
@@ -119,11 +120,11 @@ func SelectEmbedder(cfg EmbedderConfig, dataDir string) (Embedder, error) {
 
 	// 4. Nothing available — error with guidance (local is preferred).
 	return nil, fmt.Errorf(
-		"no embedder available.\n\n"+
-			"  Option A (recommended): Rebuild with built-in embedding\n"+
-			"    go build -tags rust ./cmd/kektordb\n\n"+
-			"  Option B: Install Ollama\n"+
-			"    curl -fsSL https://ollama.com/install.sh | sh\n"+
+		"no embedder available.\n\n" +
+			"  Option A (recommended): Rebuild with built-in embedding\n" +
+			"    go build -tags rust ./cmd/kektordb\n\n" +
+			"  Option B: Install Ollama\n" +
+			"    curl -fsSL https://ollama.com/install.sh | sh\n" +
 			"    ollama pull nomic-embed-text && ollama serve\n",
 	)
 }

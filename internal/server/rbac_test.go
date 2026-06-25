@@ -241,7 +241,7 @@ func TestJWKSEndpoint(t *testing.T) {
 	}
 	defer eng.Close()
 
-	srv, err := NewServer(eng, ":0", "", "master", tmpDir, "")
+	srv, err := NewServer(eng, ":0", "", "master", tmpDir, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

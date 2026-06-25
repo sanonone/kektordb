@@ -9,7 +9,7 @@ type SaveMemoryArgs struct {
 	Links     []string `json:"links,omitempty" jsonschema:"List of existing Entity IDs to link this memory to (e.g. 'project_alpha', 'user_mario')"`
 	// Tags uses any instead of []string so the MCP schema doesn't force type: array.
 	// LLMs frequently send comma-separated strings; normalizeTags() handles both formats.
-	Tags any `json:"tags,omitempty" jsonschema:"Optional search tags — JSON array [\"tag1\",\"tag2\"] or comma-separated string \"tag1,tag2\""`
+	Tags any  `json:"tags,omitempty" jsonschema:"Optional search tags — JSON array [\"tag1\",\"tag2\"] or comma-separated string \"tag1,tag2\""`
 	Pin  bool `json:"pin,omitempty" jsonschema:"If true, this memory will never decay over time (e.g. core rules, birthdays)."`
 	// ExplicitPinned allows overriding the layer's pinned_by_default setting.
 	// If nil, uses layer default. If set, overrides Pin and layer default.
@@ -391,8 +391,8 @@ type GetMemoriesArgs struct {
 }
 
 type GetMemoriesResult struct {
-	Found    int                      `json:"found"`
-	Memories []GetMemoryResultEntry  `json:"memories"`
+	Found    int                    `json:"found"`
+	Memories []GetMemoryResultEntry `json:"memories"`
 }
 
 type GetMemoryResultEntry struct {
@@ -422,11 +422,11 @@ type DeleteMemoryResult struct {
 // Removes a relationship edge between two nodes. Inverse of connect_entities.
 
 type UnlinkEntitiesArgs struct {
-	SourceID      string `json:"source_id" jsonschema:"Source node ID,required"`
-	TargetID      string `json:"target_id" jsonschema:"Target node ID,required"`
-	Relation      string `json:"relation" jsonschema:"Relation type to remove (e.g. 'mentions', 'parent'),required"`
-	IndexName     string `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
-	HardDelete    bool   `json:"hard_delete,omitempty" jsonschema:"If true, permanently remove the edge. Default: soft delete (preserves history)"`
+	SourceID        string `json:"source_id" jsonschema:"Source node ID,required"`
+	TargetID        string `json:"target_id" jsonschema:"Target node ID,required"`
+	Relation        string `json:"relation" jsonschema:"Relation type to remove (e.g. 'mentions', 'parent'),required"`
+	IndexName       string `json:"index_name,omitempty" jsonschema:"Index name (default mcp_memory)"`
+	HardDelete      bool   `json:"hard_delete,omitempty" jsonschema:"If true, permanently remove the edge. Default: soft delete (preserves history)"`
 	InverseRelation string `json:"inverse_relation,omitempty" jsonschema:"Optional inverse relation type (e.g. 'mentioned_by') to also remove"`
 }
 
@@ -446,11 +446,11 @@ type ListTemplatesResult struct {
 }
 
 type TemplateInfo struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	EntityTypes string `json:"entity_types,omitempty"` // CSV
-	IsLLM       bool   `json:"is_llm"`                 // requires LLM
-	Deterministic bool `json:"deterministic"`         // can compile without LLM
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	EntityTypes   string `json:"entity_types,omitempty"` // CSV
+	IsLLM         bool   `json:"is_llm"`                 // requires LLM
+	Deterministic bool   `json:"deterministic"`          // can compile without LLM
 }
 
 // --- Tool 6: get_artifact_history ---
@@ -465,11 +465,11 @@ type GetArtifactHistoryArgs struct {
 }
 
 type GetArtifactHistoryResult struct {
-	Entity         string         `json:"entity"`
-	Intent         string         `json:"intent"`
-	TotalVersions  int            `json:"total_versions"`
-	Versions       []ArtifactVersionInfo `json:"versions"`
-	Message        string         `json:"message,omitempty"`
+	Entity        string                `json:"entity"`
+	Intent        string                `json:"intent"`
+	TotalVersions int                   `json:"total_versions"`
+	Versions      []ArtifactVersionInfo `json:"versions"`
+	Message       string                `json:"message,omitempty"`
 }
 
 type ArtifactVersionInfo struct {
@@ -494,18 +494,18 @@ type GetArtifactStalenessArgs struct {
 }
 
 type GetArtifactStalenessResult struct {
-	Found           bool    `json:"found"`
-	Intent          string  `json:"intent"`
-	Entity          string  `json:"entity"`
-	Version         int     `json:"version,omitempty"`
-	CompiledAt      string  `json:"compiled_at,omitempty"`
-	StalenessScore  float64 `json:"staleness_score,omitempty"`
-	Status          string  `json:"status,omitempty"`
-	UsageCount      int     `json:"usage_count,omitempty"`
-	LastAccessedAt  string  `json:"last_accessed_at,omitempty"`
-	ImportanceScore float64 `json:"importance_score,omitempty"`
+	Found           bool               `json:"found"`
+	Intent          string             `json:"intent"`
+	Entity          string             `json:"entity"`
+	Version         int                `json:"version,omitempty"`
+	CompiledAt      string             `json:"compiled_at,omitempty"`
+	StalenessScore  float64            `json:"staleness_score,omitempty"`
+	Status          string             `json:"status,omitempty"`
+	UsageCount      int                `json:"usage_count,omitempty"`
+	LastAccessedAt  string             `json:"last_accessed_at,omitempty"`
+	ImportanceScore float64            `json:"importance_score,omitempty"`
 	FieldStaleness  map[string]float64 `json:"field_staleness,omitempty"`
-	Message         string  `json:"message,omitempty"`
+	Message         string             `json:"message,omitempty"`
 }
 
 // --- Tool 8: trigger_reflection ---
@@ -535,20 +535,20 @@ type AssessBeliefArgs struct {
 }
 
 type AssessBeliefResult struct {
-	Query        string             `json:"query"`
-	Confidence   float64            `json:"confidence"`   // 0.0-1.0
-	Consensus    float64            `json:"consensus"`    // 0.0-1.0: how widely the belief is supported
-	Stability    float64            `json:"stability"`    // 0.0-1.0: how long the belief has been consistent
-	Friction     float64            `json:"friction"`     // 0.0-1.0: how much contradiction exists
-	Verdict      string             `json:"verdict"`      // "well_supported" | "contested" | "fading" | "fresh"
-	Evidence     []BeliefEvidence   `json:"evidence"`
-	Message      string             `json:"message,omitempty"`
+	Query      string           `json:"query"`
+	Confidence float64          `json:"confidence"` // 0.0-1.0
+	Consensus  float64          `json:"consensus"`  // 0.0-1.0: how widely the belief is supported
+	Stability  float64          `json:"stability"`  // 0.0-1.0: how long the belief has been consistent
+	Friction   float64          `json:"friction"`   // 0.0-1.0: how much contradiction exists
+	Verdict    string           `json:"verdict"`    // "well_supported" | "contested" | "fading" | "fresh"
+	Evidence   []BeliefEvidence `json:"evidence"`
+	Message    string           `json:"message,omitempty"`
 }
 
 type BeliefEvidence struct {
 	MemoryID  string  `json:"memory_id"`
-	Stance    string  `json:"stance"`    // "supports" | "contradicts" | "neutral"
-	Weight    float64 `json:"weight"`    // 0.0-1.0
+	Stance    string  `json:"stance"` // "supports" | "contradicts" | "neutral"
+	Weight    float64 `json:"weight"` // 0.0-1.0
 	Timestamp int64   `json:"timestamp,omitempty"`
 }
 
@@ -569,7 +569,7 @@ type SearchWithScoresResult struct {
 
 type ScoredResult struct {
 	MemoryID string                 `json:"memory_id"`
-	Score    float64                `json:"score"`           // cosine similarity, 0.0-1.0+
+	Score    float64                `json:"score"` // cosine similarity, 0.0-1.0+
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
@@ -598,12 +598,12 @@ type GetRelationsArgs struct {
 }
 
 type GetRelationsResult struct {
-	NodeID    string              `json:"node_id"`
-	Outgoing  map[string][]string `json:"outgoing"`  // relation_type -> [target_id]
-	Incoming  map[string][]string `json:"incoming"`  // relation_type -> [source_id]
-	OutCount  int                 `json:"out_count"`
-	InCount   int                 `json:"in_count"`
-	Message   string              `json:"message,omitempty"`
+	NodeID   string              `json:"node_id"`
+	Outgoing map[string][]string `json:"outgoing"` // relation_type -> [target_id]
+	Incoming map[string][]string `json:"incoming"` // relation_type -> [source_id]
+	OutCount int                 `json:"out_count"`
+	InCount  int                 `json:"in_count"`
+	Message  string              `json:"message,omitempty"`
 }
 
 // GetGardenerStatus: introspection del Gardener (mode, interval, last think, totals).
@@ -611,16 +611,16 @@ type GetRelationsResult struct {
 type GetGardenerStatusArgs struct{}
 
 type GetGardenerStatusResult struct {
-	Enabled            bool     `json:"enabled"`
-	Mode               string   `json:"mode"` // "basic" | "advanced" | "meta"
-	IntervalSeconds    int      `json:"interval_seconds"`
-	TargetIndexes      []string `json:"target_indexes"`
-	LastThinkAgo       string   `json:"last_think_ago,omitempty"` // human-readable
-	LastThinkUnix      int64    `json:"last_think_unix"`
-	TotalReflections   int64    `json:"total_reflections"`
-	TotalContradictions int64   `json:"total_contradictions"`
-	TotalDecayed       int64    `json:"total_decayed"`
-	Message            string   `json:"message,omitempty"`
+	Enabled             bool     `json:"enabled"`
+	Mode                string   `json:"mode"` // "basic" | "advanced" | "meta"
+	IntervalSeconds     int      `json:"interval_seconds"`
+	TargetIndexes       []string `json:"target_indexes"`
+	LastThinkAgo        string   `json:"last_think_ago,omitempty"` // human-readable
+	LastThinkUnix       int64    `json:"last_think_unix"`
+	TotalReflections    int64    `json:"total_reflections"`
+	TotalContradictions int64    `json:"total_contradictions"`
+	TotalDecayed        int64    `json:"total_decayed"`
+	Message             string   `json:"message,omitempty"`
 }
 
 // ListArtifacts: lista tutti i knowledge artifacts compilati con status/versione.
@@ -630,10 +630,10 @@ type ListArtifactsArgs struct {
 }
 
 type ListArtifactsResult struct {
-	IndexName string             `json:"index_name"`
-	Total     int                `json:"total"`
-	Artifacts []ArtifactSummary  `json:"artifacts"`
-	Message   string             `json:"message,omitempty"`
+	IndexName string            `json:"index_name"`
+	Total     int               `json:"total"`
+	Artifacts []ArtifactSummary `json:"artifacts"`
+	Message   string            `json:"message,omitempty"`
 }
 
 type ArtifactSummary struct {
@@ -656,16 +656,16 @@ type ListReflectionsArgs struct {
 }
 
 type ListReflectionsResult struct {
-	IndexName   string               `json:"index_name"`
-	Status      string               `json:"status,omitempty"`
-	Total       int                  `json:"total"`
-	Reflections []ReflectionSummary  `json:"reflections"`
-	Message     string               `json:"message,omitempty"`
+	IndexName   string              `json:"index_name"`
+	Status      string              `json:"status,omitempty"`
+	Total       int                 `json:"total"`
+	Reflections []ReflectionSummary `json:"reflections"`
+	Message     string              `json:"message,omitempty"`
 }
 
 type ReflectionSummary struct {
 	ID          string   `json:"id"`
-	Type        string   `json:"type"`     // contradiction, consolidation, importance, core_fact
+	Type        string   `json:"type"` // contradiction, consolidation, importance, core_fact
 	Content     string   `json:"content"`
 	Confidence  float64  `json:"confidence"`
 	Status      string   `json:"status"`
@@ -787,12 +787,12 @@ type IndexSummary struct {
 // GetPersistenceStatus: AOF stats for monitoring disk usage and durability.
 type GetPersistenceStatusResult struct {
 	AOFPath         string `json:"aof_path"`
-	AOFSizeBytes     int64  `json:"aof_size_bytes"`
-	WriteQueueDepth  int    `json:"write_queue_depth,omitempty"`
-	LastSyncAgoMs    int64  `json:"last_sync_ago_ms,omitempty"`
-	FlushIntervalMs  int    `json:"flush_interval_ms,omitempty"`
-	ForceSyncIntvMs  int    `json:"force_sync_interval_ms,omitempty"`
-	Message          string `json:"message,omitempty"`
+	AOFSizeBytes    int64  `json:"aof_size_bytes"`
+	WriteQueueDepth int    `json:"write_queue_depth,omitempty"`
+	LastSyncAgoMs   int64  `json:"last_sync_ago_ms,omitempty"`
+	FlushIntervalMs int    `json:"flush_interval_ms,omitempty"`
+	ForceSyncIntvMs int    `json:"force_sync_interval_ms,omitempty"`
+	Message         string `json:"message,omitempty"`
 }
 
 // RefreshUserProfile: force the Gardener to re-process a user profile now.
@@ -804,12 +804,12 @@ type RefreshUserProfileArgs struct {
 }
 
 type RefreshUserProfileResult struct {
-	Status     string `json:"status"`
-	UserID     string `json:"user_id"`
-	IndexName  string `json:"index_name"`
-	Confidence float64 `json:"confidence,omitempty"`
-	InteractionCount int   `json:"interaction_count,omitempty"`
-	Message    string `json:"message,omitempty"`
+	Status           string  `json:"status"`
+	UserID           string  `json:"user_id"`
+	IndexName        string  `json:"index_name"`
+	Confidence       float64 `json:"confidence,omitempty"`
+	InteractionCount int     `json:"interaction_count,omitempty"`
+	Message          string  `json:"message,omitempty"`
 }
 
 // --- Fase 2 P2: Batch 3 — graph edges + artifact diff + summarize ---
@@ -824,18 +824,18 @@ type GetEdgeDetailsArgs struct {
 }
 
 type GetEdgeDetailsResult struct {
-	SourceID      string         `json:"source_id"`
-	RelationType  string         `json:"relation_type,omitempty"`
-	EdgeCount     int            `json:"edge_count"`
-	Edges         []EdgeDetail    `json:"edges"`
-	Message       string         `json:"message,omitempty"`
+	SourceID     string       `json:"source_id"`
+	RelationType string       `json:"relation_type,omitempty"`
+	EdgeCount    int          `json:"edge_count"`
+	Edges        []EdgeDetail `json:"edges"`
+	Message      string       `json:"message,omitempty"`
 }
 
 type EdgeDetail struct {
 	TargetID  string  `json:"target_id"`
 	Weight    float32 `json:"weight"`
 	CreatedAt int64   `json:"created_at"`           // Unix nano
-	DeletedAt int64   `json:"deleted_at,omitempty"`  // 0 = active
+	DeletedAt int64   `json:"deleted_at,omitempty"` // 0 = active
 	Active    bool    `json:"active"`
 	Props     string  `json:"props,omitempty"` // raw JSON props
 }
@@ -852,14 +852,14 @@ type DiffArtifactVersionsArgs struct {
 }
 
 type DiffArtifactVersionsResult struct {
-	Intent     string         `json:"intent"`
-	Entity     string         `json:"entity"`
-	V1         int            `json:"v1"`
-	V2         int            `json:"v2"`
-	Added      map[string]any `json:"added"`
-	Removed    map[string]any `json:"removed"`
-	Modified   map[string]any `json:"modified"` // field -> {v1, v2}
-	Message    string         `json:"message,omitempty"`
+	Intent   string         `json:"intent"`
+	Entity   string         `json:"entity"`
+	V1       int            `json:"v1"`
+	V2       int            `json:"v2"`
+	Added    map[string]any `json:"added"`
+	Removed  map[string]any `json:"removed"`
+	Modified map[string]any `json:"modified"` // field -> {v1, v2}
+	Message  string         `json:"message,omitempty"`
 }
 
 // SummarizeMemories: generates a bullet-point summary of a custom set of
@@ -871,11 +871,11 @@ type SummarizeMemoriesArgs struct {
 }
 
 type SummarizeMemoriesResult struct {
-	Title         string `json:"title"`
-	SummaryID     string `json:"summary_id"`
-	Summary       string `json:"summary"`
-	ContentCount  int    `json:"content_count"`
-	Message       string `json:"message,omitempty"`
+	Title        string `json:"title"`
+	SummaryID    string `json:"summary_id"`
+	Summary      string `json:"summary"`
+	ContentCount int    `json:"content_count"`
+	Message      string `json:"message,omitempty"`
 }
 
 // --- Fase 3 P2 expansion: 6 final tools closing MCP interface ---
@@ -892,13 +892,13 @@ type FindPathArgs struct {
 }
 
 type FindPathResult struct {
-	SourceID  string             `json:"source_id"`
-	TargetID  string             `json:"target_id"`
-	Path      []string           `json:"path"`            // sequence of node IDs from source to target
-	Edges     []PathEdge         `json:"edges,omitempty"` // edges traversed in order
-	StepCount int                `json:"step_count"`
-	Found     bool               `json:"found"`
-	Message   string             `json:"message,omitempty"`
+	SourceID  string     `json:"source_id"`
+	TargetID  string     `json:"target_id"`
+	Path      []string   `json:"path"`            // sequence of node IDs from source to target
+	Edges     []PathEdge `json:"edges,omitempty"` // edges traversed in order
+	StepCount int        `json:"step_count"`
+	Found     bool       `json:"found"`
+	Message   string     `json:"message,omitempty"`
 }
 
 // PathEdge: one edge along a path, mirroring engine.SubgraphEdge.
@@ -948,29 +948,29 @@ type SessionInfo struct {
 // CreateIndex: creates a new vector index with full HNSW configuration.
 // Admin tool. Validates dimension against the active embedder.
 type CreateIndexArgs struct {
-	Name          string             `json:"name" jsonschema:"Index name (alphanumeric, underscore, dash),required"`
-	Metric        string             `json:"metric,omitempty" jsonschema:"Distance metric: 'cosine' or 'euclidean' (default cosine)"`
-	Dimension     int                `json:"dimension" jsonschema:"Vector dimension (must match embedder if active),required"`
-	Precision     string             `json:"precision,omitempty" jsonschema:"Precision: 'float32' (default), 'float16', 'int8'"`
-	M             int                `json:"m,omitempty" jsonschema:"HNSW M parameter (default 16)"`
-	EfConstruction int               `json:"ef_construction,omitempty" jsonschema:"HNSW efConstruction parameter (default 200)"`
-	TextLanguage  string             `json:"text_language,omitempty" jsonschema:"Text language for hybrid search: 'english', 'italian', '' (default empty)"`
-	AutoLinks     []AutoLinkRuleInput `json:"auto_links,omitempty" jsonschema:"Auto-linking rules (optional)"`
-	MemoryConfig  *MemoryConfigInput  `json:"memory_config,omitempty" jsonschema:"Memory decay/pinning configuration (optional)"`
-	Maintenance   *MaintenanceInput   `json:"maintenance,omitempty" jsonschema:"Maintenance configuration (optional)"`
+	Name           string              `json:"name" jsonschema:"Index name (alphanumeric, underscore, dash),required"`
+	Metric         string              `json:"metric,omitempty" jsonschema:"Distance metric: 'cosine' or 'euclidean' (default cosine)"`
+	Dimension      int                 `json:"dimension" jsonschema:"Vector dimension (must match embedder if active),required"`
+	Precision      string              `json:"precision,omitempty" jsonschema:"Precision: 'float32' (default), 'float16', 'int8'"`
+	M              int                 `json:"m,omitempty" jsonschema:"HNSW M parameter (default 16)"`
+	EfConstruction int                 `json:"ef_construction,omitempty" jsonschema:"HNSW efConstruction parameter (default 200)"`
+	TextLanguage   string              `json:"text_language,omitempty" jsonschema:"Text language for hybrid search: 'english', 'italian', '' (default empty)"`
+	AutoLinks      []AutoLinkRuleInput `json:"auto_links,omitempty" jsonschema:"Auto-linking rules (optional)"`
+	MemoryConfig   *MemoryConfigInput  `json:"memory_config,omitempty" jsonschema:"Memory decay/pinning configuration (optional)"`
+	Maintenance    *MaintenanceInput   `json:"maintenance,omitempty" jsonschema:"Maintenance configuration (optional)"`
 }
 
 type AutoLinkRuleInput struct {
-	Field       string `json:"field" jsonschema:"Metadata field to extract,required"`
-	Relation    string `json:"relation" jsonschema:"Relation type for auto-link,required"`
-	CreateNode  bool   `json:"create_node,omitempty" jsonschema:"If true, create a new node when the field is non-empty"`
+	Field      string `json:"field" jsonschema:"Metadata field to extract,required"`
+	Relation   string `json:"relation" jsonschema:"Relation type for auto-link,required"`
+	CreateNode bool   `json:"create_node,omitempty" jsonschema:"If true, create a new node when the field is non-empty"`
 }
 
 type MemoryConfigInput struct {
-	Enabled      bool          `json:"enabled,omitempty" jsonschema:"Enable memory decay/pinning"`
-	DecayModel   string        `json:"decay_model,omitempty" jsonschema:"Decay model: 'exponential', 'linear', 'step', 'ebbinghaus' (default exponential)"`
-	HalfLifeDays float64       `json:"half_life_days,omitempty" jsonschema:"Half-life in days (default 30)"`
-	Layers       []LayerInput  `json:"layers,omitempty" jsonschema:"Per-layer decay configuration"`
+	Enabled      bool         `json:"enabled,omitempty" jsonschema:"Enable memory decay/pinning"`
+	DecayModel   string       `json:"decay_model,omitempty" jsonschema:"Decay model: 'exponential', 'linear', 'step', 'ebbinghaus' (default exponential)"`
+	HalfLifeDays float64      `json:"half_life_days,omitempty" jsonschema:"Half-life in days (default 30)"`
+	Layers       []LayerInput `json:"layers,omitempty" jsonschema:"Per-layer decay configuration"`
 }
 
 type LayerInput struct {
@@ -980,25 +980,25 @@ type LayerInput struct {
 }
 
 type MaintenanceInput struct {
-	Vacuum           *IntervalInput `json:"vacuum,omitempty"`
-	Refine           *IntervalInput `json:"refine,omitempty"`
-	GraphRetention   *IntervalInput `json:"graph_retention,omitempty"`
-	ArenaCompaction  *IntervalInput `json:"arena_compaction,omitempty"`
+	Vacuum          *IntervalInput `json:"vacuum,omitempty"`
+	Refine          *IntervalInput `json:"refine,omitempty"`
+	GraphRetention  *IntervalInput `json:"graph_retention,omitempty"`
+	ArenaCompaction *IntervalInput `json:"arena_compaction,omitempty"`
 }
 
 type IntervalInput struct {
-	Enabled  bool `json:"enabled,omitempty"`
-	IntervalSec int `json:"interval_sec,omitempty" jsonschema:"Interval in seconds"`
+	Enabled     bool `json:"enabled,omitempty"`
+	IntervalSec int  `json:"interval_sec,omitempty" jsonschema:"Interval in seconds"`
 }
 
 type CreateIndexResult struct {
-	Status      string `json:"status"`
-	Name        string `json:"name"`
-	Metric      string `json:"metric"`
-	Precision   string `json:"precision"`
-	Dimension   int    `json:"dimension"`
+	Status       string `json:"status"`
+	Name         string `json:"name"`
+	Metric       string `json:"metric"`
+	Precision    string `json:"precision"`
+	Dimension    int    `json:"dimension"`
 	TextLanguage string `json:"text_language,omitempty"`
-	Message     string `json:"message,omitempty"`
+	Message      string `json:"message,omitempty"`
 }
 
 // DeleteIndex: deletes an existing index. Two-step safety: without confirm=true

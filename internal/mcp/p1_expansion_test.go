@@ -245,9 +245,9 @@ func TestGetArtifactHistoryEmptyIndex(t *testing.T) {
 func TestGetArtifactHistoryNonexistentIndex(t *testing.T) {
 	svc, _, _ := newTestServiceWithCompiler(t)
 	_, result, err := svc.GetArtifactHistory(nil, nil, GetArtifactHistoryArgs{
-		Intent:     "user_profile",
-		Entity:     "alice",
-		IndexName:  "nonexistent_index",
+		Intent:    "user_profile",
+		Entity:    "alice",
+		IndexName: "nonexistent_index",
 	})
 	if err != nil {
 		t.Fatalf("GetArtifactHistory returned error (should be graceful): %v", err)
@@ -286,9 +286,9 @@ func TestGetArtifactStalenessEmptyIndex(t *testing.T) {
 func TestGetArtifactStalenessNonexistentIndex(t *testing.T) {
 	svc, _, _ := newTestServiceWithCompiler(t)
 	_, result, err := svc.GetArtifactStaleness(nil, nil, GetArtifactStalenessArgs{
-		Intent:     "user_profile",
-		Entity:     "alice",
-		IndexName:  "nonexistent_index",
+		Intent:    "user_profile",
+		Entity:    "alice",
+		IndexName: "nonexistent_index",
 	})
 	if err != nil {
 		t.Fatalf("GetArtifactStaleness returned error (should be graceful): %v", err)
