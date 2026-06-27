@@ -27,7 +27,19 @@ func NewMCPServer(eng *engine.Engine, embedder embeddings.Embedder, allowlist ma
 	}, nil)
 
 	registerTools(s, service, allowlist)
+	registerPrompts(s, service)
 	return s
+}
+
+// registerPrompts attaches MCP prompts to the server. Prompts are on-demand
+// (not auto-injected) and available to any client that implements the MCP
+// `prompts/list` + `prompts/get` protocol. See internal/mcp/prompts.go for
+// the per-prompt documentation.
+func registerPrompts(s *mcp.Server, service *Service) {
+	s.AddPrompt(&mcp.Prompt{
+		Name:        PromptMemoryInstructions,
+		Description: "KektorDB memory protocol — when and how to save/recall memories.",
+	}, service.GetMemoryInstructionsPrompt)
 }
 
 // shouldRegister returns true if the tool should be registered based on the allowlist.

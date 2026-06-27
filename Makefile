@@ -177,3 +177,18 @@ clean:
 	@rm -rf native/compute/target
 	@rm -rf $(RELEASE_DIR)
 	@go clean -cache -testcache
+
+# --- Skill markdown sync ---
+# The MCP prompt `memory_instructions` is embedded from
+# internal/mcp/memory_instructions.md (single source-of-truth for Go).
+# A mirror at skills/kektordb/SKILL.md is shipped in the repo root so
+# users can copy it into agent systems that support skill files
+# (Hermes, Claude Code, OpenCode AGENTS.md, etc.). After editing the
+# embedded file, run `make sync-skills` to refresh the mirror.
+# TestMemoryInstructionsInSync enforces parity on every test run.
+.PHONY: sync-skills
+sync-skills:
+	@echo "==> Syncing internal/mcp/memory_instructions.md -> skills/kektordb/SKILL.md..."
+	@mkdir -p skills/kektordb
+	@cp internal/mcp/memory_instructions.md skills/kektordb/SKILL.md
+	@echo "Done. Verify with: go test -run TestMemoryInstructionsInSync ./internal/mcp/..."
