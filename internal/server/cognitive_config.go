@@ -86,6 +86,7 @@ type AutoActionResolveYAML struct {
 
 // LLMConfigYAML holds the LLM settings for the cognitive engine.
 type LLMConfigYAML struct {
+	Provider    string  `yaml:"provider"`
 	BaseURL     string  `yaml:"base_url"`
 	Model       string  `yaml:"model"`
 	APIKey      string  `yaml:"api_key"`
@@ -229,6 +230,12 @@ func LoadCognitiveConfig(path string) (cognitive.Config, llm.Config, error) {
 
 	// Build LLM config
 	llmCfg := llm.DefaultConfig()
+	if cfg.LLM.Provider != "" {
+		llmCfg.Provider = cfg.LLM.Provider
+		llmCfg.BaseURL = ""
+		llmCfg.Model = ""
+		llmCfg.APIKey = ""
+	}
 	if cfg.LLM.BaseURL != "" {
 		llmCfg.BaseURL = cfg.LLM.BaseURL
 	}

@@ -261,10 +261,18 @@ func main() {
 			)
 
 			switch proxyCfg.EmbedderType {
-			case "openai", "openai_compatible":
-				proxyCfg.Embedder = embeddings.NewOllamaEmbedder(
+			case "gemini", "google":
+				proxyCfg.Embedder = embeddings.NewGeminiEmbedder(
 					proxyCfg.EmbedderURL,
 					proxyCfg.EmbedderModel,
+					proxyCfg.EmbedderAPIKey,
+					proxyCfg.EmbedderTimeout,
+				)
+			case "openai", "openai_compatible":
+				proxyCfg.Embedder = embeddings.NewOpenAIEmbedder(
+					proxyCfg.EmbedderURL,
+					proxyCfg.EmbedderModel,
+					proxyCfg.EmbedderAPIKey,
 					proxyCfg.EmbedderTimeout,
 				)
 			default:
