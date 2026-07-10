@@ -346,18 +346,7 @@ func (e *Engine) VAdd(indexName, id string, vector []float32, metadata map[strin
 		}
 	}
 
-	// 1. Memory Add
-	internalID, err := idx.Add(id, vector)
-	if err != nil {
-		return err
-	}
-
-	// 2. Metadata
-	if len(metadata) > 0 {
-		e.DB.AddMetadata(indexName, internalID, metadata)
-	}
-
-	// 3. Persistence
+	// 1. Serialize inputs for AOF (before any mutation).
 	vecStr := float32SliceToString(vector)
 	var metaBytes []byte
 	if len(metadata) > 0 {
@@ -368,10 +357,21 @@ func (e *Engine) VAdd(indexName, id string, vector []float32, metadata map[strin
 		}
 	}
 
+	// 2. Persistence first: journal the operation before mutating RAM.
 	cmd := persistence.FormatCommand("VADD", []byte(indexName), []byte(id), []byte(vecStr), metaBytes)
 	if err := e.AOF.Write(cmd); err != nil {
-		// Warn: Persistence failed but memory success. Inconsistency risk.
-		return fmt.Errorf("CRITICAL: persistence failed (data in RAM only): %w", err)
+		return fmt.Errorf("CRITICAL: persistence failed: %w", err)
+	}
+
+	// 3. Memory Add
+	internalID, err := idx.Add(id, vector)
+	if err != nil {
+		return err
+	}
+
+	// 4. Metadata
+	if len(metadata) > 0 {
+		e.DB.AddMetadata(indexName, internalID, metadata)
 	}
 
 	metrics.TotalVectors.WithLabelValues(indexName).Inc()
@@ -414,6 +414,12 @@ func (e *Engine) VDelete(indexName, id string) error {
 		}
 	}
 
+	// Disk first: journal the operation before mutating RAM.
+	cmd := persistence.FormatCommand("VDEL", []byte(indexName), []byte(id))
+	if err := e.AOF.Write(cmd); err != nil {
+		return fmt.Errorf("persistence error: %w", err)
+	}
+
 	// Memory
 	idx.Delete(id)
 
@@ -422,12 +428,6 @@ func (e *Engine) VDelete(indexName, id string) error {
 		if err := e.DB.DeleteMetadata(indexName, internalID); err != nil {
 			slog.Warn("Failed to delete metadata", "error", err, "id", id)
 		}
-	}
-
-	// Disk
-	cmd := persistence.FormatCommand("VDEL", []byte(indexName), []byte(id))
-	if err := e.AOF.Write(cmd); err != nil {
-		return fmt.Errorf("persistence error: %w", err)
 	}
 
 	atomic.AddInt64(&e.dirtyCounter, 1)
@@ -743,24 +743,27 @@ func (e *Engine) VReinforce(indexName string, ids []string) error {
 		//	meta["_pinned"] = true
 		//}
 
-		// 4. Save metadata to DB
-		if err := e.DB.AddMetadata(indexName, internalID, meta); err != nil {
+		// 4. Serialize and persist to AOF first.
+		metaBytes, err := json.Marshal(meta)
+		if err != nil {
 			lock.Unlock()
-			slog.Error("Failed to update metadata in VReinforce", "error", err, "id", extID)
+			slog.Error("Failed to marshal metadata in VReinforce", "error", err, "id", extID)
+			continue
+		}
+		cmd := persistence.FormatCommand("VMETA", []byte(indexName), []byte(extID), metaBytes)
+		if err := e.AOF.Write(cmd); err != nil {
+			lock.Unlock()
+			slog.Warn("VReinforce: AOF write failed", "error", err, "id", extID)
 			continue
 		}
 
 		updatedCount++
 
-		// 5. Persist to AOF (The Game Changer)
-		// serialize only the metadata and write a lightweight VMETA command
-		metaBytes, err := json.Marshal(meta)
-		if err == nil {
-			// New Command: VMETA <IndexName> <ExternalID> <JSON_Metadata>
-			cmd := persistence.FormatCommand("VMETA", []byte(indexName), []byte(extID), metaBytes)
-			if err := e.AOF.Write(cmd); err != nil {
-				slog.Warn("VReinforce: AOF write failed", "error", err, "id", extID)
-			}
+		// 5. Save metadata to DB
+		if err := e.DB.AddMetadata(indexName, internalID, meta); err != nil {
+			lock.Unlock()
+			slog.Error("Failed to update metadata in VReinforce", "error", err, "id", extID)
+			continue
 		}
 
 		lock.Unlock()
@@ -813,21 +816,19 @@ func (e *Engine) VSetMetadata(indexName, id string, newProps map[string]any) err
 		meta[k] = v
 	}
 
-	// 4. Aggiorna in memoria (Aggiorna anche gli indici secondari/Roaring Bitmaps)
-	if err := e.DB.AddMetadata(indexName, internalID, meta); err != nil {
-		return fmt.Errorf("failed to update memory metadata: %w", err)
+	// 4. Persiste nell'AOF prima della mutazione RAM.
+	metaBytes, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+	cmd := persistence.FormatCommand("VMETA", []byte(indexName), []byte(id), metaBytes)
+	if aofErr := e.AOF.Write(cmd); aofErr != nil {
+		return fmt.Errorf("metadata append to log failed: %w", aofErr)
 	}
 
-	// 5. Persiste nell'AOF
-	metaBytes, err := json.Marshal(meta)
-	if err == nil {
-		cmd := persistence.FormatCommand("VMETA", []byte(indexName), []byte(id), metaBytes)
-		// AOF write failure is non-recoverable: the operation succeeded in memory but will be
-		// lost on restart. Return the error so the caller can surface it (e.g. as HTTP 500).
-		if aofErr := e.AOF.Write(cmd); aofErr != nil {
-			slog.Error("Metadata updated in memory but append to log failed with error", "error", aofErr)
-			return fmt.Errorf("Metadata updated in memory but append to log failed with error: %w", aofErr)
-		}
+	// 5. Aggiorna in memoria (Aggiorna anche gli indici secondari/Roaring Bitmaps)
+	if err := e.DB.AddMetadata(indexName, internalID, meta); err != nil {
+		return fmt.Errorf("failed to update memory metadata: %w", err)
 	}
 
 	e.EventBus.Emit(Event{Type: EventVectorUpdate, IndexName: indexName, ID: id, Timestamp: time.Now().UnixNano()})
@@ -1439,21 +1440,8 @@ func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 		}
 	}
 
-	// 1. Memory Batch
-	if err := hnswIdx.AddBatch(items); err != nil {
-		return err
-	}
-
-	// 2. Persistence Loop & Metadata
+	// 1. Persistence Loop (AOF first)
 	for _, item := range items {
-		if len(item.Metadata) > 0 {
-			id, _ := hnswIdx.GetInternalID(item.Id)
-			e.DB.AddMetadata(indexName, id, item.Metadata)
-		}
-	}
-
-	for _, item := range items {
-
 		vecStr := float32SliceToString(item.Vector)
 		var meta []byte
 		if len(item.Metadata) > 0 {
@@ -1468,6 +1456,19 @@ func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 
 		if err := e.AOF.Write(cmd); err != nil {
 			return fmt.Errorf("batch persistence partial failure: %w", err)
+		}
+	}
+
+	// 2. Memory Batch (after journaling)
+	if err := hnswIdx.AddBatch(items); err != nil {
+		return err
+	}
+
+	// 3. Metadata in-memory update
+	for _, item := range items {
+		if len(item.Metadata) > 0 {
+			id, _ := hnswIdx.GetInternalID(item.Id)
+			e.DB.AddMetadata(indexName, id, item.Metadata)
 		}
 	}
 
@@ -1617,10 +1618,7 @@ func (e *Engine) VUpdateIndexConfig(indexName string, config hnsw.AutoMaintenanc
 		return err
 	}
 
-	// 1. Update Memory
-	hnswIdx.UpdateMaintenanceConfig(config)
-
-	// 2. Persistence (AOF)
+	// 1. Persistence (AOF) first
 	// Serialize the config to JSON to save it in the AOF command
 	cfgBytes, err := json.Marshal(config)
 	if err != nil {
@@ -1632,6 +1630,9 @@ func (e *Engine) VUpdateIndexConfig(indexName string, config hnsw.AutoMaintenanc
 	if err := e.AOF.Write(cmd); err != nil {
 		return fmt.Errorf("persistence error: %w", err)
 	}
+
+	// 2. Update Memory
+	hnswIdx.UpdateMaintenanceConfig(config)
 
 	// Flush for safety since this is a rare configuration change
 	if err := e.AOF.Flush(); err != nil {
