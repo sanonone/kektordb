@@ -208,9 +208,11 @@ func Open(opts Options) (*Engine, error) {
 		return nil, fmt.Errorf("failed to replay AOF: %w", err)
 	}
 
-	// Record AOF size for Rewrite logic
-	info, _ := e.AOF.File().Stat()
-	e.aofBaseSize.Store(info.Size())
+	// Record AOF size for Rewrite logic.
+	// Guard against Stat() errors to avoid a nil-pointer panic on filesystem issues.
+	if info, err := e.AOF.File().Stat(); err == nil {
+		e.aofBaseSize.Store(info.Size())
+	}
 
 	// 4. Start Background Tasks
 	e.wg.Add(1)

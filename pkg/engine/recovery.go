@@ -695,7 +695,9 @@ func (e *Engine) RewriteAOF() error {
 		return err
 	}
 
-	fileInfo, _ := e.AOF.File().Stat()
-	e.aofBaseSize.Store(fileInfo.Size())
+	// Guard against Stat() errors to avoid a nil-pointer panic on filesystem issues.
+	if fileInfo, err := e.AOF.File().Stat(); err == nil {
+		e.aofBaseSize.Store(fileInfo.Size())
+	}
 	return nil
 }
