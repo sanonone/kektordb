@@ -8,6 +8,7 @@ import (
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/core/types"
+	"github.com/sanonone/kektordb/pkg/persistence"
 )
 
 func createTestIndex(t *testing.T, eng *Engine, name string) {
@@ -406,5 +407,192 @@ func TestVUpdateIndexConfig_AOFFirstSurvivesRestart(t *testing.T) {
 	cfg := hnswIdx.GetMaintenanceConfig()
 	if !cfg.RefineEnabled || cfg.DeleteThreshold != 0.42 {
 		t.Fatalf("config not recovered: got %+v", cfg)
+	}
+}
+
+// TestRecovery_ResyncAfterCorruption verifies that replayAOF can resync
+// (skip corrupted bytes) and continue replaying valid frames that appear
+// after the corrupted section. This is the regression test for H28.
+func TestRecovery_ResyncAfterCorruption(t *testing.T) {
+	dir := t.TempDir()
+	opts := DefaultOptions(dir)
+	opts.AutoSaveInterval = 0
+	opts.MaintenanceInterval = 0
+	aofPath := filepath.Join(dir, opts.AofFilename)
+
+	// Step 1: create engine, add vector "a", flush, close
+	eng, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	if err := eng.VCreate("idx", distance.Cosine, 4, 10, distance.Float32, "", nil, nil, nil); err != nil {
+		t.Fatalf("VCreate failed: %v", err)
+	}
+	if err := eng.VAdd("idx", "a", []float32{1, 0, 0, 0}, map[string]any{"k": "a"}); err != nil {
+		t.Fatalf("VAdd a failed: %v", err)
+	}
+	if err := eng.AOF.Flush(); err != nil {
+		t.Fatalf("AOF flush failed: %v", err)
+	}
+	if err := eng.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// Step 2: generate a valid framed VADD command for vector "b"
+	genDir := t.TempDir()
+	genPath := filepath.Join(genDir, "frame_gen.aof")
+	genW, err := persistence.NewAOFWriter(genPath, 0)
+	if err != nil {
+		t.Fatalf("NewAOFWriter failed: %v", err)
+	}
+	cmdB := persistence.FormatCommand("VADD",
+		[]byte("idx"), []byte("b"),
+		[]byte(float32SliceToString([]float32{0, 1, 0, 0})), []byte(`{"k":"b"}`))
+	if err := genW.Write(cmdB); err != nil {
+		t.Fatalf("genW.Write failed: %v", err)
+	}
+	if err := genW.Flush(); err != nil {
+		t.Fatalf("genW.Flush failed: %v", err)
+	}
+	genW.Close()
+	framedBytes, err := os.ReadFile(genPath)
+	if err != nil {
+		t.Fatalf("ReadFile genPath failed: %v", err)
+	}
+
+	// Step 3: append garbage (no 0xA5 bytes) + framed VADD for "b" to the AOF
+	aofFile, err := os.OpenFile(aofPath, os.O_APPEND|os.O_WRONLY, 0666)
+	if err != nil {
+		t.Fatalf("OpenFile AOF failed: %v", err)
+	}
+	garbage := make([]byte, 200)
+	for i := range garbage {
+		garbage[i] = byte(0x01) // all non-0xA5 bytes, not a valid magic
+	}
+	if _, err := aofFile.Write(garbage); err != nil {
+		t.Fatalf("Write garbage failed: %v", err)
+	}
+	if _, err := aofFile.Write(framedBytes); err != nil {
+		t.Fatalf("Write framed VADD b failed: %v", err)
+	}
+	if err := aofFile.Close(); err != nil {
+		t.Fatalf("Close AOF failed: %v", err)
+	}
+
+	// Step 4: reopen — resync should skip garbage and recover vector "b"
+	eng2 := reopenEngine(t, dir)
+	defer eng2.Close()
+
+	dataA, err := eng2.VGet("idx", "a")
+	if err != nil {
+		t.Fatalf("VGet a after resync failed: %v", err)
+	}
+	if dataA.Metadata["k"] != "a" {
+		t.Fatalf("metadata for a not recovered: %v", dataA.Metadata)
+	}
+
+	dataB, err := eng2.VGet("idx", "b")
+	if err != nil {
+		t.Fatalf("VGet b after resync failed (H28 resync may have failed): %v", err)
+	}
+	if dataB.Metadata["k"] != "b" {
+		t.Fatalf("metadata for b not recovered: %v", dataB.Metadata)
+	}
+}
+
+// TestRewriteAOF_NoDataLossWithConcurrentWrites verifies that concurrent writes
+// during RewriteAOF are not lost. Regression test for C22.
+func TestRewriteAOF_NoDataLossWithConcurrentWrites(t *testing.T) {
+	dir := t.TempDir()
+	opts := DefaultOptions(dir)
+	opts.AutoSaveInterval = 0
+	opts.MaintenanceInterval = 0
+	opts.AofRewritePercentage = 0
+
+	eng, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	createTestIndex(t, eng, "idx")
+
+	// Phase 1: write initial vectors to build up AOF content.
+	for i := 0; i < 5; i++ {
+		id := "init_" + string(rune('a'+i))
+		if err := eng.VAdd("idx", id, []float32{1, 0, 0, 0}, nil); err != nil {
+			t.Fatalf("VAdd %s failed: %v", id, err)
+		}
+	}
+	if err := eng.AOF.Flush(); err != nil {
+		t.Fatalf("AOF flush failed: %v", err)
+	}
+
+	// Phase 2: write BEFORE rewrite so they're in writeCh when snapshot starts.
+	for i := 0; i < 5; i++ {
+		id := "before_" + string(rune('a'+i))
+		if err := eng.VAdd("idx", id, []float32{0, 1, 0, 0}, map[string]any{"phase": "before"}); err != nil {
+			t.Fatalf("VAdd %s failed: %v", id, err)
+		}
+	}
+
+	done := make(chan struct{})
+	var rewriteErr error
+
+	// Phase 3: run RewriteAOF in background.
+	go func() {
+		rewriteErr = eng.RewriteAOF()
+		close(done)
+	}()
+
+	// Phase 4: writes DURING rewrite (land in shadow buffer).
+	for i := 0; i < 5; i++ {
+		id := "during_" + string(rune('a'+i))
+		if err := eng.VAdd("idx", id, []float32{0, 0, 1, 0}, map[string]any{"phase": "during"}); err != nil {
+			t.Fatalf("VAdd %s failed: %v", id, err)
+		}
+	}
+
+	// Wait for rewrite to finish.
+	<-done
+	if rewriteErr != nil {
+		t.Fatalf("RewriteAOF failed: %v", rewriteErr)
+	}
+
+	// Phase 5: writes AFTER rewrite (land in new AOF via regular buffer).
+	for i := 0; i < 5; i++ {
+		id := "after_" + string(rune('a'+i))
+		if err := eng.VAdd("idx", id, []float32{0, 0, 0, 1}, map[string]any{"phase": "after"}); err != nil {
+			t.Fatalf("VAdd %s failed: %v", id, err)
+		}
+	}
+
+	// Final sync: the rewrite's shadow replay already called Sync(),
+	// but the concurrent/after writes may still be in writeCh. We flush
+	// a few times to ensure the lazy writer processes them all before Close.
+	for i := 0; i < 3; i++ {
+		eng.AOF.Flush()
+	}
+	if err := eng.AOF.Sync(); err != nil {
+		t.Fatalf("AOF sync failed: %v", err)
+	}
+	if err := eng.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// Reopen and verify all vectors survived.
+	eng2 := reopenEngine(t, dir)
+	defer eng2.Close()
+
+	allIDs := []string{}
+	for i := 0; i < 5; i++ {
+		allIDs = append(allIDs, "init_"+string(rune('a'+i)))
+		allIDs = append(allIDs, "before_"+string(rune('a'+i)))
+		allIDs = append(allIDs, "during_"+string(rune('a'+i)))
+		allIDs = append(allIDs, "after_"+string(rune('a'+i)))
+	}
+
+	for _, id := range allIDs {
+		if _, err := eng2.VGet("idx", id); err != nil {
+			t.Fatalf("vector %s lost after rewrite: %v", id, err)
+		}
 	}
 }

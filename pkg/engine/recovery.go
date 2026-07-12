@@ -21,14 +21,60 @@ import (
 	"github.com/sanonone/kektordb/pkg/persistence"
 )
 
+// resyncAOF scans the AOF file forward from scanStart looking for the magic byte
+// 0xA5 that marks the beginning of a valid frame. When found, it verifies the
+// frame is structurally valid (magic + CRC + parseable RESP command) and returns
+// the file offset of that frame. If no valid resync point is found, it returns
+// (0, false).
+//
+// This enables recovery from mid-file corruption (bit-rot) by skipping the
+// damaged bytes and resuming replay at the next intact frame.
+func resyncAOF(file *os.File, lastValid int64) (int64, bool) {
+	const chunkSize = 8192
+	buf := make([]byte, chunkSize)
+	basePos := lastValid + 1
+
+	for {
+		if _, err := file.Seek(basePos, io.SeekStart); err != nil {
+			return 0, false
+		}
+		n, readErr := file.Read(buf)
+		if n == 0 {
+			return 0, false
+		}
+
+		for i := 0; i < n; i++ {
+			if buf[i] == persistence.MagicByte {
+				candidatePos := basePos + int64(i)
+				if _, seekErr := file.Seek(candidatePos, io.SeekStart); seekErr != nil {
+					return 0, false
+				}
+				payload, _, frameErr := persistence.ReadFrame(file)
+				if frameErr == nil {
+					cmdReader := bufio.NewReader(bytes.NewReader(payload))
+					if _, parseErr := persistence.ParseCommand(cmdReader); parseErr == nil {
+						return candidatePos, true
+					}
+				}
+			}
+		}
+
+		if readErr != nil {
+			return 0, false
+		}
+		basePos += int64(n)
+	}
+}
+
 // replayAOF reads the AOF file using the Framed Binary Protocol (RFC 003).
 // It reconstructs the database state by replaying commands.
 //
 // CRASH RECOVERY:
 // If the file is corrupted (e.g., due to power loss during write), this function
 // will detect the corruption (checksum mismatch or incomplete frame), log a warning,
-// and automatically TRUNCATE the file to the last valid offset. This ensures the
-// database can always start, potentially losing only the last partially written instruction.
+// and attempt to resync to the next valid frame. If resync fails, it truncates
+// the file to the last valid offset. This ensures the database can always start,
+// potentially losing only the corrupted section.
 func (e *Engine) replayAOF() error {
 	// We need Read/Write access to perform Truncate if necessary.
 	file, err := os.OpenFile(e.aofPath, os.O_RDWR, 0666)
@@ -82,9 +128,19 @@ func (e *Engine) replayAOF() error {
 			}
 
 			// Case B: Corruption (Incomplete write or Bit rot)
+			// Attempt to resync — scan forward for the next valid frame.
 			slog.Warn("AOF Corruption Detected", "error", err, "offset", validOffset)
+			resyncOffset, found := resyncAOF(file, validOffset)
+			if found {
+				skipped := resyncOffset - validOffset
+				slog.Warn("AOF resync: skipped corrupted bytes", "skipped", skipped, "new_offset", resyncOffset)
+				validOffset = resyncOffset
+				file.Seek(resyncOffset, io.SeekStart)
+				continue
+			}
 			corrupted = true
-			break // Stop reading, we will truncate later.
+			break // No valid frames after corruption — truncate from here.
+
 		}
 
 		// 2. Parse the payload (The actual RESP command)
@@ -92,7 +148,17 @@ func (e *Engine) replayAOF() error {
 		cmdReader := bufio.NewReader(bytes.NewReader(payload))
 		cmd, err := persistence.ParseCommand(cmdReader)
 		if err != nil {
+			// The frame checksummed OK but the RESP command inside is not parseable.
+			// Attempt resync — scan forward for the next valid frame.
 			slog.Warn("AOF contains valid frame but invalid RESP command", "offset", validOffset)
+			resyncOffset, found := resyncAOF(file, validOffset)
+			if found {
+				skipped := resyncOffset - validOffset
+				slog.Warn("AOF resync: skipped bytes with invalid RESP", "skipped", skipped, "new_offset", resyncOffset)
+				validOffset = resyncOffset
+				file.Seek(resyncOffset, io.SeekStart)
+				continue
+			}
 			corrupted = true
 			break
 		}
@@ -508,7 +574,6 @@ func (e *Engine) RewriteAOF() error {
 	// If there is already a rewrite in progress, we exit immediately.
 	// CompareAndSwap is a CPU-level atomic operation.
 	if !e.isRewriting.CompareAndSwap(false, true) {
-		// No critical errors, just say it's not necessary to do this now
 		return nil
 	}
 	defer e.isRewriting.Store(false)
@@ -519,7 +584,22 @@ func (e *Engine) RewriteAOF() error {
 	if err != nil {
 		return err
 	}
+
+	// Begin snapshot mode so concurrent writes are redirected to a shadow buffer
+	// instead of the AOF file that will be replaced. This prevents silent data loss
+	// during the snapshot-and-replace window (same pattern as SaveSnapshot).
+	if err := e.AOF.BeginSnapshotMode(); err != nil {
+		writer.Close()
+		os.Remove(tempAof)
+		return fmt.Errorf("rewrite: begin snapshot mode: %w", err)
+	}
+	snapshotDone := false
 	defer func() {
+		if !snapshotDone {
+			if _, err := e.AOF.EndSnapshotMode(); err != nil {
+				slog.Debug("rewrite: cleanup EndSnapshotMode failed", "error", err)
+			}
+		}
 		writer.Close()
 		os.Remove(tempAof)
 	}()
@@ -691,8 +771,29 @@ func (e *Engine) RewriteAOF() error {
 	}
 	writer.Close()
 
+	// Replace the AOF file while snapshot mode is STILL active — concurrent
+	// writes continue to accumulate in the shadow buffer, so none are lost.
 	if err := e.AOF.ReplaceWith(tempAof); err != nil {
 		return err
+	}
+
+	// Now end snapshot mode and capture ALL writes that arrived during the
+	// entire rewrite window (data snapshot + ReplaceWith).
+	shadowWrites, endErr := e.AOF.EndSnapshotMode()
+	snapshotDone = true
+	if endErr != nil {
+		return fmt.Errorf("rewrite: end snapshot mode: %w", endErr)
+	}
+
+	// Replay shadow writes into the freshly replaced AOF.
+	if len(shadowWrites) > 0 {
+		slog.Debug("rewrite: replaying shadow writes", "count", len(shadowWrites))
+		for _, data := range shadowWrites {
+			e.AOF.Write(data)
+		}
+		if err := e.AOF.Sync(); err != nil {
+			return err
+		}
 	}
 
 	// Guard against Stat() errors to avoid a nil-pointer panic on filesystem issues.
