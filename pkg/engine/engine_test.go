@@ -3,6 +3,7 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/sanonone/kektordb/pkg/core/distance"
@@ -593,6 +594,51 @@ func TestRewriteAOF_NoDataLossWithConcurrentWrites(t *testing.T) {
 	for _, id := range allIDs {
 		if _, err := eng2.VGet("idx", id); err != nil {
 			t.Fatalf("vector %s lost after rewrite: %v", id, err)
+		}
+	}
+}
+
+// TestBurstWritesSurviveClose verifies that a burst of fire-and-forget writes
+// followed by immediate Close does not lose data. Regression test for E4.
+func TestBurstWritesSurviveClose(t *testing.T) {
+	dir := t.TempDir()
+	opts := DefaultOptions(dir)
+	opts.AutoSaveInterval = 0
+	opts.MaintenanceInterval = 0
+
+	eng, err := Open(opts)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	createTestIndex(t, eng, "idx")
+
+	const burstSize = 100
+
+	// Burst writes without any intermediate flush — all go to writeCh.
+	for i := 0; i < burstSize; i++ {
+		id := "vec_" + strconv.Itoa(i)
+		if err := eng.VAdd("idx", id, []float32{1, 0, 0, 0}, map[string]any{"i": i}); err != nil {
+			t.Fatalf("VAdd %d failed: %v", i, err)
+		}
+	}
+
+	// Close immediately — the lazy writer must drain writeCh before closing.
+	if err := eng.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// Reopen and verify ALL vectors survived.
+	eng2 := reopenEngine(t, dir)
+	defer eng2.Close()
+
+	for i := 0; i < burstSize; i++ {
+		id := "vec_" + strconv.Itoa(i)
+		data, err := eng2.VGet("idx", id)
+		if err != nil {
+			t.Fatalf("vector %s lost after burst+close: %v", id, err)
+		}
+		if v, ok := data.Metadata["i"]; !ok || int(v.(float64)) != i {
+			t.Fatalf("metadata mismatch for %s: got %v", id, data.Metadata)
 		}
 	}
 }

@@ -554,10 +554,53 @@ func (lw *LazyAOFWriter) run() {
 				cmd.respCh <- commandResponse{err: fatalErr}
 
 			case cmdClose:
+				// Drain writeCh into buffer BEFORE closing — process all
+				// pending entries that Write() enqueued but the run
+				// goroutine hasn't consumed yet. This prevents silent
+				// data loss when Close() is called immediately after
+				// fire-and-forget Write() calls (E4 fix).
+				drained := 0
+				for {
+					select {
+					case req := <-lw.writeCh:
+						drained++
+						if inSnapshotMode {
+							snapshotBuffer = append(snapshotBuffer, req.data)
+						} else if fatalErr == nil {
+							buffer = append(buffer, req.data)
+						}
+					default:
+						goto doneDrain
+					}
+				}
+			doneDrain:
+
+				// If snapshot mode was active, merge the snapshot
+				// buffer into the regular buffer and exit snapshot
+				// mode so closeWriter() flushes everything.
+				if inSnapshotMode {
+					for _, data := range snapshotBuffer {
+						if fatalErr == nil {
+							buffer = append(buffer, data)
+						}
+					}
+					snapshotBuffer = snapshotBuffer[:0]
+					inSnapshotMode = false
+				}
+
+				if drained > 0 {
+					slog.Info("LazyAOFWriter: drained pending writes during close",
+						"count", drained,
+					)
+				}
+
 				err := closeWriter()
-				// Unblock any writes already sitting in the buffered channel that will
-				// never be consumed now that the goroutine is about to exit.
+
+				// Final safety net: drain any entries that arrived
+				// between the drain and closeWriter (extremely rare).
+				// These are still lost, but the window is now microscopic.
 				drainWriteCh()
+
 				cmd.respCh <- commandResponse{err: err}
 				return
 			}
