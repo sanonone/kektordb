@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -493,5 +494,39 @@ func TestKeepHistoryFalse(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("expected 1 artifact node with KeepHistory=false, got %d", count)
+	}
+}
+
+// TestGenerateTaskID_ConcurrentUniqueness verifies that generateTaskID produces
+// unique IDs even under concurrent access. Regression test for E5.
+func TestGenerateTaskID_ConcurrentUniqueness(t *testing.T) {
+	const goroutines = 100
+	const callsPerGoroutine = 100
+
+	var wg sync.WaitGroup
+	ids := make(chan string, goroutines*callsPerGoroutine)
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < callsPerGoroutine; j++ {
+				ids <- generateTaskID()
+			}
+		}()
+	}
+	wg.Wait()
+	close(ids)
+
+	seen := make(map[string]bool)
+	for id := range ids {
+		if seen[id] {
+			t.Fatalf("duplicate task ID: %s", id)
+		}
+		seen[id] = true
+	}
+	expected := goroutines * callsPerGoroutine
+	if len(seen) != expected {
+		t.Fatalf("expected %d unique IDs, got %d", expected, len(seen))
 	}
 }

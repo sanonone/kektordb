@@ -3,6 +3,7 @@ package compiler
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -146,9 +147,9 @@ func (c *Compiler) needsLLMForField(fieldDef FieldDef, mode CompileMode) bool {
 	return true
 }
 
-var taskIDCounter uint64
+var taskIDCounter atomic.Uint64
 
 func generateTaskID() string {
-	taskIDCounter++
-	return fmt.Sprintf("compile_%d_%d", time.Now().UnixNano(), taskIDCounter)
+	c := taskIDCounter.Add(1)
+	return fmt.Sprintf("compile_%d_%d", time.Now().UnixNano(), c)
 }
