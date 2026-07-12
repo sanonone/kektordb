@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -528,5 +529,69 @@ func TestGenerateTaskID_ConcurrentUniqueness(t *testing.T) {
 	expected := goroutines * callsPerGoroutine
 	if len(seen) != expected {
 		t.Fatalf("expected %d unique IDs, got %d", expected, len(seen))
+	}
+}
+
+// TestCompileTaskManager_Eviction verifies that completed tasks are evicted
+// after the TTL expires. Regression test for E6.
+func TestCompileTaskManager_Eviction(t *testing.T) {
+	const taskCount = 50
+	const shortTTL = 10 * time.Millisecond
+
+	tm := newCompileTaskManagerWithTTL(shortTTL)
+	defer tm.Close()
+
+	// Insert completed tasks with DoneAt older than the TTL.
+	past := time.Now().Add(-1 * time.Hour)
+	tm.mu.Lock()
+	for i := 0; i < taskCount; i++ {
+		doneAt := past
+		tm.tasks[fmt.Sprintf("task_%d", i)] = &compileTask{
+			ID:     fmt.Sprintf("task_%d", i),
+			Status: CompileStatusComplete,
+			DoneAt: &doneAt,
+		}
+	}
+	tm.mu.Unlock()
+
+	// Run sweep directly — deterministic, no timer dependency.
+	tm.sweep()
+
+	tm.mu.RLock()
+	remaining := len(tm.tasks)
+	tm.mu.RUnlock()
+
+	if remaining != 0 {
+		t.Fatalf("expected 0 tasks after TTL sweep, got %d", remaining)
+	}
+}
+
+// TestCompileTaskManager_PendingNotEvicted verifies that in-progress tasks
+// (without DoneAt) are not prematurely evicted.
+func TestCompileTaskManager_PendingNotEvicted(t *testing.T) {
+	const shortTTL = 10 * time.Millisecond
+
+	tm := newCompileTaskManagerWithTTL(shortTTL)
+	defer tm.Close()
+
+	tm.mu.Lock()
+	tm.tasks["pending"] = &compileTask{
+		ID:     "pending",
+		Status: CompileStatusPending,
+	}
+	tm.tasks["compiling"] = &compileTask{
+		ID:     "compiling",
+		Status: CompileStatusCompiling,
+	}
+	tm.mu.Unlock()
+
+	tm.sweep()
+
+	tm.mu.RLock()
+	remaining := len(tm.tasks)
+	tm.mu.RUnlock()
+
+	if remaining != 2 {
+		t.Fatalf("expected pending+compiling tasks to survive sweep, got %d", remaining)
 	}
 }

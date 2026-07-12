@@ -22,14 +22,74 @@ type compileTask struct {
 }
 
 // compileTaskManager tracks in-flight and completed async compilations.
+// Completed tasks are automatically evicted after defaultTaskTTL to prevent
+// unbounded memory growth (E6 fix).
 type compileTaskManager struct {
-	tasks map[string]*compileTask
-	mu    sync.RWMutex
+	tasks  map[string]*compileTask
+	mu     sync.RWMutex
+	ttl    time.Duration
+	stopCh chan struct{}
 }
 
+const defaultTaskTTL = 24 * time.Hour
+
 func newCompileTaskManager() *compileTaskManager {
-	return &compileTaskManager{
-		tasks: make(map[string]*compileTask),
+	return newCompileTaskManagerWithTTL(defaultTaskTTL)
+}
+
+// newCompileTaskManagerWithTTL is the testable constructor.
+func newCompileTaskManagerWithTTL(ttl time.Duration) *compileTaskManager {
+	tm := &compileTaskManager{
+		tasks:  make(map[string]*compileTask),
+		ttl:    ttl,
+		stopCh: make(chan struct{}),
+	}
+	go tm.sweepLoop()
+	return tm
+}
+
+// sweepLoop periodically removes completed tasks older than the TTL.
+func (tm *compileTaskManager) sweepLoop() {
+	// Sweep every hour, or more frequently if TTL is shorter (for tests).
+	interval := 1 * time.Hour
+	if tm.ttl < interval {
+		interval = tm.ttl / 2
+		if interval < time.Second {
+			interval = time.Second
+		}
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			tm.sweep()
+		case <-tm.stopCh:
+			return
+		}
+	}
+}
+
+// sweep removes all tasks whose DoneAt is older than the TTL.
+func (tm *compileTaskManager) sweep() {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	now := time.Now()
+	for id, task := range tm.tasks {
+		if task.DoneAt != nil && now.Sub(*task.DoneAt) > tm.ttl {
+			delete(tm.tasks, id)
+		}
+	}
+}
+
+// Close stops the background sweep goroutine.
+func (tm *compileTaskManager) Close() {
+	select {
+	case <-tm.stopCh:
+	default:
+		close(tm.stopCh)
 	}
 }
 
