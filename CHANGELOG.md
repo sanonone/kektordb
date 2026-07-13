@@ -2,14 +2,32 @@
 
 All notable changes to KektorDB are documented here.
 
-## [Unreleased] — feat/tui branch (beyond v0.5.2)
+## [0.6.0] — 2026-07-12
+
+### Engine Stability (P1 — Data loss & corruption)
+
+- **E1 — Memory-before-AOF:** `VAdd`, `VDelete`, `VSetMetadata`, `VReinforce`, `VAddBatch`, and `VUpdateIndexConfig` now write the AOF journal **before** mutating in-memory state, preventing silent data loss on crash (6 functions reordered). Tests: `*_AOFFirstSurvivesRestart` round-trip for each function.
+- **E2 — Nil-pointer panic on `Stat()` at boot:** `Engine.Open()` and `RewriteAOF()` now guard `AOF.File().Stat()` errors before dereferencing `FileInfo`, preventing a panic on filesystem issues or fresh data directories.
+- **E3 — AOF corruption on recovery:** Analyzed and closed as not a bug. `AOFWriter` opens with `O_APPEND`, guaranteeing atomic append regardless of truncations on other file descriptors. Recovery mechanism (`validOffset` + `Truncate`) already implemented.
+- **E3a (H28) — AOF resync after corruption:** `replayAOF()` now scans forward for the next valid magic byte (`0xA5`) after encountering a corrupt frame, preserving valid data that follows the corruption instead of truncating everything.
+- **E3b (C22) — RewriteAOF without snapshot mode:** `RewriteAOF()` now wraps the entire rewrite in `BeginSnapshotMode`/`EndSnapshotMode`, capturing concurrent writes in the shadow buffer and replaying them after `ReplaceWith`, preventing data loss during background auto-rewrite.
+- **E4 — Silent data loss on close:** `LazyAOFWriter.Close()` now drains pending `writeCh` entries into the buffer **before** `closeWriter()`, instead of dropping them silently. Snapshot buffer is flushed into the regular buffer if snapshot mode is active during close. Test: `TestBurstWritesSurviveClose` (100 VAdd burst + immediate Close).
+
+### Engine Stability (P2 — Concurrency & races)
+
+- **E5 — Race condition in `taskIDCounter`:** Changed from `uint64` (non-atomic `++`) to `atomic.Uint64` with `.Add(1)`, preventing duplicate task IDs under concurrent `StartAsyncCompile` calls. Test: `TestGenerateTaskID_ConcurrentUniqueness` (10,000 IDs, race detector clean).
+- **E6 — Async task leak:** `compileTaskManager.tasks` map now supports TTL-based eviction (`defaultTaskTTL = 24h`) with a background sweep goroutine (every hour). Tasks with expired `DoneAt` are removed; pending/compiling tasks are never evicted. `Close()` stops the sweep.
+
+### MCP
+
+- **M1 — `memory_instructions` prompt:** Exposed via `mcp.AddPrompt("memory_instructions")` so generic MCP clients (non-wizard-supported) receive the memory protocol guidance. Embedded via `//go:embed` in `internal/mcp/memory_instructions.md` with user-facing mirror in `skills/kektordb/SKILL.md`. Test: `TestMemoryInstructionsInSync` parity.
+- **MCP toolset expanded from 17 → 57 tools** (49 agent + 8 admin) across 4 rounds, closing 100% of the gap between the MCP interface and the core engine. User profile pipeline hardened with debouncer, per-user lock, brace-matching JSON parser, retry, and `max_tokens` 8000.
+
+### Authentication
+
+- **JWT-based authentication (PR #13):** Self-contained ES256 tokens, JWKS endpoint (`GET /auth/keys`), `jti` denylist with automatic cleanup. Legacy `kek_` opaque tokens are no longer accepted. `POST /auth/keys` requires `role` parameter.
 
 ### Breaking Changes
-
-- **`POST /ui/search` endpoint removed.** Text-to-vector search is now unified into `POST /vector/actions/search` via the `query_text` field. The server auto-embeds `query_text` through its `VectorizerService` when `query_vector` is empty.
-  - Endpoint: `POST /ui/search` → `POST /vector/actions/search`
-  - Request field: `"query"` → `"query_text"`
-- **`query_vector` is now optional** in `POST /vector/actions/search`. When omitted, `query_text` auto-embeds. When both are provided, `query_vector` takes precedence.
 
 ### Added
 
