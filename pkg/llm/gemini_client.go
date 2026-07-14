@@ -251,7 +251,7 @@ func (c *GeminiClient) sendGenerateContentRequest(payload geminiGenerateContentR
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("gemini api error (status %d): %s", resp.StatusCode, string(bodyBytes))
+		return "", fmt.Errorf("gemini api error (status %d)", resp.StatusCode)
 	}
 
 	var geminiResp geminiGenerateContentResponse
@@ -379,11 +379,6 @@ func (c *GeminiClient) endpoint() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid gemini endpoint: %w", err)
 	}
-	if apiKey := c.apiKey(); apiKey != "" && u.Query().Get("key") == "" {
-		q := u.Query()
-		q.Set("key", apiKey)
-		u.RawQuery = q.Encode()
-	}
 
 	return u.String(), nil
 }
@@ -397,11 +392,6 @@ func (c *GeminiClient) interactionEndpoint() (string, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil {
 		return "", fmt.Errorf("invalid gemini interaction endpoint: %w", err)
-	}
-	if apiKey := c.apiKey(); apiKey != "" && u.Query().Get("key") == "" {
-		q := u.Query()
-		q.Set("key", apiKey)
-		u.RawQuery = q.Encode()
 	}
 
 	return u.String(), nil

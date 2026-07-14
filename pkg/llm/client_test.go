@@ -105,8 +105,11 @@ func TestGeminiClientChat_RequestAndResponse(t *testing.T) {
 		if r.URL.Path != "/models/gemini-test:generateContent" {
 			t.Errorf("path = %s, want Gemini generateContent path", r.URL.Path)
 		}
-		if r.URL.Query().Get("key") != "secret" {
-			t.Errorf("key query = %q, want secret", r.URL.Query().Get("key"))
+		if r.Header.Get("x-goog-api-key") != "secret" {
+			t.Errorf("x-goog-api-key header = %q, want secret", r.Header.Get("x-goog-api-key"))
+		}
+		if r.URL.RawQuery != "" {
+			t.Errorf("URL must not contain query parameters (key leaked in URL): %s", r.URL.RawQuery)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
 			t.Errorf("decode request: %v", err)
@@ -176,11 +179,11 @@ func TestGeminiClientChat_InteractionsRequestAndResponse(t *testing.T) {
 		if r.URL.Path != "/v1beta/interactions" {
 			t.Errorf("path = %s, want /v1beta/interactions", r.URL.Path)
 		}
-		if r.URL.Query().Get("key") != "secret" {
-			t.Errorf("key query = %q, want secret", r.URL.Query().Get("key"))
-		}
 		if r.Header.Get("x-goog-api-key") != "secret" {
 			t.Errorf("x-goog-api-key header = %q, want secret", r.Header.Get("x-goog-api-key"))
+		}
+		if r.URL.RawQuery != "" {
+			t.Errorf("URL must not contain query parameters (key leaked in URL): %s", r.URL.RawQuery)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
 			t.Errorf("decode request: %v", err)

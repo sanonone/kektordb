@@ -78,7 +78,7 @@ func (e *GeminiEmbedder) Embed(text string) ([]float32, error) {
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("gemini embedder returned status: %s: %s", resp.Status, string(bodyBytes))
+		return nil, fmt.Errorf("gemini embedder returned status: %s", resp.Status)
 	}
 
 	var geminiResp struct {
@@ -111,11 +111,6 @@ func (e *GeminiEmbedder) endpoint() (string, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil {
 		return "", fmt.Errorf("invalid gemini embedder endpoint: %w", err)
-	}
-	if apiKey := e.apiKey(); apiKey != "" && u.Query().Get("key") == "" {
-		q := u.Query()
-		q.Set("key", apiKey)
-		u.RawQuery = q.Encode()
 	}
 
 	return u.String(), nil
