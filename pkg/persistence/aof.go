@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"sync"
 )
 
 // DefaultAOFWriteBufferSize is the fallback write-buffer size (in bytes) used by NewAOFWriter
@@ -12,13 +13,17 @@ const DefaultAOFWriteBufferSize = 4096
 
 // AOFWriter manages writing to the Append-Only File using a robust binary protocol.
 //
-// AOFWriter is NOT goroutine-safe by itself. Concurrent access is the responsibility
-// of the caller. In production it is always wrapped by LazyAOFWriter, whose single
-// run() goroutine is the only caller — so no locking is needed here.
+// AOFWriter is NOT goroutine-safe by itself — all mutable operations (Write, Flush,
+// Sync, Close, Truncate, ReplaceWith) must be serialized externally. In production
+// it is always wrapped by LazyAOFWriter, whose single run() goroutine serialises
+// those operations. The only exception is File() which may be called by external
+// checkers (e.g. engine background maintenance); it is protected by a shared mutex
+// with ReplaceWith().
 type AOFWriter struct {
 	file *os.File
 	buf  *bufio.Writer
 	path string
+	mu   sync.Mutex // protects file and buf across File() / ReplaceWith()
 
 	// frameWriter handles the TLVC (Type-Length-Value-Checksum) encoding.
 	// It writes directly into 'buf'.
@@ -112,13 +117,19 @@ func (a *AOFWriter) Path() string {
 }
 
 // File returns the underlying OS file (read-only access recommended or for specialized ops like Stat).
+// Protected by mu to prevent races with ReplaceWith().
 func (a *AOFWriter) File() *os.File {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	return a.file
 }
 
 // ReplaceWith replaces the current AOF file with a new one atomically (rename) and reopens it.
-// Used at the end of AOF rewriting.
+// Used at the end of AOF rewriting. Protected by mu to prevent races with File().
 func (a *AOFWriter) ReplaceWith(newFilePath string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	// 1. Flush & Close old
 	if err := a.buf.Flush(); err != nil {
 		return fmt.Errorf("failed to flush buffer before replace: %w", err)
