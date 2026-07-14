@@ -72,6 +72,8 @@ func normalizeMode(mode string) string {
 		return "ollama"
 	case "openai_compatible":
 		return "openai"
+	case "google":
+		return "gemini"
 	default:
 		return mode
 	}
@@ -99,6 +101,9 @@ func SelectEmbedder(cfg EmbedderConfig, dataDir string) (Embedder, error) {
 
 	case "ollama":
 		return NewOllamaEmbedder(ollamaURL, ollamaModel, timeout), nil
+
+	case "gemini":
+		return NewGeminiEmbedder(cfg.URL, cfg.Model, cfg.APIKey, timeout), nil
 
 	case "local":
 		return tryLocalEmbedder(dataDir, cfg.ModelDir)

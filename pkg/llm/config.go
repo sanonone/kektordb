@@ -7,6 +7,7 @@ type Config struct {
 	// - "openai" (default): OpenAI, LocalAI, vLLM
 	// - "ollama": Ollama local models
 	// - "huggingface": HuggingFace Serverless Inference API
+	// - "gemini": Google Gemini API
 	Provider string `yaml:"provider" json:"provider"`
 
 	// BaseURL is the API endpoint.

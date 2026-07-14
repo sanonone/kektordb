@@ -2,9 +2,13 @@ port: ":9092"
 target_url: "http://localhost:11434"
 
 # Configurazione Embedder (usa il tuo modello locale)
-embedder_type: "ollama_api"
-embedder_url: "http://localhost:11434/api/embeddings"
-embedder_model: "nomic-embed-text-v2-moe:latest"
+# embedder_type: "ollama_api"
+# embedder_url: "http://localhost:11434/api/embeddings"
+# embedder_model: "nomic-embed-text-v2-moe:latest"
+embedder_type: "gemini"
+embedder_url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:embedContent"
+embedder_model: "gemini-embedding-2"
+embedder_api_key: &gemini_api_key "{GEMINI_API_KEY}"
 embedder_timeout: 60s
 
 # RAG Automatico
@@ -70,13 +74,19 @@ cache_delete_threshold: 0.0 # 0.0 = Pulisci sempre se c'è anche solo 1 cancella
 
 # rewriter
 fast_llm:
-  base_url: "http://localhost:11434/v1"
-  model: "gemma4:latest"
+  # base_url: "http://localhost:11434/v1"
+  base_url: "https://generativelanguage.googleapis.com/v1beta/interactions"
+  # model: "gemma4:latest"
+  model: "gemini-3.5-flash"
+  api_key: *gemini_api_key
 
 # HyDe
 llm:
-  base_url: "http://localhost:11434/v1"
-  model: "gemma4:latest"
+  # base_url: "http://localhost:11434/v1"
+  base_url: "https://generativelanguage.googleapis.com/v1beta/interactions"
+  # model: "gemma4:latest"
+  model: "gemini-3.5-flash"
+  api_key: *gemini_api_key
 
 rag_system_prompt: |
   Sei un assistente tecnico esperto.

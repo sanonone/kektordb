@@ -75,10 +75,10 @@ func NewAIProxy(cfg Config, dbEngine *engine.Engine) (*AIProxy, error) {
 	// Initialize clients if RAG is enabled
 	if cfg.RAGEnabled {
 		fastConfig := cfg.FastLLM
-		if fastConfig.BaseURL == "" {
+		if fastConfig.BaseURL == "" && fastConfig.Provider == "" {
 			fastConfig = cfg.LLM
 		}
-		if fastConfig.BaseURL == "" {
+		if fastConfig.BaseURL == "" && fastConfig.Provider == "" {
 			fastConfig = llm.DefaultConfig()
 		}
 		p.fastLLMClient = llm.NewClient(fastConfig)
@@ -86,7 +86,7 @@ func NewAIProxy(cfg Config, dbEngine *engine.Engine) (*AIProxy, error) {
 
 		if cfg.RAGUseHyDe {
 			mainConfig := cfg.LLM
-			if mainConfig.BaseURL == "" {
+			if mainConfig.BaseURL == "" && mainConfig.Provider == "" {
 				mainConfig = llm.DefaultConfig()
 			}
 			p.llmClient = llm.NewClient(mainConfig)

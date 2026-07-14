@@ -6,7 +6,8 @@ vectorizers:
     schedule: "30s"
     source:
       type: "filesystem"
-      path: "/home/dash/Documenti/nvim comandi"
+      # path: "/home/dash/Documenti/nvim comandi"
+      path: "/Users/treav/Desktop/Repo/Tools/OSS/docs"
     include_patterns: ["*.md", "*.txt", "*.pdf", "*.docx"]
     exclude_patterns: ["draft_*"] # Ignora bozze
     index_config:
@@ -16,9 +17,13 @@ vectorizers:
       ef_construction: 200 # <--- Costruzione più lenta ma precisa
       text_language: "italian" # <--- Stemming italiano per la ricerca ibrida
     embedder:
-      type: "ollama_api"
-      url: "http://localhost:11434/api/embeddings"
-      model: "nomic-embed-text-v2-moe:latest"
+      # type: "ollama_api"
+      # url: "http://localhost:11434/api/embeddings"
+      # model: "nomic-embed-text-v2-moe:latest"
+      type: gemini
+      url: "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:embedContent"
+      model: gemini-embedding-2
+      api_key: &gemini_api_key "{GEMINI_API_KEY}"
     document_processor:
       chunking_strategy: "markdown" # <--- Rispetta la struttura MD
       chunk_size: 1000
@@ -35,8 +40,11 @@ vectorizers:
     graph_enabled: true
     graph_entity_extraction: true
     llm:
-      base_url: "http://localhost:11434/v1"
-      model: "gemma4:latest" # O llama3, mistral, gpt-4o-mini...
+      # base_url: "http://localhost:11434/v1"
+      base_url: "https://generativelanguage.googleapis.com/v1beta/interactions"
+      # model: "gemma4:latest" # O llama3, mistral, gpt-4o-mini...
+      model: "gemini-3.5-flash"
+      api_key: *gemini_api_key
       temperature: 0.0 # Meglio deterministico per estrarre dati
 
     # Esempio HuggingFace (Serverless Inference):
@@ -47,9 +55,12 @@ vectorizers:
     #   temperature: 0.0
 
     vision_llm:
-      base_url: "http://localhost:11434/v1"
+      # base_url: "http://localhost:11434/v1"
+      base_url: "https://generativelanguage.googleapis.com/v1beta/interactions"
       # IMPORTANTE: Devi aver scaricato questo modello su Ollama!
       # Consigliato: llama3.2-vision (piccolo e potente) o llava
-      model: "gemma4:latest"
+      # model: "gemma4:latest"
+      model: "gemini-3.5-flash"
+      api_key: *gemini_api_key
       temperature: 0.0
       max_tokens: 300 # Limitiamo la descrizione per non intasare l'embedding

@@ -130,7 +130,7 @@ func NewVectorizerService(server *Server, assetsDir string) (*VectorizerService,
 		var llmClient llm.Client
 		if ragConfig.GraphEntityExtraction {
 			// Se l'utente non ha configurato l'URL nel blocco LLM, usiamo un default sensato o fallback
-			if ragConfig.LLMConfig.BaseURL == "" {
+			if ragConfig.LLMConfig.BaseURL == "" && ragConfig.LLMConfig.Provider == "" {
 				// Fallback ai default di pkg/llm se la sezione manca
 				ragConfig.LLMConfig = llm.DefaultConfig()
 			}
@@ -141,7 +141,7 @@ func NewVectorizerService(server *Server, assetsDir string) (*VectorizerService,
 
 		var visionClient llm.Client
 		// Se l'URL è settato, vuol dire che l'utente vuole la visione
-		if ragConfig.VisionLLMConfig.BaseURL != "" {
+		if ragConfig.VisionLLMConfig.BaseURL != "" || ragConfig.VisionLLMConfig.Provider != "" {
 			log.Printf("[Vectorizer] Enabling Vision Pipeline using (%s)", ragConfig.VisionLLMConfig.Model)
 			visionClient = llm.NewClient(ragConfig.VisionLLMConfig)
 		}

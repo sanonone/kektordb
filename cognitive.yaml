@@ -73,13 +73,17 @@ llm:
   # API endpoint (OpenAI-compatible)
   # Ollama: "http://localhost:11434/v1"
   # OpenAI: "https://api.openai.com/v1"
-  base_url: "http://localhost:11434/v1"
+  provider: "gemini"
+  # base_url: "http://localhost:11434/v1"
+  base_url: "https://generativelanguage.googleapis.com/v1beta/interactions"
 
   # Model name
-  model: "gemma4:latest"
+  # model: "gemma4:latest"
+  model: "gemini-3.5-flash"
 
   # API key (required for OpenAI, ignored by Ollama)
-  api_key: "kektor"
+  # api_key: "kektor"
+  api_key: "{GEMINI_API_KEY}"
 
   # Temperature (0.0 = deterministic, 1.0 = creative)
   temperature: 0.5

@@ -20,9 +20,10 @@ type Config struct {
 	AssetBaseURL string `yaml:"asset_base_url"`
 
 	// Embedder Settings (Specific for Proxy)
-	EmbedderType    string              `yaml:"embedder_type"` // "ollama_api" (future: "openai")
+	EmbedderType    string              `yaml:"embedder_type"` // "ollama_api", "openai", "gemini"
 	EmbedderURL     string              `yaml:"embedder_url"`
 	EmbedderModel   string              `yaml:"embedder_model"`
+	EmbedderAPIKey  string              `yaml:"embedder_api_key"`
 	EmbedderTimeout time.Duration       `yaml:"embedder_timeout"`
 	Embedder        embeddings.Embedder `yaml:"-" json:"-"`
 

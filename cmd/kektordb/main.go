@@ -351,6 +351,7 @@ func main() {
 				Mode:    proxyCfg.EmbedderType,
 				URL:     proxyCfg.EmbedderURL,
 				Model:   proxyCfg.EmbedderModel,
+				APIKey:  proxyCfg.EmbedderAPIKey,
 				Timeout: proxyCfg.EmbedderTimeout,
 			}
 			var err error

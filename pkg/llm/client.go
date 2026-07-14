@@ -33,11 +33,26 @@ type OpenAIClient struct {
 }
 
 // NewClient initializes a new LLM client based on the configured provider.
-// All supported providers (OpenAI, Ollama, HuggingFace) use the OpenAI-compatible
-// /chat/completions endpoint, so they share the same underlying transport.
+// OpenAI-compatible providers share /chat/completions. Gemini uses its native
+// generateContent API behind the same Client interface.
 func NewClient(cfg Config) Client {
+	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
+	if provider == "" && strings.Contains(cfg.BaseURL, "generativelanguage.googleapis.com") {
+		provider = "gemini"
+	}
+	cfg.Provider = provider
+
 	// Set provider-specific defaults
-	switch cfg.Provider {
+	switch provider {
+	case "gemini", "google":
+		if cfg.BaseURL == "" {
+			cfg.BaseURL = "https://generativelanguage.googleapis.com/v1beta"
+		}
+		cfg.BaseURL = strings.TrimSuffix(cfg.BaseURL, "/")
+		if cfg.Model == "" {
+			cfg.Model = "gemini-2.0-flash"
+		}
+		return NewGeminiClient(cfg)
 	case "huggingface":
 		if cfg.BaseURL == "" {
 			cfg.BaseURL = "https://api-inference.huggingface.co/v1"
