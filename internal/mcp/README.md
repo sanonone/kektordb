@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Exposes KektorDB as an MCP (Model Context Protocol) server over JSON-RPC 2.0 via stdio, allowing LLM agents (Claude, Cursor, VS Code, or any MCP-compatible client) to interact with KektorDB's memory system using natural language tools. Identifies as "KektorDB Memory" v0.6.0 with 23 registered tools across memory CRUD, graph operations, search, session management, meta-cognition, user profiling, knowledge compilation, and administration.
+Exposes KektorDB as an MCP (Model Context Protocol) server over JSON-RPC 2.0 via stdio, allowing LLM agents (Claude, Cursor, VS Code, or any MCP-compatible client) to interact with KektorDB's memory system using natural language tools. Identifies as "KektorDB Memory" v0.6.0 with 57 registered tools (49 agent + 8 admin) across memory CRUD, graph operations, search, session management, meta-cognition, user profiling, knowledge compilation, and administration.
 
 ## Key Types & Critical Paths
 
@@ -19,7 +19,7 @@ Exposes KektorDB as an MCP (Model Context Protocol) server over JSON-RPC 2.0 via
 
 ## Architecture & Data Flow
 
-**Three-layer architecture:** MCP SDK (`github.com/modelcontextprotocol/go-sdk/mcp`) -> `server.go` (entry point, tool registration) -> `service.go` (business logic, 17 tool handlers) -> `engine.Engine` (persistence). The embedder is injected for text-to-vector conversion in search and save operations.
+**Three-layer architecture:** MCP SDK (`github.com/modelcontextprotocol/go-sdk/mcp`) -> `server.go` (entry point, tool registration) -> `service.go` (business logic, 57 tool handlers) -> `engine.Engine` (persistence). The embedder is injected for text-to-vector conversion in search and save operations.
 
 **Declarative tool registration:** Uses `mcp.AddTool(s, &mcp.Tool{...}, service.Method)`. The SDK inspects the method's argument/result structs via reflection to auto-generate JSON schemas from `jsonschema` struct tags. Adding a new tool requires only: define Args/Result structs with jsonschema tags, write the handler, register in `server.go`.
 
@@ -37,7 +37,7 @@ Exposes KektorDB as an MCP (Model Context Protocol) server over JSON-RPC 2.0 via
 ## Cross-Module Dependencies
 
 **Depends on:**
-- `pkg/engine` -- Primary dependency. All 17 tools delegate to engine methods (VAdd, VSearch, VLink, VUnlink, VGet, VGetMany, VReinforce, FindPath, etc.).
+- `pkg/engine` -- Primary dependency. All 57 tools delegate to engine methods (VAdd, VSearch, VLink, VUnlink, VGet, VGetMany, VReinforce, FindPath, etc.).
 - `pkg/embeddings` -- Embedder for text-to-vector conversion in `save_memory`, `recall`, `create_entity`, and search tools.
 - `pkg/rag` -- `AdaptiveRetrieve` tool uses `rag.AdaptiveRetriever` directly.
 

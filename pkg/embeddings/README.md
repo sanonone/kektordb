@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines a minimal interface for converting text into float32 vector embeddings, with concrete implementations for OpenAI's embedding API and Ollama's local embedding endpoint. The foundation of all vector operations in KektorDB -- used by the RAG pipeline, vectorizer services, MCP layer, proxy, and the main application entry point.
+Defines a minimal interface for converting text into float32 vector embeddings, with concrete implementations for OpenAI's embedding API, Ollama's local embedding endpoint, and Google's Gemini `embedContent` API. The foundation of all vector operations in KektorDB -- used by the RAG pipeline, vectorizer services, MCP layer, proxy, and the main application entry point.
 
 ## Key Types & Critical Paths
 
@@ -10,6 +10,7 @@ Defines a minimal interface for converting text into float32 vector embeddings, 
 - `Embedder` (interface) -- Single method: `Embed(text string) ([]float32, error)`. TODO: `EmbedBatch(texts []string)`.
 - `OpenAIEmbedder` -- `{url, model, apiKey string, timeout time.Duration, httpClient *http.Client}`. Default URL: `https://api.openai.com/v1/embeddings`.
 - `OllamaEmbedder` -- `{url, model string, timeout time.Duration, httpClient *http.Client}`. No default URL -- caller must provide.
+- `GeminiEmbedder` -- `{URL, Model, APIKey string, Client *http.Client}`. Auth via `x-goog-api-key` header. Default model: `gemini-embedding-001`.
 
 **Critical paths (hot functions):**
 - `Embed()` -- HTTP POST with JSON payload, response parsing via `json.Decoder`. Called for every text that needs vectorization (ingestion, search, cache, firewall).

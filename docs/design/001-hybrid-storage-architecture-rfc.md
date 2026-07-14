@@ -1,6 +1,6 @@
 # RFC 001: KektorDB Hybrid Storage Architecture
 
-**Status:** Draft / Planned for v0.5.0 **Date:** 2025-12-25 **Context:** Scalability beyond RAM limits while preserving a simple architecture.
+**Status:** Superseded — mmap arena storage adopted in v0.5.0. This RFC argued against mmap in favor of standard I/O; the implementation chose mmap exclusively. **Date:** 2025-12-25 (original), updated 2026-07-14.
 
 ## 1. Executive Summary
 

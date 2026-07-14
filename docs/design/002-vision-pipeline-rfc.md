@@ -1,6 +1,5 @@
 # RFC 002: Multimodal Vision Pipeline Limitations & Future Plan
-**Status:** Draft / Post-v0.4.0 Analysis
-**Context:** Current implementation of PDF image extraction and semantic indexing.
+**Status:** Draft / v0.4.0 Analysis — last reviewed 2026-07-14. Vision pipeline is functional in v0.6.0 with OCR and image processing via Vision LLM integration. The positional precision vs architectural simplicity trade-off described in this RFC remains relevant.
 
 ## 1. Executive Summary
 With release v0.4.0, KektorDB introduces a multimodal "Vision" pipeline that extracts images from PDFs, generates textual descriptions via LLM (e.g., Llama 3.2 Vision), and indexes them as searchable vectors.

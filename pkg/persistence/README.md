@@ -42,11 +42,11 @@ The on-disk durability layer for KektorDB, implementing a framed binary Append-O
 
 ## Concurrency & Locking Rules
 
-**Layer 1 -- `AOFWriter.mu` (`sync.Mutex`):** Protects all operations on the underlying file, buffer, and `FrameWriter`. Every public method (`Write`, `Flush`, `Sync`, `Close`, `Truncate`, `ReplaceWith`) acquires this lock.
+**Layer 1 -- `AOFWriter.mu` (`sync.Mutex`):** Protects `file` and `buf` against races between `File()` (called from engine background maintenance) and `ReplaceWith()` (called from the lazy writer's run goroutine). Added in v0.6.0 (E3 race fix).
 
-**Layer 2 -- `LazyAOFWriter.mu` (`sync.Mutex`):** Protects the in-memory `buffer []string` and `stopped` flag. `Write()` acquires the lock briefly to append. `Flush()` and `Sync()` acquire the lock, drain the buffer, and delegate to the underlying writer.
+**Layer 2 -- Channel-based serialization:** `LazyAOFWriter` uses a single `run()` goroutine that serialises all mutable state (buffer, snapshotBuffer, inSnapshotMode, fatalErr, closed) via two channels: `writeCh` (buffered, for data) and `cmdCh` (unbuffered, for control commands). `Write()` is fire-and-forget into `writeCh`. `Flush()`, `Sync()`, `Truncate()`, `ReplaceWith()`, `Close()` go through `cmdCh` and wait for a response. This design is race-free by construction and requires no explicit mutex on the hot path.
 
-**Background goroutine serialization:** When the buffer fills during `Write()`, a flush is spawned as `go lw.Flush()`. Multiple flush goroutines could theoretically race, but they are serialized by `mu` in `Flush()`. Trade-off: potential goroutine churn under sustained high throughput.
+**Close drain protection:** In v0.6.0 (E4 fix), `cmdClose` drains remaining `writeCh` entries into buffer before calling `closeWriter()`, preventing silent data loss when `Close()` is called immediately after fire-and-forget `Write()` calls.
 
 **Engine-level coordination:** `adminMu` (`sync.Mutex`) in the Engine protects snapshot and rewrite operations from running concurrently. `isRewriting` (`atomic.Bool`) provides a fast-path check to skip concurrent rewrite attempts.
 

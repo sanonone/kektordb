@@ -40,7 +40,7 @@ The high-level orchestration layer that unifies vector CRUD, property graph oper
 
 **Used by:**
 - `internal/server` -- Primary consumer. Every HTTP handler calls engine methods (VAdd, VSearch, VLink, etc.).
-- `internal/mcp` -- Primary consumer. All 17 MCP tools delegate to engine methods.
+- `internal/mcp` -- Primary consumer. All 57 MCP tools (49 agent + 8 admin) delegate to engine methods.
 - `pkg/proxy` -- Uses `VSearch`, `VSearchGraph`, `VDelete` for RAG, cache invalidation, and semantic firewall.
 - `pkg/rag` -- `KektorAdapter` wraps engine to implement the `Store` and `AdaptiveStore` interfaces.
 - `pkg/cognitive` -- Gardener uses VSearch, VLink, VUnlink, VGetLinks, VGetRelations, VReinforce for reflection analysis.

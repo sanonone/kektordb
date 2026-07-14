@@ -2,7 +2,7 @@
 
 ## Purpose
 
-A unified, provider-agnostic LLM client that talks to any OpenAI-compatible `/chat/completions` endpoint. A single implementation serves all providers (OpenAI, Ollama, HuggingFace, LocalAI, vLLM) through URL normalization. Used throughout KektorDB by the RAG pipeline, cognitive gardener, MCP server, HTTP handlers, and proxy layer.
+A unified, provider-agnostic LLM client that talks to any `/chat/completions` endpoint. A single implementation (`OpenAIClient`) serves OpenAI-compatible providers, while `GeminiClient` handles Google's Gemini API (both `generateContent` and `interactions` endpoints). Used throughout KektorDB by the RAG pipeline, cognitive gardener, MCP server, HTTP handlers, and proxy layer.
 
 ## Key Types & Critical Paths
 
@@ -14,7 +14,7 @@ A unified, provider-agnostic LLM client that talks to any OpenAI-compatible `/ch
 
 **Critical paths (hot functions):**
 - `sendRequest()` -- Core HTTP dispatcher: marshal payload, create POST request, set headers, execute with 120s timeout, read body, check status, parse response. Used by both `Chat` and `ChatWithImages`.
-- `NewClient()` -- URL normalization based on provider string. Default URLs: `ollama` -> `localhost:11434/v1`, `openai` -> `https://api.openai.com/v1`, `huggingface` -> `https://api-inference.huggingface.co/models/`.
+- `NewClient()` -- URL normalization based on provider string. Default URLs: `ollama` -> `localhost:11434/v1`, `openai` -> `https://api.openai.com/v1`, `gemini` -> `https://generativelanguage.googleapis.com/v1beta`, `huggingface` -> `https://api-inference.huggingface.co/v1`. Auto-detects Gemini from `generativelanguage.googleapis.com` in BaseURL when Provider is empty.
 
 ## Architecture & Data Flow
 

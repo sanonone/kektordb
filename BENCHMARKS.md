@@ -1,6 +1,8 @@
 # Detailed Performance Benchmarks
 
-This document contains the raw results of performance tests conducted on **KektorDB v0.3.0**.
+This document contains the raw results of performance tests last updated for **KektorDB v0.5.x**.
+
+> **Note:** These benchmarks were performed on v0.5.x hardware. KektorDB v0.6.0 includes significant engine stability improvements (AOF ordering, snapshot mode, lazy writer hardening) that may affect performance characteristics. Updated benchmarks are planned for a future release.
 
 ### Methodology
 *   **Hardware:** Intel Core i5-12500 (Consumer Desktop), Local SSD.
@@ -11,7 +13,7 @@ This document contains the raw results of performance tests conducted on **Kekto
     *   **QPS:** Queries Per Second (sequential latency measurement).
     *   **Index Time:** Wall-clock time to ingest and build the index.
 
-> **Note:** KektorDB is currently slower at ingestion compared to mature engines. This is partly because it builds the full queryable graph immediately upon insertion, but mostly due to the current single-graph architecture. **Optimizing bulk ingestion speed is the top priority for the next major release.**
+
 
 ---
 

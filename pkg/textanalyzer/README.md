@@ -25,14 +25,7 @@ A pluggable text analysis pipeline for full-text search indexing and LLM context
 - `StemItalian()` -- Preprocess (accent normalization, intervocalic marking) -> Step0 (clitic pronouns) -> Step1/Step2 (nominal/verb suffixes, mutually exclusive) -> Step3 (final vowels) -> Postprocess (restore markers). R1/R2/RV regions.
 - `Compress()` -- Smart tokenization preserving case + O(N) stopword filtering + strings.Builder reconstruction. Safe for concurrent use.
 
-## Key Types & Critical Paths
 
-**Critical types:**
-- `Analyzer` (interface) -- Single method: `Analyze(text string) []string`. Implemented by `EnglishStemmer` and `ItalianStemmer`.
-- `EnglishStemmer` / `ItalianStemmer` -- Empty structs (`struct{}`) serving as type markers. All logic is in method receivers.
-- `tokenizerRegex` -- Package-level `*regexp.Regexp`, compiled once at init: `[\p{L}0-9_]+`.
-
-**Critical paths (hot functions):**
 - `Tokenize()` -- Lowercase + regex extract. Pre-compiled regex, no recompilation per call.
 - `FilterEnglishStopWords()` / `FilterItalianStopWords()` -- O(1) map lookups via `map[string]struct{}`. Pre-allocated result slice.
 - `StemEnglish()` -- 9-step pipeline: Step0 (possessive) -> Step1a (plurals) -> Step1b (-ed/-ing) -> Step1c (y->i) -> Steps 2-4 (suffix tables) -> Step5 (cleanup). R1/R2 region constraints.
