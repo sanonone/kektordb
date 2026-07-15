@@ -13,298 +13,162 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 <p align="center">
-  <a href="DOCUMENTATION.md">📚 Documentazione</a> •
-  <a href="CONTRIBUTING.md">🤝 Contributi</a> •
-  <a href="docs/guides/zero_code_rag.md">🤖 Guida GraphRAG Open WebUI</a>
+  <a href="DOCUMENTATION.md">Documentazione</a> -
+  <a href="CONTRIBUTING.md">Contributi</a> -
+  <a href="docs/guides/zero_code_rag.md">Guida GraphRAG</a>
 </p>
 
 [English](README.md) | [Italiano](README.it.md)
 
-> [!TIP]
-> **Supporto Docker:** Preferisci i container? Un `Dockerfile` è incluso nella root per creare le tue immagini.
-
-KektorDB è un **sistema di memoria in-memory per applicazioni AI** che combina ricerca vettoriale ad alte prestazioni con un knowledge graph temporale. Memorizza informazioni comprendendole—tracciando importanza, relazioni ed evoluzione nel tempo. Un motore cognitivo integrato (Gardener) consolida automaticamente le memorie, rileva contraddizioni e lascia svanire le informazioni irrilevanti attraverso il decadimento temporale.
-
-> *Costruito per sviluppatori che costruiscono agenti AI, sistemi RAG e applicazioni ad alta intensità di conoscenza.*
+KektorDB e' un **sistema di memoria AI** - non un database che archivia dati, ma un motore che **capisce** cio' che memorizza. Combina ricerca vettoriale ad alte prestazioni (HNSW) con un knowledge graph temporale e un motore cognitivo che analizza continuamente i tuoi dati, rileva contraddizioni, traccia l'importanza e lascia svanire naturalmente le informazioni irrilevanti.
 
 <p align="center">
-  <img src="docs/images/kektordb-demo.gif" alt="Demo Grafo KektorDB" width="800">
+  <img src="docs/images/kektordb-demo.gif" alt="KektorDB Demo" width="800">
 </p>
 
----
-
-## Cos'è KektorDB?
-
-KektorDB è un **sistema di memoria AI** che combina due motori complementari:
-
-1. **Ricerca vettoriale ad alte prestazioni (HNSW)** per similarità semantica—trova cose che *significano* lo stesso, non solo corrispondenze esatte.
-2. **Knowledge graph temporale** per relazioni strutturate—comprende *come le cose sono connesse* e *come la conoscenza evolve*.
-
-**I database tradizionali memorizzano i dati.** Conservano fatti senza comprendere il loro contesto, importanza o relazioni. Li interroghi, e ti restituiscono ciò che è memorizzato. Semplice, ma limitato.
-
-**KektorDB pensa mentre memorizza.** Traccia cosa è importante versus dimenticato, rileva contraddizioni, e aiuta la tua AI a recuperare la *giusta* informazione al *momento* giusto.
-
-### Costruito per Ingegneri AI
-
-Se stai costruendo:
-- **Agenti AI** che necessitano di memoria persistente e auto-organizzante
-- **Sistemi RAG** che dovrebbero comprendere contesto e importanza
-- **Sistemi Multi-Agente** con conoscenza condivisa
-- **Assistenti AI Personali** che imparano nel tempo
-
-...allora KektorDB è progettato per te.
-
-### Ma Resta un Motore Potente
-
-Sotto il cofano, ottieni primitive di database collaudate:
-- **HNSW** per ricerca di similarità vettoriale ad alte prestazioni
-- **Ricerca Ibrida** che combina vettori + corrispondenza keyword BM25
-- **Quantizzazione efficiente in memoria** (Int8, Float16) per memorizzare più dati in RAM
-- **Attraversamento del grafo** per recupero contesto N-hop
-
-Questi sono strumenti. Il prodotto è un'AI che *comprende* i tuoi dati.
-
----
-
-## Casi d'Uso
-
-### 1. Memoria per Agenti AI (Primario)
-
-Dai al tuo agente AI una memoria persistente e auto-organizzante che comprende la rilevanza.
-
-*Scenario:* Costruire un assistente AI che dovrebbe ricordare preferenze utente, conversazioni passate e costruire conoscenza nel tempo.
-
-*Soluzione:* Usa le sessioni per tracciare le conversazioni. Lascia che il Gardener estragga fatti e rilevi contraddizioni. Abilita il decadimento della memoria così che le informazioni obsolete sbiadiscano naturalmente.
-
-*Vantaggio:* Gli utenti hanno l'impressione di parlare con qualcuno che si ricorda davvero di loro.
-
-### 2. Memoria Condivisa Multi-Agente
-
-Abilita più agenti AI a condividere conoscenza e imparare l'uno dall'altro.
-
-*Scenario:* Molteplici agenti specializzati (ricerca, coding, scrittura) che necessitano di condividere contesto e trasferire informazioni apprese.
-
-*Soluzione:* Usa MCP o API diretta per condividere memorie tra indici degli agenti. KektorDB traccia la provenienza della conoscenza e aiuta a risolvere i conflitti.
-
-*Vantaggio:* Gli agenti smettono di ripetere gli errori degli altri.
-
-### 3. RAG con Memoria
-
-Vai oltre "recupera e inietta"—costruisci RAG che comprende davvero la rilevanza.
-
-*Scenario:* Il tuo sistema RAG continua a recuperare documenti tecnicamente simili ma contestualmente errati.
-
-*Soluzione:* Abilita il recupero basato su grafo per seguire relazioni semantiche. Usa l'espansione contestuale adattiva. Lascia che il Gardener evidenzi le lacune nella conoscenza.
-
-*Vantaggio:* Maggiore recall, minor rischio di allucinazioni.
-
-### 4. Ricerca Vettoriale Embedded (Go)
-
-Ricerca vettoriale ad alte prestazioni integrata nella tua applicazione Go senza overhead operativo.
-
-*Scenario:* Implementare "Prodotti Correlati" o "Ricerca Semantica" in un backend Go.
-
-*Soluzione:* `import "github.com/sanonone/kektordb/pkg/engine"` per eseguire il DB nel processo.
-
-*Vantaggio:* Zero complessità di deployment. Il DB scala con la tua app.
-
----
-
-## Differenziatori Chiave
-
-### Memoria che Si Gestisce Da Sola
-
-Il **Gardener** è un processo in background che analizza continuamente i tuoi dati:
-
-- **Consolidamento**: Unisce informazioni duplicate, rafforza le memorie frequentemente usate
-- **Rilevamento Contraddizioni**: Segnala quando nuove informazioni confliggono con fatti stabiliti
-- **Analisi Lacune di Conoscenza**: Identifica cosa manca per una comprensione completa
-- **Dimenticanza**: Depriorizza naturalmente le informazioni non utilizzate
-
-### Memoria Consapevole del Tempo
-
-A differenza dei database statici, KektorDB comprende *quando* le informazioni contano:
-
-- **Decadimento**: Le memorie sbiadiscono naturalmente se non rafforzate
-- **Rafforzamento**: Recuperare una memoria la rende più prominente
-- **Grafo Temporale**: Interroga lo stato della conoscenza in qualsiasi momento nel passato
-- **Fatti Core**: Fissa i fatti essenziali per evitare che sbiadiscano mai
-
-### Risposte Consapevoli dell'Utente
-
-KektorDB costruisce e mantiene **profili utente**:
-
-- Stile di comunicazione e preferenze linguistiche
-- Aree di competenza e conoscenza nota
-- Preferenze dichiarate versus comportamento osservato
-- Risoluzione di informazioni conflittuali auto-dichiarate
-
-### Relazioni come Cittadini di Prima Classe
-
-Il knowledge graph non è un'aggiunta—è centrale:
-
-- Estrazione automatica di entità dai documenti
-- Collegamento semantico di concetti correlati
-- Attraversamento N-hop per scoperta contestuale
-- Grafo pesato con proprietà e timestamp
-
-### Supporto MCP Nativo
-
-KektorDB parla nativamente il **Model Context Protocol**. Connetti Claude Desktop o qualsiasi client MCP direttamente.
-
-**Strumenti Memoria:** `save_memory`, `recall_memory`, `scoped_recall`, `adaptive_retrieve`
-
-**Strumenti Grafo:** `create_entity`, `connect_entities`, `explore_connections`, `find_connection`
-
-**Strumenti Cognitivi:** `start_session`, `end_session`, `get_user_profile`, `check_subconscious`, `resolve_conflict`, `ask_meta_question`
-
-**Strumenti Conoscenza:** `request_knowledge`
-
-**Utilità:** `transfer_memory`, `unpin_memory`, `filter_vectors`
-
----
-
-## RAG Zero-Code (Integrazione Open WebUI)
-
-<p align="center">
-  <img src="docs/images/kektordb-rag-demo.gif" alt="Demo RAG KektorDB" width="800">
-</p>
-
-KektorDB può funzionare come **middleware intelligente** tra la tua Chat UI e il tuo LLM. Intercetta le richieste, esegue il recupero e inietta il contesto automaticamente.
-
-**Architettura:**
-`Open WebUI` -> `KektorDB Proxy (9092)` -> `Ollama / LocalAI (11434)`
-
-**Come configurarlo:**
-
-1.  **Configura `vectorizers.yaml`** per puntare ai tuoi documenti e abilitare l'Estrazione Entità.
-2.  **Configura `proxy.yaml`** per puntare al tuo LLM Locale (Ollama) o OpenAI.
-3.  **Esegui KektorDB** con il proxy abilitato:
-    ```bash
-    ./kektordb -vectorizers-config='vectorizers.yaml' -enable-proxy -proxy-config='proxy.yaml'
-    ```
-4.  **Configura Open WebUI:**
-    *   **Base URL:** `http://localhost:9092/v1`
-    *   **API Key:** `kektor` (o qualsiasi stringa).
-5.  **Chat:** Fai semplicemente domande sui tuoi documenti. KektorDB gestisce il resto.
-
-👉 **[Leggi la Guida Completa: Costruire un Sistema RAG Veloce con Open WebUI](docs/guides/zero_code_rag.md)**
-
----
-
-## ✨ Caratteristiche Principali
-
-### Funzionalità Cognitive & Agentiche
-*   **Motore Cognitivo (Gardener):** Un demone in background che esegue convalide incrociate di confidenza. Analizza il grafo per contraddizioni, traccia profili utente, modella l'evoluzione della conoscenza e risolve i conflitti usando LLM.
-*   **Estrazione Fatti Core:** Il Gardener estrae automaticamente fatti immutabili dalle interazioni utente (nome, professione, preferenze) e crea nodi di memoria pinned con `type="core_fact"` per recupero persistente e veloce senza decadimento temporale.
-*   **Punteggio Confidenza Epistemica:** Framework matematico a tre pilastri (Consenso 40%, Stabilità 30%, Attrito 30%) che assegna punteggi di confidenza (0.0-1.0) alle memorie, identificando stati: cristallizzato, stabile, volatile o contestato.
-*   **Evoluzione Semantica della Memoria ("Semantic Git"):** Controllo versione per le memorie. Evolvi le memorie anziché aggiornarle, preservando la storia completa con relazioni `superseded_by`/`evolves_from` e marcatori `_is_historical`.
-*   **Consolidamento Automatico delle Credenze:** Il Gardener risolve automaticamente credenze volatili e contestate durante i cicli di riflessione, usando il consolidamento basato su LLM per unire memorie simili o archiviare informazioni obsolete.
-*   **Recupero Adattivo:** Una sofisticata pipeline RAG che usa l'espansione del contesto graph-aware, recuperando chunk iniziali e seguendo automaticamente i vicini semantici fino a un limite di token definito dinamicamente.
-*   **Riscrittura Query (CQR):** Riscrive automaticamente le domande dell'utente per risolvere il problema della memoria a breve termine.
-*   **Grounded HyDe:** Genera risposte ipotetiche radicate su frammenti reali di dati, per migliorare drasticamente il recall per le query vaghe.
-*   **Compressione Contesto ("Caveman Mode"):** Compressione lessicale sicura che riduce il conteggio token del 20-35% per il contesto LLM preservando il significato semantico. Rimuove stopwords sicure (articoli, preposizioni) ma preserva rigorosamente le negazioni e gli operatori logici (non, e, o, ma, se).
-*   **EventBus:** Un sistema pub/sub integrato per reagire in tempo reale alle operazioni su vettori e grafo, con supporto per i Server-Sent Events (SSE).
-
-### Performance & Ingegneria
-*   **Motore HNSW:** Implementazione personalizzata ottimizzata per letture ad alta concorrenza.
-*   **Ricerca Ibrida:** Combina Similarità Vettoriale + BM25 (Parole chiave) + Filtri Metadati.
-*   **Efficienza della Memoria:** Supporta **Quantizzazione Int8** (75% di risparmio RAM) con auto-training zero-shot e **Float16**.
-*   **Manutenzione & Ottimizzazione:**
-    *   **Vacuum:** Un processo in background che pulisce i nodi eliminati per recuperare memoria e riparare le connessioni del grafo.
-    *   **Refine:** Un'ottimizzazione continua che rivaluta le connessioni del grafo per migliorare la qualità della ricerca (recall) nel tempo.
-*   **AI Gateway & Middleware:** Agisce come proxy intelligente per client compatibili con OpenAI/Ollama. Dispone di **Caching Semantico** per servire risposte istantanee a query ricorrenti e un **Firewall Semantico** per bloccare prompt dannosi basandosi su similarità vettoriale o liste di negazione esplicite.
-*   **Lazy AOF Writer:** Ottimizzazione delle performance di scrittura con batch flushing (miglioramento throughput 10-100x) mantenendo la durabilità.
-*   **Supporto Visione:** Processa immagini e PDF con capacità OCR tramite integrazione Vision LLM.
-*   **Persistenza:** Ibrida **AOF + Snapshot** assicura durabilità.
-*   **Osservabilità:** Metriche Prometheus (`/metrics`), logging strutturato e endpoint di profiling Go pprof.
-*   **Doppia Modalità:** Esegui come **Server REST** autonomo o come **Libreria Go**.
-
-### Motore a Grafo Semantico
-*   **Estrazione Entità Automatizzata:** Usa un LLM locale per identificare concetti (Persone, Progetti, Tecnologie) durante l'ingestione e collega documenti correlati.
-*   **Grafo Pesato e con Proprietà:** Supporta "Archi Ricchi" con attributi (pesi, proprietà arbitrarie) per abilitare algoritmi complessi di raccomandazione e ranking.
-*   **Grafo Temporale (Time Travel):** Ogni relazione è versionata. Il supporto al soft delete permette di interrogare lo stato del grafo in qualsiasi momento nel passato.
-*   **Memory Decay & Reinforcement:** Unifica la memoria a breve e lungo termine. I nodi non interrogati decadono naturalmente, e vengono rinforzati quando si recupera il contesto. Supporta i nodi "pinned" per bypassare il decay.
-*   **Navigazione Bidirezionale:** Gestione automatica degli archi in entrata per consentire il recupero O(1) di "chi punta al nodo X", potenziando l'attraversamento efficiente del grafo.
-*   **Entità di Grafo:** Supporto per nodi senza vettore per rappresentare entità astratte come "Utenti" o "Sessioni" nella stessa struttura a grafo.
-*   **Attraversamento del Grafo:** La ricerca attraversa qualsiasi tipo di relazione (come `prev`, `next`, `parent`, `mentions`) per fornire una finestra di contesto olistica.
-*   **Filtri sul Grafo:** Combina la ricerca vettoriale con filtri sulla topologia del grafo (es. "cerca solo nei figli del Documento X"), potenziato dai Roaring Bitmaps.
-*   **Path Finding (FindPath):** Scopri il percorso più breve tra due nodi usando BFS bidirezionale. Supporta query time-travel.
-*   **Node Search:** Esegue filtri solo su metadati senza similarità vettoriale.
-
-<p align="center">
-  <img src="docs/images/kektordb-graph-entities.png" alt="Visualizzazione Grafo di Conoscenza" width="700">
-  <br>
-  <em>Visualizzazione delle connessioni semantiche tra documenti tramite entità estratte.</em>
-</p>
-
-### Supporto Model Context Protocol (MCP)
-KektorDB funziona come un **Cognitive Memory Server** completo basato sul protocollo MCP [Model Context Protocol](https://modelcontextprotocol.io/). Questo permette agli agenti LLM (come Claude via Claude Desktop) di utilizzare direttamente KektorDB come memoria a lungo termine auto-organizzativa.
-
-*   **Come avviarlo:**
-    ```bash
-    ./kektordb --mcp
-    ```
-*   **Setup one-liner per agenti AI:**
-    ```bash
-    kektordb setup claude-code    # oppure: cursor, gemini-cli, codex, opencode
-    ```
-    Scrive la configurazione MCP con `--tools=agent` (17 tool) per mantenere il contesto snello. Idempotente -- eseguibile piu' volte.
-*   **Per avviare con un profilo tool specifico:**
-    ```bash
-    ./kektordb --mcp --tools=agent
-    ```
-
----
-
-### Dashboard
-*   **Interfaccia Web:** Disponibile su `http://localhost:9091/ui/`. Graph Explorer e Debugger di Ricerca.
-*   **Terminale (TUI):** Avvia con `--tui` per una dashboard a 5 tab con statistiche live, esploratore grafo, ricerca, timeline e impostazioni. Sperimentale -- potrebbe essere instabile. Usa `q` o `Ctrl+C` per uscire.
-
----
-
-## Installazione
-
-### Come Server (Docker)
+**In 30 secondi - dai memoria persistente al tuo agente AI:**
 
 ```bash
-docker run -p 9091:9091 -p 9092:9092 -v $(pwd)/data:/data sanonone/kektordb:latest
+# 1. Installa e configura (una volta sola)
+kektordb setup opencode
+
+# 2. Avvia il server di memoria
+kektordb --mcp --tools=agent
 ```
 
-### Come Server (Binario)
-Scarica il binario pre-compilato dalla [Pagina delle Release](https://github.com/sanonone/kektordb/releases).
+Il tuo agente ora puo' chiamare `save_memory`, `recall_memory`, `start_session` e altri 46 strumenti. Le memorie persistono tra le sessioni, decadono naturalmente quando non usate, e il motore cognitivo rileva contraddizioni e costruisce profili utente in autonomia.
 
-```bash
-# Linux/macOS
-./kektordb
-
-# Con opzioni personalizzate
-./kektordb -http-addr :9091 -save "30 500" -log-level debug
-```
-
-**Flag della linea di comando:**
-*   `-http-addr`: Indirizzo del server HTTP (default: `:9091`)
-*   `-aof-path`: Percorso del file di persistenza (default: `kektordb.aof`)
-*   `-save`: Policy di auto-snapshot `"secondi cambiamenti"` (default: `"60 1000"`, vuoto per disabilitare)
-*   `-auth-token`: Token di autenticazione API
-*   `-log-level`: Livello di logging (`debug`, `info`, `warn`, `error`)
-*   `-enable-proxy`: Abilita AI Gateway/Proxy
-*   `-proxy-config`: Percorso del file di configurazione del proxy
-*   `-vectorizers-config`: Percorso del file di configurazione dei vectorizers
-*   `-mcp`: Esegui come Server MCP (Stdio)
-*   `--embedder`: Modalita' embedder: `auto`, `ollama`, `openai`, `local`
-*   `--embedder-model`: Directory con modello ONNX + tokenizer (modalita' local)
-*   `--tools`: Profilo tool MCP: `agent`, `admin`, `all`
-*   `--tui`: Avvia dashboard terminale (sperimentale)
-*   `--cognitive-config`: Percorso al file YAML di configurazione cognitiva (abilita Gardener)
-
-> **Nota sulla Compatibilità:** Tutto lo sviluppo e i test sono stati eseguiti su **Linux (x86_64)**. Le build pure Go dovrebbero funzionare su Windows/Mac/ARM.
+I 49 strumenti agent coprono: **CRUD memoria** (`save_memory`, `recall_memory`, `adaptive_retrieve`), **operazioni grafo** (`connect_entities`, `find_path`, `explore_connections`), **gestione sessioni** (`start_session`, `end_session`), **funzioni cognitive** (`check_subconscious`, `get_user_profile`, `ask_meta_question`), **compilazione conoscenza** (`request_knowledge` con cache artifact), piu' strumenti di indicizzazione, configurazione e KV store. Usa `--tools=all` per tutti i 57.
 
 ---
 
-### Embedding Integrato (Opzionale)
+## Cosa Fa KektorDB
 
-KektorDB include un embedder ONNX integrato opzionale (`all-MiniLM-L6-v2`, 384 dimensioni) basato su Rust/Candle per embedding locali senza configurazione -- nessun Ollama richiesto.
+### Motore Cognitivo e di Memoria
+
+**Gardener - Memoria che si Auto-Gestisce.** Un processo background (3 modalita': basic, advanced, meta) che analizza continuamente il knowledge graph. Consolida memorie duplicate, rileva quando nuovi fatti contraddicono quelli stabiliti, identifica lacune di conoscenza e porta alla luce insight tramite 11 detector specializzati. Si attiva con `--cognitive-config cognitive.yaml`.
+
+**Motore Epistemico - Sappi Cio' che Sai.** Un framework matematico a tre pilastri (Consenso 40%, Stabilita' 30%, Attrito 30%) assegna punteggi di confidenza a ogni memoria. Identifica se un fatto e' *cristallizzato*, *stabile*, *volatile* o *contestato*. Interroga via `POST /vector/actions/belief-assessment`.
+
+**Rilevamento Contraddizioni - Cattura i Conflitti Subito.** Il Gardener usa analisi basata su LLM per rilevare quando nuove informazioni confliggono con fatti stabiliti. In modalita' advanced, propone risoluzioni e puo' auto-risolvere contraddizioni minori. Gli agenti controllano le contraddizioni in sospeso via `check_subconscious`.
+
+**Semantic Git - Evolvi, Non Sovrascrivere.** Controllo versione per le memorie. Quando un'informazione cambia, `VEvolve` crea una nuova versione collegata alla precedente tramite archi `superseded_by`/`evolves_from`. Storia completa preservata con marcatori `_is_historical`. Interroga lo stato della conoscenza in qualsiasi momento nel tempo.
+
+**Profilazione Utente - Conosci i Tuoi Utenti.** KektorDB costruisce e mantiene autonomamente profili utente: stile di comunicazione, preferenze linguistiche, aree di competenza, dislikes, preferenze dichiarate vs comportamento osservato. I profili si aggiornano dopo una soglia configurabile di interazioni. Interroga via `get_user_profile`.
+
+**Knowledge Engine - Artefatti Pre-Compilati.** Compila artefatti di conoscenza strutturati da query sul grafo usando template predefiniti (`entity_card`, `topic_overview`, `user_profile`, `timeline`, `session_summary`). I campi sono calcolati in modo deterministico o via LLM. Gli artefatti sono cachati (<50ms hit, zero consumo token) e automaticamente ricompilati quando i dati sorgente cambiano tramite l'Artifact Watcher integrato. Attiva la compilazione via `request_knowledge` in MCP o `POST /compile` in REST.
+
+**Memoria Temporale - Decadimento e Rinforzo.** Unifica memoria a breve e lungo termine. I nodi perdono rilevanza nel tempo se non acceduti, e vengono rinforzati al recupero. Fissa fatti fondamentali per evitare che svaniscano. Configura il decadimento per layer di memoria (episodico, semantico, procedurale) con modelli esponenziale, lineare, a gradini o Ebbinghaus.
+
+### Grafo e Ricerca
+
+**Knowledge Graph - Relazioni come Cittadini di Prima Classe.** Grafi pesati con proprieta', navigazione bidirezionale, time travel (interroga lo stato a qualsiasi timestamp), attraversamento N-hop e path finding BFS bidirezionale. Regole di auto-collegamento creano connessioni da campi metadati (es. `parent_id` -> `child_of`). Entita' del grafo possono esistere senza vettori - rappresenta utenti, sessioni o concetti astratti.
+
+**Ricerca Ibrida - Vettoriale + Keyword + Grafo.** Combina similarita' vettoriale HNSW con keyword matching BM25 e filtri metadati via roaring bitmap. La ricerca graph-aware restringe i risultati a sottografi raggiungibili da un nodo radice. Il retrieval adattivo espande il contesto seguendo vicini semantici fino a un budget di token.
+
+### Ingegneria
+
+**Persistenza Affidabile.** Architettura ibrida AOF + Snapshot. Il Lazy AOF Writer raggruppa le operazioni (miglioramento throughput 10-100x) con fsync periodico. Framing binario TLVC con controlli di integrita' CRC32. Recovery automatico con resync su corruzione - i dati validi sono preservati anche se il file AOF e' parzialmente corrotto. Compattazione background via AOF rewrite con modalita' snapshot che previene la perdita di dati durante la manutenzione.
+
+**Autenticazione JWT.** Token auto-contenuti ES256 (ECDSA P-256) con controllo accessi basato su ruoli (admin, write, read) e isolamento per namespace opzionale. Endpoint JWKS per verifica da parte di terzi. Denylist `jti` per revoca token. Nessuna memorizzazione lato server del token - il token contiene i propri claims.
+
+**Grafo Auto-Ottimizzante.** La manutenzione in background mantiene l'indice in salute: **Vacuum** recupera memoria dai nodi eliminati e ripara le connessioni del grafo. **Refine** rivaluta continuamente le connessioni del grafo per migliorare la qualita' della ricerca nel tempo - piu' a lungo KektorDB e' in esecuzione, migliori diventano i risultati di ricerca. Entrambi sono configurabili per-indice e funzionano autonomamente.
+
+**Eseguilo Come Vuoi.** Server REST autonomo, libreria Go embedded (zero overhead di rete), server MCP per agenti AI, Gateway/Proxy AI per RAG zero-code, o qualsiasi combinazione. SDK client Python, TypeScript e Go. Embedder ONNX integrato (`all-MiniLM-L6-v2`, 384 dim) per embedding locali zero-config. Strumenti CLI esterni possono elaborare documenti complessi tramite SmartLoader - configura un template di comando in `vectorizers.yaml` e KektorDB usa i parser integrati come fallback in caso di errore.
+
+---
+
+## Come Usare KektorDB
+
+| Modalita' | Comando | Ideale per |
+|-----------|---------|------------|
+| **Server MCP** | `kektordb --mcp --tools=agent` | Memoria per agenti AI (Claude, Cursor, Codex, Gemini CLI, OpenCode) |
+| **Server REST** | `./kektordb` | Backend API HTTP, qualsiasi linguaggio |
+| **Libreria Go** | `import "github.com/sanonone/kektordb/pkg/engine"` | Embedded in-process, zero overhead di rete |
+| **Gateway AI** | `./kektordb -enable-proxy -proxy-config=proxy.yaml` | RAG zero-code tra Chat UI e LLM |
+| **Client Python/TS** | `pip install kektordb-client` | Integrazione applicativa |
+
+---
+
+## Avvio Rapido
+
+### Python (API REST)
+
+```python
+from kektordb_client import KektorDBClient
+from kektordb_client.cognitive import CognitiveSession
+
+client = KektorDBClient(port=9091)
+client.vcreate("agent_memory", metric="cosine")
+
+# Salva memorie collegate a una sessione
+with CognitiveSession(client, "agent_memory", user_id="user_42") as session:
+    session.save_memory("L'utente sta costruendo un progetto Go chiamato KektorDB",
+                        layer="episodic", tags=["project", "go"])
+    session.save_memory("L'utente preferisce risposte concise con esempi",
+                        layer="semantic", tags=["preference"])
+
+# Cerca
+results = client.vsearch("agent_memory", query_vector=embed("ultimo progetto"), k=5)
+print(f"Trovate {len(results)} memorie rilevanti")
+
+# Verifica cosa sa KektorDB di questo utente
+profile = client.get_user_profile("user_42", "agent_memory")
+print(f"Stile: {profile.get('communication_style')}")
+```
+
+### Go (Embedded)
+
+```go
+import "github.com/sanonone/kektordb/pkg/engine"
+
+db, _ := engine.Open(engine.DefaultOptions("./data"))
+defer db.Close()
+
+db.VCreate("docs", distance.Cosine, 16, 200, distance.Float32, "", nil, nil, nil)
+db.VAdd("docs", "vec1", []float32{0.1, 0.2, 0.3, 0.4}, map[string]any{"title": "Hello"})
+
+results, _ := db.VSearch("docs", []float32{0.15, 0.25, 0.35, 0.45}, 10, "", "", 100, 1.0, nil)
+for _, id := range results {
+    data, _ := db.VGet("docs", id)
+    fmt.Println(data.ID, data.Metadata["title"])
+}
+```
+
+### Scarica e Avvia
+
+```bash
+# Scarica il binario dalla pagina Release di GitHub
+wget https://github.com/sanonone/kektordb/releases/latest/download/kektordb-linux-amd64
+chmod +x kektordb-linux-amd64
+
+# Avvia il server
+./kektordb-linux-amd64
+
+# Oppure usa Docker
+docker build -t kektordb .
+docker run -p 9091:9091 -v $(pwd)/data:/data kektordb
+```
+
+---
+
+## Benchmark
+
+Hardware desktop (Intel i5-12500, SSD consumer). Confronto con Qdrant e ChromaDB via Docker host networking.
+
+| Database | NLP QPS | Vision QPS | Recall@10 |
+|----------|---------|------------|-----------|
+| **KektorDB** | **1073** | **881** | 0.97 |
+| Qdrant | 848 | 845 | 0.97 |
+| ChromaDB | 802 | 735 | 0.96 |
+
+> KektorDB e' ottimizzato per scenari embedded a nodo singolo. Per deployment distribuiti su scala miliardaria, considera soluzioni specializzate. [Report completo ->](BENCHMARKS.md)
+
+---
+
+## Embedding Integrato (Opzionale)
+
+KektorDB include un embedder ONNX integrato opzionale (`all-MiniLM-L6-v2`, 384 dimensioni) basato su Rust/Candle per embedding locali zero-config - nessun Ollama richiesto.
 
 **Build con supporto Rust:**
 ```bash
@@ -316,181 +180,70 @@ Il modello ONNX (~90 MB) viene scaricato automaticamente da HuggingFace al primo
 
 | Modalita' | Descrizione |
 |-----------|-------------|
-| `auto` | Rilevamento automatico: Ollama se disponibile, ONNX locale come fallback (default) |
+| `auto` | Rilevamento automatico: ONNX locale se disponibile, Ollama come fallback (default) |
 | `ollama` / `ollama_api` | Usa API embedding di Ollama |
 | `openai` / `openai_compatible` | Usa API embedding compatibile OpenAI |
-| `local` | Modello ONNX integrato (richiede build con `-tags rust`) |
+| `gemini` / `google` | Usa API `embedContent` di Gemini |
+| `local` | Modello ONNX integrato (richiede build `-tags rust`) |
 
 ---
 
-## 🚀 Avvio Rapido (Python)
+## Ecosistema
 
-Questo esempio dimostra come costruire un **Agente AI con Memoria** usando sessioni e funzionalità cognitive.
-
-1.  **Installa il Client:**
-    ```bash
-    pip install kektordb-client sentence-transformers
-    ```
-
-2.  **Esegui lo script:**
-
-    ```python
-    from kektordb_client import KektorDBClient
-    from kektordb_client.cognitive import CognitiveSession
-
-    # 1. Inizializzazione
-    client = KektorDBClient(port=9091)
-    index = "agent_memory"
-
-    # 2. Crea indice con memoria abilitata (half-life 30 giorni)
-    try:
-        client.delete_index(index)
-    except:
-        pass
-    client.vcreate(index, metric="cosine", text_language="english")
-
-    # 3. Avvia una sessione (es. conversazione utente)
-    with CognitiveSession(client, index, user_id="user_123") as session:
-        # Salva memorie collegate a questa conversazione
-        session.save_memory(
-            "L'utente si chiama Marco e preferisce risposte concise",
-            layer="episodic",
-            tags=["user_preference"]
-        )
-        session.save_memory(
-            "Marco sta lavorando a un progetto Go chiamato KektorDB",
-            layer="semantic",
-            tags=["project", "go"]
-        )
-        session.save_memory(
-            "Marco ha chiesto come implementare RAG. Ho spiegato ricerca vettoriale + attraversamento grafo.",
-            layer="episodic"
-        )
-
-    # 4. Successivamente: Recupera profilo utente
-    profile = client.get_user_profile("user_123", index)
-    print(f"Stile di comunicazione: {profile.get('communication_style', 'N/A')}")
-    print(f"Aree di competenza: {profile.get('expertise_areas', [])}")
-
-    # 5. Cerca memorie
-    results = client.vsearch(
-        index,
-        query_vector=[0.1, 0.2, 0.3, 0.4],  # Embed della tua query
-        k=3,
-        filter_str="tags ? 'project'"
-    )
-    print(f"Trovate {len(results)} memorie rilevanti")
-
-    # 6. Verifica confidenza epistemica di una memoria
-    belief = client.vbelief_state(index, query="Nome progetto Marco")
-    print(f"Confidenza: {belief['confidence']:.2f}, Stato: {belief['state']}")
-
-    # 7. Evolvi una memoria quando l'informazione cambia
-    new_id = client.vevolve(
-        index,
-        old_id="memory_001",
-        reason="L'utente ha aggiornato la sua preferenza",
-        new_content="Marco ora preferisce spiegazioni dettagliate con esempi"
-    )
-    print(f"Memoria evoluta in: {new_id['new_id']}")
-    ```
-
-👉 **[Leggi la Documentazione Completa](DOCUMENTATION.md)** per tutti gli endpoint e le funzionalità disponibili.
+| Risorsa | Descrizione |
+|---------|-------------|
+| [Documentazione](DOCUMENTATION.md) | Riferimento tecnico completo: architettura, API, configurazione |
+| [Contributi](CONTRIBUTING.md) | Istruzioni di build, stile codice, processo PR |
+| [Guida RAG](docs/guides/zero_code_rag.md) | RAG zero-code con Open WebUI in 5 passaggi |
+| [Client Go](pkg/client/README.md) | Riferimento SDK Go |
+| [Client Python](https://pypi.org/project/kektordb-client/) | `pip install kektordb-client` |
+| [Client TypeScript](https://www.npmjs.com/package/kektordb-client) | `npm install kektordb-client` |
+| [LangChain](https://python.langchain.com/) | `from kektordb_client.langchain import KektorVectorStore` |
 
 ---
 
-### 🦜 Integrazione con LangChain
+## Roadmap
 
-KektorDB include un wrapper integrato per **LangChain Python**, permettendoti di collegarlo direttamente alle tue pipeline AI esistenti.
+### v0.6.0 (corrente)
 
-```python
-from kektordb_client.langchain import KektorVectorStore
-```
+- **Stabilita' motore:** 6 bug P1+P2 risolti - riordino memory-before-AOF, nil-pointer Stat(), recovery corruzione AOF, perdita dati silenziosa alla chiusura, race taskIDCounter, leak task asincroni
+- **MCP:** 57 strumenti (49 agent + 8 admin), prompt `memory_instructions`, supporto API Gemini
+- **Auth:** Token JWT ES256, RBAC, endpoint JWKS, denylist `jti`
+- **Recovery:** Resync AOF dopo corruzione, RewriteAOF con modalita' snapshot
 
----
+### All'Orizzonte
 
-## Benchmark
+- Wizard di setup interattivo (`kektordb init`) — configura tutto in 30 secondi
+- Docker Hub + Docker Compose
+- Git Sync (push/pull memorie tra macchine)
+- Ottimizzazioni SIMD/AVX per piu' metriche di distanza
+- API nativa di backup/restore
 
-I benchmark sono stati eseguiti su una macchina Linux locale (Hardware Consumer, Intel i5-12500). Il confronto avviene contro **Qdrant** e **ChromaDB** (via Docker con host networking) per garantire una base di riferimento equa.
-
-| Database | QPS NLP | QPS Vision | Recall@10 |
-| :--- | :--- | :--- | :--- |
-| **KektorDB** | **1073** | **881** | 0.97 |
-| Qdrant | 848 | 845 | 0.97 |
-| ChromaDB | 802 | 735 | 0.96 |
-
-> *Nota: KektorDB è ottimizzato per scenari embedded a nodo singolo. Per deployment distribuiti su scala miliardaria, considera soluzioni specializzate.*
-
-[Report Completo dei Benchmark](BENCHMARKS.md)
+> [Apri una Issue](https://github.com/sanonone/kektordb/issues) per influenzare la roadmap.
 
 ---
 
-## 🛣️ Roadmap
+## Contribuire
 
-### Rilasciato in v0.5.0 ✅
-*   [x] **mmap Arena Zero-Copy:** Dati vettoriali memorizzati in file memory-mapped, rompendo il limite RAM.
-*   [x] **Motore Cognitivo (Gardener):** Demone in background per risoluzione conflitti del grafo e profilazione utente.
-*   [x] **Estrazione Fatti Core:** Estrazione automatica di fatti utente immutabili con nodi pinned.
-*   [x] **Compressione Contesto:** Compressione lessicale sicura che riduce i token LLM del 20-35%.
-*   [x] **Client TypeScript:** SDK Node.js/TypeScript ufficiale.
-*   [x] **Semantic Git:** Evoluzione della memoria con controllo versione (`VEvolve`, `GetMemoryEvolution`).
-*   [x] **Motore Epistemico:** Valutazione stato credenza con punteggio confidenza a 3 pilastri (`VBeliefState`).
-*   [x] **Consolidamento Credenze:** Risoluzione automatica di credenze volatili/contestate.
+Se noti race condition, ottimizzazioni mancate o pattern Go non idiomatici, **apri una Issue o una PR** - ogni contributo e' benvenuto.
 
-### Rilasciato in v0.5.2 ✅
-*   [x] **Fix di stabilita':** Risolti deadlock e data race nelle operazioni vettoriali concorrenti.
-
-### Completato (branch feat/tui, non rilasciato) ✅
-*   [x] **Embedding Zero-Config:** Embedder ONNX integrato (`all-MiniLM-L6-v2`, 384dim) via Rust/Candle. Download automatico del modello da HuggingFace con verifica SHA256. Rilevamento automatico: usa Ollama se disponibile, altrimenti embedding locale. Flag `--embedder` con modalita' `auto`/`ollama`/`openai`/`local`.
-*   [x] **MCP One-Liner:** `kektordb setup <agente>` configura MCP per Claude Code, Cursor, Gemini CLI, Codex e OpenCode con un solo comando. Flag `--tools` con profili `agent`/`admin`/`all` (17/6/23 tool).
-*   [x] **Dashboard Terminale (TUI):** Interfaccia terminale a 5 tab con Bubble Tea v2: statistiche live, esploratore grafo, ricerca semantica, timeline SSE e impostazioni. Avvia con `--tui`. Stato: sperimentale, limitazioni note nello shutdown sotto carico pipeline.
-*   [x] **Motore di Conoscenza:** Artefatti di conoscenza pre-compilati con confidenza e provenienza per campo. Endpoint `/compile` con 5 template predefiniti. Tool MCP `request_knowledge` con cache artifact (<50ms HIT, zero token). Artifact Watcher integrato nel Gardener per tracciamento staleness, ricompilazione e gestione del ciclo di vita autonomi.
-
-### All'orizzonte
-*   [ ] **Docker Hub:** Immagini ufficiali per deploy immediato.
-*   [ ] **Git Sync:** Sincronizza le memorie tra macchine via git.
-*   [ ] **Docker Compose:** Stack di produzione con volumi persistenti e healthcheck.
-
-### Futuro
-*   [ ] **Backup/Restore Nativo:** API per snapshot su S3/MinIO/locale.
-*   [ ] **Ottimizzazioni SIMD/AVX:** Estensione Assembly Go puro a più metriche di distanza.
-
-> **Vuoi influenzare la roadmap?** [Apri una Issue](https://github.com/sanonone/kektordb/issues) o vota quelle esistenti!
+Vedi [CONTRIBUTING.md](CONTRIBUTING.md) per istruzioni di build e convenzioni di codice.
 
 ---
 
-## 🛑 Limitazioni Attuali 
-*   **Singolo nodo:** KektorDB attualmente non supporta il clustering. Scala verticalmente entro i limiti delle risorse della macchina.
+## Limitazioni Attuali
+
+**Nodo singolo:** KektorDB non supporta il clustering. Scala verticalmente entro i limiti di una singola macchina.
 
 ---
 
-### ⚠️ Stato del Progetto e Filosofia
+## Licenza
 
-Sebbene l'ambizione sia alta, la velocità di sviluppo dipende dal tempo libero disponibile e dai contributi della community. La roadmap rappresenta la **visione** per il progetto, ma le priorità potrebbero cambiare in base al feedback degli utenti e alle necessità di stabilità.
-
-Se ti piace la visione e vuoi accelerare il processo, **le Pull Request sono le benvenute!**
+Apache 2.0 - vedi [LICENSE](LICENSE).
 
 ---
 
-## 🤝 Contribuire
-
-Se noti race conditions, ottimizzazioni mancate o pattern Go non idiomatici, **per favore apri una Issue o una PR**.
-
-👉 **[Per saperne di più](CONTRIBUTING.md)**
-
----
-
-### Licenza
-
-Distribuito sotto Licenza Apache 2.0. Vedi il file `LICENSE` per i dettagli.
-
----
-
-## ☕ Supporta il Progetto
-
-Se trovi questo strumento utile per il tuo setup RAG locale o le tue applicazioni Go, per favore considera di supportare lo sviluppo.
-
-Il tuo supporto mi aiuta a dedicare più tempo alla manutenzione, a nuove funzionalità e alla documentazione.
+## Supporto
 
 <a href="https://ko-fi.com/sanon">
   <img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="ko-fi" width="180">

@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// Version is the client library version, matching the KektorDB release.
+const Version = "0.6.0"
+
 // --- Custom Errors ---
 
 type APIError struct {
@@ -1378,6 +1381,13 @@ type ArtifactListResponse struct {
 	Artifacts []ArtifactData `json:"artifacts"`
 }
 
+// ArtifactHistoryResponse represents a list of artifact versions from the history endpoint.
+type ArtifactHistoryResponse struct {
+	Name    string         `json:"name"`
+	Count   int            `json:"count"`
+	History []ArtifactData `json:"history"`
+}
+
 // EmbedderStatusResponse represents the embedder configuration and status.
 type EmbedderStatusResponse struct {
 	Active    string `json:"active"`
@@ -1909,4 +1919,35 @@ func (c *Client) EmbedderStatus() (*EmbedderStatusResponse, error) {
 		return nil, fmt.Errorf("invalid JSON response for EmbedderStatus: %w", err)
 	}
 	return &resp, nil
+}
+
+// GetArtifactVersions returns all versions of a compiled artifact, ordered by version descending.
+func (c *Client) GetArtifactVersions(name, entityType, entityID, indexName string) (*ArtifactHistoryResponse, error) {
+	path := fmt.Sprintf("/artifact/%s/history?entity_type=%s&entity_id=%s", name, entityType, entityID)
+	if indexName != "" {
+		path += "&index=" + indexName
+	}
+	respBody, err := c.jsonRequest(http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp ArtifactHistoryResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for GetArtifactVersions: %w", err)
+	}
+	return &resp, nil
+}
+
+// DiffArtifactVersions compares two versions of a compiled artifact.
+func (c *Client) DiffArtifactVersions(name, entityType, entityID string, v1, v2 int) (map[string]any, error) {
+	path := fmt.Sprintf("/artifact/%s/diff?entity_type=%s&entity_id=%s&v1=%d&v2=%d", name, entityType, entityID, v1, v2)
+	respBody, err := c.jsonRequest(http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for DiffArtifactVersions: %w", err)
+	}
+	return resp, nil
 }

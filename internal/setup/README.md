@@ -2,7 +2,7 @@
 
 ## Purpose
 
-One-liner MCP configuration installer for AI coding agents. Writes the MCP server config file for the specified agent, pointing to the KektorDB binary with `--tools=agent` (17 tools) to keep agent context lean. Idempotent — safe to run multiple times.
+One-liner MCP configuration installer for AI coding agents. Writes the MCP server config file for the specified agent, pointing to the KektorDB binary with `--tools=agent` (49 tools) to keep agent context lean. Idempotent — safe to run multiple times.
 
 ## Usage
 

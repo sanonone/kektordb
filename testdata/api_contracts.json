@@ -1,5 +1,5 @@
 {
-  "version": "0.5.3",
+  "version": "0.6.0",
   "description": "Shared API contracts for KektorDB client testing. All clients (Go, Python, TypeScript) must pass these contracts.",
   "base_url": "http://localhost:9091",
   "tests": [

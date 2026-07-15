@@ -488,6 +488,12 @@ export interface ArtifactListResponse {
   artifacts: ArtifactData[];
 }
 
+export interface ArtifactHistoryResponse {
+  name: string;
+  count: number;
+  history: ArtifactData[];
+}
+
 export interface EmbedderStatusResponse {
   active: string;
   model: string;

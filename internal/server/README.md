@@ -57,11 +57,8 @@ The server can also run as an MCP (Model Context Protocol) server instead of HTT
 kektordb --mcp  # Start in MCP mode
 ```
 
-**MCP Tools:** 17 tools exposing database operations:
-- **Vector:** create_index, add, search, delete, get
-- **Graph:** link, unlink, get_connections, get_relations, find_path
-- **Metadata:** set_meta, get_meta, delete_meta, find_by_filter
-- **Memory:** reinforce, get_stats
+**MCP Tools:** 57 tools exposing database operations across 11 categories.
+See the [MCP README](../mcp/README.md) for the full list.
 - **Maintenance:** maintenance_run
 
 MCP mode uses stdio JSON-RPC for communication with MCP clients (Claude Desktop, etc.).

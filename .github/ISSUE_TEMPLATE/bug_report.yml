@@ -59,7 +59,7 @@ body:
     attributes:
       label: KektorDB Version
       description: Run `kektordb --version` or provide the commit hash.
-      placeholder: "v0.5.2 or commit 1a2b3c4"
+      placeholder: "v0.6.0 or commit 1a2b3c4"
     validations:
       required: true
 

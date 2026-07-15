@@ -1427,6 +1427,67 @@ class KektorDBClient:
         """
         return self._request("GET", "/artifacts", params={"index": index_name})
 
+    def get_artifact_versions(
+        self,
+        name: str,
+        entity_type: str,
+        entity_id: str,
+        index_name: str = "mcp_memory",
+    ) -> Dict[str, Any]:
+        """
+        Returns all versions of a compiled artifact, ordered by version descending.
+
+        Args:
+            name: Artifact name (e.g. "entity_card", "user_profile")
+            entity_type: Entity type (e.g. "user", "project")
+            entity_id: Entity identifier
+            index_name: Index name (default "mcp_memory")
+
+        Returns:
+            Dict with "name", "count", and "history" keys.
+        """
+        return self._request(
+            "GET",
+            f"/artifact/{name}/history",
+            params={
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "index": index_name,
+            },
+        )
+
+    def diff_artifact_versions(
+        self,
+        name: str,
+        entity_type: str,
+        entity_id: str,
+        v1: int,
+        v2: int,
+    ) -> Dict[str, Any]:
+        """
+        Compares two versions of a compiled artifact.
+
+        Args:
+            name: Artifact name (e.g. "entity_card", "user_profile")
+            entity_type: Entity type (e.g. "user", "project")
+            entity_id: Entity identifier
+            v1: First version number
+            v2: Second version number
+
+        Returns:
+            Dict with added, removed, and modified fields.
+        """
+        return self._request(
+            "GET",
+            f"/artifact/{name}/diff",
+            params={
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "v1": v1,
+                "v2": v2,
+            },
+        )
+
     def list_compile_templates(self) -> Dict[str, Any]:
         """
         Lists all built-in compilation templates.

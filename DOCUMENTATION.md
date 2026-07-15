@@ -10,15 +10,19 @@
     *   [RAG Pipeline Configuration (`vectorizers.yaml`)](#32-rag-pipeline-configuration-vectorizersyaml)
     *   [AI Gateway Configuration (`proxy.yaml`)](#33-ai-gateway-configuration-proxyyaml)
     *   [Index Maintenance Tuning](#34-index-maintenance-tuning)
+    *   [Cognitive Engine Configuration](#35-cognitive-engine-configuration)
 4.  [Core Features & Usage](#4-core-features--usage)
     *   [Quantization (Int8 & Float16)](#41-quantization--compression)
-    *   [Hybrid Search (BM25 + Vector)](#42-hybrid-search)
-    *   [GraphRAG (Automatic Context)](#43-graphrag--context-window)
-    *   [Metadata Auto-Linking](#44-metadata-auto-linking)
-    *   [Graph Entities](#45-graph-entities-nodes-without-vectors)
-    *   [Advanced RAG Pipeline](#46-advanced-rag-pipeline)
-    *   [Memory Decay & Reinforcement](#47-memory-decay--reinforcement)
-    *   [Embedded Web UI](#48-embedded-web-ui)
+    *   [Hybrid Search (BM25 + Vector)](#43-hybrid-search)
+    *   [GraphRAG (Automatic Context)](#44-graphrag--context-window)
+    *   [Metadata Auto-Linking](#45-metadata-auto-linking)
+    *   [Graph Entities](#46-graph-entities-nodes-without-vectors)
+    *   [Advanced RAG Pipeline](#47-advanced-rag-pipeline)
+    *   [Memory Decay & Reinforcement](#48-memory-decay--reinforcement)
+    *   [Embedded Web UI](#49-embedded-web-ui)
+    *   [Context Compression](#410-context-compression)
+    *   [Terminal Dashboard (TUI)](#411-terminal-dashboard-tui)
+    *   [CLI Parser for External Tools](#412-cli-parser-for-external-tools)
 5.  [HTTP API Reference](#5-http-api-reference)
     *   [Vector Operations](#51-vector-operations)
     *   [Index Management](#52-index-management)
@@ -39,75 +43,142 @@
 
 ## 1. System Architecture
 
-KektorDB operates as a monolithic, in-memory engine with a modular design. It decouples the data structure logic from the networking and persistence layers.
+KektorDB operates as a monolithic, in-memory engine with a modular design.
+It decouples the data structure logic from the networking and persistence layers.
 
 ```mermaid
-graph TD
-    Client[Client / User App] --> EntryPoints
-    
-    subgraph "Interface Layer"
-        EntryPoints
-        API[HTTP Server]
-        Proxy[AI Gateway / Firewall]
-        RAG[RAG Vectorizer Service]
-        MCP[MCP Service]
+graph TB
+    Client[Client / User App]
+
+    subgraph Interface["Interface Layer"]
+        API[HTTP REST API<br/>:9091]
+        MCP[MCP Server<br/>stdio, 57 tools]
+        Proxy[AI Gateway<br/>Firewall + Cache + RAG]
+        TUI[Terminal Dashboard]
     end
 
-    subgraph "pkg/engine (Orchestrator)"
-        Engine[Engine Controller]
-        EventBus[EventBus Pub/Sub]
-        Engine --> Persist[Persistence AOF/Snap]
-        Engine --> Maintenance[Vacuum & Refine]
-        Engine --> EventBus
+    subgraph Engine["pkg/engine"]
+        EngCore[Engine Controller]
+        Persistence["Persistence<br/>AOF + Snapshot + Recovery"]
+        EventBus[EventBus<br/>Pub/Sub + SSE]
     end
 
-    subgraph "pkg/cognitive (Cognitive Engine)"
+    subgraph Core["pkg/core"]
+        HNSW[HNSW Index]
+        Graph[Knowledge Graph<br/>128 shards, Time Travel]
+        KV[(KV Store)]
+        Meta[Metadata Indexes<br/>Roaring Bitmaps + BTree]
+    end
+
+    subgraph Cognitive["Cognitive & Knowledge"]
         Gardener[Gardener Daemon]
-        Gardener --> LLM[LLM Detectors]
+        Compiler[Knowledge Engine]
     end
 
-    subgraph "pkg/core (In-Memory Data)"
-        Engine --> DB[Core DB]
-        DB --> KV[KV Store & Graph]
-        DB --> HNSW[HNSW Index]
-        DB --> Filters[Metadata Index]
+    subgraph RAG["RAG & Embedding"]
+        RagPipe[Adaptive Retriever<br/>HyDe + CQR]
+        Embedder[SelectEmbedder<br/>Ollama/OpenAI/Gemini/ONNX]
     end
 
-    subgraph "Compute Kernel"
-        HNSW --> Dist{Distance Metric}
-        Dist --> Go[Pure Go / Gonum]
-        Dist --> Rust[Rust / CGO Optional]
+    subgraph Storage["pkg/storage/mmap"]
+        Arena[(Vector Arena<br/>mmap, zero-copy)]
+        Compactor[Async Compactor<br/>Background defrag]
     end
 
-    API --> Engine
-    Proxy --> Engine
-    RAG --> Engine
-    MCP --> Engine
-    Gardener --> Engine
-    Engine --> EventBus
+    Client --> API
+    Client --> MCP
+    Client --> Proxy
+    API --> EngCore
+    MCP --> EngCore
+    Proxy --> EngCore
+    TUI --> EngCore
+
+    EngCore --> HNSW
+    EngCore --> Graph
+    EngCore --> KV
+    EngCore --> Meta
+    EngCore --> Persistence
+    HNSW --> Arena
+
+    Gardener --> EngCore
+    Compiler --> EngCore
+    Gardener --> Embedder
+    Compiler --> Embedder
+    EngCore --> EventBus
+    EventBus --> Gardener
+
+    Proxy --> RagPipe
+    RagPipe --> Embedder
 ```
 
 ### Components Breakdown
 
 1.  **Core (`pkg/core`):**
-    *   **HNSW Graph:** The primary index for vector similarity.
-    *   **Inverted Index:** Maps metadata values (strings) - essentially an inverted index for filtering `category='books'`.
-    *   **KV Store:** Holds the raw data, relationship links (`rel:src:type`), and system state.
+    *   **HNSW Graph:** Primary index for vector similarity search, optimized for
+        high-concurrency reads with sharded locking.
+    *   **Knowledge Graph:** 128-shard bidirectional graph with weighted property
+        edges, time travel (soft delete), N-hop traversal, and BFS path finding.
+    *   **KV Store:** Holds raw data, relationship links (`rel:src:type`), and
+        system state (auth keys, revocation markers).
+    *   **Metadata Indexes:** Roaring Bitmaps for exact/AND/OR filtering, B-Tree
+        indexes for numeric range queries (`>`, `<`, `>=`, `<=`).
 
 2.  **Engine (`pkg/engine`):**
-    *   **Transaction Coordinator:** Ensures updates are atomic compliant with the AOF persistence.
-    *   **EventBus:** A Pub/Sub system for real-time reactivity to graph and node changes.
-    *   **Background Tasks:** Manages `Vacuum` (garbage collection) and `Refine` (graph optimization).
-    *   **Locking Strategy:** Implements a global lock with parallelized batch commits to maximize throughput while ensuring safety.
-    *   **Lazy AOF Writer:** Batches operations and flushes them periodically (every 100ms or 1000 entries) rather than on every write, providing 10-100x throughput improvement while maintaining durability through periodic fsync (every 1 second).
+    *   **Engine Controller:** Coordinates vector operations (VAdd, VSearch),
+        graph mutations (VLink, VUnlink), and metadata updates (VSetMetadata).
+        Writes AOF **before** RAM mutation (E1 fix, v0.6.0) for crash safety.
+    *   **EventBus:** Pub/Sub system for real-time reactivity to graph and node
+        changes. Non-blocking sends to subscribers (drop events for slow consumers
+        rather than blocking the write path). Server-Sent Events (SSE) support.
+    *   **Background Tasks:** Manages `Vacuum` (garbage collection + graph
+        healing), `Refine` (graph optimization improving recall over time), and
+        AOF compaction.
+    *   **Locking Strategy:** Multi-tiered sharded locks: `adminMu` for
+        administrative ops (snapshot, rewrite), `graphLocks[128]` for per-key
+        graph edge serialization, `metadataLocks[256]` for per-node metadata RMW
+        cycles. No global write lock — maximum concurrency.
+    *   **Persistence:** Hybrid AOF + Snapshot. The `LazyAOFWriter` batches
+        operations (100ms flush, 1s fsync, 10-100x throughput improvement).
+        Binary TLVC framing with CRC32 integrity checks. Automatic crash recovery
+        with corruption resync (H28 fix, v0.6.0). AOF rewrite with snapshot mode
+        prevents data loss during maintenance (C22 fix, v0.6.0). Close drain
+        protection (E4 fix, v0.6.0).
 
 3.  **Server (`internal/server` & `internal/mcp`):**
-    *   **HTTP Router:** Standard Go `ServeMux`.
-    *   **Task Manager:** Handles long-running asynchronous tasks (Imports, Maintenance).
-    *   **Modules:** Hosts the *Vectorizer Service* (file watching), *Proxy* (middleware), and *MCP Service* for agentic interactions.
+    *   **HTTP Server:** Standard Go `ServeMux` with 50+ REST endpoints, JWT auth
+        middleware, SSE event streaming, Prometheus metrics, and pprof profiling.
+    *   **Task Manager:** Handles long-running async tasks (Import, Compress,
+        Maintenance, Compile).
+    *   **MCP Service:** 57 MCP tools via JSON-RPC 2.0 over stdio. Tool profiles
+        (`agent`, `admin`, `all`). `memory_instructions` prompt embedded via
+        `//go:embed`. One-liner agent setup (`kektordb setup <agent>`).
+    *   **Vectorizer Service:** Background file watching and document ingestion
+        with configurable pipelines (`vectorizers.yaml`).
 
 4.  **Cognitive Engine (`pkg/cognitive`):**
-    *   **Gardener Daemon:** A background process with different operating modes (basic, advanced, meta) that performs cross-detector confidence validation. It analyzes the graph for contradictions, user profiles, knowledge evolution, and resolves conflicts using LLMs.
+    *   **Gardener Daemon:** 3 operating modes (basic: math + graph only, no LLM;
+        advanced: + LLM detectors; meta: + cross-detector validation). 11
+        detectors: Knowledge Gaps, Importance Shifts, Sentiment Shifts, Centrality
+        Shifts, Forgetting Patterns, Consolidation, Contradictions, User
+        Preferences, Repeated Failures, Knowledge Evolution, Cross-Validator.
+    *   **Epistemic Engine:** 3-pillar confidence scoring (Consensus 40%,
+        Stability 30%, Friction 30%). States: crystallized, stable, volatile,
+        contested.
+    *   **User Profiling:** Auto-generated user profiles (communication style,
+        expertise, preferences, dislikes). Core Fact Extraction for immutable
+        facts (name, profession).
+
+5.  **Knowledge Engine (`pkg/compiler`):**
+    *   **5 Built-in Templates:** `entity_card`, `topic_overview`, `user_profile`,
+        `timeline`, `session_summary`.
+    *   **Compile Pipeline:** Resolve template → query graph for sources → for
+        each field: compute deterministically or call LLM → store as pinned graph
+        node.
+    *   **Async Task Lifecycle:** `StartAsyncCompile` → polling via
+        `GetTaskStatus`. TTL 24h with background sweep goroutine (E6 fix).
+    *   **Artifact Watcher:** Integrated into Gardener. Monitors source nodes for
+        changes, marks artifacts as stale, triggers recompilation. MCP artifact
+        cache (<50ms hit, zero token consumption).
 
 ---
 
@@ -122,15 +193,16 @@ Download from [Releases](https://github.com/sanonone/kektordb/releases).
 ```
 
 ### Docker
-The official image is lightweight (~20MB) and based on Alpine.
+A `Dockerfile` is included in the root for building your own images. Not yet
+available on Docker Hub (planned for v0.6.1+).
 
 ```bash
+docker build -t kektordb .
 docker run -d \
   -p 9091:9091 -p 9092:9092 \
   -v $(pwd)/kektor_data:/data \
   -e KEKTOR_DATA_DIR=/data \
-  -e KEKTOR_TOKEN="my-secret-key" \
-  sanonone/kektordb:latest
+  kektordb
 ```
 
 ---
@@ -163,10 +235,10 @@ These control the database engine itself.
 | `-proxy-config` | - | `""` | Path to `proxy.yaml`. Enables Proxy if set. |
 | `-vectorizers-config` | - | `""` | Path to `vectorizers.yaml`. Enables RAG if set. |
 | `-cognitive-config` | - | `""` | Path to cognitive YAML config. Enables Gardener with memory layers, decay, etc. |
-| `--embedder` | - | `auto` | Embedder mode: `auto`, `ollama`, `ollama_api`, `openai`, `openai_compatible`, `local`. ONNX model needed for `local`. `ollama_api` and `openai_compatible` are aliases for YAML compatibility. |
+| `--embedder` | - | `auto` | Embedder mode: `auto`, `ollama`, `ollama_api`, `openai`, `openai_compatible`, `gemini`, `google`, `local`. ONNX model needed for `local`. `ollama_api`/`openai_compatible`/`google` are YAML backward-compatible aliases. |
 | `--embedder-model` | - | `""` | Directory with `model.onnx` and `tokenizer.json` (local mode only). |
-| `--tools` | - | `all` | MCP tool profile: `agent` (17 tools), `admin` (6), `all` (23), or comma-separated. |
-| `--tui` | - | `false` | Launch terminal dashboard. Experimental -- see section 4.10. |
+| `--tools` | - | `all` | MCP tool profile: `agent` (49 tools), `admin` (8), `all` (57), or comma-separated. |
+| `--tui` | - | `false` | Launch terminal dashboard. Experimental -- see section 4.11. |
 
 ---
 
@@ -221,7 +293,7 @@ vectorizers:
 
     # Embedding Provider (Ollama or OpenAI-compatible)
     embedder:
-      type: "ollama_api"        # ollama_api, ollama, openai, openai_compatible, local, auto
+      type: "ollama_api"        # ollama_api, ollama, openai, openai_compatible, gemini, google, local, auto
       url: "http://localhost:11434/api/embeddings"
       model: "nomic-embed-text"
       timeout: "120s"
@@ -480,7 +552,7 @@ KektorDB creates indexes in `float32` by default. You can specify compressed for
 
 **How to use:** Set `"precision": "int8"` in `VCreate` or `vectorizers.yaml`.
 
-### 4.2 Hybrid Search
+### 4.3 Hybrid Search
 
 Hybrid search combines:
 1.  **Vector Similarity (Dense):** Understands meaning.
@@ -489,7 +561,7 @@ Hybrid search combines:
 The scores are normalized and fused using **Weighted Sum**:
 `FinalScore = (alpha * VectorScore) + ((1-alpha) * BM25Score)`
 
-### 4.3 GraphRAG & Context Window
+### 4.4 GraphRAG & Context Window
 
 KektorDB maintains an **Adjacency List** in its KV store alongside vectors.
 When `graph_enabled` is active, sequential chunks are linked.
@@ -497,7 +569,7 @@ During search, if you request `hydrate_relations: true`, KektorDB returns the ma
 
 **Self-Repair:** The graph engine includes a self-repair mechanism. If it detects a link to a node that no longer exists (e.g. was deleted), it automatically cleans up the broken link in the background to maintain consistency without impacting query latency.
 
-### 4.4 Metadata Auto-Linking (v0.4.1)
+### 4.5 Metadata Auto-Linking (v0.4.1)
 KektorDB can automatically create graph connections between nodes based on metadata fields. This is useful for reconstructing relationships from flat data (e.g., maintaining parent-child hierarchy from SQL foreign keys).
 
 **How it works:**
@@ -505,12 +577,12 @@ KektorDB can automatically create graph connections between nodes based on metad
 2.  When you add a vector with `{"parent_id": "123"}`, KektorDB automatically creates a directional link: `ThisNode -> [child_of] -> Node("123")`.
 3.  Best-effort: If the target node doesn't exist yet, the link is created in the forward direction anyway. Incoming links (Reverse Index) will work as soon as the target node is created.
 
-### 4.5 "Graph Entities" (Nodes without Vectors)
+### 4.6 "Graph Entities" (Nodes without Vectors)
 Starting from v0.4.1, KektorDB supports **First-Class Graph Entities**. You can insert a node with a `null` vector. 
 *   **Use Case:** Represents people, categories, or concepts that you want to link strictly via relationships (e.g. `Author:John`) but don't need to search via vector similarity alongside documents. 
 *   **Behavior:** These nodes have a zero-vector [0,0...] internally. They can be retrieved via `SearchNodes` (property filter) or Graph Traversal, but will appear at the "bottom" of vector similarity searches unless the query is also [0,0...].
 
-### 4.6 Advanced RAG Pipeline
+### 4.7 Advanced RAG Pipeline
 KektorDB implements a sophisticated "Agentic" retrieval pipeline to solve common RAG issues:
 
 1.  **Adaptive Retrieval:** Performs graph-aware context expansion. It retrieves seed chunks via semantic search, expands following graph relations (like `next`, `prev`, `parent`), and assembles a context window respecting the maximum token budget dynamically.
@@ -518,18 +590,18 @@ KektorDB implements a sophisticated "Agentic" retrieval pipeline to solve common
 3.  **Grounded HyDe:** Generates a hypothetical answer to the question using context snippets, then embeds that answer for retrieval. drastically improves recall for vague queries.
 4.  **Safety Net:** If HyDe fails to find relevant context, the system automatically falls back to standard vector search in real-time.
 
-### 4.7 Memory Decay & Reinforcement
+### 4.8 Memory Decay & Reinforcement
 KektorDB implements a unified memory model where nodes naturally decay in importance if they aren't accessed.
 1.  **Memory Decay:** Background workers progressively lower the "rank" or score of nodes based on time elapsed since their last access. This ensures that outdated or stale information naturally sinks to the bottom of semantic searches over time.
 2.  **Reinforcement:** Retrieving a memory explicitly "boosts" a node's relevance when it proves useful. For agents, retrieving a memory via RAG acts as reinforcement, fighting off decay and maintaining important context.
 
-### 4.8 Embedded Web UI
+### 4.9 Embedded Web UI
 A built-in dashboard is available at `http://localhost:9091/ui/`.
 *   **Graph Explorer:** Visualize the connections between your documents and entities using a force-directed graph.
 *   **Search Debugger:** Test queries and see exactly which chunks and relations are retrieved.
 *   **Zero Dependencies:** The UI is embedded in the single binary. No Node.js required.
 
-### 4.9 Context Compression 
+### 4.10 Context Compression 
 
 KektorDB implements safe lexical compression to optimize context for LLM consumption, reducing token count by 20-35% while preserving semantic meaning.
 
@@ -571,7 +643,7 @@ Add `compress_context: true` to any search or RAG request:
 
 ---
 
-### 4.10 Terminal Dashboard (TUI)
+### 4.11 Terminal Dashboard (TUI)
 
 Launch with `--tui` for a Bubble Tea v2 terminal dashboard with 5 tabs:
 
@@ -587,6 +659,45 @@ Launch with `--tui` for a Bubble Tea v2 terminal dashboard with 5 tabs:
 include shutdown delays under heavy pipeline load and incomplete SSE delivery
 during startup. Use `q` or `Ctrl+C` to exit. The Web UI (`/ui/`) remains the
 stable dashboard option.
+
+### 4.12 CLI Parser for External Tools
+
+For complex documents (non-standard PDFs, DOCX, proprietary formats), KektorDB
+supports external CLI tools for parsing via the **SmartLoader**. The system uses
+a two-tier architecture with silent fallback:
+
+```
+SmartLoader
+├── CLILoader (optional, tried first)
+│   └── Executes an external command with {{file_path}} placeholder
+│       List-based args (no shell injection), per-file timeout (default 2m)
+│       If it fails → WARN log → fallback to AutoLoader
+│
+└── AutoLoader (always present, fallback)
+    ├── PDFAdvancedLoader (.pdf)
+    ├── DocxLoader (.docx)
+    └── TextLoader (.txt, .md, and others)
+```
+
+**Configuration (`vectorizers.yaml`):**
+
+```yaml
+document_processor:
+  parser:
+    type: "cli"                                          # "internal" (default) or "cli"
+    command: ["lit", "parse", "--format", "text", "{{file_path}}"]
+    timeout: "2m"                                        # Default: 2m per file
+    fallback: "internal"                                 # Currently only "internal"
+```
+
+**Behavior on failure:** If the CLI tool is not found, times out, exits
+non-zero, or produces empty output, the system logs a warning and silently
+falls back to the built-in `AutoLoader` (Go-native parsers). The document is
+never lost — KektorDB always recovers gracefully.
+
+**When CLI parsing succeeds on a PDF** and image extraction is enabled, the
+system also runs `PDFAdvancedLoader` solely to extract images and merges them
+into the result (external-parser text + internal image extraction).
 
 ---
 
@@ -1187,15 +1298,16 @@ kektordb setup gemini-cli     # Gemini CLI
 kektordb setup codex          # OpenAI Codex
 kektordb setup opencode       # OpenCode
 ```
-Writes platform-specific MCP config with `--tools=agent` (17 tools) to keep
+Writes platform-specific MCP config with `--tools=agent` (49 tools) to keep
 agent context lean. Safe to run multiple times (idempotent).
 
 **Tool profiles (`--tools`):**
-- `agent` (default for setup): 17 tools for AI coding agents
-- `admin`: 6 administrative tools (`list_vectors`, `transfer_memory`, etc.)
-- `all`: all 23 tools
+- `agent` (default for setup): 49 tools for AI coding agents
+- `admin`: 8 administrative tools (`list_vectors`, `transfer_memory`, etc.)
+- `all`: all 57 tools (49 agent + 8 admin)
 
-**Available Tools:**
+**Available Tools:** The 57 MCP tools are organized in 11 categories. For the
+full list, see the [MCP README](../internal/mcp/README.md). Key agent tools:
 
 | Tool | Description |
 | :--- | :--- |
@@ -1495,79 +1607,6 @@ cognitive:
 
 ---
 
-## 6. Go Library Interface
-
-When imported as `github.com/sanonone/kektordb/pkg/engine`:
-
-```go
-// 1. Initialize Options
-opts := engine.DefaultOptions("./data")
-opts.AofRewritePercentage = 200 // Less aggressive rewriting
-opts.MaintenanceInterval = 30 * time.Second
-
-// 2. Open Engine
-db, err := engine.Open(opts)
-if err != nil { panic(err) }
-defer db.Close()
-
-// 3. Operations
-// Bulk Load
-db.VImport("idx", items)
-
-// Search (Note the nil graphFilter parameter)
-results, _ := db.VSearch("idx", queryVec, 10, "", 0, 0.5, nil)
-```
-
-### Advanced Go Features
-
-#### Metadata Auto-Linking
-Create an index that automatically links documents based on metadata fields.
-
-```go
-rules := []client.AutoLinkRule{
-    {
-        MetadataField: "parent_id",
-        Relation:      "parent",
-    },
-}
-err := c.VCreateWithAutoLinks("my_index", "cosine", "float32", 16, 200, nil, rules)
-```
-
-#### Subgraph Extraction
-Retrieve the local topology around a node for visualization or context analysis.
-
-```go
-subgraph, err := c.VExtractSubgraph("my_index", "root_node_id", []string{"parent", "next"}, 2)
-for _, edge := range subgraph.Edges {
-    fmt.Printf("%s --[%s]--> %s (%s)\n", edge.Source, edge.Relation, edge.Target, edge.Dir)
-}
-```
-
----
-
-## 7. Maintenance & Internals
-
-### Vacuum (Graph Healing)
-In HNSW, a node is more than just a data point; it is a "bridge" for navigation. Simply deleting a node would break paths, potentially making other nodes unreachable. 
-*   **Soft Delete**: When you call `VDelete`, the node is flagged but remains in the graph to preserve connectivity.
-*   **The Healer**: The Vacuum process identifies these "zombie" nodes, finds all neighboring nodes that point to them, and performs a local search to "re-wire" the graph. 
-*   **Memory Recovery**: Once the graph is repaired, the node's vector data is set to `nil`, allowing the Go Garbage Collector to reclaim the memory.
-
-### Graph Vacuum (History Cleanup)
-Since the Graph Engine uses **Soft Deletes** to support Time Travel, deleted edges accumulate in the KV store.
-*   **Retention Policy**: Configured via `graph_retention`.
-*   **Process**: A background task (`RunGraphVacuum`) scans for edges marked as deleted for longer than the retention period and physically removes them.
-*   **Default**: Retention is 0 (keep forever).
-
-### Refine (Dynamic Optimization)
-Graph quality in HNSW can be sensitive to the order of insertion.
-*   **Optimization**: The Refine process cycles through the index, re-evaluating the neighbors of each node. It checks if, given the current state of the database, better neighbors exist than those found at insertion time.
-*   **No Blocking**: Refine uses a "yielding" strategy: it processes small batches and releases the global lock between them, ensuring that search QPS remains stable even during heavy optimization.
-
-> **Performance Note:** Starting from v0.4.0, Int8 quantization uses an auto-training mechanism with smart sampling. You can ingest data directly into an `int8` index with zero pre-training delay. Ingestion and Compression are fully parallelized.
-
----
-
 ### 5.12 Knowledge Engine (Compiler)
 
 The Knowledge Engine compiles structured knowledge artifacts from the memory graph. Artifacts are pre-compiled knowledge objects with deterministic field extraction and optional LLM-assisted inference. Each artifact has field-level provenance (which source nodes contributed to each value) and confidence scoring. The Artifact Watcher (integrated into the Gardener) autonomously monitors source changes and triggers recompilation when knowledge becomes stale.
@@ -1682,7 +1721,7 @@ Returns all built-in compilation templates with their schemas.
 
 #### MCP Tool: `request_knowledge`
 
-The `request_knowledge` MCP tool abstracts the Knowledge Engine for AI agents. It first checks for a pre-compiled artifact cache. If found, returns structured data in <50ms with zero token cost. If not found, falls back to semantic search and triggers async compilation in the background—the next request will hit the cache.
+The `request_knowledge` MCP tool abstracts the Knowledge Engine for AI agents. It first checks for a pre-compiled artifact cache. If found, returns structured data in <50ms with zero token cost. If not found, falls back to semantic search and triggers async compilation in the background -- the next request will hit the cache.
 
 **Cache HIT (artifact exists):**
 ```json
@@ -1709,3 +1748,76 @@ The `request_knowledge` MCP tool abstracts the Knowledge Engine for AI agents. I
 ```
 
 An artifact is compiled in the background and will be available on the next request. Artifacts that haven't been accessed in 30+ days are automatically archived by the Artifact Watcher.
+
+---
+
+## 6. Go Library Interface
+
+When imported as `github.com/sanonone/kektordb/pkg/engine`:
+
+```go
+// 1. Initialize Options
+opts := engine.DefaultOptions("./data")
+opts.AofRewritePercentage = 200 // Less aggressive rewriting
+opts.MaintenanceInterval = 30 * time.Second
+
+// 2. Open Engine
+db, err := engine.Open(opts)
+if err != nil { panic(err) }
+defer db.Close()
+
+// 3. Operations
+// Bulk Load
+db.VImport("idx", items)
+
+// Search (Note the nil graphFilter parameter)
+results, _ := db.VSearch("idx", queryVec, 10, "", 0, 0.5, nil)
+```
+
+### Advanced Go Features
+
+#### Metadata Auto-Linking
+Create an index that automatically links documents based on metadata fields.
+
+```go
+rules := []client.AutoLinkRule{
+    {
+        MetadataField: "parent_id",
+        Relation:      "parent",
+    },
+}
+err := c.VCreateWithAutoLinks("my_index", "cosine", "float32", 16, 200, nil, rules)
+```
+
+#### Subgraph Extraction
+Retrieve the local topology around a node for visualization or context analysis.
+
+```go
+subgraph, err := c.VExtractSubgraph("my_index", "root_node_id", []string{"parent", "next"}, 2)
+for _, edge := range subgraph.Edges {
+    fmt.Printf("%s --[%s]--> %s (%s)\n", edge.Source, edge.Relation, edge.Target, edge.Dir)
+}
+```
+
+---
+
+## 7. Maintenance & Internals
+
+### Vacuum (Graph Healing)
+In HNSW, a node is more than just a data point; it is a "bridge" for navigation. Simply deleting a node would break paths, potentially making other nodes unreachable. 
+*   **Soft Delete**: When you call `VDelete`, the node is flagged but remains in the graph to preserve connectivity.
+*   **The Healer**: The Vacuum process identifies these "zombie" nodes, finds all neighboring nodes that point to them, and performs a local search to "re-wire" the graph. 
+*   **Memory Recovery**: Once the graph is repaired, the node's vector data is set to `nil`, allowing the Go Garbage Collector to reclaim the memory.
+
+### Graph Vacuum (History Cleanup)
+Since the Graph Engine uses **Soft Deletes** to support Time Travel, deleted edges accumulate in the KV store.
+*   **Retention Policy**: Configured via `graph_retention`.
+*   **Process**: A background task (`RunGraphVacuum`) scans for edges marked as deleted for longer than the retention period and physically removes them.
+*   **Default**: Retention is 0 (keep forever).
+
+### Refine (Dynamic Optimization)
+Graph quality in HNSW can be sensitive to the order of insertion.
+*   **Optimization**: The Refine process cycles through the index, re-evaluating the neighbors of each node. It checks if, given the current state of the database, better neighbors exist than those found at insertion time.
+*   **No Blocking**: Refine uses a "yielding" strategy: it processes small batches and releases the global lock between them, ensuring that search QPS remains stable even during heavy optimization.
+
+> **Performance Note:** Starting from v0.4.0, Int8 quantization uses an auto-training mechanism with smart sampling. You can ingest data directly into an `int8` index with zero pre-training delay. Ingestion and Compression are fully parallelized.

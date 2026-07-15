@@ -9,6 +9,7 @@ import type {
   AdaptiveRetrieveResult,
   ApiKeyPolicy,
   ArtifactData,
+  ArtifactHistoryResponse,
   ArtifactListResponse,
   BeliefAssessmentParams,
   BeliefAssessmentResult,
@@ -836,6 +837,23 @@ export class KektorDBClient {
     if (indexName) params.set("index", indexName);
     if (version !== undefined && version > 0) params.set("version", String(version));
     return this.request("GET", `/artifact/${encodeURIComponent(name)}?${params}`);
+  }
+
+  /**
+   * Returns all versions of a compiled artifact, ordered by version descending.
+   */
+  async getArtifactVersions(name: string, entityType: string, entityId: string, indexName?: string): Promise<ArtifactHistoryResponse> {
+    const params = new URLSearchParams({ entity_type: entityType, entity_id: entityId });
+    if (indexName) params.set("index", indexName);
+    return this.request("GET", `/artifact/${encodeURIComponent(name)}/history?${params}`);
+  }
+
+  /**
+   * Compares two versions of a compiled artifact.
+   */
+  async diffArtifactVersions(name: string, entityType: string, entityId: string, v1: number, v2: number): Promise<Record<string, any>> {
+    const params = new URLSearchParams({ entity_type: entityType, entity_id: entityId, v1: String(v1), v2: String(v2) });
+    return this.request("GET", `/artifact/${encodeURIComponent(name)}/diff?${params}`);
   }
 
   /**

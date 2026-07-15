@@ -1,6 +1,6 @@
 // Package mcp implements the Model Context Protocol server for KektorDB.
 //
-// It exposes 51 tools across agent (43 tools) and admin (8 tools) profiles,
+// It exposes 57 tools across agent (49 tools) and admin (8 tools) profiles,
 // including memory management, graph traversal, knowledge compilation,
 // and agent lifecycle commands. Also provides MCP setup/installer commands
 // for Claude Code, Cursor, Gemini CLI, Codex, and OpenCode.
@@ -23,7 +23,7 @@ func NewMCPServer(eng *engine.Engine, embedder embeddings.Embedder, allowlist ma
 
 	s := mcp.NewServer(&mcp.Implementation{
 		Name:    "KektorDB Memory",
-		Version: "0.5.3",
+		Version: "0.6.0",
 	}, nil)
 
 	registerTools(s, service, allowlist)
