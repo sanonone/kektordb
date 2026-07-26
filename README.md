@@ -146,8 +146,8 @@ chmod +x kektordb-linux-amd64
 ./kektordb-linux-amd64
 
 # Or use Docker
-docker build -t kektordb .
-docker run -p 9091:9091 -v $(pwd)/data:/data kektordb
+docker pull none99/kektordb
+docker run -p 9091:9091 -v $(pwd)/data:/data none99/kektordb
 ```
 
 ---
@@ -214,7 +214,7 @@ The ONNX model (~90 MB) is downloaded automatically from HuggingFace on first la
 ### On the Horizon
 
 - Interactive setup wizard (`kektordb init`) — configure everything in 30 seconds
-- Docker Hub + Docker Compose
+- Docker Compose stack
 - Git Sync (push/pull memories across machines)
 - SIMD/AVX optimizations for more distance metrics
 - Native backup/restore API

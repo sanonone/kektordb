@@ -17,6 +17,12 @@ test_data/
 examples/
 benchmarks/
 
-# IDE files
-.vscode
-.idea
+# Rust build artifacts (molto pesanti)
+native/compute/target/
+
+# Documentation and temp
+tempDocs/
+docs/
+
+# Markdown (non servono dentro il container)
+*.md
