@@ -42,6 +42,7 @@ build/
 /tempMcpDocs
 /tempDocs
 /benchmarks
+AGENTS.md
 
 # Ignore data directory
 assets/

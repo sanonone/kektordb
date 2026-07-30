@@ -183,7 +183,8 @@ func LoadConfig(path string) (Config, llm.Config, error) {
 	}
 
 	var cfg CognitiveConfigFile
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	expandedData := os.ExpandEnv(string(data))
+	if err := yaml.Unmarshal([]byte(expandedData), &cfg); err != nil {
 		return defaults, llmDefaults, fmt.Errorf("failed to parse cognitive config: %w", err)
 	}
 

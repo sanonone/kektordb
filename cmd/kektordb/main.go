@@ -54,7 +54,8 @@ func logEmbedderDimension(emb embeddings.Embedder) {
 }
 
 // setupLogger configures the global slog logger based on the level.
-func setupLogger(levelStr string) {
+// w is the writer to use (os.Stdout in normal mode, a log file in MCP mode).
+func setupLogger(levelStr string, w io.Writer) {
 	var level slog.Level
 	switch strings.ToLower(levelStr) {
 	case "debug":
@@ -69,9 +70,7 @@ func setupLogger(levelStr string) {
 		level = slog.LevelInfo
 	}
 
-	// Create a text handler (human readable).
-	// Use JSONHandler if you want machine-readable logs for Prometheus/Grafana later.
-	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+	handler := slog.NewTextHandler(w, &slog.HandlerOptions{
 		Level: level,
 		// AddSource: true, // Uncomment to see file:line in logs (useful for debug)
 	})
@@ -126,6 +125,8 @@ func main() {
 
 	modeMCP := flag.Bool("mcp", false, "Run as MCP Server (Stdio)")
 
+	mcpLogFileFlag := flag.String("mcp-log-file", "", "Log file path for MCP mode (default: <data-dir>/kektordb_mcp.log)")
+
 	toolsFlag := flag.String("tools", "all", "MCP tool profile: all, agent, admin, or comma-separated tool names")
 
 	embedderModeFlag := flag.String("embedder", "auto", "Embedder mode: auto, ollama, openai, local")
@@ -135,12 +136,35 @@ func main() {
 
 	flag.Parse()
 
-	// SETUP LOGGER
-	setupLogger(*logLevel)
+	// Compute data dir early: needed for MCP log path and engine options.
+	dataDir := filepath.Dir(*aofPath)
+
+	// MCP mode: redirect logs to file BEFORE any slog output.
+	// Stdout must stay clean for JSON-RPC protocol.
+	var mcpLogFile *os.File
+	if *modeMCP {
+		logPath := *mcpLogFileFlag
+		if logPath == "" {
+			logPath = filepath.Join(dataDir, "kektordb_mcp.log")
+		}
+		os.MkdirAll(filepath.Dir(logPath), 0755)
+		f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+		if err != nil {
+			log.Printf("Warning: failed to open MCP log file %s: %v", logPath, err)
+		} else {
+			mcpLogFile = f
+		}
+	}
+
+	// SETUP LOGGER — writes to file in MCP mode, stdout otherwise.
+	logWriter := io.Writer(os.Stdout)
+	if mcpLogFile != nil {
+		logWriter = mcpLogFile
+	}
+	setupLogger(*logLevel, logWriter)
 	slog.Info("Starting KektorDB...", "version", "v0.6.0", "log_level", *logLevel)
 
 	// Engine Configuration
-	dataDir := filepath.Dir(*aofPath)
 	aofName := filepath.Base(*aofPath)
 
 	opts := engine.DefaultOptions(dataDir)
@@ -187,14 +211,9 @@ func main() {
 	}
 
 	if *modeMCP {
-		// Redirect logs to file to keep Stdio clean for JSON-RPC
-		logFile, err := os.OpenFile("kektordb_mcp.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
-		if err != nil {
-			log.Printf("Warning: failed to open log file: %v", err)
-			// Continue with default logging to stderr
-		} else {
-			slog.SetDefault(slog.New(slog.NewTextHandler(logFile, nil)))
-			defer logFile.Close()
+		// Close the MCP log file on exit (opened earlier during setup).
+		if mcpLogFile != nil {
+			defer mcpLogFile.Close()
 		}
 
 		// Ensure engine is closed on exit to flush AOF and release resources
@@ -541,6 +560,7 @@ func printUsage() {
 	fmt.Println("  --embedder         Embedder mode: auto, ollama, openai, local (default auto)")
 	fmt.Println("  --embedder-model   Path to directory with ONNX model (local mode)")
 	fmt.Println("  --mcp              Run as MCP Server (Stdio)")
+	fmt.Println("  --mcp-log-file     Log file path for MCP mode (default: <data-dir>/kektordb_mcp.log)")
 	fmt.Println("  --tools            MCP tool profile: all, agent, admin (default all)")
 	fmt.Println("  --enable-proxy     Enable the AI Semantic Proxy")
 	fmt.Println()
