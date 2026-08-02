@@ -60,8 +60,6 @@ type MainModel struct {
 	searchLoading   bool
 	searchIndex     string
 	searchK         int
-
-	embedderMode string
 }
 
 func NewMainModel(httpAddr string) *MainModel {
@@ -91,7 +89,6 @@ func NewMainModel(httpAddr string) *MainModel {
 		searchAlpha:      0.5,
 		searchIndex:      "",
 		searchK:          10,
-		embedderMode:     "auto",
 		graphNodes:       make(map[string]GraphNode),
 		graphEdges:       make(map[string][]string),
 		graphRelTypes:    make(map[string]string),
@@ -142,11 +139,6 @@ type graphRelationsMsg struct {
 		RelType  string
 	}
 	err error
-}
-
-type embedderReloadMsg struct {
-	response *EmbedderReloadResponse
-	err      error
 }
 
 type sseEventMsg struct {

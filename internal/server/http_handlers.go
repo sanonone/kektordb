@@ -30,6 +30,7 @@ import (
 	"github.com/sanonone/kektordb/pkg/engine"
 	"github.com/sanonone/kektordb/pkg/rag"
 	"github.com/sanonone/kektordb/pkg/textanalyzer"
+	"github.com/sanonone/kektordb/pkg/transfer"
 )
 
 // Request validation limits to prevent DoS attacks (H14 fix).
@@ -54,7 +55,6 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("GET /system/tasks/{id}", s.handleTaskStatus)
 	mux.HandleFunc("GET /system/stats", s.handleSystemStats)
 	mux.HandleFunc("GET /system/gardener", s.handleSystemGardener)
-	mux.HandleFunc("POST /system/embedder/reload", s.handleEmbedderReload)
 	mux.HandleFunc("GET /system/embedder/status", s.handleEmbedderStatus)
 
 	// Event stream (SSE)
@@ -151,10 +151,13 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	// promhttp.Handler() Create a standard handler that formats data for Prometheus
 	mux.Handle("GET /metrics", promhttp.Handler())
 
-	// Auth endpoints
-	mux.HandleFunc("POST /auth/keys", s.handleCreateAPIKey)
-	mux.HandleFunc("GET /auth/keys", s.handleListAPIKeys)
-	mux.HandleFunc("DELETE /auth/keys/{id}", s.handleRevokeAPIKey)
+	// Auth endpoints (only when key management is available; OIDC mode does not
+	// issue or revoke server-side keys).
+	if s.keyManager != nil {
+		mux.HandleFunc("POST /auth/keys", s.handleCreateAPIKey)
+		mux.HandleFunc("GET /auth/keys", s.handleListAPIKeys)
+		mux.HandleFunc("DELETE /auth/keys/{id}", s.handleRevokeAPIKey)
+	}
 
 	// User Profile endpoints
 	mux.HandleFunc("GET /users/{id}/profile", s.handleGetUserProfile)
@@ -311,8 +314,20 @@ func (s *Server) handleTransferMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Not yet implemented - use MCP tool 'transfer_memory' for actual transfer.
-	s.writeHTTPError(w, http.StatusNotImplemented, fmt.Errorf("transfer memory via HTTP is not yet implemented; use MCP tool 'transfer_memory'"))
+	result, err := transfer.TransferMemory(r.Context(), s.Engine, s.embedder, transfer.Args{
+		SourceIndex:    req.SourceIndex,
+		TargetIndex:    req.TargetIndex,
+		Query:          req.Query,
+		Limit:          req.Limit,
+		WithGraph:      req.WithGraph,
+		TransferReason: req.TransferReason,
+	})
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, result)
 }
 
 // --- INDEX HANDLERS ---
@@ -2277,7 +2292,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.keyManager == nil {
-		s.writeHTTPError(w, http.StatusNotImplemented, fmt.Errorf("key management not available in OIDC mode"))
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("key manager not initialized"))
 		return
 	}
 
@@ -2322,7 +2337,7 @@ func (s *Server) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.keyManager == nil {
-		s.writeHTTPError(w, http.StatusNotImplemented, fmt.Errorf("key revocation not available in OIDC mode"))
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("key manager not initialized"))
 		return
 	}
 
@@ -2339,7 +2354,7 @@ func (s *Server) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 // every request.
 func (s *Server) handleJWKS(w http.ResponseWriter, r *http.Request) {
 	if s.keyManager == nil {
-		s.writeHTTPError(w, http.StatusNotImplemented, fmt.Errorf("JWKS not available in OIDC mode; fetch from your IDP's /.well-known/openid-configuration"))
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("key manager not initialized"))
 		return
 	}
 	jwks, err := s.keyManager.PublicKeyJWKS()
@@ -3029,28 +3044,6 @@ func (s *Server) handleEmbedderStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeHTTPResponse(w, http.StatusOK, resp)
-}
-
-// handleEmbedderReload handles POST /system/embedder/reload.
-func (s *Server) handleEmbedderReload(w http.ResponseWriter, r *http.Request) {
-	type reloadReq struct {
-		Mode string `json:"mode"`
-	}
-	type reloadResp struct {
-		Status    string `json:"status"`
-		Active    string `json:"active"`
-		Model     string `json:"model"`
-		Dimension int    `json:"dimension"`
-	}
-
-	var req reloadReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.writeHTTPResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
-		return
-	}
-
-	// Not yet implemented.
-	s.writeHTTPError(w, http.StatusNotImplemented, fmt.Errorf("embedder reload via HTTP is not yet implemented"))
 }
 
 // --- HELPER FUNCTIONS ---

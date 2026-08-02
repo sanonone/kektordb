@@ -2,6 +2,20 @@
 
 All notable changes to KektorDB are documented here.
 
+## [0.6.1] — Unreleased
+
+### MCP Quality + Polish
+
+- **Hermes setup support:** `kektordb setup hermes` injects KektorDB into `~/.hermes/config.yaml`, auto-detects the configured LLM provider, writes `~/.hermes/kektordb/cognitive.yaml` with `${ENV_VAR}` API keys, and installs a skill file at `~/.hermes/skills/memory/kektordb-mcp/SKILL.md`.
+- **Cognitive config env expansion:** `pkg/cognitive/config.go` now resolves `${ENV_VAR}` placeholders in `cognitive.yaml` via `os.ExpandEnv`, so API keys never need to be stored in plain text.
+- **MCP stdout log leak fixed:** `cmd/kektordb/main.go` redirects MCP logs to a dedicated file (`--mcp-log-file`, default `<data-dir>/kektordb_mcp.log`) before initializing the logger or engine, keeping stdio clean for MCP clients.
+
+### HTTP API Consistency
+
+- **Implemented `POST /transfer/memory`:** previously returned `501 Not Implemented`; now performs the same cross-index memory transfer as the `transfer_memory` MCP tool, including provenance metadata, dimension mismatch handling, and optional graph topology copy.
+- **Removed `POST /system/embedder/reload`:** the endpoint was a stub and has been removed from the route table; the TUI settings page now shows the embedder mode as read-only and instructs users to restart the server to change mode.
+- **Auth endpoints only registered in JWT mode:** `POST /auth/keys`, `GET /auth/keys`, `DELETE /auth/keys/{id}`, and `GET /.well-known/jwks.json` are no longer registered when the server runs in OIDC mode (where the IDP manages keys), eliminating the remaining `501` responses from the HTTP API.
+
 ## [0.6.0] — 2026-07-12
 
 ### Engine Stability (P1 — Data loss & corruption)
@@ -48,7 +62,7 @@ All notable changes to KektorDB are documented here.
 - TUI graph: multi-node results shown as selectable list; target nodes navigable with `↑↓`/`Enter`/`→`.
 - `handleSystemStats` / `handleSystemGardener`: read real Gardener state instead of hardcoded `"basic"`.
 - `handleGraphSearchNodes`: uses `VFilter` and `IterateRaw` (no dummy zero-vector). Results sorted alphabetically. IDs collected before `VGetMany` to avoid recursive `metaMu` RLock.
-- `handleTransferMemory` / `handleEmbedderReload`: return `501 Not Implemented` instead of fake `200 OK`.
+- `handleTransferMemory` / `handleEmbedderReload`: return `501 Not Implemented` instead of fake `200 OK` (resolved in v0.6.1).
 - Nil-guard for `vectorizerService` in RAG handlers.
 - All SDKs (Go, Python, TypeScript) and Web UI JS: updated to `query_text` and unified endpoint.
 - Makefile: `ensure-protoc` target auto-downloads protoc v29.3 when missing.

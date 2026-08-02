@@ -186,19 +186,6 @@ type SSEEvent struct {
 	Timestamp int64  `json:"timestamp"`
 }
 
-// EmbedderReloadRequest is the body for POST /system/embedder/reload.
-type EmbedderReloadRequest struct {
-	Mode string `json:"mode"`
-}
-
-// EmbedderReloadResponse is the response from POST /system/embedder/reload.
-type EmbedderReloadResponse struct {
-	Status    string `json:"status"`
-	Active    string `json:"active"`
-	Model     string `json:"model"`
-	Dimension int    `json:"dimension"`
-}
-
 // ─── API calls ──────────────────────────────────────────────────────────────
 
 // FetchStats fetches aggregate system stats.
@@ -308,16 +295,6 @@ func (c *TUIClient) GetNodeProperties(nodeID string) (map[string]any, error) {
 		return nil, err
 	}
 	return resp.Properties, nil
-}
-
-// ReloadEmbedder calls /system/embedder/reload to switch embedder mode.
-func (c *TUIClient) ReloadEmbedder(mode string) (*EmbedderReloadResponse, error) {
-	var resp EmbedderReloadResponse
-	body := EmbedderReloadRequest{Mode: mode}
-	if err := c.post("/system/embedder/reload", body, &resp); err != nil {
-		return nil, err
-	}
-	return &resp, nil
 }
 
 // HealthCheck checks if the server is reachable.

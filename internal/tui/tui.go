@@ -78,14 +78,6 @@ func (m *MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.stats = msg.stats
 			m.statsErr = nil
-			if m.stats != nil && m.stats.Embedder.Active != "" && m.stats.Embedder.Active != "none" {
-				serverMode := m.stats.Embedder.Active
-				if strings.HasPrefix(serverMode, "ollama") {
-					m.embedderMode = "ollama"
-				} else if strings.HasPrefix(serverMode, "openai") {
-					m.embedderMode = "openai"
-				}
-			}
 		}
 
 	case gardenerMsg:
@@ -137,9 +129,6 @@ func (m *MainModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.graphErr = msg.err
 		}
-
-	case embedderReloadMsg:
-		cmds = append(cmds, m.fetchStats)
 
 	case sseEventMsg:
 		m.appendEvent(msg.event)

@@ -34,6 +34,8 @@ type Server struct {
 
 	gardener *cognitive.Gardener
 	compiler *compiler.Compiler
+
+	embedder embeddings.Embedder // Global embedder used by transfer and compiler
 }
 
 // NewServer initializes the HTTP server using an existing Engine.
@@ -66,6 +68,7 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 		authToken:        authToken,
 		authService:      jwtProvider,
 		keyManager:       jwtProvider,
+		embedder:         emb,
 	}
 
 	// Load cognitive engine config (from YAML or defaults)
@@ -125,7 +128,10 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 	rootMux := http.NewServeMux()
 	rootMux.HandleFunc("GET /healthz", s.handleHealthz)
 	// JWKS is unauthenticated — clients and gateways fetch the public key to verify tokens locally.
-	rootMux.HandleFunc("GET /.well-known/jwks.json", s.handleJWKS)
+	// Only available when the server issues its own keys (JWT mode); OIDC mode uses the IDP JWKS.
+	if s.keyManager != nil {
+		rootMux.HandleFunc("GET /.well-known/jwks.json", s.handleJWKS)
+	}
 	rootMux.Handle("/", handler)
 	s.httpServer = &http.Server{
 		Addr:           httpAddr,

@@ -115,6 +115,14 @@ func TestInstallAllKnownAgents(t *testing.T) {
 	osExecutable = func() (string, error) { return "/usr/local/bin/kektordb", nil }
 	defer func() { osExecutable = origExec }()
 
+	// Seed a Hermes config so the hermes installer can detect a provider.
+	written[filepath.Join(tmpDir, ".hermes", "config.yaml")] = []byte(`providers:
+  opencode-go:
+    base_url: "https://opencode.ai/zen/go/v1"
+    model: "deepseek-v4-flash"
+    api_key_env: "OPENCODE_GO_API_KEY"
+`)
+
 	for _, agent := range SupportedAgents() {
 		t.Run(agent.Name, func(t *testing.T) {
 			result, err := Install(agent.Name, "")

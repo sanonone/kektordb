@@ -536,7 +536,7 @@ func cmdSetupStatus(agents []setup.Agent) {
 func printPostInstall(result *setup.Result) {
 	fmt.Println()
 	fmt.Println("Next steps:")
-	fmt.Println("  1. Restart your AI agent (Claude Code / Cursor / Gemini CLI / OpenCode)")
+	fmt.Println("  1. Restart your AI agent (Claude Code / Cursor / Gemini CLI / Codex / OpenCode / Hermes)")
 	fmt.Println("  2. The agent will now have access to KektorDB memory tools")
 	fmt.Println()
 	fmt.Println("To verify, ask your agent: 'What memory tools are available?'")

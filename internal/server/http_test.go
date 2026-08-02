@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/engine"
 )
 
@@ -280,7 +281,21 @@ func TestServerTimeoutsSet(t *testing.T) {
 
 // --- Knowledge Engine (Compiler) HTTP Tests ---
 
+type fakeEmbedder struct{ dim int }
+
+func (f *fakeEmbedder) Embed(text string) ([]float32, error) {
+	vec := make([]float32, f.dim)
+	for i := range vec {
+		vec[i] = 0.1
+	}
+	return vec, nil
+}
+
 func newTestServer(t *testing.T) (*httptest.Server, *engine.Engine) {
+	return newTestServerWithEmbedder(t, nil)
+}
+
+func newTestServerWithEmbedder(t *testing.T, emb embeddings.Embedder) (*httptest.Server, *engine.Engine) {
 	t.Helper()
 	tmpDir := t.TempDir()
 	opts := engine.DefaultOptions(tmpDir)
@@ -292,7 +307,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *engine.Engine) {
 	}
 	t.Cleanup(func() { eng.Close() })
 
-	srv, err := NewServer(eng, ":0", "", "", tmpDir, "", nil)
+	srv, err := NewServer(eng, ":0", "", "", tmpDir, "", emb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -523,5 +538,132 @@ func TestCompileValidateEndpoint(t *testing.T) {
 
 	if resp2.StatusCode != http.StatusBadRequest {
 		t.Errorf("expected 400 for missing name, got %d", resp2.StatusCode)
+	}
+}
+
+func TestTransferMemoryEndpoint(t *testing.T) {
+	ts, eng := newTestServerWithEmbedder(t, &fakeEmbedder{dim: 384})
+
+	src := "source_idx"
+	dst := "target_idx"
+	if err := eng.VCreate(src, distance.Cosine, 384, 200, distance.Float32, "english", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.VCreate(dst, distance.Cosine, 384, 200, distance.Float32, "english", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	vec := make([]float32, 384)
+	for i := range vec {
+		vec[i] = 0.1
+	}
+	if err := eng.VAdd(src, "mem1", vec, map[string]any{"content": "test memory"}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := strings.NewReader(`{"source_index":"source_idx","target_index":"target_idx","query":"test","limit":10}`)
+	resp, err := ts.Client().Post(ts.URL+"/transfer/memory", "application/json", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var result struct {
+		TransferredCount int    `json:"transferred_count"`
+		Message          string `json:"message"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.TransferredCount == 0 {
+		t.Errorf("expected at least one transfer, got %d", result.TransferredCount)
+	}
+
+	// Verify the transferred memory exists in the target index.
+	if _, err := eng.VGet(dst, "mem1"); err != nil {
+		t.Errorf("transferred memory not found in target: %v", err)
+	}
+}
+
+func TestTransferMemoryEndpointValidation(t *testing.T) {
+	ts, _ := newTestServerWithEmbedder(t, &fakeEmbedder{dim: 384})
+
+	cases := []struct {
+		name       string
+		body       string
+		wantStatus int
+	}{
+		{"missing source", `{"target_index":"t","query":"q"}`, http.StatusBadRequest},
+		{"same source and target", `{"source_index":"x","target_index":"x","query":"q"}`, http.StatusBadRequest},
+		{"missing query", `{"source_index":"s","target_index":"t"}`, http.StatusBadRequest},
+		{"source not found", `{"source_index":"missing","target_index":"t","query":"q"}`, http.StatusNotFound},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := ts.Client().Post(ts.URL+"/transfer/memory", "application/json", strings.NewReader(tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tc.wantStatus {
+				t.Errorf("expected %d, got %d", tc.wantStatus, resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestAuthEndpointsConditionallyRegistered(t *testing.T) {
+	// JWT mode: auth endpoints are available.
+	ts, _ := newTestServer(t)
+	resp, err := ts.Client().Get(ts.URL + "/auth/keys")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		t.Error("JWT mode: /auth/keys should be registered")
+	}
+
+	// OIDC mode: auth endpoints are not registered (server constructed with nil keyManager).
+	// NewServer always uses the JWT provider, so we simulate OIDC by manually creating a server
+	// with a nil keyManager and registering only the routes we need.
+	tmpDir := t.TempDir()
+	opts := engine.DefaultOptions(tmpDir)
+	opts.AutoSaveInterval = 0
+	opts.AutoSaveThreshold = 0
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+
+	srv := &Server{Engine: eng, keyManager: nil}
+	mux := http.NewServeMux()
+	srv.registerHTTPHandlers(mux)
+	ts2 := httptest.NewServer(mux)
+	defer ts2.Close()
+
+	resp2, err := ts2.Client().Get(ts2.URL + "/auth/keys")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusNotFound {
+		t.Errorf("OIDC mode: /auth/keys should return 404, got %d", resp2.StatusCode)
+	}
+
+	resp3, err := ts2.Client().Get(ts2.URL + "/.well-known/jwks.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusNotFound {
+		t.Errorf("OIDC mode: /.well-known/jwks.json should return 404, got %d", resp3.StatusCode)
 	}
 }

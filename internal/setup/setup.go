@@ -66,6 +66,11 @@ func SupportedAgents() []Agent {
 			Description: "OpenCode — Plugin TypeScript with session tracking and MCP",
 			InstallDir:  "~/.config/opencode/plugins/",
 		},
+		{
+			Name:        "hermes",
+			Description: "Hermes — MCP server in config.yaml + skill + cognitive config",
+			InstallDir:  "~/.hermes/config.yaml",
+		},
 	}
 }
 
@@ -83,8 +88,10 @@ func Install(agentName, embedderMode string) (*Result, error) {
 		return installCodex()
 	case "opencode":
 		return installOpenCode(embedderMode)
+	case "hermes":
+		return installHermes(embedderMode)
 	default:
-		return nil, fmt.Errorf("unknown agent: %q (supported: claude-code, cursor, gemini-cli, codex, opencode)", agentName)
+		return nil, fmt.Errorf("unknown agent: %q (supported: claude-code, cursor, gemini-cli, codex, opencode, hermes)", agentName)
 	}
 }
 
