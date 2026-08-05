@@ -64,3 +64,57 @@ func TestSetupLogger_NonMCPWritesToStdout(t *testing.T) {
 		t.Error("log message missing from writer")
 	}
 }
+
+func TestIsLoopbackHost(t *testing.T) {
+	tests := []struct {
+		addr string
+		want bool
+	}{
+		{"localhost:9091", true},
+		{"127.0.0.1:9091", true},
+		{"127.1.2.3:9091", true},
+		{"[::1]:9091", true},
+		{"::1", true},
+		{":9091", false},
+		{"0.0.0.0:9091", false},
+		{"[::]:9091", false},
+		{"192.168.1.5:9091", false},
+		{"10.0.0.1:9091", false},
+		{"myserver:9091", false},
+		{"127.0.0.1", true},
+	}
+	for _, tt := range tests {
+		if got := isLoopbackHost(tt.addr); got != tt.want {
+			t.Errorf("isLoopbackHost(%q) = %v, want %v", tt.addr, got, tt.want)
+		}
+	}
+}
+
+func TestSecurityWarnings(t *testing.T) {
+	tests := []struct {
+		name      string
+		authToken string
+		httpAddr  string
+		wantWarn  bool
+	}{
+		{"auth disabled on all-interfaces", "", ":9091", true},
+		{"auth disabled on 0.0.0.0", "", "0.0.0.0:9091", true},
+		{"auth disabled on LAN", "", "192.168.1.5:9091", true},
+		{"auth disabled on IPv6 all", "", "[::]:9091", true},
+		{"auth set on all-interfaces", "secret", ":9091", false},
+		{"auth disabled on localhost", "", "localhost:9091", false},
+		{"auth disabled on 127.0.0.1", "", "127.0.0.1:9091", false},
+		{"auth disabled on ::1", "", "[::1]:9091", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			warnings := securityWarnings(tt.authToken, tt.httpAddr)
+			if tt.wantWarn && len(warnings) == 0 {
+				t.Errorf("expected warning for authToken=%q httpAddr=%q, got none", tt.authToken, tt.httpAddr)
+			}
+			if !tt.wantWarn && len(warnings) > 0 {
+				t.Errorf("unexpected warnings for authToken=%q httpAddr=%q: %v", tt.authToken, tt.httpAddr, warnings)
+			}
+		})
+	}
+}

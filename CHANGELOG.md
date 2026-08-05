@@ -16,6 +16,10 @@ All notable changes to KektorDB are documented here.
 - **Removed `POST /system/embedder/reload`:** the endpoint was a stub and has been removed from the route table; the TUI settings page now shows the embedder mode as read-only and instructs users to restart the server to change mode.
 - **Auth endpoints only registered in JWT mode:** `POST /auth/keys`, `GET /auth/keys`, `DELETE /auth/keys/{id}`, and `GET /.well-known/jwks.json` are no longer registered when the server runs in OIDC mode (where the IDP manages keys), eliminating the remaining `501` responses from the HTTP API.
 
+### Security
+
+- **Boot warning when auth is disabled on a non-loopback bind:** the server now warns on stderr (and via slog) at startup when `--auth-token=""` while listening on a non-loopback address (`:9091`, `0.0.0.0:*`, `[::]:*`, LAN IPs), because the REST API, memories, and `/debug/pprof/*` are exposed to any network client. The warning suggests setting `--auth-token=<token>` or binding to `127.0.0.1:9091`. Behavior is unchanged when running with auth enabled or on loopback only.
+
 ## [0.6.0] — 2026-07-12
 
 ### Engine Stability (P1 — Data loss & corruption)

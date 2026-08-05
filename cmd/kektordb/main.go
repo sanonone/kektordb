@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -79,6 +80,43 @@ func setupLogger(levelStr string, w io.Writer) {
 	slog.SetDefault(logger) // Set as global default
 }
 
+// isLoopbackHost reports whether the host portion of a listen address is
+// loopback-only (localhost, 127.x, ::1) or explicitly binds all interfaces
+// (empty host, 0.0.0.0, ::), which is NOT loopback.
+func isLoopbackHost(addr string) bool {
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// Non-IP hostname: could resolve anywhere, treat as non-loopback.
+		return false
+	}
+	return ip.IsLoopback()
+}
+
+// securityWarnings returns boot-time warnings for insecure configurations.
+// The most critical one: auth disabled while listening on a non-loopback
+// address exposes the REST API, memories and /debug/pprof/* to any client.
+func securityWarnings(authToken, httpAddr string) []string {
+	var warnings []string
+	if authToken == "" && !isLoopbackHost(httpAddr) {
+		warnings = append(warnings, fmt.Sprintf(
+			"auth is DISABLED (--auth-token=\"\") and listening on %s (non-loopback): "+
+				"REST API, memories and /debug/pprof/* are exposed to any network client. "+
+				"Set --auth-token=<token> or bind to 127.0.0.1:9091.", httpAddr))
+	}
+	return warnings
+}
+
 func main() {
 	// Handle subcommands before flag parsing.
 	if len(os.Args) > 1 {
@@ -135,6 +173,15 @@ func main() {
 	modeTUI := flag.Bool("tui", false, "Launch terminal dashboard")
 
 	flag.Parse()
+
+	// Security warnings at boot (HTTP and TUI modes; MCP is stdio-only).
+	// Auth disabled + non-loopback bind exposes the API and /debug/pprof/*.
+	if !*modeMCP {
+		for _, w := range securityWarnings(*authToken, *httpAddr) {
+			fmt.Fprintln(os.Stderr, "WARNING:", w)
+			slog.Warn(w)
+		}
+	}
 
 	// Compute data dir early: needed for MCP log path and engine options.
 	dataDir := filepath.Dir(*aofPath)
