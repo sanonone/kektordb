@@ -1,7 +1,13 @@
 # --- Configuration Variables ---
-VERSION ?= $(shell git describe --tags --abbrev=0 || echo "v0.0.0")
+# Version stamped into the binary via -X ldflags (internal/version.Version).
+# On tagged releases this is the tag (e.g. v0.6.1); between tags it includes
+# the commit distance/sha; falls back to the dev version if not a git repo.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo v0.6.1-dev)
 BINARY_NAME=kektordb
 RELEASE_DIR=release
+
+# -X ldflag for the centralized version (internal/version.Version).
+VERSION_LDFLAGS = -X github.com/sanonone/kektordb/internal/version.Version=$(VERSION)
 
 # protoc is required for candle-onnx (build-time only, not runtime).
 # Searches PATH first, falls back to a manually downloaded binary.
@@ -84,7 +90,7 @@ generate-avo:
 build-go:
 	@echo "==> Building KektorDB (pure Go)..."
 	@mkdir -p $(RELEASE_DIR)
-	@CGO_ENABLED=0 go build -ldflags="-s -w" -o "$(RELEASE_DIR)/$(BINARY_NAME)" ./cmd/kektordb
+	@CGO_ENABLED=0 go build -ldflags="-s -w $(VERSION_LDFLAGS)" -o "$(RELEASE_DIR)/$(BINARY_NAME)" ./cmd/kektordb
 	@echo "==> Binary: $(RELEASE_DIR)/$(BINARY_NAME)"
 
 build-rust: build-rust-native
@@ -92,7 +98,7 @@ build-rust: build-rust-native
 	@mkdir -p $(RELEASE_DIR)
 	@CGO_LDFLAGS="-L$(CURDIR)/native/compute/target/release -lkektordb_compute -lm -ldl -lstdc++" \
 	CGO_ENABLED=1 \
-	go build -tags "rust netgo" -ldflags="-s -w" -o "$(RELEASE_DIR)/$(BINARY_NAME)" ./cmd/kektordb
+	go build -tags "rust netgo" -ldflags="-s -w $(VERSION_LDFLAGS)" -o "$(RELEASE_DIR)/$(BINARY_NAME)" ./cmd/kektordb
 	@echo "==> Binary: $(RELEASE_DIR)/$(BINARY_NAME)"
 
 
@@ -153,7 +159,7 @@ release-build: build-rust-target
 	CGO_ENABLED=1 \
 	GOOS=$(GOOS) GOARCH=$(GOARCH) \
 	CC="$(BUILD_CC)" CXX="$(BUILD_CXX)" \
-	go build -tags "rust netgo" -ldflags="-s -w" -o "$(RELEASE_DIR)/$(BINARY_NAME)-$(GOOS)-$(GOARCH)$(EXT)" ./cmd/kektordb
+	go build -tags "rust netgo" -ldflags="-s -w $(VERSION_LDFLAGS)" -o "$(RELEASE_DIR)/$(BINARY_NAME)-$(GOOS)-$(GOARCH)$(EXT)" ./cmd/kektordb
 
 
 # Pure Go build (for macOS)
@@ -161,7 +167,7 @@ release-build-pure:
 	@echo "==> Compiling pure-Go KektorDB for $(GOOS)/$(GOARCH)..."
 	@CGO_ENABLED=0 \
 	GOOS=$(GOOS) GOARCH=$(GOARCH) \
-	go build -ldflags="-s -w" -o "$(RELEASE_DIR)/$(BINARY_NAME)-$(GOOS)-$(GOARCH)$(EXT)" ./cmd/kektordb
+	go build -ldflags="-s -w $(VERSION_LDFLAGS)" -o "$(RELEASE_DIR)/$(BINARY_NAME)-$(GOOS)-$(GOARCH)$(EXT)" ./cmd/kektordb
 
 
 

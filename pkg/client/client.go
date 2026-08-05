@@ -8,10 +8,13 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/sanonone/kektordb/internal/version"
 )
 
 // Version is the client library version, matching the KektorDB release.
-const Version = "0.6.0"
+// Centralized in internal/version (single source of truth).
+var Version = version.Version
 
 // --- Custom Errors ---
 

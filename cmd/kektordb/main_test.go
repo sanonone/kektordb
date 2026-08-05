@@ -6,7 +6,16 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/sanonone/kektordb/internal/version"
 )
+
+func TestVersionString(t *testing.T) {
+	want := "kektordb " + version.Version
+	if got := versionString(); got != want {
+		t.Errorf("versionString() = %q, want %q", got, want)
+	}
+}
 
 func TestSetupLogger_WritesToProvidedWriter(t *testing.T) {
 	var buf bytes.Buffer

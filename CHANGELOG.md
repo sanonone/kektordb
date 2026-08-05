@@ -16,6 +16,11 @@ All notable changes to KektorDB are documented here.
 - **Removed `POST /system/embedder/reload`:** the endpoint was a stub and has been removed from the route table; the TUI settings page now shows the embedder mode as read-only and instructs users to restart the server to change mode.
 - **Auth endpoints only registered in JWT mode:** `POST /auth/keys`, `GET /auth/keys`, `DELETE /auth/keys/{id}`, and `GET /.well-known/jwks.json` are no longer registered when the server runs in OIDC mode (where the IDP manages keys), eliminating the remaining `501` responses from the HTTP API.
 
+### CLI & Versioning
+
+- **Centralized version:** new `internal/version` package is the single source of truth for the release version (server startup log, MCP `initialize` handshake, and `pkg/client.Version`). The Makefile stamps the git tag into the binary via `-X` ldflags on all build targets (`build-go`, `build-rust`, `release-build`, `release-build-pure`); dev builds report `v0.6.1-dev` or `git describe` output between tags.
+- **`kektordb version` / `kektordb --version` / `kektordb -v`:** prints `kektordb <version>` and exits (previously the version was only visible in the startup log).
+
 ### Security
 
 - **Boot warning when auth is disabled on a non-loopback bind:** the server now warns on stderr (and via slog) at startup when `--auth-token=""` while listening on a non-loopback address (`:9091`, `0.0.0.0:*`, `[::]:*`, LAN IPs), because the REST API, memories, and `/debug/pprof/*` are exposed to any network client. The warning suggests setting `--auth-token=<token>` or binding to `127.0.0.1:9091`. Behavior is unchanged when running with auth enabled or on loopback only.

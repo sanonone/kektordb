@@ -23,6 +23,7 @@ import (
 	"github.com/sanonone/kektordb/internal/server"
 	"github.com/sanonone/kektordb/internal/setup"
 	"github.com/sanonone/kektordb/internal/tui"
+	"github.com/sanonone/kektordb/internal/version"
 	"github.com/sanonone/kektordb/pkg/cognitive"
 	"github.com/sanonone/kektordb/pkg/compiler"
 	"github.com/sanonone/kektordb/pkg/embeddings"
@@ -37,6 +38,11 @@ func getEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// versionString returns the one-line CLI version output.
+func versionString() string {
+	return "kektordb " + version.Version
 }
 
 // logEmbedderDimension probes the embedder to discover and log its vector dimension.
@@ -124,6 +130,9 @@ func main() {
 		case "setup":
 			cmdSetup()
 			return
+		case "version", "--version", "-v":
+			fmt.Println(versionString())
+			return
 		case "--help", "-h":
 			printUsage()
 			return
@@ -209,7 +218,7 @@ func main() {
 		logWriter = mcpLogFile
 	}
 	setupLogger(*logLevel, logWriter)
-	slog.Info("Starting KektorDB...", "version", "v0.6.0", "log_level", *logLevel)
+	slog.Info("Starting KektorDB...", "version", version.Version, "log_level", *logLevel)
 
 	// Engine Configuration
 	aofName := filepath.Base(*aofPath)
@@ -594,11 +603,13 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("Usage:")
 	fmt.Println("  kektordb [flags]                 Start the server")
+	fmt.Println("  kektordb version                  Show version and exit")
 	fmt.Println("  kektordb setup [agent]            Configure MCP for an AI agent")
 	fmt.Println("  kektordb setup list               List supported agents")
 	fmt.Println("  kektordb setup status             Show configured agents")
 	fmt.Println()
 	fmt.Println("Flags:")
+	fmt.Println("  --version          Show version and exit")
 	fmt.Println("  --http-addr        HTTP address (default :9091)")
 	fmt.Println("  --aof-path         Path to AOF file")
 	fmt.Println("  --save             Auto-snapshot policy")

@@ -8,6 +8,7 @@ package mcp
 
 import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/sanonone/kektordb/internal/version"
 	"github.com/sanonone/kektordb/pkg/cognitive"
 	"github.com/sanonone/kektordb/pkg/compiler"
 	"github.com/sanonone/kektordb/pkg/embeddings"
@@ -23,7 +24,7 @@ func NewMCPServer(eng *engine.Engine, embedder embeddings.Embedder, allowlist ma
 
 	s := mcp.NewServer(&mcp.Implementation{
 		Name:    "KektorDB Memory",
-		Version: "0.6.0",
+		Version: version.Version,
 	}, nil)
 
 	registerTools(s, service, allowlist)
