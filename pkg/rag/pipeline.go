@@ -331,6 +331,10 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 	// Unique Parent ID (based on file path)
 	parentID := fmt.Sprintf("doc:%s", path)
 
+	// Pass 1: collect all chunk texts (with shutdown checks) so the whole
+	// document can be embedded in a single batch call instead of one HTTP
+	// round trip per chunk.
+	chunkTexts := make([]string, len(chunks))
 	for i, chunkText := range chunks {
 		// Check for shutdown between chunks to avoid blocking Stop().
 		select {
@@ -339,17 +343,37 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 		default:
 		}
 
+		chunkTexts[i] = chunkText
+
 		// --- Accumulate text for Parent extraction ---
 		if fullTextPreview.Len() < maxPreviewChars {
 			fullTextPreview.WriteString(chunkText)
 			fullTextPreview.WriteString("\n")
 		}
+	}
 
-		// Embed
-		vec, err := p.embedder.Embed(chunkText)
-		if err != nil {
-			slog.Error("[RAG] Embedding failed", "chunk_index", i, "path", path, "error", err)
-			continue
+	// Pass 2: embed all chunks in one batch call. If the batch path fails,
+	// fall back to per-chunk embedding, preserving the previous skip-on-error
+	// behavior for individual chunks.
+	vecs, embedErr := p.embedder.EmbedBatch(chunkTexts)
+	if embedErr != nil {
+		slog.Warn("[RAG] Batch embedding failed, falling back to per-chunk embedding",
+			"path", path, "chunks", len(chunks), "error", embedErr)
+		vecs = nil
+	}
+
+	for i, chunkText := range chunks {
+		// Embed (from the batch result, or serially as fallback).
+		var vec []float32
+		if vecs != nil && i < len(vecs) && len(vecs[i]) > 0 {
+			vec = vecs[i]
+		} else {
+			v, err := p.embedder.Embed(chunkText)
+			if err != nil {
+				slog.Error("[RAG] Embedding failed", "chunk_index", i, "path", path, "error", err)
+				continue
+			}
+			vec = v
 		}
 
 		// Accumulate for Parent average (only if GraphEnabled)
@@ -680,27 +704,54 @@ func (p *Pipeline) extractAndLinkEntities(chunkID, text string) error {
 	// --- BATCH CREATION (New Only) ---
 	var entityBatch []types.BatchObject
 
+	// Collect new entities first so they can be embedded in one batch call.
+	type newEntity struct {
+		id   string
+		name string
+	}
+	var newCandidates []newEntity
 	for entityID, entityName := range candidates {
 		// If exists, skip node creation
 		if _, exists := existingSet[entityID]; exists {
 			continue
 		}
+		newCandidates = append(newCandidates, newEntity{id: entityID, name: entityName})
+	}
 
-		// If new, calculate vector and add
-		vec, err := p.embedder.Embed(entityName)
-		if err != nil {
-			continue
+	if len(newCandidates) > 0 {
+		names := make([]string, len(newCandidates))
+		for i, c := range newCandidates {
+			names[i] = c.name
+		}
+		entityVecs, batchErr := p.embedder.EmbedBatch(names)
+		if batchErr != nil {
+			// Fall back to per-entity embedding if the batch path fails.
+			entityVecs = nil
 		}
 
-		entityBatch = append(entityBatch, types.BatchObject{
-			Id:     entityID,
-			Vector: vec,
-			Metadata: map[string]interface{}{
-				"type":    "entity",
-				"name":    entityName,
-				"content": fmt.Sprintf("Entity: %s", entityName),
-			},
-		})
+		for i, c := range newCandidates {
+			// If new, calculate vector and add
+			var vec []float32
+			if entityVecs != nil && i < len(entityVecs) && len(entityVecs[i]) > 0 {
+				vec = entityVecs[i]
+			} else {
+				v, err := p.embedder.Embed(c.name)
+				if err != nil {
+					continue
+				}
+				vec = v
+			}
+
+			entityBatch = append(entityBatch, types.BatchObject{
+				Id:     c.id,
+				Vector: vec,
+				Metadata: map[string]interface{}{
+					"type":    "entity",
+					"name":    c.name,
+					"content": fmt.Sprintf("Entity: %s", c.name),
+				},
+			})
+		}
 	}
 
 	// 6. Save entity nodes to DB (If there are new ones)

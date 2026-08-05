@@ -102,6 +102,88 @@ func (e *GeminiEmbedder) Embed(text string) ([]float32, error) {
 	return geminiResp.Embedding.Values, nil
 }
 
+func (e *GeminiEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+	vecs, err := e.embedBatchNative(texts)
+	if err == nil {
+		return vecs, nil
+	}
+	// Fall back to serial Embed on any batch failure (unsupported endpoint,
+	// shape mismatch, transient error).
+	return embedBatchSerial(e, texts)
+}
+
+func (e *GeminiEmbedder) embedBatchNative(texts []string) ([][]float32, error) {
+	endpoint, err := e.endpoint()
+	if err != nil {
+		return nil, err
+	}
+	batchEndpoint := strings.Replace(endpoint, ":embedContent", ":batchEmbedContents", 1)
+
+	requests := make([]map[string]interface{}, len(texts))
+	for i, text := range texts {
+		requests[i] = map[string]interface{}{
+			"model": geminiModelResource(e.Model),
+			"content": map[string]interface{}{
+				"parts": []map[string]string{
+					{"text": text},
+				},
+			},
+		}
+	}
+	payload := map[string]interface{}{"requests": requests}
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", batchEndpoint, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create gemini batch embedder request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey := e.apiKey(); apiKey != "" {
+		req.Header.Set("x-goog-api-key", apiKey)
+	}
+
+	resp, err := e.Client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("gemini batch embedder request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("gemini batch embedder returned status: %s", resp.Status)
+	}
+
+	var geminiResp struct {
+		Embeddings []struct {
+			Values []float32 `json:"values"`
+		} `json:"embeddings"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(bodyBytes, &geminiResp); err != nil {
+		return nil, fmt.Errorf("failed to decode gemini batch embedder response: %w", err)
+	}
+	if geminiResp.Error != nil {
+		return nil, fmt.Errorf("gemini batch embedder provider error: %s", geminiResp.Error.Message)
+	}
+	if len(geminiResp.Embeddings) != len(texts) {
+		return nil, fmt.Errorf("gemini batch embedder returned %d embeddings for %d texts", len(geminiResp.Embeddings), len(texts))
+	}
+
+	vecs := make([][]float32, len(texts))
+	for i, emb := range geminiResp.Embeddings {
+		vecs[i] = emb.Values
+	}
+	return vecs, nil
+}
+
 func (e *GeminiEmbedder) endpoint() (string, error) {
 	endpoint := e.URL
 	if endpoint == "" {

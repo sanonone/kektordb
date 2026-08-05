@@ -19,6 +19,18 @@ func (f *fakeEmbedder) Embed(text string) ([]float32, error) {
 	return vec, nil
 }
 
+func (f *fakeEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
+	vecs := make([][]float32, len(texts))
+	for i, t := range texts {
+		vec, err := f.Embed(t)
+		if err != nil {
+			return nil, err
+		}
+		vecs[i] = vec
+	}
+	return vecs, nil
+}
+
 func TestTransferMemory(t *testing.T) {
 	tmpDir := t.TempDir()
 	opts := engine.DefaultOptions(tmpDir)

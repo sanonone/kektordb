@@ -20,6 +20,18 @@ func (m *MockEmbedder) Embed(text string) ([]float32, error) {
 	return make([]float32, 16), nil
 }
 
+func (m *MockEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
+	vecs := make([][]float32, len(texts))
+	for i, t := range texts {
+		vec, err := m.Embed(t)
+		if err != nil {
+			return nil, err
+		}
+		vecs[i] = vec
+	}
+	return vecs, nil
+}
+
 func main() {
 	// Setup Cartelle
 	tempDir := "./temp_autolink_test"

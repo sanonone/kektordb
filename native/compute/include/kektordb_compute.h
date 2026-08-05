@@ -16,4 +16,11 @@ int  kektordb_embed(const char *text, float **out_vec, int *out_dim);
 void kektordb_free_embedding(float *ptr, int len);
 void kektordb_embed_destroy(void);
 
+// Batch embedding — embeds `count` texts in a single inference pass.
+// On success, *out_vecs is an array of `count` pointers (each allocated by
+// this library, each with `*out_dim` floats) and *out_count == count.
+// The caller must release the result with kektordb_free_embeddings(vecs, count, dim).
+int  kektordb_embed_batch(const char **texts, int count, float ***out_vecs, int *out_count, int *out_dim);
+void kektordb_free_embeddings(float **vecs, int count, int dim);
+
 #endif /* KektorDBCompute_h */

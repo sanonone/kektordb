@@ -168,6 +168,178 @@ pub unsafe extern "C" fn kektordb_free_embedding(ptr: *mut f32, len: c_int) {
     }
 }
 
+/// Embed a batch of UTF-8 text strings in a single inference pass.
+///
+/// The texts are tokenized together, padded to the longest sequence in the
+/// batch, and evaluated as one (count, max_seq) input. Pooling is mask-aware
+/// (sum over real tokens / token count) so results are numerically equivalent
+/// to calling kektordb_embed count times — the padding tokens never
+/// contribute to the mean.
+///
+/// On success: *out_vecs is an array of `count` row pointers (each an
+/// independent heap allocation of `*out_dim` floats), *out_count == count.
+/// The caller must release the result with kektordb_free_embeddings.
+/// Returns 0 on success, -1 if the model is not initialized or inference fails.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kektordb_embed_batch(
+    texts: *const *const c_char,
+    count: c_int,
+    out_vecs: *mut *mut *mut f32,
+    out_count: *mut c_int,
+    out_dim: *mut c_int,
+) -> c_int {
+    if count <= 0 || texts.is_null() || out_vecs.is_null() || out_count.is_null() || out_dim.is_null()
+    {
+        return -1;
+    }
+    let n = count as usize;
+
+    let mut strings = Vec::with_capacity(n);
+    for i in 0..n {
+        let ptr = unsafe { *texts.add(i) };
+        let s = match unsafe { CStr::from_ptr(ptr) }.to_str() {
+            Ok(s) => s,
+            Err(_) => return -1,
+        };
+        strings.push(s.to_owned());
+    }
+
+    let state_arc = {
+        let guard = MODEL.lock().unwrap();
+        match &*guard {
+            Some(arc) => Arc::clone(arc),
+            None => return -1,
+        }
+    };
+
+    let state = state_arc.read().unwrap();
+    let device = Device::Cpu;
+
+    // Tokenize the whole batch in one call (no truncation; pad to longest below).
+    let encodings = match state.tokenizer.encode_batch(strings, true) {
+        Ok(e) => e,
+        Err(_) => return -1,
+    };
+
+    let max_seq = encodings.iter().map(|e| e.get_ids().len()).max().unwrap_or(0);
+    if max_seq == 0 {
+        return -1;
+    }
+
+    // Padding token id: prefer the tokenizer's [PAD] token, fall back to 0.
+    let pad_id = state.tokenizer.token_to_id("[PAD]").unwrap_or(0) as i64;
+
+    let mut input_ids = Vec::with_capacity(n * max_seq);
+    let mut attn_mask = Vec::with_capacity(n * max_seq);
+    for enc in &encodings {
+        let ids: Vec<i64> = enc.get_ids().iter().map(|&id| id as i64).collect();
+        let len = ids.len();
+        input_ids.extend_from_slice(&ids);
+        input_ids.resize(input_ids.len() + (max_seq - len), pad_id);
+        attn_mask.extend(std::iter::repeat(1i64).take(len));
+        attn_mask.extend(std::iter::repeat(0i64).take(max_seq - len));
+    }
+
+    let input_ids = match Tensor::from_vec(input_ids, (n, max_seq), &device) {
+        Ok(t) => t,
+        Err(_) => return -1,
+    };
+    let attn_mask = match Tensor::from_vec(attn_mask, (n, max_seq), &device) {
+        Ok(t) => t,
+        Err(_) => return -1,
+    };
+    let token_type_ids = match Tensor::zeros((n, max_seq), DType::I64, &device) {
+        Ok(t) => t,
+        Err(_) => return -1,
+    };
+
+    let mut inputs = HashMap::new();
+    inputs.insert("input_ids".to_string(), input_ids);
+    inputs.insert("attention_mask".to_string(), attn_mask.clone());
+    inputs.insert("token_type_ids".to_string(), token_type_ids);
+
+    // Run inference once for the whole batch.
+    let outputs = match candle_onnx::simple_eval(&state.model, inputs) {
+        Ok(o) => o,
+        Err(_) => return -1,
+    };
+
+    let last_hidden = match outputs
+        .get("last_hidden_state")
+        .or_else(|| outputs.get("sentence_embedding"))
+        .or_else(|| outputs.get("output_0"))
+        .or_else(|| outputs.values().next())
+    {
+        Some(t) => t,
+        None => return -1,
+    };
+
+    // Mask-aware mean pooling over the sequence dimension:
+    // pooled = sum(hidden * mask) / sum(mask)  →  (n, dim).
+    // For real (unpadded) tokens the mask is 1, so this is equivalent to the
+    // plain mean(1) used by kektordb_embed on single texts.
+    let pooled: Option<Tensor> = (|| {
+        let hidden = last_hidden.to_dtype(DType::F32).ok()?;
+        let mask = attn_mask.to_dtype(DType::F32).ok()?;
+        let masked = hidden.broadcast_mul(&mask.unsqueeze(2).ok()?).ok()?;
+        let summed = masked.sum(1).ok()?;
+        let counts = mask.sum(1).ok()?;
+        summed.broadcast_div(&counts.unsqueeze(1).ok()?).ok()
+    })();
+    let pooled = match pooled {
+        Some(p) => p,
+        None => return -1,
+    };
+
+    let dim = pooled.dims().last().copied().unwrap_or(0);
+    if dim == 0 {
+        return -1;
+    }
+
+    let flat = match pooled.flatten_all().and_then(|f| f.to_vec1::<f32>()) {
+        Ok(v) => v,
+        Err(_) => return -1,
+    };
+
+    // Each row becomes an independent heap allocation, mirroring
+    // kektordb_embed's layout so kektordb_free_embeddings can release them.
+    let mut rows: Vec<*mut f32> = Vec::with_capacity(n);
+    for i in 0..n {
+        let row: Vec<f32> = flat[i * dim..(i + 1) * dim].to_vec();
+        let ptr = row.as_ptr() as *mut f32;
+        std::mem::forget(row);
+        rows.push(ptr);
+    }
+
+    unsafe {
+        *out_vecs = rows.as_mut_ptr();
+        *out_count = count;
+        *out_dim = dim as c_int;
+    }
+    std::mem::forget(rows);
+    0
+}
+
+/// Free the result of kektordb_embed_batch: an array of `count` row pointers,
+/// each an independent allocation of `dim` floats.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kektordb_free_embeddings(vecs: *mut *mut f32, count: c_int, dim: c_int) {
+    if vecs.is_null() || count <= 0 || dim <= 0 {
+        return;
+    }
+    let n = count as usize;
+    let d = dim as usize;
+    unsafe {
+        for i in 0..n {
+            let row = *vecs.add(i);
+            if !row.is_null() {
+                let _ = Vec::from_raw_parts(row, d, d);
+            }
+        }
+        let _ = Vec::from_raw_parts(vecs, n, n);
+    }
+}
+
 /// Destroy the embedded model and free resources.
 /// After calling this, kektordb_embed returns -1 until kektordb_embed_init is called again.
 #[unsafe(no_mangle)]

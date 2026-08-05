@@ -24,6 +24,18 @@ func (m *mockEmbedder) Embed(text string) ([]float32, error) {
 	return vec, nil
 }
 
+func (m *mockEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
+	vecs := make([][]float32, len(texts))
+	for i, t := range texts {
+		vec, err := m.Embed(t)
+		if err != nil {
+			return nil, err
+		}
+		vecs[i] = vec
+	}
+	return vecs, nil
+}
+
 func setupTestService(t *testing.T) (*Service, *engine.Engine, func()) {
 	t.Helper()
 

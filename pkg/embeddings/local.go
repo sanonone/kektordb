@@ -86,3 +86,64 @@ func (e *localEmbedder) Embed(text string) ([]float32, error) {
 	}
 	return result, nil
 }
+
+func (e *localEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+	// One lock for the whole batch: lazy init + single inference pass.
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if e.initErr != nil {
+		return nil, e.initErr
+	}
+	if e.modelPath == "" || e.tokenizerPath == "" {
+		return nil, fmt.Errorf("local embedder: model or tokenizer path not set")
+	}
+
+	cModelPath := C.CString(e.modelPath)
+	defer C.free(unsafe.Pointer(cModelPath))
+	cTokenizerPath := C.CString(e.tokenizerPath)
+	defer C.free(unsafe.Pointer(cTokenizerPath))
+
+	ret := C.kektordb_embed_init(cModelPath, cTokenizerPath)
+	if ret != 0 {
+		e.initErr = fmt.Errorf("kektordb_embed_init failed")
+		return nil, e.initErr
+	}
+
+	// Build the char** array of texts.
+	cTexts := make([]*C.char, len(texts))
+	for i, t := range texts {
+		cTexts[i] = C.CString(t)
+	}
+	defer func() {
+		for _, p := range cTexts {
+			C.free(unsafe.Pointer(p))
+		}
+	}()
+
+	var cVecs **C.float
+	var cCount C.int
+	var cDim C.int
+
+	ret = C.kektordb_embed_batch(&cTexts[0], C.int(len(texts)), &cVecs, &cCount, &cDim)
+	if ret != 0 {
+		return nil, fmt.Errorf("kektordb_embed_batch failed")
+	}
+	defer C.kektordb_free_embeddings(cVecs, cCount, cDim)
+
+	dim := int(cDim)
+	vecPtrs := unsafe.Slice(cVecs, int(cCount))
+	vecs := make([][]float32, int(cCount))
+	for i, p := range vecPtrs {
+		if dim > 0 {
+			src := unsafe.Slice((*float32)(unsafe.Pointer(p)), dim)
+			vecs[i] = append([]float32(nil), src...)
+		} else {
+			vecs[i] = []float32{}
+		}
+	}
+	return vecs, nil
+}

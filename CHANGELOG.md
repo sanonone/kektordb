@@ -20,6 +20,12 @@ All notable changes to KektorDB are documented here.
 
 - **Boot warning when auth is disabled on a non-loopback bind:** the server now warns on stderr (and via slog) at startup when `--auth-token=""` while listening on a non-loopback address (`:9091`, `0.0.0.0:*`, `[::]:*`, LAN IPs), because the REST API, memories, and `/debug/pprof/*` are exposed to any network client. The warning suggests setting `--auth-token=<token>` or binding to `127.0.0.1:9091`. Behavior is unchanged when running with auth enabled or on loopback only.
 
+### Performance
+
+- **`EmbedBatch` interface on all embedder backends:** `pkg/embeddings.Embedder` now exposes `EmbedBatch(texts []string) ([][]float32, error)`. Ollama (`/api/embed`), OpenAI (array `input`), and Gemini (`:batchEmbedContents`) use their native batch APIs — a document that previously cost N HTTP round trips now costs 1. The ONNX backend (Rust build) embeds a whole batch in a single inference pass via the new `kektordb_embed_batch` C ABI with mask-aware mean pooling, numerically equivalent to N serial calls. Every backend falls back to a serial loop if the batch path fails.
+- **RAG ingestion batches chunks:** `pkg/rag` embeds all chunks of a document in one `EmbedBatch` call (falling back to per-chunk embedding on failure), and the entity-extraction path does the same for new entities.
+- **Benchmarks:** mock-HTTP benchmark shows ~28× throughput for batch vs serial (32 texts, simulated provider latency); real ONNX benchmark shows ~2.4× on this machine (CPU-bound, batch of 64).
+
 ## [0.6.0] — 2026-07-12
 
 ### Engine Stability (P1 — Data loss & corruption)

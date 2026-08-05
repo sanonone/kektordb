@@ -142,6 +142,10 @@ func (NoopEmbedder) Embed(text string) ([]float32, error) {
 	return nil, fmt.Errorf("no embedder configured — install Ollama or rebuild with -tags rust")
 }
 
+func (NoopEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
+	return nil, fmt.Errorf("no embedder configured — install Ollama or rebuild with -tags rust")
+}
+
 // tryLocalEmbedder attempts to create a local embedder.
 // It avoids downloading the model if the local embedder runtime isn't available
 // (e.g., pure Go build where NewLocalEmbedder always returns an error).
