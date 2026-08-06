@@ -21,7 +21,7 @@ The sole entry point for the KektorDB server application (v0.6.1-dev). Orchestra
 
 **Startup sequence (linear flow):**
 1. Environment variable resolution: `KEKTOR_PORT` (default `:9091`), `KEKTOR_DATA_DIR`, `KEKTOR_TOKEN`.
-2. Flag parsing: `--http-addr`, `--aof-path`, `--save`, `--auth-token`, `--aof-rewrite-percentage`, `--vectorizers-config`, `--cognitive-config`, `--log-level`, `--enable-proxy`, `--proxy-config`, `--mcp`.
+2. Flag parsing: `--http-addr`, `--aof-path`, `--save`, `--auth-token`, `--aof-rewrite-percentage`, `--vectorizers-config`, `--cognitive-config`, `--log-level`, `--enable-proxy`, `--proxy-config`, `--mcp`, `--mcp-log-file`, `--tools`.
 3. Logger setup: Global `slog` text handler at requested level.
 4. Engine initialization: `engine.Open(opts)` with `log.Fatalf` on failure.
 5. Mode branch: MCP mode (redirects logs to `kektordb_mcp.log`, creates Ollama embedder, runs on stdio) or HTTP mode (creates `server.NewServer`, launches HTTP listener in goroutine).

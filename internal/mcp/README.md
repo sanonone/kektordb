@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Exposes KektorDB as an MCP (Model Context Protocol) server over JSON-RPC 2.0 via stdio, allowing LLM agents (Claude, Cursor, VS Code, or any MCP-compatible client) to interact with KektorDB's memory system using natural language tools. Identifies as "KektorDB Memory" v0.6.0 with 57 registered tools (49 agent + 8 admin) across memory CRUD, graph operations, search, session management, meta-cognition, user profiling, knowledge compilation, and administration.
+Exposes KektorDB as an MCP (Model Context Protocol) server over JSON-RPC 2.0 via stdio, allowing LLM agents (Claude, Cursor, VS Code, or any MCP-compatible client) to interact with KektorDB's memory system using natural language tools. Identifies as "KektorDB Memory" (version from `internal/version`, single source of truth) with 57 registered tools (49 agent + 8 admin) across memory CRUD, graph operations, search, session management, meta-cognition, user profiling, knowledge compilation, and administration.
 
 ## Key Types & Critical Paths
 

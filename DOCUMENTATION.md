@@ -231,6 +231,7 @@ These control the database engine itself.
 | `-aof-rewrite-percentage` | - | `100` | Trigger AOF compaction when file grows by X%. |
 | `-log-level` | - | `info` | Log level: `debug`, `info`, `warn`, `error`. |
 | `-mcp` | `KEKTOR_ENABLE_MCP` | `false` | Enables the MCP Memory Server on Standard I/O. |
+| `--mcp-log-file` | - | `<data-dir>/kektordb_mcp.log` | Log file for MCP mode; logs are redirected here to keep stdio clean for JSON-RPC. |
 | `-enable-proxy` | `-KEKTOR_ENABLE_PROXY` | `false` | Enables the AI Gateway/Proxy service on the port specified by -proxy-port. |
 | `-proxy-config` | - | `""` | Path to `proxy.yaml`. Enables Proxy if set. |
 | `-vectorizers-config` | - | `""` | Path to `vectorizers.yaml`. Enables RAG if set. |
@@ -480,6 +481,9 @@ cognitive:
     base_url: "http://localhost:11434/v1"
     model: "qwen2.5:0.5b"          # Small fast model recommended
     temperature: 0.0
+    # API keys support ${ENV_VAR} expansion — resolved from the environment
+    # at load time via os.ExpandEnv, so secrets never need to be in plain text:
+    api_key: "${OPENAI_API_KEY}"
 ```
 
 **Configuration Parameters:**

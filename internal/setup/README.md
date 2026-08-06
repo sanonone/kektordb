@@ -19,6 +19,7 @@ kektordb setup <agent>
 | `gemini-cli` | `~/.gemini/settings.json` | Gemini CLI MCP integration |
 | `codex` | `~/.codex/config.toml` | OpenAI Codex TOML config |
 | `opencode` | `~/.config/opencode/opencode.json(c)` + `~/.config/opencode/plugins/kektordb.ts` | Embedded TypeScript plugin via `//go:embed` |
+| `hermes` | `~/.hermes/config.yaml` + `~/.hermes/kektordb/cognitive.yaml` + `~/.hermes/skills/memory/kektordb-mcp/SKILL.md` | YAML `mcp_servers` entry, LLM provider auto-detected from `providers:`, cognitive config with `${ENV_VAR}` API keys, and a skill file |
 
 ## Architecture
 
@@ -33,6 +34,7 @@ kektordb setup <agent>
 - Gemini CLI: JSON settings with `mcpServers` key
 - Codex: TOML `[mcp_servers.kektordb-memory]`
 - OpenCode: JSON/JSONC config file + embedded TypeScript plugin
+- Hermes: YAML `mcp_servers.kektordb` entry in `~/.hermes/config.yaml` (command, args, `connect_timeout`, `enabled`) + `cognitive.yaml` with `${ENV_VAR}` API keys + `SKILL.md` in the Hermes skills directory
 
 ## Cross-Module Dependencies
 

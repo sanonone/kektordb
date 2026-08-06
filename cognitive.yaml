@@ -82,8 +82,9 @@ llm:
   model: "gemini-3.5-flash"
 
   # API key (required for OpenAI, ignored by Ollama)
+  # Supports ${ENV_VAR} expansion (os.ExpandEnv) so secrets stay out of the file.
   # api_key: "kektor"
-  api_key: "{GEMINI_API_KEY}"
+  api_key: "${GEMINI_API_KEY}"
 
   # Temperature (0.0 = deterministic, 1.0 = creative)
   temperature: 0.5

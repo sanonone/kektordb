@@ -55,9 +55,15 @@ interface SystemPromptInput {
 export default {
   /**
    * Called when a new OpenCode session starts.
-   * Ensures the KektorDB memory index exists.
+   * Ensures the KektorDB memory index exists — idempotently: checks first,
+   * creates only when missing (avoids a redundant 409 create per session).
    */
   async sessionStart(_input: any) {
+    const exists = await fetch(`${KEKTORDB_URL}/vector/indexes/mcp_memory`)
+      .then((r) => r.status === 200)
+      .catch(() => false)
+    if (exists) return
+
     try {
       await fetch(`${KEKTORDB_URL}/vector/actions/create`, {
         method: "POST",
@@ -70,7 +76,7 @@ export default {
         }),
       })
     } catch {
-      // Index may already exist — this is fine.
+      // Server unreachable — fail silently; will retry on next session.
     }
   },
 
