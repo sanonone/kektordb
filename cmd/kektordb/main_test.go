@@ -8,12 +8,66 @@ import (
 	"testing"
 
 	"github.com/sanonone/kektordb/internal/version"
+	"github.com/sanonone/kektordb/pkg/embeddings"
+	"github.com/sanonone/kektordb/pkg/engine"
 )
 
 func TestVersionString(t *testing.T) {
 	want := "kektordb " + version.Version
 	if got := versionString(); got != want {
 		t.Errorf("versionString() = %q, want %q", got, want)
+	}
+}
+
+func TestSeedDemoData(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := engine.DefaultOptions(tmpDir)
+	eng, err := engine.Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eng.Close()
+
+	if err := seedDemoData(eng, embeddings.NoopEmbedder{}); err != nil {
+		t.Fatalf("seedDemoData: %v", err)
+	}
+
+	if !eng.IndexExists("mcp_memory") {
+		t.Fatal("expected mcp_memory index after seeding")
+	}
+
+	// All demo memories are searchable by vector (deterministic hash vectors).
+	queryVec := demoHashVec(demoMemories[1].content)
+	results, err := eng.VSearchWithScores("mcp_memory", queryVec, 10)
+	if err != nil {
+		t.Fatalf("VSearchWithScores: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least one result for a demo query")
+	}
+	if results[0].ID != demoMemories[1].id {
+		t.Errorf("expected top hit %q, got %q", demoMemories[1].id, results[0].ID)
+	}
+
+	// Entity + links are present.
+	if _, err := eng.VGet("mcp_memory", "entity:project_kektordb"); err != nil {
+		t.Errorf("expected entity node: %v", err)
+	}
+	edges, found := eng.VGetEdges("mcp_memory", "mem_gardener", "mentions", 0)
+	if !found || len(edges) == 0 {
+		t.Error("expected 'mentions' edge from mem_gardener to the entity")
+	}
+
+	// Demo vectors are deterministic (seeding twice yields identical vectors).
+	v1 := demoHashVec("same text")
+	v2 := demoHashVec("same text")
+	if len(v1) != len(v2) || len(v1) != 384 {
+		t.Fatalf("demo vector dim = %d, want 384", len(v1))
+	}
+	for i := range v1 {
+		if v1[i] != v2[i] {
+			t.Fatal("demo vectors not deterministic")
+		}
 	}
 }
 

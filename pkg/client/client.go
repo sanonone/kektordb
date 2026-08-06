@@ -543,10 +543,18 @@ func (c *Client) VImport(indexName string, vectors []VectorAddObject) (map[strin
 	return resp, nil
 }
 
+// ScoreBreakdown explains how a search score was computed: the raw similarity
+// from vector distance and the time-decay factor applied on top.
+type ScoreBreakdown struct {
+	Similarity  float64 `json:"similarity"`
+	DecayFactor float64 `json:"decay_factor"`
+}
+
 // SearchResultWithScore represents a search result with its relevance score.
 type SearchResultWithScore struct {
-	ID    string  `json:"id"`
-	Score float64 `json:"score"`
+	ID        string          `json:"id"`
+	Score     float64         `json:"score"`
+	Breakdown *ScoreBreakdown `json:"score_breakdown,omitempty"`
 }
 
 type searchWithScoresResponse struct {

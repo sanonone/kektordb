@@ -26,7 +26,6 @@ import (
 	"github.com/sanonone/kektordb/pkg/core"
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
-	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/engine"
 	"github.com/sanonone/kektordb/pkg/rag"
 	"github.com/sanonone/kektordb/pkg/textanalyzer"
@@ -655,13 +654,9 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 	// --- Auto-embed: if QueryVector empty but QueryText provided ---
 	queryVec := req.QueryVector
 	if len(queryVec) == 0 && req.QueryText != "" {
-		if s.vectorizerService == nil {
-			s.writeHTTPError(w, http.StatusServiceUnavailable, fmt.Errorf("vectorizer service not available"))
-			return
-		}
-		embedder := s.vectorizerService.GetEmbedderForIndex(req.IndexName)
+		embedder := s.resolveEmbedder(req.IndexName)
 		if embedder == nil {
-			s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("no embedder configured for index '%s'", req.IndexName))
+			s.writeHTTPError(w, http.StatusServiceUnavailable, fmt.Errorf("no embedder available for index '%s'", req.IndexName))
 			return
 		}
 		var err error
@@ -761,7 +756,27 @@ func (s *Server) handleVectorSearchWithScores(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	results, err := s.Engine.VSearchWithScores(req.IndexName, req.QueryVector, req.K)
+	// Auto-embed: if QueryVector empty but QueryText provided (mirrors /search).
+	queryVec := req.QueryVector
+	if len(queryVec) == 0 && req.QueryText != "" {
+		embedder := s.resolveEmbedder(req.IndexName)
+		if embedder == nil {
+			s.writeHTTPError(w, http.StatusServiceUnavailable, fmt.Errorf("no embedder available for index '%s'", req.IndexName))
+			return
+		}
+		var err error
+		queryVec, err = embedder.Embed(req.QueryText)
+		if err != nil {
+			s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("embedding failed: %v", err))
+			return
+		}
+	}
+	if len(queryVec) == 0 {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("either query_vector or query_text is required"))
+		return
+	}
+
+	results, err := s.Engine.VSearchWithScores(req.IndexName, queryVec, req.K)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			s.writeHTTPError(w, http.StatusNotFound, err)
@@ -2542,10 +2557,7 @@ func (s *Server) handleBeliefAssessment(w http.ResponseWriter, r *http.Request) 
 		queryVec = req.QueryVec
 	} else if req.Query != "" {
 		// Embed the query text using the vectorizer service
-		var embedder embeddings.Embedder
-		if s.vectorizerService != nil {
-			embedder = s.vectorizerService.GetEmbedderForIndex(req.IndexName)
-		}
+		embedder := s.resolveEmbedder(req.IndexName)
 
 		if embedder == nil {
 			s.writeHTTPError(w, http.StatusServiceUnavailable, fmt.Errorf("no embedder available for index '%s'", req.IndexName))
@@ -2689,10 +2701,7 @@ func (s *Server) handleVEvolve(w http.ResponseWriter, r *http.Request) {
 		newVector = req.NewVector
 	} else if req.NewContent != "" {
 		// Embed the content text using the vectorizer service
-		var embedder embeddings.Embedder
-		if s.vectorizerService != nil {
-			embedder = s.vectorizerService.GetEmbedderForIndex(req.IndexName)
-		}
+		embedder := s.resolveEmbedder(req.IndexName)
 
 		if embedder == nil {
 			s.writeHTTPError(w, http.StatusServiceUnavailable, fmt.Errorf("no embedder available for index '%s'", req.IndexName))

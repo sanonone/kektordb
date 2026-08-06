@@ -560,12 +560,16 @@ paths:
           application/json:
             schema:
               type: object
-              required: [index_name, query_vector, k]
+              required: [index_name, k]
               properties:
                 index_name: { type: string }
                 query_vector:
                   type: array
                   items: { type: number }
+                  description: Takes precedence over query_text
+                query_text:
+                  type: string
+                  description: Auto-embedded server-side when query_vector is empty
                 k: { type: integer }
       responses:
         '200':
@@ -582,6 +586,11 @@ paths:
                       properties:
                         id: { type: string }
                         score: { type: number }
+                        score_breakdown:
+                          type: object
+                          properties:
+                            similarity: { type: number }
+                            decay_factor: { type: number }
 
   /vector/actions/delete_vector:
     post:

@@ -679,3 +679,162 @@ func TestAuthEndpointsConditionallyRegistered(t *testing.T) {
 		t.Errorf("OIDC mode: /.well-known/jwks.json should return 404, got %d", resp3.StatusCode)
 	}
 }
+
+// --- Text-based search (inference API) ---
+
+// createTestIndexAndVectors creates a 4-dim index and adds two vectors via HTTP.
+func createTestIndexAndVectors(t *testing.T, ts *httptest.Server) {
+	t.Helper()
+	createBody := strings.NewReader(`{"index_name":"idx","metric":"cosine","m":8,"ef_construction":100,"precision":"float32"}`)
+	req, _ := http.NewRequest("POST", ts.URL+"/vector/actions/create", createBody)
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	batchBody := strings.NewReader(`{"index_name":"idx","vectors":[` +
+		`{"id":"a","vector":[0.1,0.1,0.1,0.1]},` +
+		`{"id":"b","vector":[0.2,0.2,0.2,0.2]}]}`)
+	req2, _ := http.NewRequest("POST", ts.URL+"/vector/actions/add-batch", batchBody)
+	resp2, err := ts.Client().Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+}
+
+func TestSearchWithScoresQueryText(t *testing.T) {
+	emb := &fakeEmbedder{dim: 4}
+	ts, _ := newTestServerWithEmbedder(t, emb)
+	createTestIndexAndVectors(t, ts)
+
+	body := strings.NewReader(`{"index_name":"idx","k":5,"query_text":"hello world"}`)
+	req, _ := http.NewRequest("POST", ts.URL+"/vector/actions/search-with-scores", body)
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for query_text search, got %d", resp.StatusCode)
+	}
+	var parsed struct {
+		Results []struct {
+			ID        string  `json:"id"`
+			Score     float64 `json:"score"`
+			Breakdown *struct {
+				Similarity  float64 `json:"similarity"`
+				DecayFactor float64 `json:"decay_factor"`
+			} `json:"score_breakdown"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Results) == 0 {
+		t.Fatal("expected results for query_text search")
+	}
+	r := parsed.Results[0]
+	if r.ID == "" || r.Score == 0 {
+		t.Errorf("invalid result: id=%q score=%f", r.ID, r.Score)
+	}
+	if r.Breakdown == nil {
+		t.Error("expected score_breakdown in response")
+	} else if r.Breakdown.Similarity <= 0 || r.Breakdown.DecayFactor != 1 {
+		t.Errorf("unexpected breakdown: %+v", r.Breakdown)
+	}
+}
+
+func TestSearchWithScoresQueryTextNoEmbedder(t *testing.T) {
+	// Server without any embedder: text search must fail cleanly with 503.
+	ts, _ := newTestServer(t)
+	createTestIndexAndVectors(t, ts)
+
+	body := strings.NewReader(`{"index_name":"idx","k":5,"query_text":"hello"}`)
+	req, _ := http.NewRequest("POST", ts.URL+"/vector/actions/search-with-scores", body)
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 without embedder, got %d", resp.StatusCode)
+	}
+}
+
+func TestSearchWithScoresRequiresQuery(t *testing.T) {
+	ts, _ := newTestServer(t)
+	createTestIndexAndVectors(t, ts)
+
+	body := strings.NewReader(`{"index_name":"idx","k":5}`)
+	req, _ := http.NewRequest("POST", ts.URL+"/vector/actions/search-with-scores", body)
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected 400 when query_vector and query_text are both missing, got %d", resp.StatusCode)
+	}
+}
+
+// TestSearchByTextStandaloneServer verifies text search works on a server
+// WITHOUT vectorizer pipelines, using the global embedder (regression for the
+// resolveEmbedder fallback — previously returned 503).
+func TestSearchByTextStandaloneServer(t *testing.T) {
+	emb := &fakeEmbedder{dim: 4}
+	ts, _ := newTestServerWithEmbedder(t, emb)
+	createTestIndexAndVectors(t, ts)
+
+	body := strings.NewReader(`{"index_name":"idx","k":5,"query_text":"hello world"}`)
+	req, _ := http.NewRequest("POST", ts.URL+"/vector/actions/search", body)
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for standalone text search, got %d", resp.StatusCode)
+	}
+	var parsed struct {
+		Results []string `json:"results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Results) == 0 {
+		t.Error("expected results from standalone text search")
+	}
+}
+
+// TestSearchWithScoresLowercaseFields is a regression test for the missing
+// json tags on engine.SearchResult: the documented contract (openapi.yaml,
+// pkg/client, UI) expects lowercase "id"/"score"/"score_breakdown".
+func TestSearchWithScoresLowercaseFields(t *testing.T) {
+	ts, _ := newTestServer(t)
+	createTestIndexAndVectors(t, ts)
+
+	body := strings.NewReader(`{"index_name":"idx","k":5,"query_vector":[0.1,0.1,0.1,0.1]}`)
+	req, _ := http.NewRequest("POST", ts.URL+"/vector/actions/search-with-scores", body)
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	s := string(raw)
+	for _, want := range []string{`"id"`, `"score"`, `"score_breakdown"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("response missing %s (lowercase contract): %s", want, s)
+		}
+	}
+	if strings.Contains(s, `"ID"`) || strings.Contains(s, `"Score"`) {
+		t.Errorf("response uses uppercase fields (missing json tags): %s", s)
+	}
+}

@@ -568,9 +568,17 @@ type SearchWithScoresResult struct {
 }
 
 type ScoredResult struct {
-	MemoryID string                 `json:"memory_id"`
-	Score    float64                `json:"score"` // cosine similarity, 0.0-1.0+
-	Metadata map[string]interface{} `json:"metadata,omitempty"`
+	MemoryID  string                 `json:"memory_id"`
+	Score     float64                `json:"score"` // cosine similarity, 0.0-1.0+
+	Breakdown *ScoreBreakdown        `json:"score_breakdown,omitempty"`
+	Metadata  map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// ScoreBreakdown explains how a search score was computed: the raw similarity
+// from vector distance and the time-decay factor applied on top.
+type ScoreBreakdown struct {
+	Similarity  float64 `json:"similarity"`
+	DecayFactor float64 `json:"decay_factor"`
 }
 
 // --- Tool 11: list_indexes ---

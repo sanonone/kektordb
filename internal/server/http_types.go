@@ -63,7 +63,8 @@ type VectorSearchRequest struct {
 type VectorSearchWithScoresRequest struct {
 	IndexName   string    `json:"index_name"`
 	K           int       `json:"k"`
-	QueryVector []float32 `json:"query_vector"`
+	QueryVector []float32 `json:"query_vector,omitempty"` // Optional - takes precedence over QueryText
+	QueryText   string    `json:"query_text,omitempty"`   // Optional - if set and QueryVector empty, server auto-embeds
 }
 
 // VectorDeleteRequest defines the body for vector deletion.

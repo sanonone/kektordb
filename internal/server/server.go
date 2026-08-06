@@ -192,3 +192,19 @@ func (s *Server) Shutdown() {
 func (s *Server) SetCompiler(c *compiler.Compiler) {
 	s.compiler = c
 }
+
+// resolveEmbedder returns the embedder to use for text→vector conversion for a
+// given index: the per-index embedder when a vectorizer pipeline is configured
+// for that index, otherwise the server-global embedder (--embedder flag).
+// Returns nil when no usable embedder is available (e.g. only NoopEmbedder).
+func (s *Server) resolveEmbedder(indexName string) embeddings.Embedder {
+	if s.vectorizerService != nil {
+		if emb := s.vectorizerService.GetEmbedderForIndex(indexName); emb != nil {
+			return emb
+		}
+	}
+	if _, ok := s.embedder.(embeddings.NoopEmbedder); ok {
+		return nil
+	}
+	return s.embedder
+}

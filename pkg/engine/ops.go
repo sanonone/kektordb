@@ -1265,10 +1265,18 @@ func (e *Engine) VGetConnections(indexName, sourceID, relationType string) ([]co
 	return results, nil
 }
 
+// ScoreBreakdown explains how a search score was computed: the raw similarity
+// from vector distance and the time-decay factor applied on top.
+type ScoreBreakdown struct {
+	Similarity  float64 `json:"similarity"`
+	DecayFactor float64 `json:"decay_factor"`
+}
+
 // SearchResult represents a match with its similarity score/distance.
 type SearchResult struct {
-	ID    string
-	Score float64
+	ID        string          `json:"id"`
+	Score     float64         `json:"score"`
+	Breakdown *ScoreBreakdown `json:"score_breakdown,omitempty"`
 }
 
 // VSearchWithScores performs a search and returns results with their scores.
@@ -1286,9 +1294,14 @@ func (e *Engine) VSearchWithScores(indexName string, query []float32, k int) ([]
 
 	internalResults := hnswIdx.SearchWithScores(query, k, nil, 0)
 
-	// Convert distance to score (1 / (1 + distance))
+	// Convert distance to score (1 / (1 + distance)) and record the raw
+	// similarity before any time decay is applied (the score breakdown).
+	similarity := make([]float64, len(internalResults))
+	decayFactor := make([]float64, len(internalResults))
 	for i := range internalResults {
-		internalResults[i].Score = 1.0 / (1.0 + internalResults[i].Score)
+		similarity[i] = 1.0 / (1.0 + internalResults[i].Score)
+		internalResults[i].Score = similarity[i]
+		decayFactor[i] = 1.0
 	}
 
 	// Apply time decay if memory config is enabled
@@ -1356,23 +1369,33 @@ func (e *Engine) VSearchWithScores(indexName string, query []float32, k int) ([]
 					// Calculate decay with selected model
 					factor := calculateTimeDecayModel(created, layerHalfLife, decayModel, accessCount)
 					internalResults[i].Score *= factor
+					decayFactor[i] = factor
 				}
 			}
 		}
 		e.DB.RUnlock()
 	}
 
-	// Sort by score (highest first)
-	sort.Slice(internalResults, func(i, j int) bool {
-		return internalResults[i].Score > internalResults[j].Score
+	// Sort by score (highest first) while keeping the breakdown arrays
+	// aligned: sort a slice of indices instead of the results themselves.
+	order := make([]int, len(internalResults))
+	for i := range order {
+		order[i] = i
+	}
+	sort.Slice(order, func(a, b int) bool {
+		return internalResults[order[a]].Score > internalResults[order[b]].Score
 	})
 
 	results := make([]SearchResult, len(internalResults))
-	for i, r := range internalResults {
-		extID, _ := hnswIdx.GetExternalID(r.DocID)
-		results[i] = SearchResult{
+	for j, i := range order {
+		extID, _ := hnswIdx.GetExternalID(internalResults[i].DocID)
+		results[j] = SearchResult{
 			ID:    extID,
-			Score: r.Score,
+			Score: internalResults[i].Score,
+			Breakdown: &ScoreBreakdown{
+				Similarity:  similarity[i],
+				DecayFactor: decayFactor[i],
+			},
 		}
 	}
 	return results, nil

@@ -184,6 +184,23 @@ graph TB
 
 ## 2. Installation & Deployment
 
+### Try it in 5 seconds (no setup)
+
+```bash
+./kektordb try
+```
+
+Starts an ephemeral demo server on `http://127.0.0.1:9091` with seeded sample
+memories, one entity, and graph links. All data lives in a temp directory and
+is discarded on exit. Vector search works out of the box; text search
+(`query_text`) also works when an embedder is available (Ollama or the built-in
+ONNX runtime):
+
+```bash
+curl -X POST http://127.0.0.1:9091/vector/actions/search-with-scores \
+  -d '{"index_name":"mcp_memory","k":5,"query_text":"how does the gardener work?"}'
+```
+
 ### Standalone Binary
 Download from [Releases](https://github.com/sanonone/kektordb/releases).
 
@@ -810,9 +827,9 @@ Retrieves raw vectors and metadata by ID.
 #### Search with Scores
 **`POST /vector/actions/search-with-scores`**
 
-Performs a search and returns results with their similarity scores. Applies time decay if Memory mode is enabled.
+Performs a search and returns results with their similarity scores and a score breakdown. Applies time decay if Memory mode is enabled.
 
-**Body:**
+**Body** — `query_text` is auto-embedded server-side when `query_vector` is empty (takes precedence when both are set):
 ```json
 {
   "index_name": "docs",
@@ -820,6 +837,27 @@ Performs a search and returns results with their similarity scores. Applies time
   "k": 10
 }
 ```
+```json
+{
+  "index_name": "docs",
+  "query_text": "how does the gardener work?",
+  "k": 10
+}
+```
+
+**Response** — each result includes `id`, `score`, and `score_breakdown` (`similarity` from vector distance, `decay_factor` from the memory decay model; `score = similarity × decay_factor`):
+```json
+{
+  "results": [
+    {
+      "id": "mem_gardener",
+      "score": 0.657,
+      "score_breakdown": { "similarity": 0.657, "decay_factor": 1.0 }
+    }
+  ]
+}
+```
+`query_text`/`query_vector` embedding resolution: per-index vectorizer embedder first, then the server-global embedder (`--embedder`). Text search therefore works on standalone servers without `vectorizers.yaml`.
 
 #### Reinforce
 **`POST /vector/actions/reinforce`**

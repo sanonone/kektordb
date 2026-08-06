@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"log/slog"
@@ -129,6 +130,9 @@ func main() {
 		switch os.Args[1] {
 		case "setup":
 			cmdSetup()
+			return
+		case "try":
+			cmdTry()
 			return
 		case "version", "--version", "-v":
 			fmt.Println(versionString())
@@ -589,6 +593,170 @@ func cmdSetupStatus(agents []setup.Agent) {
 	}
 }
 
+// demoHashVec returns a deterministic 384-dim vector derived from the text.
+// Used only by demo mode so the seeded corpus is searchable without any
+// external embedder.
+func demoHashVec(text string) []float32 {
+	h := fnv.New32a()
+	h.Write([]byte(text))
+	base := h.Sum32()
+	v := make([]float32, 384)
+	for i := range v {
+		v[i] = float32((base>>(i%30))%1000) / 1000.0
+	}
+	return v
+}
+
+// demoMemories is the seeded corpus for `kektordb try`. Topics are chosen so
+// text search returns relevant results for queries about the product.
+var demoMemories = []struct {
+	id      string
+	layer   string
+	content string
+	tags    string
+}{
+	{"mem_hnsw", "semantic", "KektorDB uses an HNSW index for fast approximate nearest-neighbor vector search.", "architecture,hnsw"},
+	{"mem_gardener", "semantic", "The Gardener is the cognitive engine background process: it analyzes the knowledge graph, consolidates duplicates, and detects contradictions between memories.", "gardener,cognitive"},
+	{"mem_contradiction", "episodic", "The agent once believed the client preferred PostgreSQL, then learned they migrated to SQLite; the Gardener flagged the contradiction automatically.", "contradiction,episodic"},
+	{"mem_decay", "semantic", "Memories decay over time when unused, unless pinned; the decay rate depends on the memory layer (episodic decays fastest).", "decay,memory-layer"},
+	{"mem_mcp", "semantic", "KektorDB exposes 57 MCP tools to AI agents: save, recall, traverse the graph, compile knowledge, and manage sessions.", "mcp,tools"},
+	{"mem_profile", "episodic", "The user prefers concise answers with code examples and dislikes long explanations of internal architecture.", "user-profile,preference"},
+	{"mem_rag", "semantic", "The RAG pipeline loads documents, splits them into chunks, embeds all chunks in one batch call, and stores them with graph links.", "rag,ingestion"},
+	{"mem_session", "procedural", "Start a session before long tasks: sessions group memories and produce a deterministic summary at the end.", "sessions,workflow"},
+	{"mem_transfer", "procedural", "Memories can be transferred between indexes with provenance metadata, useful when splitting a memory into researcher and writer spaces.", "transfer,workflow"},
+	{"mem_evolve", "episodic", "When a fact is corrected, use memory evolution: the old memory is archived as historical and linked to the new one.", "evolution,episodic"},
+}
+
+// seedDemoData populates the demo index with sample memories, one entity, and
+// graph links so `kektordb try` is immediately explorable. When a real
+// embedder is available its vectors are used (so text search works in the same
+// space); otherwise deterministic hash vectors keep vector search functional.
+func seedDemoData(eng *engine.Engine, embedder embeddings.Embedder) error {
+	if err := eng.VCreate("mcp_memory", "cosine", 16, 200, "float32", "english", nil, nil, nil); err != nil {
+		return err
+	}
+
+	hashFallback := false
+	if _, ok := embedder.(embeddings.NoopEmbedder); ok || embedder == nil {
+		hashFallback = true
+	}
+
+	embedText := func(text string) []float32 {
+		if hashFallback {
+			return demoHashVec(text)
+		}
+		if vec, err := embedder.Embed(text); err == nil && len(vec) > 0 {
+			return vec
+		}
+		return demoHashVec(text)
+	}
+
+	for _, m := range demoMemories {
+		vec := embedText(m.content)
+		meta := map[string]interface{}{
+			"content":      m.content,
+			"memory_layer": m.layer,
+			"tags":         m.tags,
+			"_created_at":  float64(time.Now().Add(-24 * time.Hour).Unix()),
+		}
+		if err := eng.VAdd("mcp_memory", m.id, vec, meta); err != nil {
+			return err
+		}
+	}
+
+	// One entity + a couple of mentions to make the graph explorable.
+	entityVec := embedText("KektorDB project")
+	if err := eng.VAdd("mcp_memory", "entity:project_kektordb", entityVec, map[string]interface{}{
+		"type":    "entity",
+		"name":    "KektorDB",
+		"content": "The KektorDB cognitive memory project",
+	}); err != nil {
+		return err
+	}
+	for _, memID := range []string{"mem_hnsw", "mem_gardener", "mem_mcp"} {
+		if err := eng.VLink("mcp_memory", memID, "entity:project_kektordb", "mentions", "mentioned_in", 1.0, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// cmdTry runs KektorDB in ephemeral demo mode: a fresh temp data directory is
+// seeded with sample memories and discarded on exit. No configuration, no
+// persistence — the fastest way to evaluate the product.
+func cmdTry() {
+	tmpDir, err := os.MkdirTemp("", "kektordb-demo-")
+	if err != nil {
+		log.Fatalf("try: failed to create temp dir: %v", err)
+	}
+
+	opts := engine.DefaultOptions(tmpDir)
+	eng, err := engine.Open(opts)
+	if err != nil {
+		log.Fatalf("try: failed to open engine: %v", err)
+	}
+	defer eng.Close()
+
+	// Demo embedder for text search (auto-detect; falls back to hash vectors).
+	embedderCfg := embeddings.EmbedderConfig{Mode: "auto"}
+	embedder, _ := embeddings.SelectEmbedder(embedderCfg, tmpDir)
+	if embedder == nil {
+		embedder = embeddings.NoopEmbedder{}
+	}
+
+	if err := seedDemoData(eng, embedder); err != nil {
+		log.Fatalf("try: failed to seed demo data: %v", err)
+	}
+
+	// Extract an optional --http-addr from the remaining args (the global
+	// flag package is not parsed in subcommand mode; same pattern as --embedder).
+	addr := "127.0.0.1:9091" // loopback default: demo needs no auth warning
+	for i := 2; i < len(os.Args); i++ {
+		if strings.HasPrefix(os.Args[i], "--http-addr=") {
+			addr = strings.TrimPrefix(os.Args[i], "--http-addr=")
+			break
+		}
+		if os.Args[i] == "--http-addr" && i+1 < len(os.Args) {
+			addr = os.Args[i+1]
+			break
+		}
+	}
+
+	// Demo needs an embedder for text search; vector search works regardless.
+	srv, err := server.NewServer(eng, addr, "", "", tmpDir, "", embedder)
+	if err != nil {
+		log.Fatalf("try: failed to create server: %v", err)
+	}
+	go func() {
+		if err := srv.Run(); err != nil && err != http.ErrServerClosed {
+			slog.Error("try: server crashed", "error", err)
+		}
+	}()
+
+	fmt.Println()
+	fmt.Println("  KektorDB — DEMO MODE")
+	fmt.Println("  --------------------")
+	fmt.Printf("  API:       http://%s\n", addr)
+	fmt.Printf("  Dashboard: http://%s/ui/\n", addr)
+	fmt.Println()
+	fmt.Println("  Try it:")
+	fmt.Printf("  curl -X POST http://%s/vector/actions/search-with-scores \\\n", addr)
+	fmt.Println("    -d '{\"index_name\":\"mcp_memory\",\"k\":5,\"query_text\":\"how does the gardener work?\"}'")
+	fmt.Println()
+	fmt.Println("  All data is ephemeral — nothing is persisted. Press Ctrl+C to exit.")
+	fmt.Println()
+
+	stopChan := make(chan os.Signal, 1)
+	signal.Notify(stopChan, os.Interrupt, syscall.SIGTERM)
+	<-stopChan
+
+	slog.Info("Shutting down demo mode...")
+	srv.Shutdown()
+	if err := os.RemoveAll(tmpDir); err != nil {
+		slog.Warn("try: failed to clean temp dir", "error", err)
+	}
+}
+
 func printPostInstall(result *setup.Result) {
 	fmt.Println()
 	fmt.Println("Next steps:")
@@ -603,6 +771,7 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("Usage:")
 	fmt.Println("  kektordb [flags]                 Start the server")
+	fmt.Println("  kektordb try                     Run ephemeral demo mode (seeded, no persistence)")
 	fmt.Println("  kektordb version                  Show version and exit")
 	fmt.Println("  kektordb setup [agent]            Configure MCP for an AI agent")
 	fmt.Println("  kektordb setup list               List supported agents")

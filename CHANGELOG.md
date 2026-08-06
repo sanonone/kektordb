@@ -20,6 +20,17 @@ All notable changes to KektorDB are documented here.
 
 - **Centralized version:** new `internal/version` package is the single source of truth for the release version (server startup log, MCP `initialize` handshake, and `pkg/client.Version`). The Makefile stamps the git tag into the binary via `-X` ldflags on all build targets (`build-go`, `build-rust`, `release-build`, `release-build-pure`); dev builds report `v0.6.1-dev` or `git describe` output between tags.
 - **`kektordb version` / `kektordb --version` / `kektordb -v`:** prints `kektordb <version>` and exits (previously the version was only visible in the startup log).
+- **`kektordb try` — ephemeral demo mode:** launches a seeded demo server on `127.0.0.1:9091` with a fresh temp data directory (discarded on exit). ~10 sample memories about the product, one entity, and graph links make it immediately explorable: vector search works out of the box (deterministic hash vectors), and text search works too when an embedder is available (Ollama/ONNX). No config, no persistence.
+
+### Search UX
+
+- **Text search on every search endpoint:** `POST /vector/actions/search` and `POST /vector/actions/search-with-scores` accept `query_text` (auto-embedded server-side; `query_vector` takes precedence). Embedder resolution now falls back from the per-index vectorizer embedder to the server-global embedder (`--embedder`), fixing text search on standalone servers that run without `vectorizers.yaml` (previously `503`).
+- **Score breakdown:** `search-with-scores` results now include `score_breakdown` (`similarity` from vector distance + `decay_factor` from the memory time-decay model), explaining why a memory ranked where it did.
+- **Response field fix:** search results now serialize as lowercase `id`/`score` as documented in the API contract (previously marshaled as `ID`/`Score`, breaking the Go client and the dashboard UI score display).
+
+### MCP
+
+- **Schema guard test:** `TestAllToolsExposeInputSchema` drives the real MCP server over an in-memory transport and verifies every one of the 57 tools exposes a valid `inputSchema` with consistent `required`/`properties` (regression guard for the `jsonschema` tags on tool Args).
 
 ### Security
 

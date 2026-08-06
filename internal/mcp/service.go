@@ -2269,10 +2269,18 @@ func (s *Service) SearchWithScores(ctx context.Context, req *mcp.CallToolRequest
 		metaByID[d.ID] = d.Metadata
 	}
 	for _, r := range results {
+		var breakdown *ScoreBreakdown
+		if r.Breakdown != nil {
+			breakdown = &ScoreBreakdown{
+				Similarity:  r.Breakdown.Similarity,
+				DecayFactor: r.Breakdown.DecayFactor,
+			}
+		}
 		result.Results = append(result.Results, ScoredResult{
-			MemoryID: r.ID,
-			Score:    r.Score,
-			Metadata: metaByID[r.ID],
+			MemoryID:  r.ID,
+			Score:     r.Score,
+			Breakdown: breakdown,
+			Metadata:  metaByID[r.ID],
 		})
 	}
 	return nil, result, nil
