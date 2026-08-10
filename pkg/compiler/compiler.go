@@ -100,18 +100,17 @@ func (c *Compiler) resolveConfidenceMin(req CompileRequest, template *CompileTem
 }
 
 // resolveRefreshPolicy returns the refresh policy from the request or template.
+// An explicitly-set TaskSpec policy always wins (even one that disables
+// history — previously KeepHistory=false was silently ignored); otherwise the
+// template policy; otherwise the built-in default (B3 fix).
 func (c *Compiler) resolveRefreshPolicy(req CompileRequest, template *CompileTemplate) RefreshPolicy {
-	if req.TaskSpec != nil && req.TaskSpec.RefreshPolicy.KeepHistory {
+	if req.TaskSpec != nil && !IsZeroPolicy(req.TaskSpec.RefreshPolicy) {
 		return req.TaskSpec.RefreshPolicy
 	}
-	if template != nil {
+	if template != nil && !IsZeroPolicy(template.RefreshPolicy) {
 		return template.RefreshPolicy
 	}
-	return RefreshPolicy{
-		KeepHistory:    true,
-		MaxVersions:    0,
-		PruneAfterDays: 90,
-	}
+	return DefaultRefreshPolicy()
 }
 
 func (c *Compiler) artifactKey(indexName, name, entityType, entityID string) string {

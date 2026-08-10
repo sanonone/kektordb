@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -458,8 +459,98 @@ func (s *Service) ScopedRecall(ctx context.Context, req *mcp.CallToolRequest, ar
 		return nil, RecallResult{}, err
 	}
 
+	// Two-stage scoped recall (B5): when the scoped seed search is
+	// insufficient, expand within the root's graph neighborhood and rank the
+	// additional nodes by semantic similarity to the query.
+	if len(ids) < limit {
+		ids = s.expandScopedResults(idx, args, vec, ids, limit)
+	}
+
 	res, err := s.formatResults(idx, ids)
 	return nil, res, err
+}
+
+// expandScopedResults fills the result set up to limit with nodes from the
+// root's graph neighborhood, ranked by cosine similarity to the query vector.
+// The expansion is strictly scoped to the root's subgraph — it never leaks
+// results from outside. Returns the seed unchanged when the expansion fails.
+func (s *Service) expandScopedResults(idx string, args ScopedRecallArgs, queryVec []float32, seed []string, limit int) []string {
+	relations := s.defaultRelationsForNode(idx, args.RootID)
+	depth := args.Depth
+	if depth <= 0 {
+		depth = 2
+	}
+
+	subgraph, err := s.engine.VExtractSubgraph(idx, args.RootID, relations, depth, 0, nil, 0.0)
+	if err != nil || subgraph == nil || len(subgraph.Nodes) == 0 {
+		return seed
+	}
+
+	seedSet := make(map[string]bool, len(seed))
+	for _, id := range seed {
+		seedSet[id] = true
+	}
+
+	// Collect candidate node IDs (scope minus seed) and fetch their vectors.
+	candidateIDs := make([]string, 0, len(subgraph.Nodes))
+	for _, n := range subgraph.Nodes {
+		if n.ID == "" || seedSet[n.ID] {
+			continue
+		}
+		candidateIDs = append(candidateIDs, n.ID)
+	}
+	if len(candidateIDs) == 0 {
+		return seed
+	}
+
+	datas, err := s.engine.VGetMany(idx, candidateIDs)
+	if err != nil {
+		return seed
+	}
+
+	// Rank candidates by cosine similarity to the query.
+	type scored struct {
+		id    string
+		score float64
+	}
+	candidates := make([]scored, 0, len(datas))
+	for _, d := range datas {
+		sim := cosineSimilarity(queryVec, d.Vector)
+		if sim > 0 {
+			candidates = append(candidates, scored{id: d.ID, score: sim})
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
+
+	out := append([]string(nil), seed...)
+	for _, c := range candidates {
+		if len(out) >= limit {
+			break
+		}
+		out = append(out, c.id)
+	}
+	return out
+}
+
+// cosineSimilarity returns the cosine similarity between two vectors.
+// Robust to non-normalized storage (HNSW cosine indexes normalize on insert,
+// but candidates from graph traversal may not be).
+func cosineSimilarity(a, b []float32) float64 {
+	if len(a) == 0 || len(a) != len(b) {
+		return 0
+	}
+	var dot, na, nb float64
+	for i := range a {
+		dot += float64(a[i]) * float64(b[i])
+		na += float64(a[i]) * float64(a[i])
+		nb += float64(b[i]) * float64(b[i])
+	}
+	if na == 0 || nb == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
 
 func (s *Service) Traverse(ctx context.Context, req *mcp.CallToolRequest, args TraverseArgs) (*mcp.CallToolResult, TraverseResult, error) {

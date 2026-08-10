@@ -32,6 +32,17 @@ All notable changes to KektorDB are documented here.
 
 - **Schema guard test:** `TestAllToolsExposeInputSchema` drives the real MCP server over an in-memory transport and verifies every one of the 57 tools exposes a valid `inputSchema` with consistent `required`/`properties` (regression guard for the `jsonschema` tags on tool Args).
 
+### Knowledge Engine (Compiler)
+
+- **Watcher lock released during LLM recompiles (B1):** `ScanArtifacts` now uses a two-phase design — the watcher lock is held only for load/staleness accounting and candidate selection; recompilations (LLM calls, seconds) run in background goroutines with a per-artifact in-flight guard. `OnEvent` staleness tracking and the Gardener `think()` cycle are never blocked by recompiles.
+- **Staleness decay based on last recompilation (B2):** time-based decay is measured from `LastRecompiledAt` (falling back to the original compile time) and the compile timestamp is refreshed after each recompile, eliminating the "always stale → recompile every cycle" quadratic behavior for old artifacts.
+- **Built-in refresh policy wired into the watcher (B3):** `DefaultRefreshPolicy()` is the single source of truth (previously duplicated with different values in 3 places). `Mode: manual` disables auto-recompilation, `Mode: scheduled` + `MaxStalenessH` triggers time-based recompiles, and `RecompileOn` filters which engine events count towards staleness. Explicit `TaskSpec` policies now win even when they disable history (previously `KeepHistory=false` was silently ignored).
+- **Two-stage scoped recall (B5):** `scoped_recall` first runs the scoped seed search; when the seed is insufficient it expands within the root's graph neighborhood, ranking additional nodes by cosine similarity to the query — never leaking results from outside the scope.
+
+### Persistence
+
+- **VAdd write-path latency (B4):** vector serialization for the AOF switched from decimal formatting to a compact hex bit pattern (`h` + 8 hex chars per float32) — 6.4× faster per VAdd (30µs → 4.7µs measured); RESP `FormatCommand` no longer uses `fmt.Sprintf`; the AOF write buffer grew from 4KB to 64KB (≈20 frames per syscall during flushes). p95 under sustained batch load improved from 2.04ms to 1.89ms. AOF replay accepts both the new hex and the legacy decimal vector formats (backward compatible).
+
 ### Security
 
 - **Boot warning when auth is disabled on a non-loopback bind:** the server now warns on stderr (and via slog) at startup when `--auth-token=""` while listening on a non-loopback address (`:9091`, `0.0.0.0:*`, `[::]:*`, LAN IPs), because the REST API, memories, and `/debug/pprof/*` are exposed to any network client. The warning suggests setting `--auth-token=<token>` or binding to `127.0.0.1:9091`. Behavior is unchanged when running with auth enabled or on loopback only.

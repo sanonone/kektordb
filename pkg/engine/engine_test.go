@@ -448,7 +448,7 @@ func TestRecovery_ResyncAfterCorruption(t *testing.T) {
 	}
 	cmdB := persistence.FormatCommand("VADD",
 		[]byte("idx"), []byte("b"),
-		[]byte(float32SliceToString([]float32{0, 1, 0, 0})), []byte(`{"k":"b"}`))
+		[]byte(float32SliceToHexString([]float32{0, 1, 0, 0})), []byte(`{"k":"b"}`))
 	if err := genW.Write(cmdB); err != nil {
 		t.Fatalf("genW.Write failed: %v", err)
 	}

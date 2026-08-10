@@ -749,7 +749,7 @@ func (e *Engine) RewriteAOF() error {
 		writer.Write(persistence.FormatCommand("VCREATE", args...))
 
 		for _, ve := range snap.vectors {
-			vecStr := float32SliceToString(ve.vector)
+			vecStr := float32SliceToHexString(ve.vector)
 			var metaBytes []byte
 			if len(ve.metadata) > 0 {
 				var err error

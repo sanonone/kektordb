@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"reflect"
 	"sync"
 	"time"
 
@@ -48,6 +49,10 @@ type Watcher struct {
 	stalenessThreshold   float64
 	maxRecompilePerCycle int
 
+	// inFlight tracks artifacts currently being recompiled in background
+	// goroutines, so concurrent scans never select them again.
+	inFlight map[string]bool
+
 	recompileThisCycle int // reset per ScanArtifacts call
 }
 
@@ -68,6 +73,7 @@ func NewWatcher(comp *Compiler, eng *engine.Engine, cfg *cognitive.Config, targe
 		compiler:             comp,
 		eng:                  eng,
 		tracked:              make(map[string]*watchedArtifact),
+		inFlight:             make(map[string]bool),
 		stalenessThreshold:   defaultStalenessThreshold,
 		maxRecompilePerCycle: defaultMaxRecompilePerCycle,
 	}
@@ -114,6 +120,29 @@ func NewWatcher(comp *Compiler, eng *engine.Engine, cfg *cognitive.Config, targe
 	return w
 }
 
+// acceptsEventType reports whether an engine event should count towards the
+// artifact's staleness, according to its refresh policy. An empty RecompileOn
+// list accepts everything (legacy behavior); otherwise only the configured
+// event kinds are tracked (B3).
+func (a *watchedArtifact) acceptsEventType(eventType engine.EventType) bool {
+	if len(a.RefreshPolicy.RecompileOn) == 0 {
+		return true
+	}
+	for _, trigger := range a.RefreshPolicy.RecompileOn {
+		switch trigger {
+		case "entity_update":
+			if eventType == engine.EventVectorAdd || eventType == engine.EventVectorUpdate {
+				return true
+			}
+		case "new_relationship":
+			if eventType == engine.EventEdgeCreate {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // OnEvent handles engine write events. If a changed node is a source
 // of a tracked artifact, increments its staleness score.
 // Events are filtered by index: only artifacts in the event's index are checked.
@@ -133,6 +162,9 @@ func (w *Watcher) OnEvent(event engine.Event) {
 	var toUpdate []string
 	for key, a := range w.tracked {
 		if event.IndexName != "" && event.IndexName != a.IndexName {
+			continue
+		}
+		if !a.acceptsEventType(event.Type) {
 			continue
 		}
 		for _, srcID := range a.SourceNodeIDs {
@@ -167,44 +199,88 @@ func (w *Watcher) OnEvent(event engine.Event) {
 	w.mu.Unlock()
 }
 
+// decayBase returns the timestamp the time-based staleness decay is measured
+// from: the last recompilation when available, otherwise the original compile
+// time. Using LastRecompiledAt prevents stale artifacts from accumulating
+// decay forever and being recompiled on every cycle (B2 fix).
+func (a *watchedArtifact) decayBase() time.Time {
+	if !a.LastRecompiledAt.IsZero() {
+		return a.LastRecompiledAt
+	}
+	return a.CompiledAt
+}
+
 // ScanArtifacts loads artifacts from the graph, checks staleness
 // thresholds, and triggers recompilation. Called by the Gardener.
+//
+// Two-phase design (B1 fix): the watcher lock is only held for the decision
+// phase (load + staleness accounting + candidate selection). The actual
+// recompilations — which make LLM calls and take seconds — run in background
+// goroutines WITHOUT the lock, so OnEvent and the Gardener think() cycle are
+// never blocked by them.
 func (w *Watcher) ScanArtifacts() {
 	w.recompileThisCycle = 0
 
+	// Phase A: under lock — load, decay, and select recompile candidates.
 	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	// Load all non-historical artifacts from the graph
 	if err := w.loadArtifacts(); err != nil {
 		slog.Warn("ArtifactWatcher: failed to load artifacts", "error", err)
-		return
 	}
 
+	var toRecompile []*watchedArtifact
 	for key, a := range w.tracked {
+		if w.inFlight[key] {
+			continue
+		}
+
 		// Update importance based on access patterns
 		w.updateImportance(a)
 
 		// Calculate dynamic threshold
 		threshold := w.getStalenessThreshold(a)
 
-		// Apply time-based staleness decay
-		hoursSinceCompile := time.Since(a.CompiledAt).Hours()
-		a.StalenessScore += hoursSinceCompile * stalenessDecayPerHour
+		// Apply time-based staleness decay since the last recompile/compile.
+		hoursSinceBase := time.Since(a.decayBase()).Hours()
+		a.StalenessScore += hoursSinceBase * stalenessDecayPerHour
 
-		// Trigger recompilation if threshold exceeded
-		if a.StalenessScore >= threshold && w.recompileThisCycle < w.maxRecompilePerCycle {
+		// Trigger decision per refresh policy (B3):
+		//   manual        → never auto-recompile
+		//   scheduled     → recompile when age >= MaxStalenessH
+		//   default       → staleness score over the dynamic threshold
+		trigger := false
+		switch a.RefreshPolicy.Mode {
+		case RefreshModeManual:
+			trigger = false
+		case RefreshModeScheduled:
+			if a.RefreshPolicy.MaxStalenessH > 0 {
+				trigger = hoursSinceBase >= float64(a.RefreshPolicy.MaxStalenessH)
+			}
+		default:
+			trigger = a.StalenessScore >= threshold
+		}
+
+		if trigger && w.recompileThisCycle < w.maxRecompilePerCycle {
 			slog.Info("ArtifactWatcher: recompiling stale artifact",
 				"artifact", key,
 				"staleness", a.StalenessScore,
 				"threshold", threshold,
+				"mode", a.RefreshPolicy.Mode,
 			)
-			w.recompile(a)
+			w.inFlight[key] = true
+			w.recompileThisCycle++
+			toRecompile = append(toRecompile, a)
 		}
 	}
 
 	// Lifecycle management: prune old versions
 	w.manageLifecycle()
+	w.mu.Unlock()
+
+	// Phase B: recompile outside the lock (LLM calls take seconds). The
+	// per-artifact state update happens in Phase C when each compile ends.
+	for _, a := range toRecompile {
+		w.recompileAsync(a)
+	}
 }
 
 // loadArtifacts scans all configured indexes for knowledge_artifact nodes
@@ -237,15 +313,40 @@ func (w *Watcher) loadArtifacts() error {
 
 			key := fmt.Sprintf("%s:%s:%s:%s", idx, name, entityType, entityID)
 
-			// Skip if already tracked
-			if _, exists := w.tracked[key]; exists {
-				continue
-			}
-
 			// Extract version
 			version := 1
 			if v, ok := data.Metadata["version"].(float64); ok {
 				version = int(v)
+			}
+
+			// Extract compiled_at
+			var compiledAt time.Time
+			if ca, ok := data.Metadata["_created_at"].(float64); ok {
+				compiledAt = time.Unix(int64(ca), int64((ca-float64(int64(ca)))*1e9))
+			}
+
+			// Already tracked: refresh version/compile time if the graph has
+			// a newer version than we know about (e.g. recompiled through a
+			// different path than the watcher). This keeps the staleness
+			// decay base honest (B2). Also refresh the refresh policy when
+			// the stored task_spec changed (B3).
+			if existing, exists := w.tracked[key]; exists {
+				if version > existing.Version {
+					existing.Version = version
+					if !compiledAt.IsZero() {
+						existing.CompiledAt = compiledAt
+						if existing.LastRecompiledAt.IsZero() {
+							existing.LastRecompiledAt = compiledAt
+						}
+					}
+				}
+				if taskStr, ok := data.Metadata["task_spec"].(string); ok && taskStr != "" {
+					var taskSpec TaskSpec
+					if json.Unmarshal([]byte(taskStr), &taskSpec) == nil && !reflect.DeepEqual(taskSpec.RefreshPolicy, existing.RefreshPolicy) {
+						existing.RefreshPolicy = taskSpec.RefreshPolicy
+					}
+				}
+				continue
 			}
 
 			// Extract source node IDs from compiled_from edges
@@ -261,12 +362,6 @@ func (w *Watcher) loadArtifacts() error {
 				staleness = s
 			}
 
-			// Extract compiled_at
-			var compiledAt time.Time
-			if ca, ok := data.Metadata["_created_at"].(float64); ok {
-				compiledAt = time.Unix(int64(ca), int64((ca-float64(int64(ca)))*1e9))
-			}
-
 			wa := &watchedArtifact{
 				Name:           name,
 				EntityType:     entityType,
@@ -276,18 +371,15 @@ func (w *Watcher) loadArtifacts() error {
 				CompiledAt:     compiledAt,
 				StalenessScore: staleness,
 				FieldStaleness: make(map[string]float64),
-				RefreshPolicy: RefreshPolicy{
-					KeepHistory:    true,
-					MaxVersions:    20,
-					PruneAfterDays: 90,
-				},
-				IndexName: idx,
+				RefreshPolicy:  DefaultRefreshPolicy(),
+				IndexName:      idx,
 			}
 
-			// Use stored refresh policy if available
+			// Use stored refresh policy if available (B3: only override the
+			// built-in default when the policy is explicitly set).
 			if taskStr, ok := data.Metadata["task_spec"].(string); ok && taskStr != "" {
 				var taskSpec TaskSpec
-				if json.Unmarshal([]byte(taskStr), &taskSpec) == nil {
+				if json.Unmarshal([]byte(taskStr), &taskSpec) == nil && !IsZeroPolicy(taskSpec.RefreshPolicy) {
 					wa.RefreshPolicy = taskSpec.RefreshPolicy
 				}
 			}
@@ -349,8 +441,18 @@ func (w *Watcher) getStalenessThreshold(a *watchedArtifact) float64 {
 	return base
 }
 
+// recompileAsync launches the recompilation in a background goroutine so the
+// watcher lock and the Gardener think() cycle are never blocked by LLM calls.
+func (w *Watcher) recompileAsync(a *watchedArtifact) {
+	go w.recompile(a)
+}
+
 // recompile triggers a full recompilation of the artifact.
+// Phase C: on completion, the tracked state is updated under the watcher lock
+// and the in-flight guard is released.
 func (w *Watcher) recompile(a *watchedArtifact) {
+	key := fmt.Sprintf("%s:%s:%s:%s", a.IndexName, a.Name, a.EntityType, a.EntityID)
+
 	req := CompileRequest{
 		Name:     a.Name,
 		Template: a.Name,
@@ -369,20 +471,36 @@ func (w *Watcher) recompile(a *watchedArtifact) {
 			"entity", fmt.Sprintf("%s:%s", a.EntityType, a.EntityID),
 			"error", err,
 		)
-		return
 	}
 
-	a.StalenessScore = 0
-	a.FieldStaleness = make(map[string]float64)
-	a.LastRecompiledAt = time.Now()
-	a.RecompileCount++
-	w.recompileThisCycle++
+	// Phase C: state update under lock.
+	w.mu.Lock()
+	defer w.mu.Unlock()
 
-	slog.Info("ArtifactWatcher: artifact recompiled",
-		"artifact", a.Name,
-		"entity", fmt.Sprintf("%s:%s", a.EntityType, a.EntityID),
-		"version", a.Version,
-	)
+	cur, ok := w.tracked[key]
+	if ok {
+		delete(w.inFlight, key)
+		if err == nil {
+			// Reset staleness and refresh the decay base (B2): the next
+			// cycle measures decay from now, not from the original compile.
+			cur.StalenessScore = 0
+			cur.FieldStaleness = make(map[string]float64)
+			cur.LastRecompiledAt = time.Now()
+			cur.CompiledAt = cur.LastRecompiledAt
+			cur.RecompileCount++
+			cur.Version++
+
+			slog.Info("ArtifactWatcher: artifact recompiled",
+				"artifact", a.Name,
+				"entity", fmt.Sprintf("%s:%s", a.EntityType, a.EntityID),
+				"version", cur.Version,
+			)
+		}
+		// On compile error the staleness stays high so the next cycle retries.
+	} else {
+		// Artifact was archived while recompiling — just release the guard.
+		delete(w.inFlight, key)
+	}
 }
 
 // manageLifecycle checks artifacts for lifecycle events:

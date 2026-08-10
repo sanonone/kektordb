@@ -89,6 +89,31 @@ type RefreshPolicy struct {
 	PruneAfterDays int      `json:"prune_after_days,omitempty"`    // Auto-delete versions older than N days (0 = never)
 }
 
+// Refresh policy modes.
+const (
+	RefreshModeOnSourceChange = "on_source_change" // default: staleness-score driven
+	RefreshModeScheduled      = "scheduled"        // time-driven via MaxStalenessH
+	RefreshModeManual         = "manual"           // no automatic recompilation
+)
+
+// DefaultRefreshPolicy returns the built-in policy used whenever no explicit
+// policy is provided (request TaskSpec or template). Single source of truth
+// for the watcher and the compiler (B3).
+func DefaultRefreshPolicy() RefreshPolicy {
+	return RefreshPolicy{
+		Mode:           RefreshModeOnSourceChange,
+		KeepHistory:    true,
+		MaxVersions:    20,
+		PruneAfterDays: 90,
+	}
+}
+
+// IsZeroPolicy reports whether no field of the policy is explicitly set.
+func IsZeroPolicy(p RefreshPolicy) bool {
+	return p.Mode == "" && p.MaxStalenessH == 0 && len(p.RecompileOn) == 0 &&
+		!p.KeepHistory && p.MaxVersions == 0 && p.PruneAfterDays == 0
+}
+
 // TaskSpec defines the agent role and desired output shape for compilation.
 type TaskSpec struct {
 	AgentRole     string        `json:"agent_role,omitempty"`

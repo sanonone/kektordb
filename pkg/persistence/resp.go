@@ -90,22 +90,42 @@ func ParseCommand(reader *bufio.Reader) (*Command, error) {
 // FormatCommand formats a command name and its arguments into a single
 // RESP-formatted string. It correctly handles nil arguments by writing a RESP
 // null bulk string.
+//
+// Fast path (B4): headers and lengths are written with strconv.Itoa into a
+// pre-grown builder instead of fmt.Sprintf, avoiding per-argument formatting
+// and intermediate []byte→string conversions on the AOF write path.
 func FormatCommand(commandName string, args ...[]byte) string {
+	// Estimate: headers + payloads (len args are tiny).
+	totalArgs := 1 + len(args)
+	size := len(commandName) + 16
+	for _, arg := range args {
+		size += len(arg) + 16
+	}
 	var b strings.Builder
+	b.Grow(size)
 
 	// Write the array header: number of elements.
-	totalArgs := 1 + len(args)
-	b.WriteString(fmt.Sprintf("*%d\r\n", totalArgs))
+	b.WriteByte('*')
+	b.WriteString(strconv.Itoa(totalArgs))
+	b.WriteString("\r\n")
 
 	// Write the command name.
-	b.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(commandName), commandName))
+	b.WriteByte('$')
+	b.WriteString(strconv.Itoa(len(commandName)))
+	b.WriteString("\r\n")
+	b.WriteString(commandName)
+	b.WriteString("\r\n")
 
 	// Write each argument.
 	for _, arg := range args {
 		if arg == nil {
 			b.WriteString("$-1\r\n") // RESP representation for nil
 		} else {
-			b.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(arg), string(arg)))
+			b.WriteByte('$')
+			b.WriteString(strconv.Itoa(len(arg)))
+			b.WriteString("\r\n")
+			b.Write(arg)
+			b.WriteString("\r\n")
 		}
 	}
 

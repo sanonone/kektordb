@@ -347,7 +347,7 @@ func (e *Engine) VAdd(indexName, id string, vector []float32, metadata map[strin
 	}
 
 	// 1. Serialize inputs for AOF (before any mutation).
-	vecStr := float32SliceToString(vector)
+	vecStr := float32SliceToHexString(vector)
 	var metaBytes []byte
 	if len(metadata) > 0 {
 		var err error
@@ -1465,7 +1465,7 @@ func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 
 	// 1. Persistence Loop (AOF first)
 	for _, item := range items {
-		vecStr := float32SliceToString(item.Vector)
+		vecStr := float32SliceToHexString(item.Vector)
 		var meta []byte
 		if len(item.Metadata) > 0 {
 			var err error

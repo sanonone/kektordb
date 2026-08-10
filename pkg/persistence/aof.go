@@ -9,7 +9,9 @@ import (
 
 // DefaultAOFWriteBufferSize is the fallback write-buffer size (in bytes) used by NewAOFWriter
 // when the caller passes a bufferSize of 0 or less.
-const DefaultAOFWriteBufferSize = 4096
+// 64KB: with ~3KB VADD frames this batches ~20 entries per syscall, keeping
+// the LazyAOFWriter's run goroutine out of the write path (B4 latency fix).
+const DefaultAOFWriteBufferSize = 65536
 
 // AOFWriter manages writing to the Append-Only File using a robust binary protocol.
 //
