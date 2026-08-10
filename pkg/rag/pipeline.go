@@ -363,6 +363,14 @@ func (p *Pipeline) processFile(path string, info os.FileInfo, oldState *fileStat
 	}
 
 	for i, chunkText := range chunks {
+		// Check for shutdown between chunks: the per-chunk serial fallback
+		// below is I/O-bound, so Stop() must be able to interrupt it.
+		select {
+		case <-p.stopCh:
+			return nil
+		default:
+		}
+
 		// Embed (from the batch result, or serially as fallback).
 		var vec []float32
 		if vecs != nil && i < len(vecs) && len(vecs[i]) > 0 {

@@ -28,7 +28,7 @@ All notable changes to KektorDB are documented here.
 - **Score breakdown:** `search-with-scores` results now include `score_breakdown` (`similarity` from vector distance + `decay_factor` from the memory time-decay model), explaining why a memory ranked where it did.
 - **Response field fix:** search results now serialize as lowercase `id`/`score` as documented in the API contract (previously marshaled as `ID`/`Score`, breaking the Go client and the dashboard UI score display).
 
-### MCP
+### MCP Schema
 
 - **Schema guard test:** `TestAllToolsExposeInputSchema` drives the real MCP server over an in-memory transport and verifies every one of the 57 tools exposes a valid `inputSchema` with consistent `required`/`properties` (regression guard for the `jsonschema` tags on tool Args).
 

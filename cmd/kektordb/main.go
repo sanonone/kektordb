@@ -116,10 +116,14 @@ func isLoopbackHost(addr string) bool {
 func securityWarnings(authToken, httpAddr string) []string {
 	var warnings []string
 	if authToken == "" && !isLoopbackHost(httpAddr) {
+		port := "9091"
+		if _, p, err := net.SplitHostPort(httpAddr); err == nil && p != "" {
+			port = p
+		}
 		warnings = append(warnings, fmt.Sprintf(
 			"auth is DISABLED (--auth-token=\"\") and listening on %s (non-loopback): "+
 				"REST API, memories and /debug/pprof/* are exposed to any network client. "+
-				"Set --auth-token=<token> or bind to 127.0.0.1:9091.", httpAddr))
+				"Set --auth-token=<token> or bind to 127.0.0.1:%s.", httpAddr, port))
 	}
 	return warnings
 }
@@ -689,6 +693,8 @@ func cmdTry() {
 	if err != nil {
 		log.Fatalf("try: failed to create temp dir: %v", err)
 	}
+	// Clean up the temp dir on every exit path, including startup failures.
+	defer os.RemoveAll(tmpDir)
 
 	opts := engine.DefaultOptions(tmpDir)
 	eng, err := engine.Open(opts)

@@ -155,19 +155,21 @@ func TestIsLoopbackHost(t *testing.T) {
 
 func TestSecurityWarnings(t *testing.T) {
 	tests := []struct {
-		name      string
-		authToken string
-		httpAddr  string
-		wantWarn  bool
+		name         string
+		authToken    string
+		httpAddr     string
+		wantWarn     bool
+		wantContains string
 	}{
-		{"auth disabled on all-interfaces", "", ":9091", true},
-		{"auth disabled on 0.0.0.0", "", "0.0.0.0:9091", true},
-		{"auth disabled on LAN", "", "192.168.1.5:9091", true},
-		{"auth disabled on IPv6 all", "", "[::]:9091", true},
-		{"auth set on all-interfaces", "secret", ":9091", false},
-		{"auth disabled on localhost", "", "localhost:9091", false},
-		{"auth disabled on 127.0.0.1", "", "127.0.0.1:9091", false},
-		{"auth disabled on ::1", "", "[::1]:9091", false},
+		{"auth disabled on all-interfaces", "", ":9091", true, ""},
+		{"auth disabled on 0.0.0.0", "", "0.0.0.0:9091", true, ""},
+		{"auth disabled on LAN", "", "192.168.1.5:9091", true, ""},
+		{"auth disabled on IPv6 all", "", "[::]:9091", true, ""},
+		{"auth disabled on custom port", "", "0.0.0.0:8088", true, "127.0.0.1:8088"},
+		{"auth set on all-interfaces", "secret", ":9091", false, ""},
+		{"auth disabled on localhost", "", "localhost:9091", false, ""},
+		{"auth disabled on 127.0.0.1", "", "127.0.0.1:9091", false, ""},
+		{"auth disabled on ::1", "", "[::1]:9091", false, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -177,6 +179,11 @@ func TestSecurityWarnings(t *testing.T) {
 			}
 			if !tt.wantWarn && len(warnings) > 0 {
 				t.Errorf("unexpected warnings for authToken=%q httpAddr=%q: %v", tt.authToken, tt.httpAddr, warnings)
+			}
+			if tt.wantContains != "" {
+				if len(warnings) == 0 || !strings.Contains(warnings[0], tt.wantContains) {
+					t.Errorf("warning should mention %q, got: %v", tt.wantContains, warnings)
+				}
 			}
 		})
 	}
