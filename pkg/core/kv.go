@@ -27,22 +27,28 @@ func NewKVStore() *KVStore {
 
 // Set adds or updates a value for a given key.
 // This is a write operation and is fully thread-safe.
+// The value is copied: later mutations of the caller's slice never affect
+// the stored state (defensive copy — the KV holds auth keys and tokens).
 func (s *KVStore) Set(key string, value []byte) {
 	s.mu.Lock() // Lock for writing
 	defer s.mu.Unlock()
 
-	s.data[key] = value
+	s.data[key] = append([]byte(nil), value...)
 }
 
 // Get retrieves the value for a given key.
 // It returns the value and a boolean indicating whether the key was found.
 // This is a read operation and is safe for concurrent use.
+// The returned slice is a copy: mutating it never affects the stored state.
 func (s *KVStore) Get(key string) ([]byte, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	value, found := s.data[key]
-	return value, found
+	if !found {
+		return nil, false
+	}
+	return append([]byte(nil), value...), true
 }
 
 // Delete removes a key and its associated value from the store.

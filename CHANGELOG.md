@@ -56,6 +56,7 @@ All notable changes to KektorDB are documented here.
 - **`AddMetadata` auto-initializes the secondary maps:** a manually registered index no longer hits mid-update errors or a nil-map panic on the text index; all five per-index maps are ensured up front (shared `ensureSecondaryIndexMaps`).
 - **`FindIDsByTextSearch` validates the index type:** a non-HNSW index returns a clean error instead of panicking on a nil `*hnsw.Index` (latent).
 - **BM25 guards `avgLen == 0`:** documents with zero indexed tokens now score `0` instead of producing `NaN` (which made the ranking sort unstable).
+- **Defensive KV copies:** `KVStore.Set` copies the caller's slice and `Get` returns a copy, so auth keys/tokens can never be corrupted by callers mutating their own buffers. The metadata getters' shallow-copy contract (map copied, nested values shared and read-only) is now documented on all three variants.
 
 ### Security
 

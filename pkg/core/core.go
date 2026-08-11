@@ -739,6 +739,13 @@ func (s *DB) GetVectors(indexName string, vectorIDs []string) ([]VectorData, err
 
 // getMetadataForNode is a helper function to retrieve metadata for a given node ID.
 // Note: This implementation is inefficient as it scans the entire inverted index.
+//
+// CONTRACT (shallow copy): the returned map is a fresh map, but its VALUES are
+// shared with the internal state. Callers may mutate the map itself (add/remove
+// keys) freely; mutating a nested value (e.g. an []string or map inside a
+// value) corrupts internal state without passing through the locks. Deep
+// copying arbitrary `any` values is unbounded, so this trade-off is accepted
+// and callers must treat nested values as read-only.
 func (s *DB) getMetadataForNode(indexName string, nodeID uint32) map[string]any {
 	s.mu.RLock()
 	idxMu, exists := s.indexLocks[indexName]
@@ -768,6 +775,8 @@ func (s *DB) getMetadataForNode(indexName string, nodeID uint32) map[string]any 
 // It only acquires the per-index lock (idxMu) for safe metadata map access.
 // This variant prevents deadlock when called from worker goroutines
 // dispatched by a caller that already holds s.mu.RLock().
+// Same shallow-copy contract as getMetadataForNode: nested values are shared
+// and must be treated as read-only.
 func (s *DB) getMetadataForNodeLocked(indexName string, nodeID uint32, idxMu *sync.RWMutex) map[string]any {
 	idxMu.RLock()
 	defer idxMu.RUnlock()
@@ -790,6 +799,9 @@ func (s *DB) GetMetadataForNode(indexName string, nodeID uint32) map[string]any 
 }
 
 // getMetadataForNodeUnlocked is the lock-free version of getMetadataForNode.
+// The caller MUST hold the appropriate locks (s.mu and/or idxMu) before use.
+// Same shallow-copy contract as getMetadataForNode: nested values are shared
+// and must be treated as read-only.
 func (s *DB) getMetadataForNodeUnlocked(indexName string, nodeID uint32) map[string]any {
 	// Direct lookup O(1)
 	if idxMap, ok := s.metadataMap[indexName]; ok {
