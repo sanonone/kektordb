@@ -184,6 +184,15 @@ clean:
 	@rm -rf $(RELEASE_DIR)
 	@go clean -cache -testcache
 
+# Removes only RUNTIME DATA created by local runs (AOF, snapshots, arenas,
+# local models/assets) — build artifacts and Go caches are untouched.
+.PHONY: clean-data
+clean-data:
+	@echo "==> Removing local runtime data..."
+	@rm -f *.aof *.kdb kektordb-test
+	@rm -rf arenas models assets
+	@echo "Done. Data files removed; build artifacts and caches preserved."
+
 # --- Skill markdown sync ---
 # The MCP prompt `memory_instructions` is embedded from
 # internal/mcp/memory_instructions.md (single source-of-truth for Go).

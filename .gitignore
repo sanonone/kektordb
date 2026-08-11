@@ -22,6 +22,9 @@ arenas/
 # Embedder Local
 models/
 
+# Tesseract OCR data (runtime data, downloaded locally — never commit)
+eng.traineddata
+
 # File MCP Log
 *.log
 
