@@ -51,6 +51,11 @@ All notable changes to KektorDB are documented here.
 - **`RemoveEdge` soft delete targets the active edge:** after an edge evolution (`AddEdge` with changed props/weight appends a new active version), soft removal now marks the edge with `DeletedAt == 0` — previously it re-marked the already-deleted historical version and left the active edge standing, silently breaking graph shrinking.
 - **Filter operator parsing is quote-aware:** `evaluateBooleanFilter` scans for operators outside quoted sections only, so values containing operators (`tag = "a<=b"`, `version >= "1.0"`) parse correctly instead of splitting mid-value.
 - **Malformed filters no longer panic:** an OR-block made only of `AND`/whitespace (e.g. `"a=1 OR AND AND"`) is skipped instead of panicking on `roaring.Or(nil)`.
+- **BM25 statistics consistency:** `DeleteMetadata` only decrements `TotalDocs` when the node actually had text indexed for the field (clamped at 0), preventing negative document counts and corrupted `AvgFieldLength`/IDF.
+- **Numeric-looking string values are searchable with `=`:** the equality branch now unions the B-tree (float64) and the inverted index (string) results, so metadata like `{"age": "10"}` matches both `age = 10` and `age = "10"`.
+- **`AddMetadata` auto-initializes the secondary maps:** a manually registered index no longer hits mid-update errors or a nil-map panic on the text index; all five per-index maps are ensured up front (shared `ensureSecondaryIndexMaps`).
+- **`FindIDsByTextSearch` validates the index type:** a non-HNSW index returns a clean error instead of panicking on a nil `*hnsw.Index` (latent).
+- **BM25 guards `avgLen == 0`:** documents with zero indexed tokens now score `0` instead of producing `NaN` (which made the ranking sort unstable).
 
 ### Security
 

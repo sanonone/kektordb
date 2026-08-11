@@ -889,9 +889,18 @@ func (s *DB) DeleteMetadata(indexName string, nodeID uint32) error {
 	// 5. Update text index stats
 	if statsMap, ok := s.textIndexStats[indexName]; ok {
 		for _, stats := range statsMap {
-			delete(stats.DocLengths, nodeID)
+			// Only decrement when this node actually had text indexed for the
+			// field (mirrors removeOldIndexEntries): a numeric-only node was
+			// never counted in TotalDocs, and unconditionally decrementing
+			// would drive the BM25 statistics negative.
+			if _, had := stats.DocLengths[nodeID]; had {
+				delete(stats.DocLengths, nodeID)
+				stats.TotalDocs--
+				if stats.TotalDocs < 0 {
+					stats.TotalDocs = 0
+				}
+			}
 			// Recalculate total docs and avg length
-			stats.TotalDocs--
 			if stats.TotalDocs > 0 {
 				totalLen := 0
 				for _, length := range stats.DocLengths {
@@ -1409,9 +1418,29 @@ func (s *DB) removeOldIndexEntries(indexName string, nodeID uint32, key string, 
 	}
 }
 
+// ensureSecondaryIndexMaps creates the per-index secondary maps when missing
+// (mirroring CreateVectorIndex). Used by AddMetadata/AddMetadataUnlocked so a
+// missing map never causes a mid-update error or a nil-map assignment panic.
+func (s *DB) ensureSecondaryIndexMaps(indexName string) {
+	if s.metadataMap[indexName] == nil {
+		s.metadataMap[indexName] = make(map[uint32]map[string]any)
+	}
+	if s.invertedIndex[indexName] == nil {
+		s.invertedIndex[indexName] = make(map[string]map[string]*roaring.Bitmap)
+	}
+	if s.bTreeIndex[indexName] == nil {
+		s.bTreeIndex[indexName] = make(map[string]*btree.BTreeG[BTreeItem])
+	}
+	if s.textIndex[indexName] == nil {
+		s.textIndex[indexName] = make(map[string]map[string]PostingList)
+	}
+	if s.textIndexStats[indexName] == nil {
+		s.textIndexStats[indexName] = make(map[string]*TextIndexStats)
+	}
+}
+
 // AddMetadata associates metadata with a node ID and updates the secondary indexes.
-func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]any) error {
-	// 1. Take Global RLock to prevent index deletion
+func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]any) error { // 1. Take Global RLock to prevent index deletion
 	s.mu.RLock()
 	idxMu, exists := s.indexLocks[indexName]
 	if !exists {
@@ -1437,6 +1466,11 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 		return nil
 	}
 
+	// Ensure the per-index secondary maps exist (auto-init). Lazy mid-loop
+	// checks caused partial updates — metadata was written before an error
+	// could be returned — and a potential nil-map assignment panic.
+	s.ensureSecondaryIndexMaps(indexName)
+
 	var analyzer textanalyzer.Analyzer
 	switch hnswIndex.TextLanguage() {
 	case "english":
@@ -1449,9 +1483,6 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 
 	for key, value := range metadata {
 		// Update direct lookup map (O(1))
-		if _, ok := s.metadataMap[indexName]; !ok {
-			s.metadataMap[indexName] = make(map[uint32]map[string]any)
-		}
 		if _, ok := s.metadataMap[indexName][nodeID]; !ok {
 			s.metadataMap[indexName][nodeID] = make(map[string]any)
 		}
@@ -1466,10 +1497,7 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 		switch v := value.(type) { // Check the type of the 'any' variable
 		case string:
 			// --- LOGICA INDICE INVERTITO (invariata) ---
-			indexMetadata, ok := s.invertedIndex[indexName]
-			if !ok {
-				return fmt.Errorf("metadata index for '%s' not found", indexName)
-			}
+			indexMetadata := s.invertedIndex[indexName]
 			if _, ok := indexMetadata[key]; !ok {
 				indexMetadata[key] = make(map[string]*roaring.Bitmap)
 			}
@@ -1531,10 +1559,7 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 
 		case float64:
 			// --- B-TREE LOGIC (for numerical data) ---
-			indexBTree, ok := s.bTreeIndex[indexName]
-			if !ok {
-				return fmt.Errorf("b-tree index for '%s' not found", indexName)
-			}
+			indexBTree := s.bTreeIndex[indexName]
 
 			// Check if a B-Tree for this key already exists; otherwise, create it
 			if _, ok := indexBTree[key]; !ok {
@@ -1603,6 +1628,9 @@ func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[s
 		return nil
 	}
 
+	// Ensure the per-index secondary maps exist (same rationale as AddMetadata).
+	s.ensureSecondaryIndexMaps(indexName)
+
 	var analyzer textanalyzer.Analyzer
 	switch hnswIndex.TextLanguage() {
 	case "english":
@@ -1615,9 +1643,6 @@ func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[s
 
 	for key, value := range metadata {
 		// Update direct lookup map (O(1))
-		if _, ok := s.metadataMap[indexName]; !ok {
-			s.metadataMap[indexName] = make(map[uint32]map[string]any)
-		}
 		if _, ok := s.metadataMap[indexName][nodeID]; !ok {
 			s.metadataMap[indexName][nodeID] = make(map[string]any)
 		}
@@ -1632,10 +1657,7 @@ func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[s
 		switch v := value.(type) { // Check the type of the 'any' variable
 		case string:
 			// --- LOGICA INDICE INVERTITO (invariata) ---
-			indexMetadata, ok := s.invertedIndex[indexName]
-			if !ok {
-				return fmt.Errorf("metadata index for '%s' not found", indexName)
-			}
+			indexMetadata := s.invertedIndex[indexName]
 			if _, ok := indexMetadata[key]; !ok {
 				indexMetadata[key] = make(map[string]*roaring.Bitmap)
 			}
@@ -1697,10 +1719,7 @@ func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[s
 
 		case float64:
 			// --- B-TREE LOGIC (for numerical data) ---
-			indexBTree, ok := s.bTreeIndex[indexName]
-			if !ok {
-				return fmt.Errorf("b-tree index for '%s' not found", indexName)
-			}
+			indexBTree := s.bTreeIndex[indexName]
 
 			// Check if a B-Tree for this key already exists; otherwise, create it
 			if _, ok := indexBTree[key]; !ok {
@@ -1911,9 +1930,11 @@ func (s *DB) evaluateBooleanFilter(indexName string, filter string) (*roaring.Bi
 
 	switch op {
 	case "=":
-		numValue, err := strconv.ParseFloat(valueStr, 64)
-		if err == nil && hasBTree {
-			idSet := roaring.New()
+		idSet := roaring.New()
+
+		// Numeric branch: exact B-tree match (float64 values).
+		numValue, numErr := strconv.ParseFloat(valueStr, 64)
+		if numErr == nil && hasBTree {
 			if tree, ok := indexBTree[key]; ok {
 				tree.Ascend(BTreeItem{Value: numValue}, func(item BTreeItem) bool {
 					if item.Value != numValue {
@@ -1923,18 +1944,22 @@ func (s *DB) evaluateBooleanFilter(indexName string, filter string) (*roaring.Bi
 					return true
 				})
 			}
-			return idSet, nil
 		}
 
-		if !hasInv {
-			return roaring.New(), nil
-		}
-		if keyMetadata, ok := indexInv[key]; ok {
-			if valSet, ok := keyMetadata[valueStr]; ok {
-				return valSet, nil // Ritorna il puntatore (lettura veloce, FindIDsByFilter farà il Clone)
+		// Lenient union: string values that LOOK numeric (e.g. metadata
+		// {"age": "10"} stored in the inverted index) must also match
+		// `age = 10` / `age = "10"` — previously the numeric branch
+		// returned empty when the key was absent from the B-tree, hiding
+		// the string value entirely.
+		if hasInv {
+			if keyMetadata, ok := indexInv[key]; ok {
+				if valSet, ok := keyMetadata[valueStr]; ok {
+					idSet.Or(valSet)
+				}
 			}
 		}
-		return roaring.New(), nil
+
+		return idSet, nil
 
 	case "<", "<=", ">", ">=":
 		idSet := roaring.New()
@@ -2081,7 +2106,10 @@ func (db *DB) FindIDsByTextSearch(indexName, fieldName, queryText string) ([]typ
 		return nil, fmt.Errorf("index '%s' not found", indexName)
 	}
 
-	hnswIndex, _ := idx.(*hnsw.Index)
+	hnswIndex, ok := idx.(*hnsw.Index)
+	if !ok {
+		return nil, fmt.Errorf("index '%s' is not an HNSW index", indexName)
+	}
 	var analyzer textanalyzer.Analyzer
 	switch hnswIndex.TextLanguage() {
 	case "english":
@@ -2152,6 +2180,13 @@ func (db *DB) calculateBM25TermScore(token string, docID uint32, tf int, stats *
 	}
 
 	if tf == 0 {
+		return 0.0
+	}
+
+	// Guard against avgLen == 0 (all documents have zero indexed tokens):
+	// docLen/avgLen would be 0/0 = NaN, poisoning the ranking (sort with NaN
+	// is unstable). With avgLen 0 every docLen is 0, so all scores are 0.
+	if stats.AvgFieldLength <= 0 {
 		return 0.0
 	}
 
