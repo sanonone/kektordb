@@ -57,6 +57,10 @@ All notable changes to KektorDB are documented here.
 - **`FindIDsByTextSearch` validates the index type:** a non-HNSW index returns a clean error instead of panicking on a nil `*hnsw.Index` (latent).
 - **BM25 guards `avgLen == 0`:** documents with zero indexed tokens now score `0` instead of producing `NaN` (which made the ranking sort unstable).
 - **Defensive KV copies:** `KVStore.Set` copies the caller's slice and `Get` returns a copy, so auth keys/tokens can never be corrupted by callers mutating their own buffers. The metadata getters' shallow-copy contract (map copied, nested values shared and read-only) is now documented on all three variants.
+- **Incremental BM25 field-length statistics:** `TextIndexStats` gained a `TotalDocLength` counter updated in O(1) on every add/update/remove; `AvgFieldLength` is derived from it instead of an O(N) per-field rescan on every `AddMetadata` — bulk ingestion with the text analyzer drops from O(N²) to O(N).
+- **`IterateKV` returns defensive copies** of the values and documents the no-write contract (callback runs under the KV read lock — writing would deadlock).
+- **`GetOutEdges` copies `Props`:** returned edges no longer share the `json.RawMessage` slice with the stored graph — caller mutations can't corrupt it.
+- **Cleanup:** removed stale commented-out vector-reconstruction blocks (NodeSnapshot, Snapshot, LoadFromSnapshot) and normalized an internal bug-reference comment.
 
 ### Security
 

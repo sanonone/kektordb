@@ -196,3 +196,118 @@ func TestBM25AvgLenZeroNoNaN(t *testing.T) {
 		t.Errorf("expected 0 score when avgLen == 0, got %v", score)
 	}
 }
+
+// --- Proposta 1: incremental AvgFieldLength counter ---
+
+func TestAvgFieldLengthIncrementalCounter(t *testing.T) {
+	db := NewDB()
+	defer db.Close()
+	if err := db.CreateVectorIndex("idx", distance.Cosine, 16, 100, distance.Float32, "english", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	idx, _ := db.GetVectorIndex("idx")
+	vec := []float32{0.1, 0.2, 0.3, 0.4}
+	addDoc := func(id, content string) uint32 {
+		internal, err := idx.Add(id, vec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := db.AddMetadata("idx", internal, map[string]any{"content": content}); err != nil {
+			t.Fatal(err)
+		}
+		return internal
+	}
+
+	a := addDoc("a", "hello world")           // 2 tokens
+	_ = addDoc("b", "kektor database engine") // 3 tokens
+
+	stats := db.textIndexStats["idx"]["content"]
+	if stats.TotalDocs != 2 || stats.TotalDocLength != 5 {
+		t.Fatalf("after adds: docs=%d totalLen=%d, want 2/5", stats.TotalDocs, stats.TotalDocLength)
+	}
+	if stats.AvgFieldLength != 2.5 {
+		t.Errorf("AvgFieldLength=%v, want 2.5", stats.AvgFieldLength)
+	}
+
+	// Replace a's content: old 2 tokens removed, new 4 added.
+	if err := db.AddMetadata("idx", a, map[string]any{"content": "hello brave new world"}); err != nil {
+		t.Fatal(err)
+	}
+	if stats.TotalDocs != 2 || stats.TotalDocLength != 7 {
+		t.Fatalf("after update: docs=%d totalLen=%d, want 2/7", stats.TotalDocs, stats.TotalDocLength)
+	}
+	if stats.AvgFieldLength != 3.5 {
+		t.Errorf("AvgFieldLength=%v, want 3.5", stats.AvgFieldLength)
+	}
+
+	// Delete a: 4 tokens removed → 1 doc / 3 tokens.
+	if err := db.DeleteMetadata("idx", a); err != nil {
+		t.Fatal(err)
+	}
+	if stats.TotalDocs != 1 || stats.TotalDocLength != 3 {
+		t.Fatalf("after delete: docs=%d totalLen=%d, want 1/3", stats.TotalDocs, stats.TotalDocLength)
+	}
+	if stats.AvgFieldLength != 3 {
+		t.Errorf("AvgFieldLength=%v, want 3", stats.AvgFieldLength)
+	}
+
+	// Counter must equal the brute-force sum of DocLengths.
+	var sum int64
+	for _, l := range stats.DocLengths {
+		sum += int64(l)
+	}
+	if sum != stats.TotalDocLength {
+		t.Errorf("counter %d != brute-force sum %d", stats.TotalDocLength, sum)
+	}
+}
+
+// --- PA.4: GetOutEdges copies Props ---
+
+func TestGetOutEdgesPropsCopied(t *testing.T) {
+	db := NewDB()
+	defer db.Close()
+
+	db.AddEdge("src", "dst", "rel", 1.0, []byte(`{"k":1}`), 1000)
+
+	out, _ := db.GetOutEdges("src", "rel", 0)
+	if len(out) != 1 {
+		t.Fatal("expected 1 edge")
+	}
+	// Mutating the returned Props must not corrupt the stored graph.
+	for i := range out[0].Props {
+		out[0].Props[i] = 'X'
+	}
+
+	out2, _ := db.GetOutEdges("src", "rel", 0)
+	if string(out2[0].Props) != `{"k":1}` {
+		t.Errorf("Props shared with internal state: %q", out2[0].Props)
+	}
+}
+
+// --- PA.3: IterateKV returns defensive copies ---
+
+func TestIterateKVDefensiveCopy(t *testing.T) {
+	kv := NewKVStore()
+	kv.Set("k", []byte("v1"))
+
+	db := NewDB()
+	db.kvStore = kv
+
+	var got []byte
+	db.IterateKV(func(p KVPair) {
+		if p.Key == "k" {
+			got = p.Value
+		}
+	})
+	if string(got) != "v1" {
+		t.Fatalf("IterateKV value = %q", got)
+	}
+
+	// Mutating the callback's copy must not affect the store.
+	got[0] = 'X'
+	again, _ := kv.Get("k")
+	if string(again) != "v1" {
+		t.Errorf("IterateKV exposed the internal buffer: %q", again)
+	}
+}

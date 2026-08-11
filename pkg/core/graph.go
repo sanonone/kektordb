@@ -269,6 +269,9 @@ func (db *DB) GetOutEdges(sourceID, relationType string, atTime int64) ([]GraphE
 	var activeEdges []GraphEdge
 	for _, edge := range outList {
 		if isActiveAtTime(edge.CreatedAt, edge.DeletedAt, atTime) {
+			// Copy Props: json.RawMessage is a shared slice — a caller mutating
+			// the returned edge would otherwise corrupt the stored graph.
+			edge.Props = append([]byte(nil), edge.Props...)
 			activeEdges = append(activeEdges, edge)
 		}
 	}

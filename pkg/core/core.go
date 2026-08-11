@@ -109,11 +109,6 @@ type IndexSnapshot struct {
 type NodeSnapshot struct {
 	NodeData *hnsw.Node             // The graph data (ID, connections, etc.)
 	Metadata map[string]interface{} // The associated metadata
-
-	// Explicitly typed vector data to prevent gob from converting to float64 on decode.
-	// VectorF32 []float32 `json:"vector_f32,omitempty"`
-	// VectorF16 []uint16  `json:"vector_f16,omitempty"`
-	// VectorI8  []int8    `json:"vector_i8,omitempty"`
 }
 
 // GobEncode implements custom gob encoding to handle interface{} metadata.
@@ -273,20 +268,6 @@ func (s *DB) Snapshot(writer io.Writer) error {
 					// on this index's metaMu.Lock).
 					Metadata: s.getMetadataForNodeUnlocked(name, internalID),
 				}
-
-				// Use a type switch to populate the correct vector field
-				// Populate the correct vector field in the snapshot
-				/*
-					if node.VectorF32 != nil {
-						snap.VectorF32 = node.VectorF32
-					} else if node.VectorF16 != nil {
-						snap.VectorF16 = node.VectorF16
-					} else if node.VectorI8 != nil {
-						snap.VectorI8 = node.VectorI8
-					} else {
-						slog.Warn("No vector data found for node during snapshot", "node_id", internalID)
-					}
-				*/
 				nodeSnapshots[internalID] = snap
 			}
 
@@ -397,18 +378,6 @@ func (s *DB) LoadFromSnapshot(reader io.Reader, basePath string) error {
 
 		// --- Reconstruct the 'Vector' field ---
 		for id, nodeSnap := range indexSnap.Nodes {
-			// Reconstruct the typed fields
-			/*
-				if nodeSnap.VectorF32 != nil {
-					nodeSnap.NodeData.VectorF32 = nodeSnap.VectorF32
-				} else if nodeSnap.VectorF16 != nil {
-					nodeSnap.NodeData.VectorF16 = nodeSnap.VectorF16
-				} else if nodeSnap.VectorI8 != nil {
-					nodeSnap.NodeData.VectorI8 = nodeSnap.VectorI8
-				} else {
-					slog.Warn("No vector data found for node in snapshot", "node_id", id)
-				}
-			*/
 			nodesToLoad[id] = nodeSnap.NodeData
 		}
 
@@ -458,12 +427,15 @@ func (s *DB) RunMaintenance() {
 
 // IterateKV iterates over all key-value pairs in the store, passing each to a callback function.
 // The iteration is performed under a read lock.
+// CONTRACT: the callback must NOT write to the KVStore (the RLock is held for
+// the whole iteration — a write would deadlock) and must NOT retain or mutate
+// the value slice (it is a defensive copy).
 func (s *DB) IterateKV(callback func(pair KVPair)) {
 	s.kvStore.mu.RLock()
 	defer s.kvStore.mu.RUnlock()
 
 	for key, value := range s.kvStore.data {
-		callback(KVPair{Key: key, Value: value})
+		callback(KVPair{Key: key, Value: append([]byte(nil), value...)})
 	}
 }
 
@@ -906,19 +878,16 @@ func (s *DB) DeleteMetadata(indexName string, nodeID uint32) error {
 			// never counted in TotalDocs, and unconditionally decrementing
 			// would drive the BM25 statistics negative.
 			if _, had := stats.DocLengths[nodeID]; had {
+				stats.TotalDocLength -= int64(stats.DocLengths[nodeID])
 				delete(stats.DocLengths, nodeID)
 				stats.TotalDocs--
 				if stats.TotalDocs < 0 {
 					stats.TotalDocs = 0
 				}
 			}
-			// Recalculate total docs and avg length
+			// O(1) average from the incremental counter.
 			if stats.TotalDocs > 0 {
-				totalLen := 0
-				for _, length := range stats.DocLengths {
-					totalLen += length
-				}
-				stats.AvgFieldLength = float64(totalLen) / float64(stats.TotalDocs)
+				stats.AvgFieldLength = float64(stats.TotalDocLength) / float64(stats.TotalDocs)
 			} else {
 				stats.AvgFieldLength = 0
 			}
@@ -978,6 +947,10 @@ type TextIndexStats struct {
 	TotalDocs int
 	// Average length of a field across all documents
 	AvgFieldLength float64
+	// TotalDocLength is the sum of all DocLengths — an incremental counter
+	// that keeps AvgFieldLength computable in O(1) on every add/remove
+	// (bulk ingestion previously recomputed it with an O(N) scan per call).
+	TotalDocLength int64
 	// Map of DocID -> field length
 	DocLengths map[uint32]int
 }
@@ -1375,10 +1348,17 @@ func (s *DB) removeOldIndexEntries(indexName string, nodeID uint32, key string, 
 			if statsMap, ok := s.textIndexStats[indexName]; ok {
 				if stats, ok := statsMap[key]; ok {
 					if _, had := stats.DocLengths[nodeID]; had {
+						stats.TotalDocLength -= int64(stats.DocLengths[nodeID])
 						delete(stats.DocLengths, nodeID)
 						stats.TotalDocs--
 						if stats.TotalDocs < 0 {
 							stats.TotalDocs = 0
+						}
+						// O(1) average from the incremental counter.
+						if stats.TotalDocs > 0 {
+							stats.AvgFieldLength = float64(stats.TotalDocLength) / float64(stats.TotalDocs)
+						} else {
+							stats.AvgFieldLength = 0
 						}
 					}
 				}
@@ -1536,11 +1516,18 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 
 				// --- BM25 LOGIC ---
 
-				// Update document statistics
-				if _, docExists := stats.DocLengths[nodeID]; !docExists {
+				// Update document statistics (incremental counter, O(1))
+				oldLen := 0
+				if _, docExists := stats.DocLengths[nodeID]; docExists {
+					oldLen = stats.DocLengths[nodeID]
+				} else {
 					stats.TotalDocs++
 				}
 				stats.DocLengths[nodeID] = len(tokens)
+				stats.TotalDocLength += int64(len(tokens) - oldLen)
+				if stats.TotalDocs > 0 {
+					stats.AvgFieldLength = float64(stats.TotalDocLength) / float64(stats.TotalDocs)
+				}
 
 				// 2. Calculate term frequencies (TF) for this document
 				termFrequencies := make(map[string]int)
@@ -1619,9 +1606,6 @@ func (s *DB) AddMetadata(indexName string, nodeID uint32, metadata map[string]an
 		}
 	}
 
-	// Recalculate the average field length
-	s.recalculateAvgFieldLengths(indexName)
-
 	return nil
 
 }
@@ -1696,11 +1680,18 @@ func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[s
 
 				// --- BM25 LOGIC ---
 
-				// Update document statistics
-				if _, docExists := stats.DocLengths[nodeID]; !docExists {
+				// Update document statistics (incremental counter, O(1))
+				oldLen := 0
+				if _, docExists := stats.DocLengths[nodeID]; docExists {
+					oldLen = stats.DocLengths[nodeID]
+				} else {
 					stats.TotalDocs++
 				}
 				stats.DocLengths[nodeID] = len(tokens)
+				stats.TotalDocLength += int64(len(tokens) - oldLen)
+				if stats.TotalDocs > 0 {
+					stats.AvgFieldLength = float64(stats.TotalDocLength) / float64(stats.TotalDocs)
+				}
 
 				// 2. Calculate term frequencies (TF) for this document
 				termFrequencies := make(map[string]int)
@@ -1766,26 +1757,7 @@ func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[s
 		}
 	}
 
-	// Recalculate the average field length
-	s.recalculateAvgFieldLengths(indexName)
-
 	return nil
-}
-
-// recalculateAvgFieldLengths updates the average field length statistic for text indexes.
-// This is necessary for BM25 ranking.
-func (s *DB) recalculateAvgFieldLengths(indexName string) {
-	if indexStats, ok := s.textIndexStats[indexName]; ok {
-		for _, fieldStats := range indexStats {
-			var totalLength int
-			for _, length := range fieldStats.DocLengths {
-				totalLength += length
-			}
-			if fieldStats.TotalDocs > 0 {
-				fieldStats.AvgFieldLength = float64(totalLength) / float64(fieldStats.TotalDocs)
-			}
-		}
-	}
 }
 
 // FindIDsByFilter acts as a query planner for metadata filters.
@@ -1869,7 +1841,7 @@ func (s *DB) FindIDsByFilter(indexName string, filter string) (*roaring.Bitmap, 
 // getAllValidNodeIDsLocked returns a bitmap of all non-deleted node internal IDs
 // for an index. The caller MUST hold s.mu.RLock() to protect s.vectorIndexes.
 // This function does NOT acquire any locks itself — it relies on the caller's lock
-// to avoid reentrant RLock deadlock (bug #1.4).
+// to avoid a reentrant RLock deadlock (see deadlock_test.go in pkg/core/hnsw).
 func (s *DB) getAllValidNodeIDsLocked(indexName string) (*roaring.Bitmap, error) {
 	idx, exists := s.vectorIndexes[indexName]
 	if !exists {
