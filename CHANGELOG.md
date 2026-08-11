@@ -43,6 +43,12 @@ All notable changes to KektorDB are documented here.
 
 - **VAdd write-path latency (B4):** vector serialization for the AOF switched from decimal formatting to a compact hex bit pattern (`h` + 8 hex chars per float32) — 6.4× faster per VAdd (30µs → 4.7µs measured); RESP `FormatCommand` no longer uses `fmt.Sprintf`; the AOF write buffer grew from 4KB to 64KB (≈20 frames per syscall during flushes). p95 under sustained batch load improved from 2.04ms to 1.89ms. AOF replay accepts both the new hex and the legacy decimal vector formats (backward compatible).
 
+### Core Stability
+
+- **Snapshot lock-cycle fixed:** `DB.Snapshot` no longer holds an index's `metaMu.RLock` across its encode loop (it self-locks via `SnapshotData`), breaking the ABBA deadlock with `DeleteVectorIndex`/`DB.Close` (`s.mu.Lock` → `idx.Close` → `metaMu.Lock`) that previously hung the process permanently under concurrent autosave + index deletion. The index list is snapshotted under `s.mu` (no map race), indexes being shut down are skipped (`IsClosed`), and per-index map mutations are now consistently guarded by `idxMu` in `DeleteVectorIndex` and `Compress`.
+- **Compress lifecycle:** the old index is closed (mmap released) before the arena rename, vectors are deep-copied out of the arena before unmapping (fixes a SIGSEGV in quantizer training), and a failed `hnsw.New` restores the renamed arena directory.
+- **`LoadFromSnapshot` closes existing indexes** before replacing the state (no mmap/handle leak on live reload).
+
 ### Security
 
 - **Boot warning when auth is disabled on a non-loopback bind:** the server now warns on stderr (and via slog) at startup when `--auth-token=""` while listening on a non-loopback address (`:9091`, `0.0.0.0:*`, `[::]:*`, LAN IPs), because the REST API, memories, and `/debug/pprof/*` are exposed to any network client. The warning suggests setting `--auth-token=<token>` or binding to `127.0.0.1:9091`. Behavior is unchanged when running with auth enabled or on loopback only.

@@ -188,14 +188,25 @@ func (s *DB) Snapshot(writer io.Writer) error {
 	// 1b. Lock the KV store.
 	s.kvStore.RLock()
 
-	// 1c. Lock each individual HNSW index.
-	// Create a list of indexes to unlock later.
-	indexesToUnlock := make([]*hnsw.Index, 0, len(s.vectorIndexes))
-	for _, idx := range s.vectorIndexes {
-		if hnswIndex, ok := idx.(*hnsw.Index); ok {
-			hnswIndex.RLock()
-			// log.Printf("Snapshot acquired read lock on index %s", name)
-			indexesToUnlock = append(indexesToUnlock, hnswIndex)
+	// 1c. Snapshot the index list and lock the per-index metadata locks.
+	// NOTE: we deliberately do NOT hold the index's metaMu.RLock across the
+	// snapshot: Index.SnapshotData() acquires it internally (hnsw_index.go
+	// FASE B), and holding it here too would deadlock under a concurrent
+	// DeleteVectorIndex/DB.Close (s.mu.Lock → idx.Close → metaMu.Lock) —
+	// Go RWMutex writer-preference blocks the reentrant RLock. The snapshot
+	// encode never touches arena memory (vectors are restored from the arena
+	// file via ArenaState), so no outer metaMu hold is required.
+	// The map copy avoids a data race with DeleteVectorIndex removing entries
+	// while we iterate after releasing s.mu.
+	indexes := make(map[string]VectorIndex, len(s.vectorIndexes))
+	for name, idx := range s.vectorIndexes {
+		indexes[name] = idx
+	}
+	idxLocksToUnlock := make([]*sync.RWMutex, 0, len(s.vectorIndexes))
+	for name := range indexes {
+		if idxMu, ok := s.indexLocks[name]; ok {
+			idxMu.RLock()
+			idxLocksToUnlock = append(idxLocksToUnlock, idxMu)
 		}
 	}
 
@@ -212,8 +223,8 @@ func (s *DB) Snapshot(writer io.Writer) error {
 	// --- PHASE 3: Ensure final unlocking of everything else ---
 	defer func() {
 		s.kvStore.RUnlock()
-		for _, idx := range indexesToUnlock {
-			idx.RUnlock()
+		for _, idxMu := range idxLocksToUnlock {
+			idxMu.RUnlock()
 		}
 		for i := 0; i < NumGraphShards; i++ {
 			s.graphShards[i].mu.RUnlock()
@@ -239,8 +250,14 @@ func (s *DB) Snapshot(writer io.Writer) error {
 		snapshot.GraphData[i] = GraphSnapshot{Nodes: nodesCopy}
 	}
 
-	for name, idx := range s.vectorIndexes {
+	for name, idx := range indexes {
 		if hnswIndex, ok := idx.(*hnsw.Index); ok {
+			// Skip indexes being shut down concurrently: their arena may
+			// already be unmapped and their data is going away anyway.
+			if hnswIndex.IsClosed() {
+				continue
+			}
+
 			nodes, extToInt, counter, entrypoint, maxLevel, quantizer, norms, autoLinks, memoryConfig, vectorDim := hnswIndex.SnapshotData()
 
 			metric, m, efc, precision, _, textLang := hnswIndex.GetInfoUnlocked()
@@ -250,7 +267,11 @@ func (s *DB) Snapshot(writer io.Writer) error {
 				// Create the node snapshot
 				snap := &NodeSnapshot{
 					NodeData: node,
-					Metadata: s.getMetadataForNode(name, internalID),
+					// Read under the idxMu.RLock held since phase 1 — never
+					// re-acquire s.mu here (would deadlock with a concurrent
+					// DeleteVectorIndex/Close holding s.mu.Lock and waiting
+					// on this index's metaMu.Lock).
+					Metadata: s.getMetadataForNodeUnlocked(name, internalID),
 				}
 
 				// Use a type switch to populate the correct vector field
@@ -331,6 +352,17 @@ func (s *DB) LoadFromSnapshot(reader io.Reader, basePath string) error {
 		s.graphShards[i].nodes = snapshot.GraphData[i].Nodes
 		if s.graphShards[i].nodes == nil {
 			s.graphShards[i].nodes = make(map[string]*GraphNode)
+		}
+	}
+	// Close any existing indexes before replacing the state: their arena mmaps
+	// and file handles would otherwise leak (the snapshot is normally loaded
+	// at boot with no existing indexes, but a live reload must be safe).
+	// Safe under s.mu.Lock because Snapshot no longer re-acquires s.mu while
+	// holding an index's metaMu.RLock (ABBA fix).
+	for name, idx := range s.vectorIndexes {
+		if err := idx.Close(); err != nil {
+			slog.Warn("LoadFromSnapshot: failed to close existing index",
+				"index", name, "error", err)
 		}
 	}
 	s.vectorIndexes = make(map[string]VectorIndex)
@@ -1037,6 +1069,13 @@ func (s *DB) DeleteVectorIndex(name string) error {
 		return fmt.Errorf("index '%s' not found", name)
 	}
 
+	// Lock the per-index metadata lock: all secondary map mutations take
+	// idxMu, so a concurrent Snapshot holding idxMu.RLock (which no longer
+	// holds s.mu) would otherwise race with these deletes.
+	idxMu := s.indexLocks[name]
+	idxMu.Lock()
+	defer idxMu.Unlock()
+
 	slog.Info("[DB] Calling index.Close()", "index", name)
 
 	// Get arena directory before closing (we'll delete it after)
@@ -1119,11 +1158,15 @@ func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) err
 	oldHNSWIndex.IterateRaw(func(id string, vector interface{}) {
 		// We make a type assertion to be sure
 		if vecF32, ok := vector.([]float32); ok {
+			// Deep copy: IterateRaw exposes slices into the arena mmap, which
+			// is unmapped by oldHNSWIndex.Close() below — the copy keeps the
+			// data alive in Go heap for TrainQuantizer and the batch inserts.
+			vecCopy := append([]float32(nil), vecF32...)
 			internalID, _ := oldHNSWIndex.GetInternalID(id)
 			metadata := s.getMetadataForNodeUnlocked(indexName, internalID)
 			allVectors = append(allVectors, rawData{
 				ID:       id,
-				Vector:   vecF32,
+				Vector:   vecCopy,
 				Metadata: metadata,
 			})
 		}
@@ -1138,13 +1181,31 @@ func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) err
 	textLang := oldHNSWIndex.TextLanguage()
 	oldArenaDir := oldHNSWIndex.GetArenaDir()
 
+	// Lock the per-index metadata lock: the secondary map resets below would
+	// otherwise race with a concurrent Snapshot reading metadataMap under
+	// idxMu.RLock (Snapshot no longer holds s.mu in its encode loop).
+	idxMu := s.indexLocks[indexName]
+	idxMu.Lock()
+	defer idxMu.Unlock()
+
+	// Close the old index first so its arena mmap is released: the async
+	// RemoveAll below then actually frees the virtual memory instead of
+	// leaving it mapped until process exit (mmap leak).
+	// Safe under s.mu.Lock because Snapshot no longer re-acquires s.mu while
+	// holding an index's metaMu.RLock (ABBA fix).
+	if err := oldHNSWIndex.Close(); err != nil {
+		slog.Warn("Failed to close old index during compression", "index", indexName, "error", err)
+	}
+
 	// Rename old arena directory to prevent precision mismatch on restart.
 	// The new compressed index will create its own arena with the correct precision.
+	renamed := false
 	if oldArenaDir != "" {
 		oldArenaBackup := oldArenaDir + ".old_compress"
 		if err := os.Rename(oldArenaDir, oldArenaBackup); err != nil {
 			slog.Warn("Failed to rename old arena directory during compression", "dir", oldArenaDir, "error", err)
 		} else {
+			renamed = true
 			// Clean up backup asynchronously to not block
 			go func() {
 				_ = os.RemoveAll(oldArenaBackup)
@@ -1154,6 +1215,13 @@ func (s *DB) Compress(indexName string, newPrecision distance.PrecisionType) err
 
 	newIndex, err := hnsw.New(m, efConst, metric, newPrecision, textLang, oldArenaDir)
 	if err != nil {
+		// Restore the renamed arena so a restart finds the files in place.
+		if renamed && oldArenaDir != "" {
+			if rerr := os.Rename(oldArenaDir+".old_compress", oldArenaDir); rerr != nil {
+				slog.Error("Failed to restore arena directory after compression failure",
+					"dir", oldArenaDir, "error", rerr)
+			}
+		}
 		return fmt.Errorf("failed to create new compressed index: %w", err)
 	}
 

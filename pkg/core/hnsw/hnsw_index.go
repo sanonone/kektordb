@@ -3570,6 +3570,13 @@ func (h *Index) isClosed() bool {
 	return h.closed.Load()
 }
 
+// IsClosed reports whether the index has been closed (or is closing). Useful
+// for external consumers iterating indexes (e.g. snapshot) to skip indexes
+// that are being shut down concurrently.
+func (h *Index) IsClosed() bool {
+	return h.closed.Load()
+}
+
 // MarkClosed sets the closed flag. Used during testing or forced shutdown.
 func (h *Index) MarkClosed() {
 	h.closed.Store(true)
