@@ -48,6 +48,9 @@ All notable changes to KektorDB are documented here.
 - **Snapshot lock-cycle fixed:** `DB.Snapshot` no longer holds an index's `metaMu.RLock` across its encode loop (it self-locks via `SnapshotData`), breaking the ABBA deadlock with `DeleteVectorIndex`/`DB.Close` (`s.mu.Lock` → `idx.Close` → `metaMu.Lock`) that previously hung the process permanently under concurrent autosave + index deletion. The index list is snapshotted under `s.mu` (no map race), indexes being shut down are skipped (`IsClosed`), and per-index map mutations are now consistently guarded by `idxMu` in `DeleteVectorIndex` and `Compress`.
 - **Compress lifecycle:** the old index is closed (mmap released) before the arena rename, vectors are deep-copied out of the arena before unmapping (fixes a SIGSEGV in quantizer training), and a failed `hnsw.New` restores the renamed arena directory.
 - **`LoadFromSnapshot` closes existing indexes** before replacing the state (no mmap/handle leak on live reload).
+- **`RemoveEdge` soft delete targets the active edge:** after an edge evolution (`AddEdge` with changed props/weight appends a new active version), soft removal now marks the edge with `DeletedAt == 0` — previously it re-marked the already-deleted historical version and left the active edge standing, silently breaking graph shrinking.
+- **Filter operator parsing is quote-aware:** `evaluateBooleanFilter` scans for operators outside quoted sections only, so values containing operators (`tag = "a<=b"`, `version >= "1.0"`) parse correctly instead of splitting mid-value.
+- **Malformed filters no longer panic:** an OR-block made only of `AND`/whitespace (e.g. `"a=1 OR AND AND"`) is skipped instead of panicking on `roaring.Or(nil)`.
 
 ### Security
 

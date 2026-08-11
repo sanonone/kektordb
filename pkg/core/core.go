@@ -1822,6 +1822,12 @@ func (s *DB) FindIDsByFilter(indexName string, filter string) (*roaring.Bitmap, 
 		}
 
 		// Union (OR) with the final result set.
+		// A block whose AND-clauses were all empty/whitespace leaves
+		// blockIDSet nil (e.g. filter "a=1 OR AND AND") — skip it instead of
+		// panicking on roaring.Or with a nil receiver.
+		if blockIDSet == nil {
+			continue
+		}
 		finalIDSet.Or(blockIDSet)
 
 	}
@@ -1850,19 +1856,48 @@ func (s *DB) getAllValidNodeIDsLocked(indexName string) (*roaring.Bitmap, error)
 // regex to parse the CONTAINS function
 var containsRegex = regexp.MustCompile(`(?i)CONTAINS\s*\(\s*(\w+)\s*,\s*['"](.+?)['"]\s*\)`)
 
+// findFilterOperator returns the first comparison operator OUTSIDE quoted
+// sections of the filter, plus its byte index. Compound operators (!=, <=,
+// >=) take precedence over single ones at the same position. Operators
+// inside quoted values (e.g. `tag = "a<=b"`) are ignored.
+func findFilterOperator(filter string) (string, int) {
+	inSingle, inDouble := false, false
+	for i := 0; i < len(filter); i++ {
+		c := filter[i]
+		switch c {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+			}
+			continue
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+			continue
+		}
+		if inSingle || inDouble {
+			continue
+		}
+		if i+1 < len(filter) {
+			switch filter[i : i+2] {
+			case "!=", "<=", ">=":
+				return filter[i : i+2], i
+			}
+		}
+		switch c {
+		case '=', '<', '>':
+			return string(c), i
+		}
+	}
+	return "", -1
+}
+
 // evaluateBooleanFilter evaluates a single expression like "price >= 10" or "name = 'Alice'".
 func (s *DB) evaluateBooleanFilter(indexName string, filter string) (*roaring.Bitmap, error) {
 	filter = strings.TrimSpace(filter)
 
-	var op string
-	opIndex := -1
-	for _, operator := range []string{"!=", "<=", ">=", "=", "<", ">"} {
-		if idx := strings.Index(filter, operator); idx != -1 {
-			op = operator
-			opIndex = idx
-			break
-		}
-	}
+	op, opIndex := findFilterOperator(filter)
 	if opIndex == -1 {
 		return nil, fmt.Errorf("invalid filter format")
 	}

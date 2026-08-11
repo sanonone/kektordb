@@ -204,9 +204,14 @@ func (db *DB) RemoveEdge(sourceID, targetID, relationType string, hardDelete boo
 				}
 				sourceNode.OutEdges[relationType] = newOut
 			} else {
-				// Soft Delete
+				// Soft Delete: mark the ACTIVE edge (DeletedAt == 0). After an
+				// edge evolution AddEdge soft-deletes the old version and
+				// appends a new active one; marking the first matching edge
+				// would re-mark the already-deleted version and leave the
+				// active edge standing (time-travel history is preserved —
+				// old versions keep their DeletedAt).
 				for i := range outList {
-					if outList[i].TargetID == targetID {
+					if outList[i].TargetID == targetID && outList[i].DeletedAt == 0 {
 						outList[i].DeletedAt = timestamp
 						break
 					}
@@ -227,9 +232,10 @@ func (db *DB) RemoveEdge(sourceID, targetID, relationType string, hardDelete boo
 				}
 				targetNode.InEdges[relationType] = newIn
 			} else {
-				// Soft Delete
+				// Soft Delete: mark the ACTIVE reverse edge (same rationale
+				// as the forward edge above).
 				for i := range inList {
-					if inList[i].SourceID == sourceID {
+					if inList[i].SourceID == sourceID && inList[i].DeletedAt == 0 {
 						inList[i].DeletedAt = timestamp
 						break
 					}
