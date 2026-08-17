@@ -488,12 +488,17 @@ func (va *VectorArena) Close() error {
 		if err := chunk.File.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
+		// Nil the data slice: any late reader (e.g. an arena compactor
+		// goroutine that survived a Stop timeout) must see a nil slice and
+		// skip instead of faulting on unmapped memory (SIGSEGV).
+		chunk.Data = nil
 	}
 	for _, chunk := range va.droppedChunks {
 		if err := munmapFile(chunk.Data); err != nil && firstErr == nil {
 			firstErr = err
 		}
 		// File already closed in DeferDropChunk, just unmap
+		chunk.Data = nil
 	}
 	va.droppedChunks = nil
 	return firstErr
@@ -518,6 +523,7 @@ func (va *VectorArena) ForceClose() error {
 		if err := chunk.File.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
+		chunk.Data = nil
 	}
 	for _, chunk := range va.droppedChunks {
 		if chunk == nil || chunk.Data == nil {
@@ -526,6 +532,7 @@ func (va *VectorArena) ForceClose() error {
 		if err := munmapFile(chunk.Data); err != nil && firstErr == nil {
 			firstErr = err
 		}
+		chunk.Data = nil
 	}
 	// Clear chunks to prevent further access
 	va.chunks = nil

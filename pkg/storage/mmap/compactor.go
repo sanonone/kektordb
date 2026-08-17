@@ -227,6 +227,13 @@ func (ac *AsyncCompactor) RunCycle() {
 		return
 	}
 
+	// Skip if the arena has been closed: compaction must never touch an
+	// unmapped arena (its chunks may already be nil-ed by Close).
+	if ac.arena.closed.Load() {
+		slog.Debug("[ArenaCompactor] Skipping - arena closed")
+		return
+	}
+
 	if !ac.config.Enabled {
 		return
 	}
@@ -322,6 +329,11 @@ func (ac *AsyncCompactor) compactChunk(chunkID int) (relocated, freed int) {
 		if ac.draining.Load() {
 			return relocated, freed
 		}
+		// The arena was closed mid-cycle: stop immediately (chunks are being
+		// unmapped / already nil).
+		if ac.arena.closed.Load() {
+			return relocated, freed
+		}
 
 		select {
 		case <-ac.stopCh:
@@ -350,7 +362,9 @@ func (ac *AsyncCompactor) compactChunk(chunkID int) (relocated, freed int) {
 			vec := make([]byte, ac.arena.vectorSize)
 
 			ac.arena.mu.RLock()
-			if chunkIdx < len(ac.arena.chunks) && ac.arena.chunks[chunkIdx] != nil {
+			// Data may be nil if the arena was closed (chunks unmapped) while
+			// this cycle was in flight — skip instead of faulting.
+			if chunkIdx < len(ac.arena.chunks) && ac.arena.chunks[chunkIdx] != nil && ac.arena.chunks[chunkIdx].Data != nil {
 				copy(vec, ac.arena.chunks[chunkIdx].Data[offset:offset+ac.arena.vectorSize])
 			}
 			ac.arena.mu.RUnlock()
@@ -386,20 +400,23 @@ func (ac *AsyncCompactor) compactChunk(chunkID int) (relocated, freed int) {
 			targetChunkID := int(targetSlot) / ac.arena.vecsPerChk
 			targetOffset := ArenaHeaderSize + int(targetSlot%uint32(ac.arena.vecsPerChk))*ac.arena.vectorSize
 
-			if targetChunkID < len(ac.arena.chunks) && ac.arena.chunks[targetChunkID] != nil {
+			// Data may be nil if the arena was closed mid-cycle — skip.
+			if targetChunkID < len(ac.arena.chunks) && ac.arena.chunks[targetChunkID] != nil && ac.arena.chunks[targetChunkID].Data != nil {
 				copy(ac.arena.chunks[targetChunkID].Data[targetOffset:targetOffset+ac.arena.vectorSize], v.data)
 			}
 
 			// Update slot table
 			ac.arena.slotTable[v.internalID] = targetSlot
 
-			// Update node pointer
-			newBytes := ac.arena.chunks[targetChunkID].Data[targetOffset : targetOffset+ac.arena.vectorSize]
-			if ac.nodeUpdater != nil {
-				ac.nodeUpdater.UpdateNodePointer(v.internalID, newBytes)
+			// Update node pointer (skip if the arena was closed mid-cycle —
+			// the target chunk Data would be nil and the update is moot).
+			if targetChunkID < len(ac.arena.chunks) && ac.arena.chunks[targetChunkID] != nil && ac.arena.chunks[targetChunkID].Data != nil {
+				newBytes := ac.arena.chunks[targetChunkID].Data[targetOffset : targetOffset+ac.arena.vectorSize]
+				if ac.nodeUpdater != nil {
+					ac.nodeUpdater.UpdateNodePointer(v.internalID, newBytes)
+				}
+				relocated++
 			}
-
-			relocated++
 		}
 
 		// Free old slots

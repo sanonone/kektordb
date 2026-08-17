@@ -61,6 +61,7 @@ All notable changes to KektorDB are documented here.
 - **`IterateKV` returns defensive copies** of the values and documents the no-write contract (callback runs under the KV read lock — writing would deadlock).
 - **`GetOutEdges` copies `Props`:** returned edges no longer share the `json.RawMessage` slice with the stored graph — caller mutations can't corrupt it.
 - **Cleanup:** removed stale commented-out vector-reconstruction blocks (NodeSnapshot, Snapshot, LoadFromSnapshot) and normalized an internal bug-reference comment.
+- **Arena/compactor shutdown race fixed (flaky SIGSEGV):** `VectorArena.Close()`/`ForceClose()` now nil the chunk `Data` slices after unmapping, and the arena compactor skips nil-Data chunks and exits when the arena is closed. Previously a compactor cycle that survived the 5s `Stop` timeout could read unmapped memory after the arena was unmapped — the root cause of the intermittent `SIGSEGV` (in zone mmap) seen in combined `-race` test runs. Also added an `isClosed()` guard to the graph optimizer's `Refine()` so a turbo-refine in flight during `Engine.Close` stops instead of touching the unmapped arena. New deterministic regression test `TestCompactorReadAfterCloseIsSafe`.
 
 ### Security
 

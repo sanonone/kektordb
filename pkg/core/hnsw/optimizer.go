@@ -271,6 +271,11 @@ type refineResult struct {
 // Refine improves the graph quality by re-evaluating neighbors for a batch of nodes.
 // This implementation uses parallel computation with sharded commit for better performance.
 func (o *GraphOptimizer) Refine() bool {
+	// Stop refining if the index is being closed: the arena may be unmapped
+	// and node vectors would fault (turbo-refine survives engine Close).
+	if o.index.isClosed() {
+		return false
+	}
 	// =========================================================================
 	// PHASE 0: PREPARATION (Brief lock to read state)
 	// =========================================================================
