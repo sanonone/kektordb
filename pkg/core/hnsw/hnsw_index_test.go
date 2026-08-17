@@ -103,6 +103,13 @@ func TestLargeBatchInsertionForProfiling(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping profiling test in short mode (100K vectors)")
 	}
+	// This is a profiling benchmark (100K vectors + pprof output), not a
+	// correctness test: it only runs when explicitly requested, so the
+	// pre-release suite and the race detector never hit it.
+	// Run with: KEKTORDB_PROFILING=1 go test -run TestLargeBatchInsertionForProfiling
+	if os.Getenv("KEKTORDB_PROFILING") == "" {
+		t.Skip("profiling test — run with KEKTORDB_PROFILING=1")
+	}
 	// --- Setup: data generation happens HERE, outside of profiling ---
 	const (
 		totalVectors = 100000

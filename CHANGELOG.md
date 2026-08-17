@@ -2,7 +2,7 @@
 
 All notable changes to KektorDB are documented here.
 
-## [0.6.1] — Unreleased
+## [0.6.1] — 2026-08-15
 
 ### MCP Quality + Polish
 

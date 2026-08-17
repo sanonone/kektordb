@@ -1,8 +1,12 @@
 # Detailed Performance Benchmarks
 
-This document contains the raw results of performance tests last updated for **KektorDB v0.5.x**.
+This document contains the raw results of performance tests last updated for **KektorDB v0.6.1**.
 
-> **Note:** These benchmarks were performed on v0.5.x hardware. KektorDB v0.6.0 includes significant engine stability improvements (AOF ordering, snapshot mode, lazy writer hardening) that may affect performance characteristics. Updated benchmarks are planned for a future release.
+> **Note:** The competitor comparison tables below were performed on v0.5.x hardware. KektorDB v0.6.x adds significant engine stability improvements (AOF ordering, snapshot mode, lazy writer hardening) and the following measured gains:
+>
+> - **Batch embedding:** `EmbedBatch` reduces per-request overhead to a single HTTP round trip — mock-provider benchmark shows **~28× throughput** for batch vs serial (32 texts); the ONNX backend embeds a whole batch in one inference pass (~2.4× on CPU-bound hardware).
+> - **AOF write path:** vector serialization for VAdd is ~**6.4× faster** (30µs → 4.7µs per vector, hex bit encoding), with the AOF buffer raised to 64KB; p95 VAdd latency under sustained batch load improved from 2.04ms to 1.89ms.
+> - **BM25 statistics:** `AvgFieldLength` is maintained incrementally — bulk text ingestion with the analyzer is O(N) instead of O(N²).
 
 ### Methodology
 *   **Hardware:** Intel Core i5-12500 (Consumer Desktop), Local SSD.

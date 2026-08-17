@@ -92,6 +92,23 @@ I 49 strumenti agent coprono: **CRUD memoria** (`save_memory`, `recall_memory`, 
 
 ## Avvio Rapido
 
+### Provalo in 5 secondi (nessuna configurazione)
+
+```bash
+./kektordb try
+```
+
+Avvia un server demo effimero su `http://127.0.0.1:9091` con memorie di
+esempio, un'entità e link di grafo. Tutti i dati vivono in una directory
+temporanea e vengono scartati all'uscita. La ricerca vettoriale funziona
+subito; la ricerca testuale (`query_text`) funziona quando è disponibile un
+embedder (Ollama o il runtime ONNX integrato):
+
+```bash
+curl -X POST http://127.0.0.1:9091/vector/actions/search-with-scores \
+  -d '{"index_name":"mcp_memory","k":5,"query_text":"come funziona il gardener?"}'
+```
+
 ### Python (API REST)
 
 ```python
@@ -204,7 +221,7 @@ Il modello ONNX (~90 MB) viene scaricato automaticamente da HuggingFace al primo
 
 ## Roadmap
 
-### v0.6.0 (corrente)
+### v0.6.1 (corrente)
 
 - **Stabilita' motore:** 6 bug P1+P2 risolti - riordino memory-before-AOF, nil-pointer Stat(), recovery corruzione AOF, perdita dati silenziosa alla chiusura, race taskIDCounter, leak task asincroni
 - **MCP:** 57 strumenti (49 agent + 8 admin), prompt `memory_instructions`, supporto API Gemini

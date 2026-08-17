@@ -204,7 +204,7 @@ The ONNX model (~90 MB) is downloaded automatically from HuggingFace on first la
 
 ## Roadmap
 
-### v0.6.0 (current)
+### v0.6.1 (current)
 
 - **Engine stability:** 6 P1+P2 bugs fixed - memory-before-AOF reorder, nil-pointer Stat(), AOF corruption recovery, silent data loss on close, taskIDCounter race, async task leak
 - **MCP:** 57 tools (49 agent + 8 admin), `memory_instructions` prompt, Gemini API support

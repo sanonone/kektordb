@@ -1,5 +1,5 @@
 
-# KektorDB Technical Documentation (v0.6.0)
+# KektorDB Technical Documentation (v0.6.1)
 
 ## Table of Contents
 
