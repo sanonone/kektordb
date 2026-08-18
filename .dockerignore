@@ -1,28 +1,40 @@
-# Git
+# VCS / tooling
 .git
 .gitignore
+.github
 
 # Build artifacts
-kektordb
-*.exe
-*.dll
-*.so
-*.dylib
-*.a
+native/compute/target
+release/
 
-# Data
-kektordb.aof
-kektordb.kdb
-test_data/
-examples/
+# Local runtime data (git-ignored)
+*.aof
+*.kdb
+arenas/
+models/
+assets/
+kektor_data/
+temp_rag_data/
+
+# Dev docs (planning only, not shipped)
+tempDocs/
+tempMcpDocs/
+skills/
+
+# Clients: installed dependencies and build output
+clients/typescript/node_modules/
+clients/typescript/dist/
+clients/python/build/
+clients/python/dist/
+clients/python/*.egg-info/
+
+# Large local benchmark datasets (git-ignored — not needed in the image)
+clients/python/datasets/
+clients/python/glove.*
 benchmarks/
 
-# Rust build artifacts (molto pesanti)
-native/compute/target/
-
-# Documentation and temp
-tempDocs/
-docs/
-
-# Markdown (non servono dentro il container)
-*.md
+# Misc
+*.log
+*.pprof
+kektordb-test
+eng.traineddata

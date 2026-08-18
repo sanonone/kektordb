@@ -1,0 +1,84 @@
+# KektorDB — Rust-optimized image (SIMD distance + built-in ONNX embedder).
+#
+# Multi-arch: linux/amd64 + linux/arm64 (glibc-based; candle/tokenizers are not
+# feasible on 32-bit arm/v7 — use the pure-Go Dockerfile for Raspberry Pi).
+#
+# The ONNX model (all-MiniLM-L6-v2) is downloaded at build time with pinned
+# SHA256 checksums (same sources as pkg/embeddings/download.go), so the
+# container works offline with `--embedder local`.
+
+# ─── Stage 1: Rust builder ───────────────────────────────────────────────────
+FROM rust:1-bookworm AS rust-builder
+
+# protoc is required by candle-onnx at build time (same as make ensure-protoc).
+RUN apt-get update && apt-get install -y --no-install-recommends curl unzip \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL -o /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-linux-x86_64.zip \
+    && unzip -o /tmp/protoc.zip -d /tmp/protoc && rm /tmp/protoc.zip \
+    && chmod +x /tmp/protoc/bin/protoc
+
+WORKDIR /build
+COPY native/compute/ native/compute/
+WORKDIR /build/native/compute
+RUN PROTOC=/tmp/protoc/bin/protoc cargo build --release
+
+# ─── Stage 2: Go builder (CGO + rust tag) ────────────────────────────────────
+FROM golang:1.26-bookworm AS go-builder
+
+ARG VERSION=v0.6.1-dev
+
+RUN apt-get update && apt-get install -y --no-install-recommends gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+COPY --from=rust-builder /build/native/compute/target/release/libkektordb_compute.a \
+     /app/native/compute/target/release/libkektordb_compute.a
+
+RUN CGO_ENABLED=1 \
+    CGO_LDFLAGS="-L/app/native/compute/target/release -lkektordb_compute -lm -ldl -lstdc++" \
+    go build -tags "rust netgo" \
+      -ldflags="-s -w -X github.com/sanonone/kektordb/internal/version.Version=${VERSION}" \
+      -trimpath -o kektordb ./cmd/kektordb
+
+# ─── Stage 3: ONNX model download (checksum-pinned) ──────────────────────────
+FROM alpine:3.21 AS model-download
+
+RUN apk add --no-cache curl
+
+RUN mkdir -p /opt/kektordb-models/models && \
+    curl -fsSL -o /tmp/model.onnx \
+      https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx && \
+    echo "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452  /tmp/model.onnx" | sha256sum -c - && \
+    mv /tmp/model.onnx /opt/kektordb-models/models/all-MiniLM-L6-v2.onnx && \
+    curl -fsSL -o /tmp/tokenizer.json \
+      https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json && \
+    echo "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037  /tmp/tokenizer.json" | sha256sum -c - && \
+    mv /tmp/tokenizer.json /opt/kektordb-models/models/all-MiniLM-L6-v2-tokenizer.json
+
+# ─── Stage 4: Runtime ────────────────────────────────────────────────────────
+FROM debian:bookworm-slim AS runtime
+
+# libstdc++ is linked dynamically by the Rust staticlib.
+RUN apt-get update && apt-get install -y --no-install-recommends libstdc++6 ca-certificates tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /root/
+COPY --from=go-builder /app/kektordb .
+COPY --from=model-download /opt/kektordb-models /opt/kektordb-models
+
+RUN mkdir -p /data /docs
+
+ENV KEKTOR_PORT=:9091
+ENV KEKTOR_DATA_DIR=/data
+ENV KEKTOR_TOKEN=""
+
+EXPOSE 9091
+EXPOSE 9092
+
+VOLUME ["/data"]
+
+CMD ["./kektordb", "--embedder", "local", "--embedder-model", "/opt/kektordb-models"]

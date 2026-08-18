@@ -1,5 +1,9 @@
 FROM golang:1.26-alpine AS builder
 
+# Release version stamped into the binary. The CI passes the git tag
+# (e.g. v0.6.1); local builds default to the dev version.
+ARG VERSION=v0.6.1-dev
+
 RUN apk add --no-cache git
 
 WORKDIR /app
@@ -9,7 +13,9 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -trimpath -o kektordb ./cmd/kektordb
+RUN CGO_ENABLED=0 GOOS=linux go build \
+  -ldflags="-s -w -X github.com/sanonone/kektordb/internal/version.Version=${VERSION}" \
+  -trimpath -o kektordb ./cmd/kektordb
 
 FROM alpine:latest
 
