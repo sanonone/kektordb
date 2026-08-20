@@ -440,11 +440,19 @@ func (e *Engine) VGetIncomingEdges(indexName, targetID, relationType string, atT
 
 // RunGraphVacuum executes the cleanup of old soft-deleted edges natively in RAM.
 func (e *Engine) RunGraphVacuum() {
+	// Hold s.mu.RLock for the whole walk and use the Unlocked variants:
+	// GetVectorIndexInfo/GetVectorIndex take s.mu.RLock internally, and a
+	// second reentrant RLock here would deadlock under writer-preference
+	// once a create/delete index waits (same class as P1-5). Lock order
+	// s.mu → graphShards (VacuumGraph) matches DB.Snapshot.
+	e.DB.RLock()
+	defer e.DB.RUnlock()
+
 	infos, _ := e.DB.GetVectorIndexInfoUnlocked()
 	var retention time.Duration
 
 	for _, info := range infos {
-		idx, _ := e.DB.GetVectorIndex(info.Name)
+		idx, _ := e.DB.GetVectorIndexUnlocked(info.Name)
 		if hnswIdx, ok := idx.(*hnsw.Index); ok {
 			cfg := hnswIdx.GetMaintenanceConfig()
 			if cfg.GraphRetention > 0 {
