@@ -162,10 +162,14 @@ func (o *GraphOptimizer) Vacuum() bool {
 
 	// Collect nodes that need repair
 	nodesToRepair := make([]*Node, 0, totalNodes/10) // Heuristic pre-allocation
-	for _, node := range nodes {
+	for i, node := range nodes {
 		if node == nil || node.Deleted.Load() {
 			continue
 		}
+		// The slice index is the internal ID. It is not set on the Add path
+		// (Node.InternalID is only populated on snapshot/load), and reconnectNode
+		// must lock the correct node shard (P1-9).
+		node.InternalID = uint32(i)
 		// Check if any neighbor is dead
 		needsRepair := false
 		for _, layer := range node.Connections {
@@ -241,8 +245,14 @@ func (o *GraphOptimizer) Vacuum() bool {
 		}
 	}
 
-	// Physical Cleanup
+	// Physical Cleanup. Take the per-node shard lock: searches read
+	// nodes[id] and the vector bytes under RLockNode, and the nil write here
+	// (plus the vector clear) must be excluded from those reads. metaMu.Lock
+	// alone does not synchronize with the per-node shards (P1-9).
 	for deadID := range deletedSet {
+		o.index.LockNode(deadID)
+
+		// overwrite slot virtual memory
 		// overwrite slot virtual memory
 		if o.index.arena != nil {
 			if vecBytes, err := o.index.arena.GetBytes(deadID); err == nil {
@@ -255,6 +265,7 @@ func (o *GraphOptimizer) Vacuum() bool {
 			delete(o.index.internalToExternalID, deadID)
 		}
 		nodes[deadID] = nil // Free RAM
+		o.index.UnlockNode(deadID)
 	}
 
 	slog.Info("[Optimizer] Vacuum complete", "repaired_parents", repairedCount, "removed_nodes", len(deletedSet))
@@ -325,6 +336,10 @@ func (o *GraphOptimizer) Refine() bool {
 	for i := start; i < end; i++ {
 		node := nodes[i]
 		if node != nil && !node.Deleted.Load() {
+			// Slice index = internal ID; without this the per-node shard
+			// locks below would all target shard 0 and fail to synchronize
+			// with concurrent searches (same root cause as P1-9).
+			node.InternalID = uint32(i)
 			nodesToProcess = append(nodesToProcess, node)
 		}
 	}
@@ -578,9 +593,21 @@ func (o *GraphOptimizer) reconnectNode(node *Node, ignoreSet map[uint32]struct{}
 			continue
 		}
 
-		// 2. Filter dead nodes & Add existing valid neighbors
-		// We want to keep existing good connections that might not be found by search
-		currentNeighbors := node.Connections[l]
+		// 2. Snapshot current neighbors under the node shard lock. Searches
+		// and Add read/write Connections under RLockNode/LockNode, while
+		// Vacuum previously did it under metaMu.Lock only — the two lock
+		// domains do not exclude each other, so the Connections slice raced
+		// with concurrent searches (P1-9). The lock is NOT held across the
+		// computation below: searchLayerUnlocked/selectNeighbors/loadNode
+		// take RLockNode internally and would self-deadlock against our
+		// exclusive LockNode.
+		o.index.LockNode(node.InternalID)
+		currentNeighbors := make([]uint32, len(node.Connections[l]))
+		copy(currentNeighbors, node.Connections[l])
+		o.index.UnlockNode(node.InternalID)
+
+		// 2b. Filter dead nodes & merge existing valid neighbors (reads
+		// other nodes only; loadNode takes RLockNode internally).
 		for _, nID := range currentNeighbors {
 			// Check if ignored (deleted)
 			if ignoreSet != nil {
@@ -599,7 +626,7 @@ func (o *GraphOptimizer) reconnectNode(node *Node, ignoreSet map[uint32]struct{}
 			}
 
 			if !alreadyIn {
-				target := o.index.getNodes()[nID]
+				target := o.index.loadNode(nID)
 				if target != nil && !target.Deleted.Load() {
 					dist, _ := o.index.distanceBetweenNodes(node, target)
 					candidates = append(candidates, types.Candidate{Id: nID, Distance: dist})
@@ -634,12 +661,14 @@ func (o *GraphOptimizer) reconnectNode(node *Node, ignoreSet map[uint32]struct{}
 
 		selected := o.index.selectNeighbors(validCandidates, maxM)
 
-		// 6. Update
+		// 6. Write back under the node shard lock.
 		newConns := make([]uint32, len(selected))
 		for i, c := range selected {
 			newConns[i] = c.Id
 		}
+		o.index.LockNode(node.InternalID)
 		node.Connections[l] = newConns
+		o.index.UnlockNode(node.InternalID)
 	}
 }
 

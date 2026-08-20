@@ -127,10 +127,12 @@ func (q *Quantizer) Train(vectors [][]float32) {
 	// Set the new AbsMax.
 	q.mu.Lock()
 	q.AbsMax = allAbsValues[quantileIndex]
+	newAbsMax := q.AbsMax
 	q.mu.Unlock()
 
-	// Add a log for debugging.
-	slog.Debug("[DEBUG QUANTIZER] Training complete", "vectors_count", len(trainingSet), "abs_max", q.AbsMax)
+	// Add a log for debugging. Read the local copy: reading q.AbsMax here
+	// would race with a concurrent Train writing it under the lock (P1-3).
+	slog.Debug("[DEBUG QUANTIZER] Training complete", "vectors_count", len(trainingSet), "abs_max", newAbsMax)
 }
 
 // IsTrained reports whether the quantizer has a non-zero AbsMax, reading it
