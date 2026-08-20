@@ -3060,13 +3060,21 @@ func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uin
 	}
 
 	// ── FASE A: deep-copy Connections under per-node RLockNode ──
-	// RLockNode blocks LockNode used by Add Phase 3 (lines 708-773 of Add),
-	// which modifies Connections[l] after releasing metaMu at line 668.
-	// By using RLockNode instead of metaMu.RLock here we avoid any lock
-	// ordering inversion: Add acquires metaMu.Lock → LockNode, and we
-	// acquire RLockNode → metaMu.RLock at separate times.
-	// Searches are unaffected: they also use RLockNode, compatible with RLocks.
-	nodes := h.getNodes()
+	// Copy the node slice under a brief metaMu.RLock first: Add/AddBatch
+	// write nodes[i] while holding metaMu.Lock (Add line 643, AddBatch
+	// Phase 1B), so iterating the live slice without the lock is a data
+	// race. The copy is O(n) pointers; writers are blocked only for the
+	// copy, not for the per-node deep copy below.
+	//
+	// The per-node RLockNode then guards the Connections reads against Add
+	// Phase 3 (lines 708-773, after metaMu is released) and the arena
+	// compactor's UpdateNodePointer. Lock order stays metaMu → LockNode,
+	// the same direction the writers use, so no inversion is possible
+	// (we never hold RLockNode while acquiring metaMu.RLock).
+	h.metaMu.RLock()
+	nodes := make([]*Node, len(h.getNodes()))
+	copy(nodes, h.getNodes())
+	h.metaMu.RUnlock()
 
 	nodesMap := make(map[uint32]*Node, len(nodes))
 
@@ -3112,9 +3120,18 @@ func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uin
 
 	memCfg := h.memoryConfig
 
+	// Copy the external→internal ID map: the caller serializes it with gob
+	// AFTER this method returns and releases metaMu, so returning the live
+	// map by reference races with concurrent Add/AddBatch/Delete writes
+	// ("concurrent map iteration and map write"). Copy under the lock.
+	extToIntCopy := make(map[string]uint32, len(h.externalToInternalID))
+	for k, v := range h.externalToInternalID {
+		extToIntCopy[k] = v
+	}
+
 	dim := h.vectorDim
 
-	return nodesMap, h.externalToInternalID, uint32(h.nodeCounter.Load()), uint32(h.entrypointID.Load()), int(h.maxLevel.Load()), h.quantizer, normsCopy, autoLinksCopy, memCfg, dim
+	return nodesMap, extToIntCopy, uint32(h.nodeCounter.Load()), uint32(h.entrypointID.Load()), int(h.maxLevel.Load()), h.quantizer, normsCopy, autoLinksCopy, memCfg, dim
 }
 
 // LoadSnapshotData restores the internal state of the index from snapshot data.
