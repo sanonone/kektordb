@@ -222,7 +222,11 @@ type Gardener struct {
 	profileDebounce     time.Duration     // Quiet period required (default: 5s)
 	profileTimer        *time.Timer       // Active debounce timer (nil when not pending)
 	profilePendingUsers map[string]string // userID -> indexName, accumulated since last fire
-	profileTimerMu      sync.Mutex        // Protects profileTimer and profilePendingUsers
+	profileTimerMu      sync.Mutex        // Protects profileTimer, profilePendingUsers and profileGen
+	// profileGen is incremented on every schedule. A timer callback that
+	// observes a stale generation (a newer schedule superseded it) must not
+	// drain pending users that belong to the newer debounce window (P1-10).
+	profileGen int
 
 	// Per-user locks for UpdateUserProfile. Prevents concurrent updates for the
 	// same userID from racing on the profile node (stale reads + overwrites).
@@ -476,7 +480,11 @@ func (g *Gardener) Stop() {
 
 		// Flush any pending profile updates. If a debounced update was
 		// scheduled but hadn't fired yet, run it now to avoid losing data.
-		g.flushPendingProfileUpdates(0)
+		// Pass the current generation so the flush is never skipped.
+		g.profileTimerMu.Lock()
+		gen := g.profileGen
+		g.profileTimerMu.Unlock()
+		g.flushPendingProfileUpdates(gen, 0)
 
 		slog.Info("[Cognitive Engine] Gardener stopped.")
 	})
@@ -583,11 +591,15 @@ func (g *Gardener) scheduleProfileUpdate(indexName, userID string, count int) {
 	g.profilePendingUsers[userID] = indexName
 
 	// Reset the timer if it's already active; otherwise create a new one.
+	// Every schedule bumps the generation: a callback from a superseded
+	// timer must not drain pending users accumulated for the new window.
 	if g.profileTimer != nil {
 		g.profileTimer.Stop()
 	}
+	g.profileGen++
+	gen := g.profileGen
 	g.profileTimer = time.AfterFunc(g.profileDebounce, func() {
-		g.flushPendingProfileUpdates(count)
+		g.flushPendingProfileUpdates(gen, count)
 	})
 
 	slog.Info("[Cognitive Engine] Profile update scheduled (debounced)",
@@ -603,9 +615,19 @@ func (g *Gardener) scheduleProfileUpdate(indexName, userID string, count int) {
 // serially from the user's perspective because the debounce already
 // coalesced all rapid saves).
 //
-// Also called from Stop() with count=0 to flush on shutdown.
-func (g *Gardener) flushPendingProfileUpdates(count int) {
+// gen is the generation captured when the timer was created: if a newer
+// schedule superseded it, the drain is skipped so the newer callback
+// handles the users after the full quiet period (P1-10).
+//
+// Also called from Stop() with the current generation to flush on shutdown.
+func (g *Gardener) flushPendingProfileUpdates(gen, count int) {
 	g.profileTimerMu.Lock()
+	if gen != g.profileGen {
+		// A newer schedule superseded this timer: let the newer callback
+		// drain the pending users.
+		g.profileTimerMu.Unlock()
+		return
+	}
 	pending := g.profilePendingUsers
 	g.profilePendingUsers = make(map[string]string)
 	g.profileTimer = nil
