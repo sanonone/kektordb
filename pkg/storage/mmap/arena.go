@@ -380,29 +380,33 @@ func (va *VectorArena) GetBytes(internalID uint32) ([]byte, error) {
 		return nil, fmt.Errorf("arena is closed")
 	}
 
-	// 1. Logical to Physical Translation
+	// Hold slotMu.RLock for the entire operation. The compactor relocates
+	// vectors under slotMu.Lock + mu.Lock (same lock order), so keeping the
+	// slot read lock here closes the TOCTOU window in which a vector could
+	// be moved (or its slot freed) between the slot-table lookup and the
+	// data access (P0-4).
 	va.slotMu.RLock()
+	defer va.slotMu.RUnlock()
+
+	// 1. Logical to Physical Translation
 	if internalID >= uint32(len(va.slotTable)) {
-		va.slotMu.RUnlock()
 		return nil, fmt.Errorf("internalID %d out of bounds in slot table", internalID)
 	}
 	physSlot := va.slotTable[internalID]
 
 	if physSlot == UnallocatedSlot {
-		va.slotMu.RUnlock()
 		return nil, fmt.Errorf("internalID %d is not allocated", internalID)
 	}
 
 	// 2. Physical Location Calculation
 	chunkID := int(physSlot) / va.vecsPerChk
 	offset := ArenaHeaderSize + (int(physSlot)%va.vecsPerChk)*va.vectorSize
-	va.slotMu.RUnlock()
 
 	// 3. Check if chunk exists and access data
 	// Try read lock first
 	va.mu.RLock()
 
-	if chunkID < len(va.chunks) && va.chunks[chunkID] != nil {
+	if chunkID < len(va.chunks) && va.chunks[chunkID] != nil && va.chunks[chunkID].Data != nil {
 		// Fast path: chunk exists
 		data := va.chunks[chunkID].Data[offset : offset+va.vectorSize]
 		va.mu.RUnlock()
@@ -413,22 +417,12 @@ func (va *VectorArena) GetBytes(internalID uint32) ([]byte, error) {
 	// Release read lock
 	va.mu.RUnlock()
 
-	// Re-acquire slot lock to verify slot is still valid (TOCTOU)
-	va.slotMu.RLock()
-	currentPhys := UnallocatedSlot
-	if internalID < uint32(len(va.slotTable)) {
-		currentPhys = va.slotTable[internalID]
-	}
-	va.slotMu.RUnlock()
-
-	if currentPhys == UnallocatedSlot || currentPhys != physSlot {
-		return nil, fmt.Errorf("slot %d was reassigned or freed during chunk allocation", internalID)
-	}
-
 	// Acquire write lock to create chunk
 	va.mu.Lock()
 
-	// Double-check after acquiring write lock (another goroutine may have created it)
+	// Re-check under the write lock: the slot cannot have been moved (we
+	// still hold slotMu.RLock), but another goroutine may have created the
+	// chunk in the meantime.
 	if chunkID >= len(va.chunks) {
 		// Create missing chunks up to the required one
 		for i := len(va.chunks); i <= chunkID; i++ {
@@ -439,7 +433,12 @@ func (va *VectorArena) GetBytes(internalID uint32) ([]byte, error) {
 		}
 	}
 
-	data := va.chunks[chunkID].Data[offset : offset+va.vectorSize]
+	chunk := va.chunks[chunkID]
+	if chunk == nil || chunk.Data == nil {
+		va.mu.Unlock()
+		return nil, fmt.Errorf("arena is closed")
+	}
+	data := chunk.Data[offset : offset+va.vectorSize]
 	va.mu.Unlock()
 
 	return data, nil

@@ -348,8 +348,11 @@ func (ac *AsyncCompactor) compactChunk(chunkID int) (relocated, freed int) {
 			break
 		}
 
-		// Read all vectors in batch
+		// Read all vectors in batch. Hold slotMu.RLock across the reads: the
+		// slot table is written by AllocSlot/FreeSlot/GetBytes/compactChunk,
+		// and an unlocked read here is a data race (P1-8).
 		vectors := make([]vectorData, len(batch))
+		ac.arena.slotMu.RLock()
 		for i, internalID := range batch {
 			physSlot := ac.arena.slotTable[internalID]
 			if physSlot == UnallocatedSlot {
@@ -375,6 +378,7 @@ func (ac *AsyncCompactor) compactChunk(chunkID int) (relocated, freed int) {
 				data:       vec,
 			}
 		}
+		ac.arena.slotMu.RUnlock()
 
 		// Find free slots - prefer LOW slots (for consolidation)
 		newSlots := ac.arena.FindFreeSlots(len(batch))
@@ -383,58 +387,82 @@ func (ac *AsyncCompactor) compactChunk(chunkID int) (relocated, freed int) {
 		}
 
 		// Move vectors to new positions
-		ac.arena.slotMu.Lock()
-		ac.arena.mu.Lock()
+		reloc, freed := ac.moveBatch(vectors, newSlots)
+		relocated += reloc
+		freed += freed
 
-		for i, v := range vectors {
-			if len(newSlots) <= i {
-				break
+		time.Sleep(ac.config.BatchDelay)
+	}
+
+	return relocated, freed
+}
+
+// moveBatch relocates the given vectors to newSlots under slotMu+mu (same
+// lock order as the rest of the compactor). Exposed as a separate method so
+// the relocation logic (P0-3: stale target slots pointing past the chunk
+// list) can be tested deterministically.
+func (ac *AsyncCompactor) moveBatch(vectors []vectorData, newSlots []uint32) (relocated, freed int) {
+	ac.arena.slotMu.Lock()
+	defer ac.arena.slotMu.Unlock()
+	ac.arena.mu.Lock()
+	defer ac.arena.mu.Unlock()
+
+	for i, v := range vectors {
+		if len(newSlots) <= i {
+			break
+		}
+
+		// TOCTOU check
+		if ac.arena.slotTable[v.internalID] != v.fromSlot {
+			continue
+		}
+
+		targetSlot := newSlots[i]
+		targetChunkID := int(targetSlot) / ac.arena.vecsPerChk
+		targetOffset := ArenaHeaderSize + int(targetSlot%uint32(ac.arena.vecsPerChk))*ac.arena.vectorSize
+
+		// Materialize the target chunk before moving. A stale free slot
+		// (e.g. left behind by a previously dropped trailing chunk, or a
+		// fresh slot past nextPhysSlot after compaction dropped chunks)
+		// can point past the current chunk list. Writing slotTable there
+		// without creating the chunk would silently lose the vector (P0-3).
+		if targetChunkID >= len(ac.arena.chunks) {
+			for ci := len(ac.arena.chunks); ci <= targetChunkID; ci++ {
+				if err := ac.arena.addChunk(ci); err != nil {
+					slog.Warn("[ArenaCompactor] failed to create target chunk during compaction", "chunk", ci, "error", err)
+					break
+				}
 			}
+		}
 
-			// TOCTOU check
-			if ac.arena.slotTable[v.internalID] != v.fromSlot {
-				continue
-			}
-
-			targetSlot := newSlots[i]
-			targetChunkID := int(targetSlot) / ac.arena.vecsPerChk
-			targetOffset := ArenaHeaderSize + int(targetSlot%uint32(ac.arena.vecsPerChk))*ac.arena.vectorSize
-
-			// Data may be nil if the arena was closed mid-cycle — skip.
-			if targetChunkID < len(ac.arena.chunks) && ac.arena.chunks[targetChunkID] != nil && ac.arena.chunks[targetChunkID].Data != nil {
-				copy(ac.arena.chunks[targetChunkID].Data[targetOffset:targetOffset+ac.arena.vectorSize], v.data)
-			}
+		// Data may be nil if the arena was closed mid-cycle — skip.
+		// slotTable and freeSlots are only updated when the copy actually
+		// happened: otherwise the vector would point at a chunk that was
+		// never created (P0-3).
+		if targetChunkID < len(ac.arena.chunks) && ac.arena.chunks[targetChunkID] != nil && ac.arena.chunks[targetChunkID].Data != nil {
+			copy(ac.arena.chunks[targetChunkID].Data[targetOffset:targetOffset+ac.arena.vectorSize], v.data)
 
 			// Update slot table
 			ac.arena.slotTable[v.internalID] = targetSlot
 
-			// Update node pointer (skip if the arena was closed mid-cycle —
-			// the target chunk Data would be nil and the update is moot).
-			if targetChunkID < len(ac.arena.chunks) && ac.arena.chunks[targetChunkID] != nil && ac.arena.chunks[targetChunkID].Data != nil {
-				newBytes := ac.arena.chunks[targetChunkID].Data[targetOffset : targetOffset+ac.arena.vectorSize]
-				if ac.nodeUpdater != nil {
-					ac.nodeUpdater.UpdateNodePointer(v.internalID, newBytes)
-				}
-				relocated++
+			newBytes := ac.arena.chunks[targetChunkID].Data[targetOffset : targetOffset+ac.arena.vectorSize]
+			if ac.nodeUpdater != nil {
+				ac.nodeUpdater.UpdateNodePointer(v.internalID, newBytes)
 			}
+			relocated++
 		}
+	}
 
-		// Free old slots
-		for i, v := range vectors {
-			if len(newSlots) <= i {
-				break
-			}
-			if ac.arena.slotTable[v.internalID] == v.fromSlot {
-				continue
-			}
-			ac.arena.freeSlots = append(ac.arena.freeSlots, v.fromSlot)
-			freed++
+	// Free old slots
+	for i, v := range vectors {
+		if len(newSlots) <= i {
+			break
 		}
-
-		ac.arena.mu.Unlock()
-		ac.arena.slotMu.Unlock()
-
-		time.Sleep(ac.config.BatchDelay)
+		if ac.arena.slotTable[v.internalID] == v.fromSlot {
+			continue
+		}
+		ac.arena.freeSlots = append(ac.arena.freeSlots, v.fromSlot)
+		freed++
 	}
 
 	return relocated, freed
@@ -536,6 +564,17 @@ func (ac *AsyncCompactor) tryDropEmptyChunks() {
 		slog.Info("[ArenaCompactor] Dropping empty chunk", "chunk", lastChunkIdx)
 
 		droppedCount++
+
+		// Drop any free-slot entries that belonged to the dropped chunk.
+		// Reusing them later would point compaction targets (or fresh
+		// allocations) at a chunk that no longer exists (P0-3).
+		kept := ac.arena.freeSlots[:0]
+		for _, slot := range ac.arena.freeSlots {
+			if slot < chunkStartSlot || slot >= chunkEndSlot {
+				kept = append(kept, slot)
+			}
+		}
+		ac.arena.freeSlots = kept
 
 		// Use DeferDropChunk: MADV_DONTNEED + close file + remove file,
 		// but keep mmap mapping alive to prevent use-after-free segfaults.
