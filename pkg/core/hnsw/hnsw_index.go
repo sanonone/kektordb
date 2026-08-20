@@ -50,6 +50,12 @@ type Index struct {
 	// blocking until all readers drain. This prevents SIGSEGV from use-after-unmap.
 	activeMu sync.RWMutex
 
+	// closeTimeout bounds how long Close waits for in-flight operations to
+	// drain before giving up. On timeout the arena is deliberately left
+	// mapped (see Close): unmapping under live readers would SIGSEGV (P1-2).
+	// Configurable for tests.
+	closeTimeout time.Duration
+
 	// closed flag to prevent operations after Close() is called
 	closed atomic.Bool
 
@@ -141,6 +147,7 @@ func New(m int, efConstruction int, metric distance.DistanceMetric, precision di
 		textLanguage:         textLang,
 		shardsMu:             make([]sync.RWMutex, NumShards),
 		arenaDir:             arenaDir,
+		closeTimeout:         10 * time.Second,
 	}
 
 	// init atomic var
@@ -3532,16 +3539,15 @@ func (h *Index) Close() error {
 	select {
 	case <-drainDone:
 		// In-flight operations have drained, safe to proceed
-	case <-time.After(10 * time.Second):
-		slog.Error("[HNSW] Close timed out waiting for in-flight operations", "arena_dir", h.arenaDir)
-		// Force close the arena without waiting for compactor
-		if h.arena != nil {
-			if err := h.arena.ForceClose(); err != nil {
-				slog.Warn("[HNSW] ForceClose error", "error", err)
-			}
-			h.arena = nil
-		}
-		return fmt.Errorf("close timed out after 10 seconds - possible deadlock in in-flight operations")
+	case <-time.After(h.closeTimeout):
+		slog.Error("[HNSW] Close timed out waiting for in-flight operations", "arena_dir", h.arenaDir, "timeout", h.closeTimeout)
+		// Deliberately do NOT unmap the arena: the in-flight operations that
+		// failed to drain may hold mmap-backed slices and would SIGSEGV on
+		// unmapped memory once they resume (P1-2). Leaving the mapping in
+		// place costs a bounded leak on a rare error path (the process is
+		// shutting down or the op is deadlocked); the index stays closed for
+		// new operations.
+		return fmt.Errorf("close timed out after %s waiting for in-flight operations - possible deadlock", h.closeTimeout)
 	}
 
 	// Step 3: Now safe to do cleanup under metaMu.
