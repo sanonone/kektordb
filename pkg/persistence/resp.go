@@ -23,6 +23,12 @@ type Command struct {
 	Args [][]byte
 }
 
+// MaxArgsPerCommand is the maximum number of bulk-string arguments a single
+// RESP command may declare. It bounds the allocation in ParseCommand so a
+// corrupted or hostile AOF cannot trigger an OOM during replay (a 1GB frame
+// of empty arguments would otherwise allocate a ~6GB slice).
+const MaxArgsPerCommand = 1_000_000
+
 // ParseCommand reads a RESP-formatted command from a bufio.Reader.
 // It requires a bufio.Reader because a single command can span multiple lines.
 func ParseCommand(reader *bufio.Reader) (*Command, error) {
@@ -43,6 +49,9 @@ func ParseCommand(reader *bufio.Reader) (*Command, error) {
 	if err != nil || numArgs <= 0 {
 		return nil, fmt.Errorf("invalid number of arguments")
 	}
+	if numArgs > MaxArgsPerCommand {
+		return nil, fmt.Errorf("too many arguments: %d exceeds maximum %d", numArgs, MaxArgsPerCommand)
+	}
 
 	args := make([][]byte, numArgs)
 	for i := 0; i < numArgs; i++ {
@@ -62,6 +71,9 @@ func ParseCommand(reader *bufio.Reader) (*Command, error) {
 		lenArg, err := strconv.Atoi(line[1:])
 		if err != nil || lenArg < 0 {
 			return nil, fmt.Errorf("invalid argument length")
+		}
+		if lenArg > MaxPayloadSize {
+			return nil, fmt.Errorf("argument length %d exceeds maximum %d", lenArg, MaxPayloadSize)
 		}
 
 		// Read the argument data.
