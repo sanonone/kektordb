@@ -708,8 +708,8 @@ func (e *Engine) VReinforce(indexName string, ids []string) error {
 	var updatedCount int64
 
 	for _, extID := range ids {
-		// 1. Get internal ID safely
-		internalID, found := hnswIdx.GetInternalIDUnlocked(extID)
+		// 1. Get internal ID safely (locked: the map is written by Add/Delete)
+		internalID, found := hnswIdx.GetInternalID(extID)
 		if !found {
 			continue
 		}
@@ -718,10 +718,11 @@ func (e *Engine) VReinforce(indexName string, ids []string) error {
 		lock := e.getMetadataLockShard(internalID)
 		lock.Lock()
 
-		// 3. Fetch current metadata (under protection of node-level lock)
-		e.DB.RLock()
+		// 3. Fetch current metadata (under protection of node-level lock).
+		// GetMetadataForNode self-locks (s.mu + idxMu): do NOT wrap it in an
+		// outer e.DB.RLock() — that re-acquires s.mu.RLock reentrantly and
+		// deadlocks once a writer (create/delete index, close) waits (P1-5).
 		meta := e.DB.GetMetadataForNode(indexName, internalID)
-		e.DB.RUnlock()
 		if meta == nil {
 			meta = make(map[string]any)
 		}
@@ -802,10 +803,10 @@ func (e *Engine) VSetMetadata(indexName, id string, newProps map[string]any) err
 	lock.Lock()
 	defer lock.Unlock()
 
-	// 2. Legge i metadati correnti (sotto protezione del node-level lock)
-	e.DB.RLock()
+	// 2. Legge i metadati correnti (sotto protezione del node-level lock).
+	// GetMetadataForNode self-locks: no outer e.DB.RLock() (P1-5, vedi
+	// VReinforce).
 	meta := e.DB.GetMetadataForNode(indexName, internalID)
-	e.DB.RUnlock()
 
 	if meta == nil {
 		meta = make(map[string]any)
@@ -1318,7 +1319,8 @@ func (e *Engine) VSearchWithScores(indexName string, query []float32, k int) ([]
 			defaultDecayModel = "exponential"
 		}
 
-		e.DB.RLock()
+		// GetMetadataForNode self-locks per call; no outer e.DB.RLock() here
+		// (P1-5, vedi VReinforce).
 		for i := range internalResults {
 			meta := e.DB.GetMetadataForNode(indexName, internalResults[i].DocID)
 
@@ -1373,7 +1375,6 @@ func (e *Engine) VSearchWithScores(indexName string, query []float32, k int) ([]
 				}
 			}
 		}
-		e.DB.RUnlock()
 	}
 
 	// Sort by score (highest first) while keeping the breakdown arrays
