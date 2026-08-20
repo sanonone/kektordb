@@ -133,6 +133,16 @@ func (q *Quantizer) Train(vectors [][]float32) {
 	slog.Debug("[DEBUG QUANTIZER] Training complete", "vectors_count", len(trainingSet), "abs_max", q.AbsMax)
 }
 
+// IsTrained reports whether the quantizer has a non-zero AbsMax, reading it
+// under the internal lock. Callers must use this instead of reading AbsMax
+// directly: Train writes it under the same lock, and an unlocked read races
+// with a concurrent Train (P1-3).
+func (q *Quantizer) IsTrained() bool {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	return q.AbsMax != 0
+}
+
 // Quantize converts a float32 vector into its int8 representation.
 // It scales the float values based on the trained AbsMax and then rounds them to the nearest integer.
 func (q *Quantizer) Quantize(vector []float32) []int8 {
