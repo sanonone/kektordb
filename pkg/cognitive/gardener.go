@@ -1553,6 +1553,15 @@ func (g *Gardener) ForceThink(indexName string) {
 
 	slog.Info("[Cognitive Engine] Manual reflection cycle triggered.", "index", indexName, "mode", g.cfg.Mode)
 
+	// Guard: thinkReqs is only created in Start(), which returns early when
+	// the Gardener is disabled (the default). A blocking send on the nil
+	// channel would deadlock the caller forever — e.g. the MCP tool
+	// trigger_reflection or the HTTP reflection endpoint (P1-4).
+	if g.thinkReqs == nil {
+		slog.Warn("[Cognitive Engine] Cannot force think: Gardener is not running (cognitive engine disabled)", "index", indexName)
+		return
+	}
+
 	// Blocking send: waits for any in-progress think to finish,
 	// then the worker runs think() on all target indexes.
 	g.thinkReqs <- struct{}{}
