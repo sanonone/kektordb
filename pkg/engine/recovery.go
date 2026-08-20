@@ -746,7 +746,25 @@ func (e *Engine) RewriteAOF() error {
 		if len(rulesBytes) > 0 {
 			args = append(args, []byte("AUTO_LINKS"), rulesBytes)
 		}
+
+		// Persist memory config (decay) in the rewritten VCREATE, mirroring the
+		// VCreate path in ops.go. Without this, decay configuration is silently
+		// lost after a rewrite + restart (P0-2).
+		if memCfg := snap.ref.hnswIdx.GetMemoryConfig(); memCfg.Enabled {
+			if memBytes, err := json.Marshal(memCfg); err == nil {
+				args = append(args, []byte("MEMORY_CONFIG"), memBytes)
+			}
+		}
 		writer.Write(persistence.FormatCommand("VCREATE", args...))
+
+		// Persist the maintenance config (vacuum/refine) via VCONFIG, mirroring
+		// VCreate. Only written when set, so an all-zero config never overrides
+		// the defaults on replay.
+		if maintCfg := snap.ref.hnswIdx.GetMaintenanceConfig(); maintCfg != (hnsw.AutoMaintenanceConfig{}) {
+			if cfgBytes, err := json.Marshal(maintCfg); err == nil {
+				writer.Write(persistence.FormatCommand("VCONFIG", []byte(info.Name), cfgBytes))
+			}
+		}
 
 		for _, ve := range snap.vectors {
 			vecStr := float32SliceToHexString(ve.vector)
