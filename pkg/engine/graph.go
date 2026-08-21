@@ -440,14 +440,13 @@ func (e *Engine) VGetIncomingEdges(indexName, targetID, relationType string, atT
 
 // RunGraphVacuum executes the cleanup of old soft-deleted edges natively in RAM.
 func (e *Engine) RunGraphVacuum() {
-	// Hold s.mu.RLock for the whole walk and use the Unlocked variants:
-	// GetVectorIndexInfo/GetVectorIndex take s.mu.RLock internally, and a
-	// second reentrant RLock here would deadlock under writer-preference
-	// once a create/delete index waits (same class as P1-5). Lock order
-	// s.mu → graphShards (VacuumGraph) matches DB.Snapshot.
+	// Hold s.mu.RLock ONLY while collecting the config: GetVectorIndexInfo/
+	// GetVectorIndex take s.mu.RLock internally, and a second reentrant
+	// RLock here would deadlock under writer-preference once a create/delete
+	// index waits (same class as P1-5). The prune itself (VacuumGraph) takes
+	// the per-shard graph locks, so we release the global lock before it to
+	// avoid blocking writers (VAdd/VCreate) for the whole prune (audit §2.3).
 	e.DB.RLock()
-	defer e.DB.RUnlock()
-
 	infos, _ := e.DB.GetVectorIndexInfoUnlocked()
 	var retention time.Duration
 
@@ -461,6 +460,7 @@ func (e *Engine) RunGraphVacuum() {
 			}
 		}
 	}
+	e.DB.RUnlock()
 
 	if retention <= 0 {
 		return // Keep forever
