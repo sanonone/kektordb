@@ -79,3 +79,4 @@ pkg/core/distance/stubs_avo_amd64.go
 
 # Rust CGO build artifacts (built by `make build-rust-native`, cleaned by `make clean`)
 native/compute/target/
+.pi/

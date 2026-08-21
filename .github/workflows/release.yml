@@ -115,6 +115,8 @@ jobs:
           push: true
           tags: ${{ env.IMAGE }}:tmp-go
           build-args: VERSION=${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Build Rust image (amd64 + arm64)
         uses: docker/build-push-action@v6
@@ -125,6 +127,8 @@ jobs:
           push: true
           tags: ${{ env.IMAGE }}:tmp-rust
           build-args: VERSION=${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Merge manifests into release tags
         run: |

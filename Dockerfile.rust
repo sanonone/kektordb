@@ -20,7 +20,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl unzip \
 WORKDIR /build
 COPY native/compute/ native/compute/
 WORKDIR /build/native/compute
-RUN PROTOC=/tmp/protoc/bin/protoc cargo build --release
+# Cache the cargo registry and build artifacts across CI runs: candle +
+# tokenizers take ~40min to compile from scratch, and without this every
+# release rebuilds them (the main cause of the ~50min docker job).
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/native/compute/target \
+    PROTOC=/tmp/protoc/bin/protoc cargo build --release
 
 # ─── Stage 2: Go builder (CGO + rust tag) ────────────────────────────────────
 FROM golang:1.26-bookworm AS go-builder
@@ -32,7 +37,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc \
 
 WORKDIR /app
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
 COPY . .
 COPY --from=rust-builder /build/native/compute/target/release/libkektordb_compute.a \
