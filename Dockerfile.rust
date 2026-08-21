@@ -21,11 +21,15 @@ WORKDIR /build
 COPY native/compute/ native/compute/
 WORKDIR /build/native/compute
 # Cache the cargo registry and build artifacts across CI runs: candle +
-# tokenizers take ~40min to compile from scratch, and without this every
-# release rebuilds them (the main cause of the ~50min docker job).
+# tokenizers take ~2-40min to compile, and without this every release
+# rebuilds them. NOTE: files written inside a cache mount do NOT end up in
+# the image layer, so the staticlib is copied to /out/ (a regular dir)
+# before the stage ends — the go-builder stage copies it from there.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/native/compute/target \
-    PROTOC=/tmp/protoc/bin/protoc cargo build --release
+    PROTOC=/tmp/protoc/bin/protoc cargo build --release && \
+    mkdir -p /out && \
+    cp /build/native/compute/target/release/libkektordb_compute.a /out/
 
 # ─── Stage 2: Go builder (CGO + rust tag) ────────────────────────────────────
 FROM golang:1.26-bookworm AS go-builder
@@ -41,7 +45,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
 COPY . .
-COPY --from=rust-builder /build/native/compute/target/release/libkektordb_compute.a \
+COPY --from=rust-builder /out/libkektordb_compute.a \
      /app/native/compute/target/release/libkektordb_compute.a
 
 RUN CGO_ENABLED=1 \
