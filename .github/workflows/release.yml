@@ -160,6 +160,13 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          # Idempotent publish: if this exact version is already on the
+          # registry (e.g. a re-release after a failed docker job), skip
+          # instead of failing — npm rejects re-publishing the same version.
+          if npm view "kektordb-client@${VERSION}" version >/dev/null 2>&1; then
+            echo "kektordb-client@${VERSION} already published - skipping"
+            exit 0
+          fi
           npm ci
           npm version --no-git-tag-version "${VERSION}"
           npm run build
