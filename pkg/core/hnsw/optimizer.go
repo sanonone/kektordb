@@ -170,8 +170,11 @@ func (o *GraphOptimizer) Vacuum() bool {
 		// (Add/AddBatch) and on load — do not write it here (a write under
 		// metaMu.RLock races with SnapshotData's write under RLockNode;
 		// see audit-fix-critici-residui.md §2.1).
-		// Check if any neighbor is dead
+		// Check if any neighbor is dead. Connections is written by Add Phase 3
+		// under LockNode, so it must be read under RLockNode — metaMu.RLock
+		// does NOT exclude LockNode (found by stress test, Aug 2026).
 		needsRepair := false
+		o.index.RLockNode(node.InternalID)
 		for _, layer := range node.Connections {
 			for _, neighborID := range layer {
 				if _, isDead := deletedSet[neighborID]; isDead {
@@ -183,6 +186,7 @@ func (o *GraphOptimizer) Vacuum() bool {
 				break
 			}
 		}
+		o.index.RUnlockNode(node.InternalID)
 		if needsRepair {
 			nodesToRepair = append(nodesToRepair, node)
 		}
