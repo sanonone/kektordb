@@ -3087,7 +3087,11 @@ func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uin
 
 	for internalID, node := range nodes {
 		if node != nil {
-			node.InternalID = uint32(internalID)
+			// NOTE: node.InternalID is already set by the Node literal at
+			// creation time (Add/AddBatch) and on load; do NOT write it here.
+			// Writing it under RLockNode races with readers that use it under
+			// the same shard lock (Refine/Vacuum) — two RLocks do not exclude
+			// each other (see audit-fix-critici-residui.md §2.1).
 
 			h.RLockNode(uint32(internalID))
 			connCopy := make([][]uint32, len(node.Connections))
@@ -3099,7 +3103,7 @@ func (h *Index) SnapshotData() (map[uint32]*Node, map[string]uint32, uint32, uin
 
 			nodeCopy := &Node{
 				Id:          node.Id,
-				InternalID:  node.InternalID,
+				InternalID:  uint32(internalID),
 				Connections: connCopy,
 			}
 			nodeCopy.Deleted.Store(node.Deleted.Load())

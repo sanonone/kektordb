@@ -162,14 +162,14 @@ func (o *GraphOptimizer) Vacuum() bool {
 
 	// Collect nodes that need repair
 	nodesToRepair := make([]*Node, 0, totalNodes/10) // Heuristic pre-allocation
-	for i, node := range nodes {
+	for _, node := range nodes {
 		if node == nil || node.Deleted.Load() {
 			continue
 		}
-		// The slice index is the internal ID. It is not set on the Add path
-		// (Node.InternalID is only populated on snapshot/load), and reconnectNode
-		// must lock the correct node shard (P1-9).
-		node.InternalID = uint32(i)
+		// NOTE: node.InternalID is set by the Node literal at creation time
+		// (Add/AddBatch) and on load — do not write it here (a write under
+		// metaMu.RLock races with SnapshotData's write under RLockNode;
+		// see audit-fix-critici-residui.md §2.1).
 		// Check if any neighbor is dead
 		needsRepair := false
 		for _, layer := range node.Connections {
@@ -333,13 +333,10 @@ func (o *GraphOptimizer) Refine() bool {
 	// Collect valid nodes to process
 	nodesToProcess := make([]*Node, 0, end-start)
 	o.index.metaMu.RLock()
-	for i := start; i < end; i++ {
-		node := nodes[i]
+	for _, node := range nodes {
 		if node != nil && !node.Deleted.Load() {
-			// Slice index = internal ID; without this the per-node shard
-			// locks below would all target shard 0 and fail to synchronize
-			// with concurrent searches (same root cause as P1-9).
-			node.InternalID = uint32(i)
+			// NOTE: node.InternalID is set at creation time (Add/AddBatch) —
+			// do not write it here (race with SnapshotData; audit §2.1).
 			nodesToProcess = append(nodesToProcess, node)
 		}
 	}
