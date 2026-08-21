@@ -90,6 +90,15 @@ type Index struct {
 	// It's a pointer because we need its state to be shared and mutable.
 	quantizer *distance.Quantizer
 
+	// quantizerMu serializes the auto-train check+train in the paths that run
+	// OUTSIDE metaMu (single Add and AddBatch Phase 0.A). Without it, two
+	// concurrent first adds on an int8 index both see IsTrained()==false and
+	// both call Train → AbsMax is last-writer-wins, nondeterministic. It is a
+	// leaf lock: never held while acquiring metaMu (the single-Add path
+	// releases it before metaMu.Lock), so no ordering inversion with the
+	// AddBatch path that runs inside metaMu.Lock.
+	quantizerMu sync.Mutex
+
 	// Stores the appropriate distance function for this index.
 	// Uses 'any' for flexibility with different function signatures.
 	distanceFunc any
@@ -507,17 +516,10 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 			h.metaMu.Unlock()
 		}
 
-		// If untraiend, we train on this single vector (suboptimal but safe)
-		// We need to protect Train/Quantize access if Quantizer isn't thread-safe.
-		// Assumption: Quantizer.Quantize IS thread-safe (read-only AbsMax).
-		// Quantizer.Train IS NOT.
-		// For now, let's assume valid state or auto-train.
-
-		// Safety check for AbsMax
-		if !h.quantizer.IsTrained() {
-			// Edge case: single vector training
-			h.quantizer.Train([][]float32{vector})
-		}
+		// Auto-train under the single-flight lock: two concurrent first adds
+		// must not both call Train (AbsMax would be last-writer-wins). The
+		// train happens on the single vector — suboptimal but safe.
+		h.ensureQuantizerTrained([][]float32{vector})
 
 		storedVector = h.quantizer.Quantize(vector)
 		vectorI8 = storedVector.([]int8)
@@ -1069,9 +1071,9 @@ func (h *Index) AddBatchOldOK(objects []types.BatchObject) error {
 				h.quantizer = &distance.Quantizer{}
 			}
 			if !h.quantizer.IsTrained() {
-				// Prevent multiple concurrent trainings
-				// Although AddBatch is technically thread-safe w.r.t other AddBatches if called correctly,
-				// we are inside the global lock here (h.metaMu.Lock()), so we are safe.
+				// Inside metaMu.Lock (serialized w.r.t. other AddBatches), but
+				// the single-Add path trains outside metaMu under quantizerMu —
+				// use the same single-flight helper so the two paths agree.
 
 				// Collect all vectors to train
 				trainingData := make([][]float32, numVectors)
@@ -1520,7 +1522,9 @@ func (h *Index) addBatchInternal(objects []types.BatchObject, efConst int) error
 			for i := range objects {
 				trainingData[i] = objects[i].Vector
 			}
-			h.quantizer.Train(trainingData)
+			// Single-flight: this path runs OUTSIDE metaMu, so a concurrent
+			// single Add (or another AddBatch) could otherwise double-train.
+			h.ensureQuantizerTrained(trainingData)
 		}
 	}
 
@@ -3595,6 +3599,24 @@ func (h *Index) NeedsRefine() bool {
 
 func (h *Index) isClosed() bool {
 	return h.closed.Load()
+}
+
+// ensureQuantizerTrained performs a single-flight auto-train of the int8
+// quantizer: check-then-train under quantizerMu so that concurrent first
+// adds (single Add outside metaMu, AddBatch Phase 0.A outside metaMu) cannot
+// both call Train — AbsMax would be last-writer-wins and nondeterministic.
+// The caller must have already ensured h.quantizer != nil (or we create it
+// defensively). Training on a subset is suboptimal but safe.
+func (h *Index) ensureQuantizerTrained(trainingData [][]float32) {
+	h.quantizerMu.Lock()
+	defer h.quantizerMu.Unlock()
+
+	if h.quantizer == nil {
+		h.quantizer = &distance.Quantizer{}
+	}
+	if !h.quantizer.IsTrained() {
+		h.quantizer.Train(trainingData)
+	}
 }
 
 // IsClosed reports whether the index has been closed (or is closing). Useful
