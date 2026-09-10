@@ -44,6 +44,16 @@ pub unsafe extern "C" fn kektordb_embed_init(
         Err(_) => return -1,
     };
 
+    // Fast path: if already initialized, do NOT re-read/re-parse the model
+    // files (133MB ONNX for bge-small). Re-parsing on every call leaks the
+    // protobuf arena and bloats the server (measured: ~170MB per batch).
+    {
+        let guard = MODEL.lock().unwrap();
+        if guard.is_some() {
+            return 0; // Already initialized
+        }
+    }
+
     let model = match candle_onnx::read_file(mp) {
         Ok(m) => m,
         Err(_) => return -1,
@@ -55,11 +65,15 @@ pub unsafe extern "C" fn kektordb_embed_init(
 
     let mut guard = MODEL.lock().unwrap();
     if guard.is_some() {
-        return 0; // Already initialized
+        return 0; // Already initialized (race with another caller)
     }
     *guard = Some(Arc::new(RwLock::new(ModelState { model, tokenizer })));
     0
 }
+
+/// Maximum sequence length accepted by the embedder (512 for all-MiniLM-L6-v2
+/// and bge-small) minus a small safety margin.
+const MAX_SEQ: usize = 510;
 
 /// Embed a UTF-8 text string and return a float32 vector (384 dimensions for all-MiniLM-L6-v2).
 /// The caller must free the returned vector with kektordb_free_embedding(ptr, len).
@@ -91,7 +105,16 @@ pub unsafe extern "C" fn kektordb_embed(
         Ok(e) => e,
         Err(_) => return -1,
     };
-    let tokens: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
+    // Truncate to the model's max sequence length (512 for all-MiniLM-L6-v2
+    // and bge-small) minus a safety margin. Without truncation, long inputs
+    // make the ONNX ops panic/abort (panic = "abort" in this crate), which
+    // kills the whole server process.
+    let tokens: Vec<i64> = encoding
+        .get_ids()
+        .iter()
+        .take(MAX_SEQ)
+        .map(|&id| id as i64)
+        .collect();
     let seq_len = tokens.len();
 
     // Build named input tensors (all I64 for this ONNX model)
@@ -221,7 +244,11 @@ pub unsafe extern "C" fn kektordb_embed_batch(
         Err(_) => return -1,
     };
 
-    let max_seq = encodings.iter().map(|e| e.get_ids().len()).max().unwrap_or(0);
+    let max_seq = encodings
+        .iter()
+        .map(|e| e.get_ids().len().min(MAX_SEQ))
+        .max()
+        .unwrap_or(0);
     if max_seq == 0 {
         return -1;
     }
@@ -232,7 +259,12 @@ pub unsafe extern "C" fn kektordb_embed_batch(
     let mut input_ids = Vec::with_capacity(n * max_seq);
     let mut attn_mask = Vec::with_capacity(n * max_seq);
     for enc in &encodings {
-        let ids: Vec<i64> = enc.get_ids().iter().map(|&id| id as i64).collect();
+        let ids: Vec<i64> = enc
+            .get_ids()
+            .iter()
+            .take(MAX_SEQ)
+            .map(|&id| id as i64)
+            .collect();
         let len = ids.len();
         input_ids.extend_from_slice(&ids);
         input_ids.resize(input_ids.len() + (max_seq - len), pad_id);

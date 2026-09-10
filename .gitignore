@@ -3,6 +3,7 @@
 #
 # Binaries for programs and plugins
 /kektordb
+kektordb-rust
 *.exe
 *.exe~
 *.dll
@@ -10,6 +11,9 @@
 *.dylib
 release/
 kektordb-test
+
+# Embedding disk cache (benchmark harness, regenerabile)
+.cache/
 
 # Test binary, built with `go test -c`
 *.test
