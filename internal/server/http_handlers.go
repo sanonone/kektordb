@@ -26,6 +26,7 @@ import (
 	"github.com/sanonone/kektordb/pkg/core"
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
+	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/engine"
 	"github.com/sanonone/kektordb/pkg/rag"
 	"github.com/sanonone/kektordb/pkg/textanalyzer"
@@ -55,6 +56,10 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("GET /system/stats", s.handleSystemStats)
 	mux.HandleFunc("GET /system/gardener", s.handleSystemGardener)
 	mux.HandleFunc("GET /system/embedder/status", s.handleEmbedderStatus)
+	// Batch embedding endpoint: exposes the configured embedder (local ONNX,
+	// Ollama, OpenAI, Gemini) over HTTP so clients can embed text without
+	// running their own embedding stack.
+	mux.HandleFunc("POST /embeddings", s.handleEmbeddings)
 
 	// Event stream (SSE)
 	mux.HandleFunc("GET /events/stream", s.handleEventStream)
@@ -3053,6 +3058,42 @@ func (s *Server) handleEmbedderStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeHTTPResponse(w, http.StatusOK, resp)
+}
+
+// handleEmbeddings exposes the configured embedder over HTTP (batch).
+// POST /embeddings {"texts": ["...", ...]} -> {"embeddings": [[...], ...], "dim": N}
+func (s *Server) handleEmbeddings(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Texts []string `json:"texts"`
+	}
+	if err := s.decodeJSON(r, &req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, err)
+		return
+	}
+	if len(req.Texts) == 0 {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("texts is required"))
+		return
+	}
+
+	if _, ok := s.embedder.(embeddings.NoopEmbedder); ok {
+		s.writeHTTPError(w, http.StatusServiceUnavailable, fmt.Errorf("no embedder configured (start with --embedder)"))
+		return
+	}
+
+	vecs, err := s.embedder.EmbedBatch(req.Texts)
+	if err != nil {
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("embedding failed: %w", err))
+		return
+	}
+	if len(vecs) == 0 || len(vecs[0]) == 0 {
+		s.writeHTTPError(w, http.StatusInternalServerError, fmt.Errorf("embedding returned empty result"))
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, map[string]any{
+		"embeddings": vecs,
+		"dim":        len(vecs[0]),
+	})
 }
 
 // --- HELPER FUNCTIONS ---
