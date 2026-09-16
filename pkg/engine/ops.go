@@ -1282,7 +1282,7 @@ type SearchResult struct {
 
 // VSearchWithScores performs a search and returns results with their scores.
 // If the index has MemoryConfig enabled, it applies time decay ranking.
-func (e *Engine) VSearchWithScores(indexName string, query []float32, k int) ([]SearchResult, error) {
+func (e *Engine) VSearchWithScores(indexName string, query []float32, k int, filter string, efSearch int) ([]SearchResult, error) {
 	idx, ok := e.DB.GetVectorIndex(indexName)
 	if !ok {
 		return nil, fmt.Errorf("index not found")
@@ -1293,7 +1293,17 @@ func (e *Engine) VSearchWithScores(indexName string, query []float32, k int) ([]
 		return nil, err
 	}
 
-	internalResults := hnswIdx.SearchWithScores(query, k, nil, 0)
+	// Optional boolean metadata filter (same syntax as /search filter).
+	// Empty filter = no filtering (previous behavior, unchanged).
+	var allowList *roaring.Bitmap
+	if strings.TrimSpace(filter) != "" {
+		allowList, err = e.DB.FindIDsByFilter(indexName, filter)
+		if err != nil {
+			return nil, fmt.Errorf("invalid filter: %w", err)
+		}
+	}
+
+	internalResults := hnswIdx.SearchWithScores(query, k, allowList, efSearch)
 
 	// Convert distance to score (1 / (1 + distance)) and record the raw
 	// similarity before any time decay is applied (the score breakdown).

@@ -98,7 +98,7 @@ func TestMemoryEngine(t *testing.T) {
 		})
 
 		// Search
-		results, err := eng.VSearchWithScores(idxName, queryVec, 10)
+		results, err := eng.VSearchWithScores(idxName, queryVec, 10, "", 0)
 		if err != nil {
 			t.Fatalf("Search failed: %v", err)
 		}

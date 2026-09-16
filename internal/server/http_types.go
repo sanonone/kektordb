@@ -65,6 +65,8 @@ type VectorSearchWithScoresRequest struct {
 	K           int       `json:"k"`
 	QueryVector []float32 `json:"query_vector,omitempty"` // Optional - takes precedence over QueryText
 	QueryText   string    `json:"query_text,omitempty"`   // Optional - if set and QueryVector empty, server auto-embeds
+	Filter      string    `json:"filter,omitempty"`       // Optional - boolean metadata filter (same syntax as /search)
+	EfSearch    int       `json:"ef_search,omitempty"`    // Optional - search breadth (same as /search)
 }
 
 // VectorDeleteRequest defines the body for vector deletion.

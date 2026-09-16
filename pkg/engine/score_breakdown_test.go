@@ -25,7 +25,7 @@ func TestVSearchWithScoresBreakdown_NoDecay(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results, err := eng.VSearchWithScores("idx", vec, 5)
+	results, err := eng.VSearchWithScores("idx", vec, 5, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestVSearchWithScoresBreakdown_Decay(t *testing.T) {
 		}
 	}
 
-	results, err := eng.VSearchWithScores("idx", vec, 5)
+	results, err := eng.VSearchWithScores("idx", vec, 5, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -38,7 +38,7 @@ func TestSeedDemoData(t *testing.T) {
 
 	// All demo memories are searchable by vector (deterministic hash vectors).
 	queryVec := demoHashVec(demoMemories[1].content)
-	results, err := eng.VSearchWithScores("mcp_memory", queryVec, 10)
+	results, err := eng.VSearchWithScores("mcp_memory", queryVec, 10, "", 0)
 	if err != nil {
 		t.Fatalf("VSearchWithScores: %v", err)
 	}

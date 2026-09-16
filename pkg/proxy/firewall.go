@@ -50,7 +50,7 @@ func (p *AIProxy) checkSemanticFirewall(vec []float32) (bool, string) {
 		return false, ""
 	}
 
-	results, err := p.engine.VSearchWithScores(p.cfg.FirewallIndex, vec, 1)
+	results, err := p.engine.VSearchWithScores(p.cfg.FirewallIndex, vec, 1, "", 0)
 	if err != nil || len(results) == 0 {
 		return false, ""
 	}

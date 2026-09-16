@@ -2342,7 +2342,7 @@ func (s *Service) SearchWithScores(ctx context.Context, req *mcp.CallToolRequest
 	if err != nil {
 		return nil, result, err
 	}
-	results, err := s.engine.VSearchWithScores(idx, vec, k)
+	results, err := s.engine.VSearchWithScores(idx, vec, k, "", 0)
 	if err != nil {
 		return nil, result, err
 	}

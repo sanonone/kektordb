@@ -834,7 +834,7 @@ func (g *Gardener) findRedundantClusters(indexName string, similarityThreshold f
 			continue
 		}
 
-		results, err := g.eng.VSearchWithScores(indexName, vData.Vector, 10)
+		results, err := g.eng.VSearchWithScores(indexName, vData.Vector, 10, "", 0)
 		if err != nil {
 			continue
 		}
@@ -912,7 +912,7 @@ func (g *Gardener) findRedundantClustersInLayer(indexName string, layer string, 
 			continue
 		}
 
-		results, err := g.eng.VSearchWithScores(indexName, vData.Vector, 10)
+		results, err := g.eng.VSearchWithScores(indexName, vData.Vector, 10, "", 0)
 		if err != nil {
 			continue
 		}
@@ -1359,7 +1359,7 @@ func (g *Gardener) detectContradictions(indexName string) {
 		}
 
 		// Find semantically similar but non-identical memories (score 0.70–0.95).
-		neighbors, _ := g.eng.VSearchWithScores(indexName, node.Vector, 5)
+		neighbors, _ := g.eng.VSearchWithScores(indexName, node.Vector, 5, "", 0)
 
 		for _, neighbor := range neighbors {
 			if neighbor.ID == node.ID || neighbor.Score > 0.95 || neighbor.Score < 0.70 {
@@ -2345,7 +2345,7 @@ func (g *Gardener) detectKnowledgeGaps(indexName string) {
 		inRels := g.eng.VGetIncomingRelations(indexName, node.ID)
 
 		// Find top-5 semantically similar nodes (score > 0.85).
-		neighbors, _ := g.eng.VSearchWithScores(indexName, node.Vector, 5)
+		neighbors, _ := g.eng.VSearchWithScores(indexName, node.Vector, 5, "", 0)
 
 		for _, neighbor := range neighbors {
 			if neighbor.ID == node.ID || neighbor.Score < 0.85 {

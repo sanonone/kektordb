@@ -394,7 +394,7 @@ func checkStreaming(body []byte) bool {
 }
 
 func (p *AIProxy) checkFirewallWithVec(vec []float32) (bool, string) {
-	results, err := p.engine.VSearchWithScores(p.cfg.FirewallIndex, vec, 1)
+	results, err := p.engine.VSearchWithScores(p.cfg.FirewallIndex, vec, 1, "", 0)
 	if err != nil || len(results) == 0 {
 		return false, ""
 	}
@@ -406,7 +406,7 @@ func (p *AIProxy) checkFirewallWithVec(vec []float32) (bool, string) {
 }
 
 func (p *AIProxy) checkCache(vec []float32) (string, bool) {
-	results, err := p.engine.VSearchWithScores(p.cfg.CacheIndex, vec, 1)
+	results, err := p.engine.VSearchWithScores(p.cfg.CacheIndex, vec, 1, "", 0)
 	if err != nil || len(results) == 0 {
 		return "", false
 	}
@@ -467,7 +467,7 @@ func (p *AIProxy) checkFirewall(text string) (bool, string) {
 	if err != nil {
 		return false, ""
 	}
-	results, err := p.engine.VSearchWithScores(p.cfg.FirewallIndex, vec, 1)
+	results, err := p.engine.VSearchWithScores(p.cfg.FirewallIndex, vec, 1, "", 0)
 	if err != nil || len(results) == 0 {
 		return false, ""
 	}

@@ -781,7 +781,7 @@ func (s *Server) handleVectorSearchWithScores(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	results, err := s.Engine.VSearchWithScores(req.IndexName, queryVec, req.K)
+	results, err := s.Engine.VSearchWithScores(req.IndexName, queryVec, req.K, req.Filter, req.EfSearch)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			s.writeHTTPError(w, http.StatusNotFound, err)

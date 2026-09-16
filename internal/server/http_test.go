@@ -838,3 +838,83 @@ func TestSearchWithScoresLowercaseFields(t *testing.T) {
 		t.Errorf("response uses uppercase fields (missing json tags): %s", s)
 	}
 }
+
+// TestSearchWithScoresFilter (fix D6): /vector/actions/search-with-scores
+// accetta filter ed ef_search come /search. Verifica che i risultati siano
+// filtrati E abbiano gli score, e che senza filtro il comportamento sia invariato.
+func TestSearchWithScoresFilter(t *testing.T) {
+	ts, _ := newTestServer(t)
+	createBody := strings.NewReader(`{"index_name":"fidx","metric":"cosine","m":8,"ef_construction":100,"precision":"float32"}`)
+	req, _ := http.NewRequest("POST", ts.URL+"/vector/actions/create", createBody)
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	// 3 vettori vicini a [1,0,0,0] con tag=A, 3 vicini a [0,1,0,0] con tag=B
+	batchBody := strings.NewReader(`{"index_name":"fidx","vectors":[` +
+		`{"id":"a1","vector":[1.0,0.0,0.0,0.0],"metadata":{"tag":"A"}},` +
+		`{"id":"a2","vector":[0.9,0.1,0.0,0.0],"metadata":{"tag":"A"}},` +
+		`{"id":"a3","vector":[0.8,0.2,0.0,0.0],"metadata":{"tag":"A"}},` +
+		`{"id":"b1","vector":[0.0,1.0,0.0,0.0],"metadata":{"tag":"B"}},` +
+		`{"id":"b2","vector":[0.1,0.9,0.0,0.0],"metadata":{"tag":"B"}},` +
+		`{"id":"b3","vector":[0.2,0.8,0.0,0.0],"metadata":{"tag":"B"}}]}`)
+	req2, _ := http.NewRequest("POST", ts.URL+"/vector/actions/add-batch", batchBody)
+	resp2, err := ts.Client().Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+
+	post := func(body string) (int, map[string]any) {
+		t.Helper()
+		r, _ := http.NewRequest("POST", ts.URL+"/vector/actions/search-with-scores", strings.NewReader(body))
+		rp, err := ts.Client().Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rp.Body.Close()
+		var parsed map[string]any
+		if err := json.NewDecoder(rp.Body).Decode(&parsed); err != nil {
+			t.Fatal(err)
+		}
+		return rp.StatusCode, parsed
+	}
+
+	// 1. Con filtro: solo tag=A, con score
+	code, parsed := post(`{"index_name":"fidx","k":5,"query_vector":[1.0,0.0,0.0,0.0],"filter":"tag='A'","ef_search":50}`)
+	if code != http.StatusOK {
+		t.Fatalf("expected 200 with filter, got %d (%v)", code, parsed)
+	}
+	results, _ := parsed["results"].([]any)
+	if len(results) != 3 {
+		t.Fatalf("expected 3 filtered results, got %d (%v)", len(results), parsed)
+	}
+	for _, r := range results {
+		m, _ := r.(map[string]any)
+		if _, ok := m["score"]; !ok {
+			t.Errorf("filtered result missing score: %v", m)
+		}
+		if id, _ := m["id"].(string); len(id) == 0 || id[0] != 'a' {
+			t.Errorf("filtered result not from tag=A: %v", m)
+		}
+	}
+
+	// 2. Senza filtro: comportamento invariato (6 risultati con score)
+	code, parsed = post(`{"index_name":"fidx","k":6,"query_vector":[1.0,0.0,0.0,0.0]}`)
+	if code != http.StatusOK {
+		t.Fatalf("expected 200 without filter, got %d", code)
+	}
+	if results, _ := parsed["results"].([]any); len(results) != 6 {
+		t.Errorf("expected 6 unfiltered results, got %d", len(results))
+	}
+
+	// 3. Filtro malformato: nessun panic; o errore o set vuoto (lenient)
+	code, parsed = post(`{"index_name":"fidx","k":5,"query_vector":[1.0,0.0,0.0,0.0],"filter":"tag==="}`)
+	if code != http.StatusInternalServerError {
+		if results, _ := parsed["results"].([]any); len(results) != 0 {
+			t.Errorf("expected 500 or empty results for malformed filter, got %d (%v)", code, parsed)
+		}
+	}
+}

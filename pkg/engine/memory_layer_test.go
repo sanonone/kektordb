@@ -86,7 +86,7 @@ func TestMemoryLayerDecay(t *testing.T) {
 	}
 
 	// Search and verify decay behavior
-	results, err := eng.VSearchWithScores("test", vec, 10)
+	results, err := eng.VSearchWithScores("test", vec, 10, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
