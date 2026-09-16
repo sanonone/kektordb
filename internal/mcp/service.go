@@ -3478,7 +3478,7 @@ func (s *Service) DeleteIndex(ctx context.Context, req *mcp.CallToolRequest, arg
 		return nil, result, nil
 	}
 	result.Status = "deleted"
-	result.Message = "index '" + args.Name + "' deleted (arena cleanup async)"
+	result.Message = "index '" + args.Name + "' deleted (arena cleanup synchronous)"
 	return nil, result, nil
 }
 

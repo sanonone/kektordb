@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/RoaringBitmap/roaring"
 	"github.com/sanonone/kektordb/pkg/core/distance"
@@ -1096,14 +1097,26 @@ func (s *DB) DeleteVectorIndex(name string) error {
 
 	delete(s.metadataMap, name)
 
-	// Remove arena directory from disk if it exists
+	// Remove arena directory from disk if it exists.
+	// Sincrono con retry: quando questa funzione ritorna nil, la directory
+	// e' garantita sparita (fix D7 - niente piu' cancellazione in background).
+	// Se fallisce, mappe e Close sono comunque avvenuti: l'errore lo dichiara
+	// e il replay VDROP pulira' gli orfani al riavvio (recovery.go, non-fatale).
 	if arenaDir != "" {
-		slog.Info("[DB] Removing arena directory", "index", name, "dir", arenaDir)
-		if err := os.RemoveAll(arenaDir); err != nil {
-			slog.Error("[DB] Failed to remove arena directory", "index", name, "dir", arenaDir, "error", err)
-		} else {
-			slog.Info("[DB] Arena directory removed successfully", "index", name, "dir", arenaDir)
+		var rmErr error
+		for i := 0; i < 5; i++ {
+			rmErr = os.RemoveAll(arenaDir)
+			if rmErr == nil || os.IsNotExist(rmErr) {
+				rmErr = nil
+				break
+			}
+			slog.Warn("[DB] Retry removing arena directory", "index", name, "attempt", i+1, "error", rmErr)
+			time.Sleep(50 * time.Millisecond)
 		}
+		if rmErr != nil {
+			return fmt.Errorf("index %q removed from memory but arena directory %q could not be deleted: %w (orphans cleaned on restart by VDROP replay)", name, arenaDir, rmErr)
+		}
+		slog.Info("[DB] Arena directory removed successfully", "index", name, "dir", arenaDir)
 	}
 
 	slog.Info("[DB] Index and all associated data have been deleted", "index", name)
