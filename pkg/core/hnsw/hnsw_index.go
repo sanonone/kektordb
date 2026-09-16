@@ -38,6 +38,14 @@ type LinkRequest struct {
 
 const NumShards = 128
 
+// filteredBruteForceThreshold: allowlist con cardinalità <= soglia vengono
+// valutate con brute-force esatto invece della traversata HNSW (fix D2).
+// Sotto questa soglia il brute force è sia esatto che più veloce della
+// traversata, e aggira il problema del sottografo filtrato disconnesso:
+// con filtri selettivi (<1%) la traversata restituisce ~nulla comunque.
+// Costo indicativo: 5000 membri x 384 dim ~= 4M flop (<1ms).
+const filteredBruteForceThreshold = 5000
+
 // Index represents the hierarchical graph structure.
 type Index struct {
 	// Global mutex for concurrency control. Finer-grained locking may be considered in the future.
@@ -365,6 +373,99 @@ func (h *Index) SearchWithScores(query []float32, k int, allowList *roaring.Bitm
 	return results
 }
 
+// bruteForceFiltered valuta con scoring esatto tutti i membri dell'allowlist
+// e restituisce i top-k (fix D2, tier per allowlist piccole).
+// Semantica identica a BruteForceIndex.SearchWithScores: score-then-filter.
+// Usato solo quando la cardinalità è sotto filteredBruteForceThreshold.
+func (h *Index) bruteForceFiltered(query any, allowList *roaring.Bitmap, k int) ([]types.Candidate, error) {
+	if h.isClosed() {
+		return nil, fmt.Errorf("index is closed")
+	}
+	if k <= 0 {
+		return []types.Candidate{}, nil
+	}
+	scored := make([]types.Candidate, 0, allowList.GetCardinality())
+	nodes := h.getNodes()
+	it := allowList.Iterator()
+	for it.HasNext() {
+		id := it.Next()
+		if id >= uint32(len(nodes)) {
+			continue
+		}
+		h.RLockNode(id)
+		node := nodes[id]
+		if node == nil || node.Deleted.Load() {
+			h.RUnlockNode(id)
+			continue
+		}
+		var dist float64
+		var err error
+		switch h.precision {
+		case distance.Float32:
+			dist, err = h.distFuncF32(query.([]float32), node.GetVectorF32())
+		case distance.Float16:
+			dist, err = h.distFuncF16(query.([]uint16), node.GetVectorF16())
+		case distance.Int8:
+			if h.quantizer == nil {
+				h.RUnlockNode(id)
+				return nil, fmt.Errorf("quantizer missing")
+			}
+			stored := node.GetVectorI8()
+			q := query.([]int8)
+			var qNormSq int64
+			for _, v := range q {
+				qNormSq += int64(v) * int64(v)
+			}
+			qNorm := float32(math.Sqrt(float64(qNormSq)))
+			if qNorm == 0 {
+				qNorm = 1
+			}
+			dot, derr := h.distFuncI8(q, stored)
+			if derr != nil {
+				h.RUnlockNode(id)
+				continue
+			}
+			storedNorm := float32(0)
+			if norms := h.getNorms(); norms != nil && int(node.InternalID) < len(norms) {
+				storedNorm = norms[node.InternalID]
+			}
+			if storedNorm == 0 {
+				dist, err = 1.0, nil
+			} else {
+				sim := float64(dot) / (float64(qNorm) * float64(storedNorm))
+				if sim > 1.0 {
+					sim = 1.0
+				}
+				if sim < -1.0 {
+					sim = -1.0
+				}
+				dist, err = 1.0-sim, nil
+			}
+		default:
+			h.RUnlockNode(id)
+			return nil, fmt.Errorf("precision not setup")
+		}
+		h.RUnlockNode(id)
+		if err != nil {
+			continue
+		}
+		scored = append(scored, types.Candidate{Id: id, Distance: dist})
+	}
+	slices.SortFunc(scored, func(a, b types.Candidate) int {
+		if a.Distance < b.Distance {
+			return -1
+		}
+		if a.Distance > b.Distance {
+			return 1
+		}
+		return 0
+	})
+	if len(scored) > k {
+		scored = scored[:k]
+	}
+	return scored, nil
+}
+
 // searchInternal handles query pre-processing (normalization/quantization) once and orchestrates the search.
 func (h *Index) searchInternal(query []float32, k int, allowList *roaring.Bitmap, efSearch int) ([]types.Candidate, error) {
 	//h.metaMu.RLock()
@@ -395,6 +496,19 @@ func (h *Index) searchInternal(query []float32, k int, allowList *roaring.Bitmap
 		}
 		if boosted > actualEfSearch {
 			actualEfSearch = boosted
+		}
+	}
+
+	// Fix D2: scala ef sulla selettività del filtro. Con allowlist selettive
+	// il budget di esplorazione standard non basta a riempire il result set:
+	// lo scaliamo in proporzione (cap sul totale nodi). Le allowlist piccole
+	// non arrivano qui (gestite dal brute-force esatto più sotto).
+	if allowList != nil && !allowList.IsEmpty() {
+		if sel := allowList.GetCardinality(); sel > 0 && uint64(currentCounter) > sel {
+			scaled := uint64(actualEfSearch) * uint64(currentCounter) / sel
+			if scaled > uint64(actualEfSearch) {
+				actualEfSearch = int(min(scaled, uint64(currentCounter)))
+			}
 		}
 	}
 
@@ -431,6 +545,14 @@ func (h *Index) searchInternal(query []float32, k int, allowList *roaring.Bitmap
 			return nil, fmt.Errorf("quantizer missing")
 		}
 		finalQuery = h.quantizer.Quantize(queryF32)
+	}
+
+	// Fix D2: allowlist piccole -> scoring esatto diretto, senza traversata.
+	// Evita il crollo del filtered search su filtri selettivi (il sottografo
+	// filtrato è disconnesso: la traversata restituirebbe ~nulla comunque).
+	if allowList != nil && !allowList.IsEmpty() &&
+		allowList.GetCardinality() <= filteredBruteForceThreshold {
+		return h.bruteForceFiltered(finalQuery, allowList, k)
 	}
 
 	// Smart Entry Point Selection
@@ -2541,12 +2663,12 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 			}
 			visited.Add(neighborID)
 
-			// AllowList filter (for boolean filters)
-			if allowList != nil && !allowList.IsEmpty() {
-				if !allowList.Contains(neighborID) {
-					continue
-				}
-			}
+			// Fix D2: NESSUNO skip dei nodi fuori allowlist in esplorazione.
+			// I nodi filtrati servono per tenere connesso il grafo durante
+			// la traversata (saltarli disconnette il sottografo e la ricerca
+			// muore con filtri selettivi). Il filtro si applica solo alla
+			// collection dei risultati (sotto). Le allowlist piccole non
+			// arrivano qui (brute-force esatto in searchInternal).
 
 			h.RLockNode(neighborID)
 			nodesSlice := h.getNodes()
@@ -2580,8 +2702,11 @@ func (h *Index) searchLayerUnlocked(query any, entrypointID uint32, k int, level
 				// always add to candidates to continue graph exploration
 				candidates.Push(neighborCandidate)
 
-				// Add to results ONLY if not deleted
-				if !neighborNode.Deleted.Load() {
+				// Add to results ONLY if not deleted AND (no filter OR allowed).
+				// I nodi fuori allowlist partecipano alla navigazione ma non
+				// vengono mai restituiti (fix D2).
+				if !neighborNode.Deleted.Load() &&
+					(allowList == nil || allowList.IsEmpty() || allowList.Contains(neighborID)) {
 					results.Push(neighborCandidate)
 
 					if results.Len() > ef {
