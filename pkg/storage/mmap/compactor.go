@@ -49,6 +49,12 @@ type NodePointerUpdater interface {
 type MaintenanceCoordinator interface {
 	TryAcquireCompactionLock() bool
 	ReleaseCompactionLock()
+	// AcquireCompactionLock blocks until the compaction slot is free. Used by
+	// Vacuum to serialize with the arena compactor: both take arena.slotMu and
+	// per-node shard locks in opposite order (compactor: slotMu -> shard via
+	// UpdateNodePointer; Vacuum: shard -> slotMu via GetBytes/FreeSlot), so
+	// running concurrently can ABBA-deadlock.
+	AcquireCompactionLock()
 	TryAcquireSnapshotLock() bool
 	ReleaseSnapshotLock()
 	RecordWrite()

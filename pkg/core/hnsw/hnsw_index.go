@@ -3843,6 +3843,11 @@ func (c *hnswMaintenanceCoord) TryAcquireCompactionLock() bool {
 	return c.compactionLock.TryLock()
 }
 
+// AcquireCompactionLock blocks until the compaction slot is free.
+func (c *hnswMaintenanceCoord) AcquireCompactionLock() {
+	c.compactionLock.Lock()
+}
+
 func (c *hnswMaintenanceCoord) ReleaseCompactionLock() {
 	c.compactionLock.Unlock()
 }

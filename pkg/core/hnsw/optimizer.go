@@ -133,6 +133,19 @@ func (o *GraphOptimizer) RunCycle(forceType string) bool {
 func (o *GraphOptimizer) Vacuum() bool {
 	const repairBatchSize = 100 // Nodes to repair per lock acquisition
 
+	// Serialize with the arena compactor. Both touch the arena and per-node
+	// shard locks in opposite orders (compactor: slotMu → shard via
+	// UpdateNodePointer; Vacuum: shard → slotMu via GetBytes/FreeSlot), so
+	// concurrent execution can ABBA-deadlock. The MaintenanceCoordinator
+	// exists exactly for this serialization (compaction was designed to run
+	// after Vacuum); the Vacuum side was missing until Fase 3. Acquire before
+	// any other lock (no cycle: only Vacuum takes this lock, and it takes it
+	// first). The compactor's TryAcquire counterpart skips its cycle instead.
+	if o.index.maintenanceCoord != nil {
+		o.index.maintenanceCoord.AcquireCompactionLock()
+		defer o.index.maintenanceCoord.ReleaseCompactionLock()
+	}
+
 	// =========================================================================
 	// PHASE 1: IDENTIFY DELETED NODES (RLock - allows concurrent queries)
 	// =========================================================================
