@@ -256,12 +256,16 @@ func (o *GraphOptimizer) Vacuum() bool {
 	for deadID := range deletedSet {
 		o.index.LockNode(deadID)
 
-		// overwrite slot virtual memory
-		// overwrite slot virtual memory
+		// overwrite slot virtual memory before freeing the physical slot
 		if o.index.arena != nil {
 			if vecBytes, err := o.index.arena.GetBytes(deadID); err == nil {
 				clear(vecBytes)
 			}
+			// Release the physical slot for reuse (fix Fase 3: was never freed,
+			// compactor inerte). Must happen after graph repair (Phase 3) and
+			// while still holding metaMu.Lock + LockNode, i.e. no live node
+			// references deadID anymore (soft-delete → vacuum).
+			o.index.arena.FreeSlot(deadID)
 		}
 
 		if extID, ok := o.index.internalToExternalID[deadID]; ok {

@@ -307,7 +307,9 @@ func (e *Engine) backgroundTasks() {
 		case <-ticker.C:
 			e.checkMaintenance()
 		case <-maintTicker.C:
-			e.DB.RunMaintenance() // Graph Healing/Refine logic
+			if e.DB.RunMaintenance() { // Graph Healing/Refine logic (incl. Vacuum arena reuse)
+				atomic.AddInt64(&e.dirtyCounter, 1)
+			}
 		case <-graphTicker.C:
 			e.RunGraphVacuum() // Global Graph Vacuum
 		case <-flushTicker.C:

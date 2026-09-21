@@ -411,7 +411,7 @@ func (s *DB) LoadFromSnapshot(reader io.Reader, basePath string) error {
 
 // RunMaintenance triggers background tasks (Vacuum/Refine) on all vector indexes.
 // It should be called periodically by the Engine.
-func (s *DB) RunMaintenance() {
+func (s *DB) RunMaintenance() bool {
 	s.mu.RLock()
 	indexes := make([]*hnsw.Index, 0, len(s.vectorIndexes))
 	for _, idx := range s.vectorIndexes {
@@ -421,9 +421,13 @@ func (s *DB) RunMaintenance() {
 	}
 	s.mu.RUnlock()
 
+	didWork := false
 	for _, idx := range indexes {
-		idx.MaintenanceRun("") // "" = auto (check timer)
+		if idx.MaintenanceRun("") { // "" = auto (check timer)
+			didWork = true
+		}
 	}
+	return didWork
 }
 
 // IterateKV iterates over all key-value pairs in the store, passing each to a callback function.
