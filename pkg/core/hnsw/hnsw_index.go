@@ -43,8 +43,10 @@ const NumShards = 128
 // Sotto questa soglia il brute force è sia esatto che più veloce della
 // traversata, e aggira il problema del sottografo filtrato disconnesso:
 // con filtri selettivi (<1%) la traversata restituisce ~nulla comunque.
-// Costo indicativo: 5000 membri x 384 dim ~= 4M flop (<1ms).
-const filteredBruteForceThreshold = 5000
+// Soglia 20000 copre tutti gli haystack LongMemEval (S ~1k, M ~10k nodi
+// con chunk 120/20; max ~11k) con costo max 20000×384≈7.7M flop (<1 ms).
+// Validato Fase 2: traverse su 10k/100k dava recall 0.40-0.47, brute 1.0.
+const filteredBruteForceThreshold = 20000
 
 // Index represents the hierarchical graph structure.
 type Index struct {
