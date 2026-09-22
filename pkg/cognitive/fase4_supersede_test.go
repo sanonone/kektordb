@@ -11,6 +11,7 @@ package cognitive
 
 import (
 	"fmt"
+	"math/rand"
 	"strings"
 	"testing"
 	"time"
@@ -232,4 +233,217 @@ func TestFase4EpistemicMaxPerCycleBounds(t *testing.T) {
 	if len(pending) < 7 {
 		t.Errorf("reflection ancora unresolved = %d, want >=7 (le non processate non vanno toccate)", len(pending))
 	}
+}
+
+// --- C1: batching delle chiamate LLM ---
+
+// batchedContradictionReply costruisce una risposta JSON array per n coppie.
+func batchedContradictionReply(pairs int, contradict bool) string {
+	var b strings.Builder
+	b.WriteString("[")
+	for i := 0; i < pairs; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"pair": %d, "contradiction": %t, "reason": "r%d", "suggested_resolution": "", "action_required": false}`,
+			i+1, contradict, i)
+	}
+	b.WriteString("]")
+	return b.String()
+}
+
+// TestFase4C1BatchingCutsLLMCalls: con molte coppie nella finestra, le chiamate
+// LLM devono essere ~pairs/contradictionBatchSize, non una per coppia.
+func TestFase4C1BatchingCutsLLMCalls(t *testing.T) {
+	eng := newFase4Engine(t, "fase4_batch")
+	idx := "fase4_batch"
+
+	// Vettori pseudo-casuali deterministici: producono una distribuzione di
+	// similarità realistica con molte coppie nella finestra 0.70-0.95.
+	// (Perturbazioni piccole su una base comune danno cos > 0.95: nessuna coppia.)
+	rng := rand.New(rand.NewSource(42))
+	for i := 0; i < 30; i++ {
+		v := make([]float32, 8)
+		for d := range v {
+			v[d] = rng.Float32()
+		}
+		eng.VAdd(idx, fmt.Sprintf("mem_%02d", i), v, map[string]any{
+			"content": fmt.Sprintf("Statement %d about the same topic", i), "type": "memory",
+		})
+	}
+
+	mock := &MockLLM{ContradictionReply: batchedContradictionReply(contradictionBatchSize, false)}
+	g := NewGardener(eng, mock, Config{Enabled: true, Interval: time.Hour})
+	g.detectContradictions(idx)
+
+	if mock.CallCount == 0 {
+		t.Fatal("nessuna chiamata LLM: il test non ha esercitato il path di batching")
+	}
+
+	// Conta le coppie analizzate: la marcatura avviene solo a verdetto ricevuto.
+	ids, _, _ := eng.VGetIDsByCursor(idx, 0, 200)
+	pairs := 0
+	for _, id := range ids {
+		if links, found := eng.VGetLinks(idx, id, "analyzed_against"); found {
+			pairs += len(links)
+		}
+	}
+	// Ogni coppia è marcata in entrambe le direzioni (link bidirezionale).
+	distinctPairs := pairs / 2
+	t.Logf("coppie distinte: %d, chiamate LLM: %d (rapporto %.1f coppie/chiamata)",
+		distinctPairs, mock.CallCount, float64(distinctPairs)/float64(mock.CallCount))
+
+	if distinctPairs > 0 && mock.CallCount*contradictionBatchSize < distinctPairs {
+		t.Errorf("batching inefficace: %d chiamate per %d coppie (atteso <= %d)",
+			mock.CallCount, distinctPairs, (distinctPairs+contradictionBatchSize-1)/contradictionBatchSize)
+	}
+}
+
+// TestFase4C1AllPairsStillEvaluated: il batching non deve ridurre la copertura:
+// ogni coppia nella finestra riceve un verdetto.
+func TestFase4C1AllPairsStillEvaluated(t *testing.T) {
+	eng := newFase4Engine(t, "fase4_batch_cov")
+	idx := "fase4_batch_cov"
+
+	rng := rand.New(rand.NewSource(7))
+	for i := 0; i < 12; i++ {
+		v := make([]float32, 8)
+		for d := range v {
+			v[d] = rng.Float32()
+		}
+		eng.VAdd(idx, fmt.Sprintf("p_%02d", i), v, map[string]any{
+			"content": fmt.Sprintf("Fact %d", i), "type": "memory",
+		})
+	}
+
+	// Conta le coppie attese (stessa logica della fase 1, senza dedup grafico).
+	undirected := map[string]bool{}
+	for i := 0; i < 12; i++ {
+		d, err := eng.VGet(idx, fmt.Sprintf("p_%02d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		neigh, _ := eng.VSearchWithScores(idx, d.Vector, 5, "", 0)
+		for _, nb := range neigh {
+			if nb.ID == d.ID || nb.Score > 0.95 || nb.Score < 0.70 {
+				continue
+			}
+			a, b := d.ID, nb.ID
+			if a > b {
+				a, b = b, a
+			}
+			undirected[a+"|"+b] = true
+		}
+	}
+
+	mock := &MockLLM{ContradictionReply: batchedContradictionReply(contradictionBatchSize, false)}
+	g := NewGardener(eng, mock, Config{Enabled: true, Interval: time.Hour})
+	g.detectContradictions(idx)
+
+	ids, _, _ := eng.VGetIDsByCursor(idx, 0, 200)
+	marked := 0
+	for _, id := range ids {
+		if links, found := eng.VGetLinks(idx, id, "analyzed_against"); found {
+			marked += len(links)
+		}
+	}
+	markedPairs := marked / 2
+
+	if len(undirected) == 0 {
+		t.Fatal("nessuna coppia nella finestra: test vacuo")
+	}
+	t.Logf("coppie attese: %d, coppie marcate: %d, chiamate: %d", len(undirected), markedPairs, mock.CallCount)
+	if markedPairs != len(undirected) {
+		t.Errorf("copertura incompleta: %d coppie marcate su %d attese", markedPairs, len(undirected))
+	}
+}
+
+// --- C3: niente marcatura senza verdetto ---
+
+// TestFase4C3NoMarkingOnLLMFailure: se la chiamata LLM fallisce, nessuna coppia
+// deve essere marcata analyzed_against: restano ri-esaminabili.
+func TestFase4C3NoMarkingOnLLMFailure(t *testing.T) {
+	eng := newFase4Engine(t, "fase4_fail")
+	idx := "fase4_fail"
+
+	eng.VAdd(idx, "f_a", []float32{0.5, 0.75, 0.1}, map[string]any{
+		"content": "Python is a fast language", "type": "memory",
+	})
+	eng.VAdd(idx, "f_b", []float32{0.7, 0.3, 0.2}, map[string]any{
+		"content": "Python is a slow language", "type": "memory",
+	})
+
+	mock := &failLLM{}
+	g := NewGardener(eng, mock, Config{Enabled: true, Interval: time.Hour})
+	g.detectContradictions(idx)
+
+	if mock.CallCount == 0 {
+		t.Fatal("LLM non chiamato: test vacuo")
+	}
+	ids, _, _ := eng.VGetIDsByCursor(idx, 0, 100)
+	marked := 0
+	for _, id := range ids {
+		if links, found := eng.VGetLinks(idx, id, "analyzed_against"); found {
+			marked += len(links)
+		}
+	}
+	if marked != 0 {
+		t.Errorf("analyzed_against edges = %d, want 0: un fallimento LLM non deve bruciare la coppia", marked)
+	}
+	if n := fase4CountReflections(t, eng, idx); n != 0 {
+		t.Errorf("reflections = %d, want 0", n)
+	}
+}
+
+// TestFase4C3IncompleteVerdictNotMarked: se il LLM risponde con meno verdetti
+// del richiesto, le coppie senza verdetto NON vanno marcate (riprovano dopo),
+// mentre quelle con verdetto sì.
+func TestFase4C3IncompleteVerdictNotMarked(t *testing.T) {
+	// Unit-level: il parser deve restituire solo i verdetti presenti.
+	resp := `[{"pair": 1, "contradiction": false, "reason": "ok"}]`
+	v := parseContradictionBatch(resp, 3)
+	if len(v) != 1 {
+		t.Fatalf("verdicts = %d, want 1", len(v))
+	}
+	if _, ok := v[0]; !ok {
+		t.Error("verdict per pair 1 mancante")
+	}
+	if _, ok := v[1]; ok {
+		t.Error("pair 2 non doveva avere verdetto (assente nella risposta)")
+	}
+
+	// Risposta con pair fuori range: ignorata.
+	v2 := parseContradictionBatch(`[{"pair": 9, "contradiction": true}]`, 2)
+	if _, ok := v2[8]; ok {
+		t.Error("pair fuori range non doveva essere accettato")
+	}
+
+	// Array vuoto -> nessun verdetto.
+	if v3 := parseContradictionBatch(`[]`, 2); len(v3) != 0 {
+		t.Errorf("array vuoto: verdicts = %d, want 0", len(v3))
+	}
+
+	// Fallback oggetto singolo per batch di 1.
+	v4 := parseContradictionBatch(`{"contradiction": true, "reason": "single"}`, 1)
+	if it, ok := v4[0]; !ok || !it.Contradiction {
+		t.Error("fallback oggetto singolo non ha prodotto il verdetto")
+	}
+
+	// Testo spazzatura -> nessun verdetto (niente panico).
+	if v5 := parseContradictionBatch(`sorry, I cannot help`, 2); len(v5) != 0 {
+		t.Errorf("risposta spazzatura: verdicts = %d, want 0", len(v5))
+	}
+}
+
+// failLLM simula un LLM sempre in errore (rete giù, timeout).
+type failLLM struct{ CallCount int }
+
+func (f *failLLM) Chat(systemPrompt, userQuery string) (string, error) {
+	f.CallCount++
+	return "", fmt.Errorf("simulated network failure")
+}
+
+func (f *failLLM) ChatWithImages(systemPrompt, userQuery string, images [][]byte) (string, error) {
+	f.CallCount++
+	return "", fmt.Errorf("simulated network failure")
 }

@@ -1344,6 +1344,154 @@ func isHistoricalOrArchived(meta map[string]any) bool {
 	return false
 }
 
+// isMetaNode reports whether a node is a cognitive meta-node (reflection,
+// consolidated memory/belief, evolved memory). Those carry no primary content
+// and must not participate in contradiction analysis, or reflections would
+// contradict each other in a loop.
+func isMetaNode(meta map[string]any) bool {
+	memType, ok := meta["type"].(string)
+	if !ok {
+		return false
+	}
+	switch memType {
+	case "reflection", "consolidated_memory", "consolidated_belief", "evolved_memory":
+		return true
+	}
+	return false
+}
+
+// formatMemoryDate renders a memory's _created_at as YYYY-MM-DD ("" if unset).
+func formatMemoryDate(meta map[string]any) string {
+	if ts, ok := meta["_created_at"].(float64); ok {
+		return time.Unix(int64(ts), 0).Format("2006-01-02")
+	}
+	return ""
+}
+
+// contradictionPairKey is an order-independent key for a memory pair, so the
+// same pair found from either side is evaluated once per cycle.
+func contradictionPairKey(a, b string) string {
+	if a > b {
+		a, b = b, a
+	}
+	return a + "\x00" + b
+}
+
+// contradictionBatchSize is how many pairs are sent in a single LLM call.
+// Batching keeps the same coverage as one-call-per-pair while cutting the
+// number of calls by roughly this factor.
+const contradictionBatchSize = 5
+
+// contradictionCandidate is one (live memory, live neighbour) pair inside the
+// 0.70–0.95 similarity window, waiting for an LLM contradiction verdict.
+// Collected without side effects so evaluation can be batched (C1) and the
+// analyzed_against edge only written once a verdict is in hand (C3).
+type contradictionCandidate struct {
+	nodeID          string
+	nodeContent     string
+	nodeDate        string
+	nodeVector      []float32
+	neighborID      string
+	neighborContent string
+	neighborDate    string
+	neighborVector  []float32
+}
+
+// llmContradictionBatchItem is one verdict inside a batched LLM response.
+type llmContradictionBatchItem struct {
+	Pair                int    `json:"pair"`
+	Contradiction       bool   `json:"contradiction"`
+	Reason              string `json:"reason"`
+	SuggestedResolution string `json:"suggested_resolution"`
+	ActionRequired      bool   `json:"action_required"`
+}
+
+// parseContradictionBatch extracts verdicts from a batched LLM response.
+// The returned map is keyed by 0-based index into the submitted batch.
+// Pairs absent from the response are simply missing: the caller must NOT mark
+// them as analyzed (C3), so they are retried on a later cycle instead of being
+// silently lost. The "pair" field is honoured when present (1-based) and
+// positional order is used as a fallback for models that omit it.
+//
+// Both the documented array form and a bare single object are accepted: models
+// occasionally drop the array wrapper, and rejecting that would throw away a
+// usable verdict. A bare object is only accepted for a single-pair batch.
+func parseContradictionBatch(resp string, n int) map[int]llmContradictionBatchItem {
+	out := make(map[int]llmContradictionBatchItem)
+
+	startIdx := strings.Index(resp, "[")
+	endIdx := strings.LastIndex(resp, "]")
+	if startIdx != -1 && endIdx > startIdx {
+		var items []llmContradictionBatchItem
+		if err := json.Unmarshal([]byte(resp[startIdx:endIdx+1]), &items); err == nil {
+			for i, it := range items {
+				idx := i
+				if it.Pair >= 1 && it.Pair <= n {
+					idx = it.Pair - 1
+				}
+				if idx < 0 || idx >= n {
+					continue
+				}
+				out[idx] = it
+			}
+			if len(out) > 0 {
+				return out
+			}
+		}
+	}
+
+	// Fallback: a single object (no array wrapper). Only meaningful for one pair.
+	if n == 1 {
+		objStart := strings.Index(resp, "{")
+		objEnd := strings.LastIndex(resp, "}")
+		if objStart != -1 && objEnd > objStart {
+			var item llmContradictionBatchItem
+			if err := json.Unmarshal([]byte(resp[objStart:objEnd+1]), &item); err == nil {
+				out[0] = item
+			}
+		}
+	}
+
+	return out
+}
+
+// analyzeContradictionBatch asks the LLM for a contradiction verdict on every
+// pair in the batch, in a single call.
+func (g *Gardener) analyzeContradictionBatch(batch []contradictionCandidate) (map[int]llmContradictionBatchItem, error) {
+	sysPrompt := `You are a contradiction analyst for an AI agent's memory.
+You will receive a numbered list of PAIRS of memory statements.
+For EACH pair decide whether the two statements logically contradict each other.
+Consider their timestamps — the more recent memory is likely more accurate.
+
+Return ONLY a valid JSON array with exactly one object per pair, in the same order:
+[{"pair": 1, "contradiction": true/false, "reason": "...", "suggested_resolution": "...", "action_required": true/false}]
+
+Guidelines for action_required:
+- true if the agent must manually investigate or choose which memory to keep
+- false if the contradiction is minor or can be auto-resolved by preferring the newer memory
+
+Guidelines for suggested_resolution:
+- If timestamps differ significantly, suggest: "Keep the newer memory (from <date>) and archive the older one."
+- If both are equally recent, suggest: "Verify which statement is correct and discard the other."
+- If not a contradiction, set to ""`
+
+	var b strings.Builder
+	for i, c := range batch {
+		fmt.Fprintf(&b, "PAIR %d\n  A (from %s): %s\n  B (from %s): %s\n",
+			i+1, c.nodeDate, c.nodeContent, c.neighborDate, c.neighborContent)
+	}
+
+	resp, err := g.llm.Chat(sysPrompt, b.String())
+	if err != nil {
+		return nil, err
+	}
+	verdicts := parseContradictionBatch(resp, len(batch))
+	if len(verdicts) == 0 {
+		return nil, fmt.Errorf("batched contradiction response unparsable (%d pairs)", len(batch))
+	}
+	return verdicts, nil
+}
+
 // detectContradictions finds memories about the same topic that make conflicting claims.
 func (g *Gardener) detectContradictions(indexName string) {
 	// Small batch (50) because each pair triggers an LLM call.
@@ -1361,15 +1509,16 @@ func (g *Gardener) detectContradictions(indexName string) {
 		"nodes_to_check", len(nodes),
 	)
 
+	// ── PHASE 1: collect candidate pairs (no LLM calls, no graph writes) ──
+	var candidates []contradictionCandidate
+	seenPairs := make(map[string]struct{})
+
 	for _, node := range nodes {
 		contentA, ok := node.Metadata["content"].(string)
 		if !ok || contentA == "" {
 			continue
 		}
-		// Skip meta-nodes (reflections, consolidated memories, evolved memories)
-		// to avoid circular contradictions and wasted LLM calls on non-content nodes.
-		if memType, ok := node.Metadata["type"].(string); ok &&
-			(memType == "reflection" || memType == "consolidated_memory" || memType == "consolidated_belief" || memType == "evolved_memory") {
+		if isMetaNode(node.Metadata) {
 			continue
 		}
 		// Skip memories already superseded (evolved) or archived: they are
@@ -1389,23 +1538,24 @@ func (g *Gardener) detectContradictions(indexName string) {
 			}
 
 			// Dedup via graph edge: skip if this pair was already analyzed.
-			existingLinks, found := g.eng.VGetLinks(indexName, node.ID, "analyzed_against")
-			if found {
-				skip := false
-				for _, link := range existingLinks {
+			if links, found := g.eng.VGetLinks(indexName, node.ID, "analyzed_against"); found {
+				already := false
+				for _, link := range links {
 					if link == neighbor.ID {
-						skip = true
+						already = true
 						break
 					}
 				}
-				if skip {
+				if already {
 					continue
 				}
 			}
 
-			// Mark the pair as analyzed to prevent re-processing.
-			if err := g.eng.VLink(indexName, node.ID, neighbor.ID, "analyzed_against", "analyzed_against", 1.0, nil); err != nil {
-				slog.Warn("[Cognitive Engine] Failed to mark pair as analyzed", "error", err)
+			// Dedup within this cycle: the analyzed_against edge is written only
+			// after a verdict (C3), so the same pair could otherwise be collected
+			// twice — once from each side.
+			key := contradictionPairKey(node.ID, neighbor.ID)
+			if _, dup := seenPairs[key]; dup {
 				continue
 			}
 
@@ -1417,103 +1567,108 @@ func (g *Gardener) detectContradictions(indexName string) {
 			if !ok {
 				continue
 			}
-			// Also skip meta-nodes as neighbor candidates (same rationale as above).
-			if memType, ok := neighborData.Metadata["type"].(string); ok &&
-				(memType == "reflection" || memType == "consolidated_memory" || memType == "consolidated_belief" || memType == "evolved_memory") {
-				continue
-			}
-			// Same for superseded/archived neighbours: pairing live memories with
-			// obsolete ones produces reflections that can never be auto-resolved
-			// into anything useful (the obsolete side is already hidden).
-			if isHistoricalOrArchived(neighborData.Metadata) {
+			if isMetaNode(neighborData.Metadata) || isHistoricalOrArchived(neighborData.Metadata) {
 				continue
 			}
 
-			// Ask the LLM for a contradiction analysis.
-			dateA := ""
-			if ts, ok := node.Metadata["_created_at"].(float64); ok {
-				dateA = time.Unix(int64(ts), 0).Format("2006-01-02")
-			}
-			dateB := ""
-			if ts, ok := neighborData.Metadata["_created_at"].(float64); ok {
-				dateB = time.Unix(int64(ts), 0).Format("2006-01-02")
-			}
+			seenPairs[key] = struct{}{}
+			candidates = append(candidates, contradictionCandidate{
+				nodeID:          node.ID,
+				nodeContent:     contentA,
+				nodeDate:        formatMemoryDate(node.Metadata),
+				nodeVector:      node.Vector,
+				neighborID:      neighbor.ID,
+				neighborContent: contentB,
+				neighborDate:    formatMemoryDate(neighborData.Metadata),
+				neighborVector:  neighborData.Vector,
+			})
+		}
+	}
 
-			sysPrompt := `Analyze the following two memory statements from an AI agent.
-Consider their timestamps — the more recent memory is likely more accurate.
-Do they logically contradict each other?
-Return ONLY a valid JSON object:
-{"contradiction": true/false, "reason": "...", "suggested_resolution": "...", "action_required": true/false}
+	if len(candidates) == 0 {
+		return
+	}
 
-Guidelines for action_required:
-- true if the agent must manually investigate or choose which memory to keep
-- false if the contradiction is minor or can be auto-resolved by preferring the newer memory
+	// ── PHASE 2: evaluate in batches, then apply verdicts and mark ──
+	llmCalls := 0
+	for start := 0; start < len(candidates); start += contradictionBatchSize {
+		end := start + contradictionBatchSize
+		if end > len(candidates) {
+			end = len(candidates)
+		}
+		batch := candidates[start:end]
 
-Guidelines for suggested_resolution:
-- If timestamps differ significantly, suggest: "Keep the newer memory (from <date>) and archive the older one."
-- If both are equally recent, suggest: "Verify which statement is correct and discard the other."
-- If not a contradiction, set to ""`
+		verdicts, err := g.analyzeContradictionBatch(batch)
+		llmCalls++
+		if err != nil {
+			// C3: no verdict means no marking — the pairs stay eligible and are
+			// retried next cycle instead of being lost to a transient failure.
+			slog.Warn("[Cognitive Engine] Batched contradiction analysis failed",
+				"index", indexName, "pairs", len(batch), "error", err)
+			continue
+		}
 
-			userPrompt := fmt.Sprintf("Memory A (from %s): %s\nMemory B (from %s): %s", dateA, contentA, dateB, contentB)
-
-			respText, err := g.llm.Chat(sysPrompt, userPrompt)
-			if err != nil {
-				slog.Warn("[Cognitive Engine] LLM call failed in contradiction detection",
-					"index", indexName,
-					"error", err,
-				)
+		for i := range batch {
+			c := batch[i]
+			verdict, ok := verdicts[i]
+			if !ok {
+				// Incomplete verdict for this pair: leave it unmarked for retry.
 				continue
 			}
 
-			// Extract JSON from the response, stripping any markdown or extra text.
-			startIdx := strings.Index(respText, "{")
-			endIdx := strings.LastIndex(respText, "}")
-			if startIdx != -1 && endIdx != -1 && endIdx > startIdx {
-				respText = respText[startIdx : endIdx+1]
+			// Mark the pair as analyzed only now that a definitive verdict exists.
+			if err := g.eng.VLink(indexName, c.nodeID, c.neighborID, "analyzed_against", "analyzed_against", 1.0, nil); err != nil {
+				slog.Warn("[Cognitive Engine] Failed to mark pair as analyzed", "error", err)
+				continue
 			}
 
-			var aiAnalysis llmContradictionResponse
-			if err := json.Unmarshal([]byte(respText), &aiAnalysis); err == nil {
-				if aiAnalysis.Contradiction {
-					slog.Info("[Cognitive Engine] ⚠️ Contradiction Detected!", "reason", aiAnalysis.Reason)
+			if !verdict.Contradiction {
+				continue
+			}
 
-					reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
-					g.reflectionsMu.Lock()
-					g.newReflections = append(g.newReflections, reflectionID)
-					g.reflectionsMu.Unlock()
-					g.totalReflections.Add(1)
-					g.totalContradictions.Add(1)
+			slog.Info("[Cognitive Engine] ⚠️ Contradiction Detected!", "reason", verdict.Reason)
 
-					// Zero-cost embedding: average of the two conflicting vectors.
-					dim := len(node.Vector)
-					avgVec := make([]float32, dim)
-					for i := range node.Vector {
-						avgVec[i] = (node.Vector[i] + neighborData.Vector[i]) / 2.0
-					}
+			reflectionID := fmt.Sprintf("reflection_%d", time.Now().UnixNano())
+			g.reflectionsMu.Lock()
+			g.newReflections = append(g.newReflections, reflectionID)
+			g.reflectionsMu.Unlock()
+			g.totalReflections.Add(1)
+			g.totalContradictions.Add(1)
 
-					meta := map[string]any{
-						"type":                 "reflection",
-						"content":              fmt.Sprintf("Conflict detected: %s", aiAnalysis.Reason),
-						"status":               "unresolved",
-						"confidence":           0.7,
-						"suggested_resolution": aiAnalysis.SuggestedResolution,
-						"action_required":      aiAnalysis.ActionRequired,
-						"_created_at":          float64(time.Now().Unix()),
-					}
+			// Zero-cost embedding: average of the two conflicting vectors.
+			dim := len(c.nodeVector)
+			avgVec := make([]float32, dim)
+			for k := 0; k < dim && k < len(c.neighborVector); k++ {
+				avgVec[k] = (c.nodeVector[k] + c.neighborVector[k]) / 2.0
+			}
 
-					g.eng.VAdd(indexName, reflectionID, avgVec, meta)
+			meta := map[string]any{
+				"type":                 "reflection",
+				"content":              fmt.Sprintf("Conflict detected: %s", verdict.Reason),
+				"status":               "unresolved",
+				"confidence":           0.7,
+				"suggested_resolution": verdict.SuggestedResolution,
+				"action_required":      verdict.ActionRequired,
+				"_created_at":          float64(time.Now().Unix()),
+			}
 
-					// Link both memories to the reflection node.
-					if err := g.eng.VLink(indexName, reflectionID, node.ID, "contradicts", "contradicted_by", 1.0, nil); err != nil {
-						slog.Warn("[Cognitive Engine] Failed to link contradiction", "error", err)
-					}
-					if err := g.eng.VLink(indexName, reflectionID, neighbor.ID, "contradicts", "contradicted_by", 1.0, nil); err != nil {
-						slog.Warn("[Cognitive Engine] Failed to link contradiction", "error", err)
-					}
-				}
+			g.eng.VAdd(indexName, reflectionID, avgVec, meta)
+
+			// Link both memories to the reflection node.
+			if err := g.eng.VLink(indexName, reflectionID, c.nodeID, "contradicts", "contradicted_by", 1.0, nil); err != nil {
+				slog.Warn("[Cognitive Engine] Failed to link contradiction", "error", err)
+			}
+			if err := g.eng.VLink(indexName, reflectionID, c.neighborID, "contradicts", "contradicted_by", 1.0, nil); err != nil {
+				slog.Warn("[Cognitive Engine] Failed to link contradiction", "error", err)
 			}
 		}
 	}
+
+	slog.Debug("[Cognitive Engine] Contradiction scan complete",
+		"index", indexName,
+		"pairs", len(candidates),
+		"llm_calls", llmCalls,
+	)
 }
 
 // detectImportanceShifts detects entities that have suddenly become popular
