@@ -826,8 +826,8 @@ func (g *Gardener) findRedundantClusters(indexName string, similarityThreshold f
 		}
 		scanned++
 
-		// Skip archived memories and meta-nodes (master/reflections).
-		if archived, ok := vData.Metadata["_archived"].(bool); ok && archived {
+		// Skip archived/superseded memories and meta-nodes (master/reflections).
+		if isHistoricalOrArchived(vData.Metadata) {
 			continue
 		}
 		if memType, ok := vData.Metadata["type"].(string); ok && (memType == "consolidated_memory" || memType == "reflection") {
@@ -843,10 +843,10 @@ func (g *Gardener) findRedundantClusters(indexName string, similarityThreshold f
 		for _, res := range results {
 			if res.Score >= similarityThreshold {
 				if _, seen := clusteredSet[res.ID]; !seen {
-					// Also skip archived or meta-type neighbors.
+					// Also skip archived/superseded or meta-type neighbors.
 					neighborData, err := g.eng.VGet(indexName, res.ID)
 					if err == nil {
-						if arch, ok := neighborData.Metadata["_archived"].(bool); ok && arch {
+						if isHistoricalOrArchived(neighborData.Metadata) {
 							continue
 						}
 						if memType, ok := neighborData.Metadata["type"].(string); ok && (memType == "consolidated_memory" || memType == "reflection") {
@@ -904,8 +904,8 @@ func (g *Gardener) findRedundantClustersInLayer(indexName string, layer string, 
 			continue
 		}
 
-		// Skip archived memories and meta-nodes
-		if archived, ok := vData.Metadata["_archived"].(bool); ok && archived {
+		// Skip archived/superseded memories and meta-nodes
+		if isHistoricalOrArchived(vData.Metadata) {
 			continue
 		}
 		if memType, ok := vData.Metadata["type"].(string); ok && (memType == "consolidated_memory" || memType == "reflection" || memType == "semantic_memory") {
@@ -933,8 +933,8 @@ func (g *Gardener) findRedundantClustersInLayer(indexName string, layer string, 
 					if neighborLayer != layer {
 						continue
 					}
-					// Skip archived or meta-type neighbors
-					if arch, ok := neighborData.Metadata["_archived"].(bool); ok && arch {
+					// Skip archived/superseded or meta-type neighbors
+					if isHistoricalOrArchived(neighborData.Metadata) {
 						continue
 					}
 					if memType, ok := neighborData.Metadata["type"].(string); ok && (memType == "consolidated_memory" || memType == "reflection" || memType == "semantic_memory") {
@@ -1329,6 +1329,21 @@ func (g *Gardener) pickCentralContent(indexName string, items []core.VectorData)
 	return bestContent
 }
 
+// isHistoricalOrArchived reports whether a memory node has been superseded
+// (_is_historical) or archived (_archived). Such nodes are hidden from default
+// retrieval (see mcp defaultMemoryFilter), so background detectors must not
+// treat them as live content: re-analysing them wastes LLM calls and can
+// generate reflections/consolidations on material already deemed obsolete.
+func isHistoricalOrArchived(meta map[string]any) bool {
+	if hist, ok := meta["_is_historical"].(bool); ok && hist {
+		return true
+	}
+	if arch, ok := meta["_archived"].(bool); ok && arch {
+		return true
+	}
+	return false
+}
+
 // detectContradictions finds memories about the same topic that make conflicting claims.
 func (g *Gardener) detectContradictions(indexName string) {
 	// Small batch (50) because each pair triggers an LLM call.
@@ -1355,6 +1370,13 @@ func (g *Gardener) detectContradictions(indexName string) {
 		// to avoid circular contradictions and wasted LLM calls on non-content nodes.
 		if memType, ok := node.Metadata["type"].(string); ok &&
 			(memType == "reflection" || memType == "consolidated_memory" || memType == "consolidated_belief" || memType == "evolved_memory") {
+			continue
+		}
+		// Skip memories already superseded (evolved) or archived: they are
+		// hidden from default retrieval, so re-analysing them only burns LLM
+		// calls and can spawn reflections (and thus new consolidations) on
+		// material the system has already decided is obsolete.
+		if isHistoricalOrArchived(node.Metadata) {
 			continue
 		}
 
@@ -1398,6 +1420,12 @@ func (g *Gardener) detectContradictions(indexName string) {
 			// Also skip meta-nodes as neighbor candidates (same rationale as above).
 			if memType, ok := neighborData.Metadata["type"].(string); ok &&
 				(memType == "reflection" || memType == "consolidated_memory" || memType == "consolidated_belief" || memType == "evolved_memory") {
+				continue
+			}
+			// Same for superseded/archived neighbours: pairing live memories with
+			// obsolete ones produces reflections that can never be auto-resolved
+			// into anything useful (the obsolete side is already hidden).
+			if isHistoricalOrArchived(neighborData.Metadata) {
 				continue
 			}
 
