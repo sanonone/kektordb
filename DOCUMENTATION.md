@@ -1681,7 +1681,18 @@ cognitive:
       consensus: 0.20
       stability: 0.30
       friction: 0.50
+
+    # Max conflicting memories merged in one consolidation. A normal reflection
+    # carries 2; composite reflections can carry more. Above the limit the
+    # reflection is escalated to manual review instead of consolidating a subset.
+    epistemic_max_nodes_per_consolidation: 20
 ```
+
+**Consolidation is all-or-nothing.** If any `VEvolve` fails mid-way, the nodes
+already evolved are restored (see *Restore Memory* below) and the master belief
+is removed, so the graph returns to its previous state and the reflection is
+escalated for review. A failed consolidation never leaves a half-migrated set of
+memories under a single "consolidated truth".
 
 **Why the gate weights differ from the public weights:** the three-pillar score
 answers *"how reliable is this belief?"*. The auto-resolution gate needs to answer

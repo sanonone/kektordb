@@ -61,6 +61,10 @@ type GardenerConfigYAML struct {
 	// contradiction detector's explicit action_required flag. Default true.
 	EpistemicRequireActionRequired *bool `yaml:"epistemic_require_action_required"`
 
+	// EpistemicMaxNodesPerConsolidation (E): max conflicting memories merged in
+	// one consolidation. Default 20.
+	EpistemicMaxNodesPerConsolidation int `yaml:"epistemic_max_nodes_per_consolidation"`
+
 	// EpistemicWeights (B1): pillar weights for the resolution gate only.
 	EpistemicWeights EpistemicWeightsYAML `yaml:"epistemic_weights"`
 }
@@ -204,22 +208,23 @@ func LoadConfig(path string) (Config, llm.Config, error) {
 
 	// Build Gardener config
 	gardener := Config{
-		Enabled:                      cfg.Gardener.Enabled,
-		Mode:                         cfg.Gardener.Mode,
-		Interval:                     parseDuration(cfg.Gardener.Interval, 30*time.Second),
-		TargetIndexes:                cfg.Gardener.TargetIndexes,
-		AdaptiveThreshold:            cfg.Gardener.AdaptiveThreshold,
-		AdaptiveMinInterval:          parseDuration(cfg.Gardener.AdaptiveMinInterval, 30*time.Second),
-		AutoResolveEnabled:           cfg.AutoResolve.Enabled,
-		AutoResolveLinks:             cfg.AutoResolve.Actions.CreateSuggestedLinks.Enabled,
-		AutoResolveLinksMin:          cfg.AutoResolve.Actions.CreateSuggestedLinks.MinConfidence,
-		AutoResolveContra:            cfg.AutoResolve.Actions.MarkMinorContradictions.Enabled,
-		MemoryConfig:                 buildMemoryConfig(cfg.Gardener.MemoryLayers),
-		EnableUserProfiling:          cfg.Gardener.EnableUserProfiling,
-		ProfileUpdateThreshold:       cfg.Gardener.ProfileUpdateThreshold,
-		EpistemicResolutionEnabled:   cfg.Gardener.EpistemicResolutionEnabled,
-		EpistemicMaxPerCycle:         cfg.Gardener.EpistemicMaxPerCycle,
-		EpistemicConfidenceThreshold: cfg.Gardener.EpistemicConfidenceThreshold,
+		Enabled:                           cfg.Gardener.Enabled,
+		Mode:                              cfg.Gardener.Mode,
+		Interval:                          parseDuration(cfg.Gardener.Interval, 30*time.Second),
+		TargetIndexes:                     cfg.Gardener.TargetIndexes,
+		AdaptiveThreshold:                 cfg.Gardener.AdaptiveThreshold,
+		AdaptiveMinInterval:               parseDuration(cfg.Gardener.AdaptiveMinInterval, 30*time.Second),
+		AutoResolveEnabled:                cfg.AutoResolve.Enabled,
+		AutoResolveLinks:                  cfg.AutoResolve.Actions.CreateSuggestedLinks.Enabled,
+		AutoResolveLinksMin:               cfg.AutoResolve.Actions.CreateSuggestedLinks.MinConfidence,
+		AutoResolveContra:                 cfg.AutoResolve.Actions.MarkMinorContradictions.Enabled,
+		MemoryConfig:                      buildMemoryConfig(cfg.Gardener.MemoryLayers),
+		EnableUserProfiling:               cfg.Gardener.EnableUserProfiling,
+		ProfileUpdateThreshold:            cfg.Gardener.ProfileUpdateThreshold,
+		EpistemicResolutionEnabled:        cfg.Gardener.EpistemicResolutionEnabled,
+		EpistemicMaxPerCycle:              cfg.Gardener.EpistemicMaxPerCycle,
+		EpistemicConfidenceThreshold:      cfg.Gardener.EpistemicConfidenceThreshold,
+		EpistemicMaxNodesPerConsolidation: cfg.Gardener.EpistemicMaxNodesPerConsolidation,
 		EpistemicWeights: EpistemicWeights{
 			Consensus: cfg.Gardener.EpistemicWeights.Consensus,
 			Stability: cfg.Gardener.EpistemicWeights.Stability,
@@ -253,6 +258,9 @@ func LoadConfig(path string) (Config, llm.Config, error) {
 	}
 	if gardener.EpistemicConfidenceThreshold == 0 {
 		gardener.EpistemicConfidenceThreshold = 0.40
+	}
+	if gardener.EpistemicMaxNodesPerConsolidation <= 0 {
+		gardener.EpistemicMaxNodesPerConsolidation = 20
 	}
 	// B1: fill weights left at zero with the Gardener defaults (0.20/0.30/0.50).
 	if w := DefaultGardenerEpistemicWeights(); gardener.EpistemicWeights.Consensus == 0 &&

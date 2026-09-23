@@ -185,6 +185,14 @@ type Config struct {
 	// score-only gate.
 	EpistemicRequireActionRequired bool
 
+	// EpistemicMaxNodesPerConsolidation (E) bounds how many conflicting memories
+	// are consolidated in one operation. A reflection normally carries two
+	// contradicts edges, but composite reflections can carry more: the bound
+	// keeps the consolidation prompt (callEpistemicLLM sends every node) and the
+	// number of graph mutations finite. Exceeding it escalates the reflection to
+	// manual review rather than consolidating a partial set. Default: 20.
+	EpistemicMaxNodesPerConsolidation int
+
 	// EpistemicWeights (B1): pillar weights used by the Gardener's resolution
 	// gate. They are deliberately separate from engine.DefaultEpistemicConfig()
 	// (which backs the public belief-assessment API and its documented
@@ -3613,6 +3621,23 @@ func (g *Gardener) processEpistemicReflection(indexName, reflectionID string) {
 		return
 	}
 
+	// E: bound the consolidation size. A reflection normally carries two
+	// contradicts edges, but composite reflections (detectCrossValidator) can
+	// carry more. Without a bound, callEpistemicLLM would send every node in one
+	// prompt and executeConsolidation would mutate the graph an unbounded number
+	// of times. Exceeding the limit escalates instead of consolidating a subset.
+	maxNodes := g.cfg.EpistemicMaxNodesPerConsolidation
+	if maxNodes <= 0 {
+		maxNodes = 20
+	}
+	if len(nodesData) > maxNodes {
+		slog.Warn("[Gardener] Reflection has too many conflicting nodes for auto-consolidation, escalating",
+			"reflection", reflectionID, "nodes", len(nodesData), "max", maxNodes)
+		g.escalateToManual(indexName, reflectionID,
+			fmt.Sprintf("too_many_nodes: %d > %d", len(nodesData), maxNodes))
+		return
+	}
+
 	// Calculate centroid (mean of all vectors)
 	centroid := make([]float32, targetDim)
 	for _, node := range nodesData {
@@ -3806,6 +3831,12 @@ func (g *Gardener) parseEpistemicResponse(resp string) (*epistemicResolution, er
 }
 
 // executeConsolidation creates the master belief and VEvolve conflicting nodes.
+//
+// E: the operation is all-or-nothing. Previously a partial failure left some
+// nodes evolved and others still visible under the same "consolidated truth",
+// and marked the reflection resolved anyway. Now any failure rolls back the
+// nodes already evolved (VRestore, fix D) and removes the master node, so the
+// reflection can be retried or escalated with the graph unchanged.
 func (g *Gardener) executeConsolidation(
 	indexName, reflectionID string,
 	nodes []epistemicNodeInternal,
@@ -3829,8 +3860,11 @@ func (g *Gardener) executeConsolidation(
 		return
 	}
 
-	// VEvolve each conflicting node to point to master
-	successCount := 0
+	// VEvolve each conflicting node to point to master.
+	// evolved collects the nodes actually evolved, so a mid-way failure can undo them.
+	evolved := make([]string, 0, len(nodes))
+	var failure error
+
 	for _, node := range nodes {
 		// Create evolution metadata with consolidated truth as the corrected content
 		evolveMeta := map[string]any{
@@ -3847,15 +3881,16 @@ func (g *Gardener) executeConsolidation(
 			"Epistemic consolidation: "+resolution.ConsolidatedTruth,
 		)
 		if err != nil {
-			slog.Warn("[Gardener] VEvolve failed", "node", node.id, "error", err)
-			continue
+			slog.Warn("[Gardener] VEvolve failed, rolling back consolidation",
+				"node", node.id, "error", err, "already_evolved", len(evolved))
+			failure = fmt.Errorf("vevolve failed for %s: %w", node.id, err)
+			break
 		}
-		successCount++
+		evolved = append(evolved, node.id)
 	}
 
-	if successCount == 0 {
-		// All VEvolve failed - master is orphaned
-		g.escalateToManual(indexName, reflectionID, "all_vevolve_failed")
+	if failure != nil {
+		g.rollbackConsolidation(indexName, reflectionID, masterID, evolved, failure)
 		return
 	}
 
@@ -3864,15 +3899,55 @@ func (g *Gardener) executeConsolidation(
 		"status":              "resolved",
 		"resolution":          "epistemic_consolidation",
 		"consolidated_belief": masterID,
-		"nodes_consolidated":  successCount,
+		"nodes_consolidated":  len(evolved),
 		"_updated_at":         float64(time.Now().Unix()),
 	})
 
 	slog.Info("[Gardener] Successfully consolidated belief",
 		"reflection", reflectionID,
 		"master", masterID,
-		"nodes_consolidated", successCount,
+		"nodes_consolidated", len(evolved),
 		"truth", resolution.ConsolidatedTruth)
+}
+
+// rollbackConsolidation undoes a partially applied consolidation: every node
+// already evolved is restored (VRestore clears _is_historical, keeping the
+// evolution edges as history) and the master node is removed, since nothing
+// references it any more. The reflection is escalated for manual review.
+//
+// Best-effort by design: rollback failures are logged, not fatal. The reflection
+// is escalated either way, so the inconsistency is visible to an operator
+// instead of silently marked as resolved.
+func (g *Gardener) rollbackConsolidation(
+	indexName, reflectionID, masterID string,
+	evolved []string,
+	cause error,
+) {
+	restored := 0
+	for _, id := range evolved {
+		if err := g.eng.VRestore(indexName, id); err != nil {
+			slog.Error("[Gardener] Rollback failed to restore node",
+				"node", id, "master", masterID, "error", err)
+			continue
+		}
+		restored++
+	}
+
+	if err := g.eng.VDelete(indexName, masterID); err != nil {
+		slog.Error("[Gardener] Rollback failed to delete master node",
+			"master", masterID, "error", err)
+	}
+
+	slog.Warn("[Gardener] Consolidation rolled back",
+		"reflection", reflectionID,
+		"master", masterID,
+		"nodes_restored", restored,
+		"nodes_evolved", len(evolved),
+		"cause", cause.Error())
+
+	g.escalateToManual(indexName, reflectionID,
+		fmt.Sprintf("consolidation_rolled_back: %s (restored %d/%d nodes)",
+			cause.Error(), restored, len(evolved)))
 }
 
 // escalateToManual marks a reflection for human review.

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +54,9 @@ func fase4CountReflections(t *testing.T, eng *engine.Engine, idx string) int {
 	}
 	return n
 }
+
+// fase4DefaultFilter replica il filtro di default MCP (memorie visibili).
+const fase4DefaultFilter = "_is_historical != 'true' AND _archived != 'true'"
 
 const fase4ContradictionReply = `{"contradiction": true, "reason": "opposite claims", "suggested_resolution": "keep newer", "action_required": true}`
 
@@ -660,5 +664,207 @@ gardener:
 	}
 	if cfg2.EpistemicRequireActionRequired {
 		t.Error("epistemic_require_action_required=false non rispettato")
+	}
+}
+
+// --- E: bound + rollback all-or-nothing ---
+
+// TestFase4EBoundEscalates: una reflection con più nodi del limite non deve
+// essere consolidata (né parzialmente), ma escalata a revisione manuale.
+func TestFase4EBoundEscalates(t *testing.T) {
+	eng := newFase4Engine(t, "fase4_bound")
+	idx := "fase4_bound"
+
+	reflID := "reflection_bound"
+	eng.VAdd(idx, reflID, []float32{0.5, 0.5, 0.5}, map[string]any{
+		"type": "reflection", "status": "unresolved", "content": "many conflicts",
+		"action_required": true,
+		"_created_at":     float64(time.Now().Unix() - 400*24*3600),
+	})
+	// 6 memorie contraddittorie, limite 3.
+	const nNodes = 6
+	for j := 0; j < nNodes; j++ {
+		id := fmt.Sprintf("bound_m%d", j)
+		eng.VAdd(idx, id, []float32{0.5 + float32(j)*0.01, 0.5, 0.5}, map[string]any{
+			"content":     fmt.Sprintf("Statement %d", j),
+			"type":        "memory",
+			"_created_at": float64(time.Now().Unix() - 400*24*3600),
+		})
+		eng.VLink(idx, reflID, id, "contradicts", "contradicted_by", 1.0, nil)
+	}
+
+	mock := &MockLLM{Responses: []string{`{"resolvable": true, "consolidated_truth": "Merged", "clarification_question": ""}`}}
+	g := NewGardener(eng, mock, Config{
+		Enabled:                           true,
+		Interval:                          time.Hour,
+		EpistemicResolutionEnabled:        true,
+		EpistemicMaxPerCycle:              3,
+		EpistemicRequireActionRequired:    true,
+		EpistemicMaxNodesPerConsolidation: 3, // < 6 nodi
+	})
+	g.resolveVolatileBeliefs(idx)
+
+	// Nessuna memoria deve essere stata evoluta.
+	for j := 0; j < nNodes; j++ {
+		d, _ := eng.VGet(idx, fmt.Sprintf("bound_m%d", j))
+		if hist, _ := d.Metadata["_is_historical"].(bool); hist {
+			t.Errorf("memoria %d evoluta nonostante il superamento del limite", j)
+		}
+	}
+	// Nessun master belief creato.
+	bp, _ := eng.VFilter(idx, "type='consolidated_belief'", 10)
+	if len(bp) != 0 {
+		t.Errorf("master belief creato nonostante il limite: %v", bp)
+	}
+	// La reflection deve essere escalata.
+	d, err := eng.VGet(idx, reflID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Metadata["status"] != "needs_manual_review" {
+		t.Errorf("status = %v, want needs_manual_review", d.Metadata["status"])
+	}
+	if reason, _ := d.Metadata["error_reason"].(string); !strings.Contains(reason, "too_many_nodes") {
+		t.Errorf("error_reason = %q, want contiene 'too_many_nodes'", reason)
+	}
+}
+
+// TestFase4EBoundWithinLimitConsolidates: sotto il limite il consolidamento
+// procede normalmente (il bound non blocca il caso legittimo).
+func TestFase4EBoundWithinLimitConsolidates(t *testing.T) {
+	eng := newFase4Engine(t, "fase4_bound_ok")
+	idx := "fase4_bound_ok"
+	reflID := "reflection_bound_ok"
+	fase4ReflectionSetup(t, eng, idx, reflID, 400, true)
+
+	mock := &MockLLM{Responses: []string{`{"resolvable": true, "consolidated_truth": "Merged truth", "clarification_question": ""}`}}
+	g := NewGardener(eng, mock, Config{
+		Enabled:                           true,
+		Interval:                          time.Hour,
+		EpistemicResolutionEnabled:        true,
+		EpistemicMaxPerCycle:              3,
+		EpistemicRequireActionRequired:    true,
+		EpistemicMaxNodesPerConsolidation: 20,
+	})
+	g.resolveVolatileBeliefs(idx)
+
+	d, _ := eng.VGet(idx, reflID)
+	if d.Metadata["status"] != "resolved" {
+		t.Errorf("status = %v, want resolved (sotto il limite deve consolidare)", d.Metadata["status"])
+	}
+	// Le due memorie contraddittorie devono essere storiche.
+	for j := 0; j < 2; j++ {
+		md, _ := eng.VGet(idx, fmt.Sprintf("%s_m%d", reflID, j))
+		if hist, _ := md.Metadata["_is_historical"].(bool); !hist {
+			t.Errorf("memoria %d non evoluta dopo un consolidamento riuscito", j)
+		}
+	}
+}
+
+// TestFase4ERollbackRestoresEvolvedNodes: se un VEvolve fallisce a metà, i nodi
+// già evoluti devono tornare visibili e il master deve sparire.
+//
+// Chiama executeConsolidation direttamente (come fa
+// TestExecuteConsolidationEvolvedContent) perché serve iniettare un nodo non
+// evolvibile DOPO uno evolvibile: passando dalla pipeline completa il nodo
+// mancante verrebbe filtrato prima, e il fallimento non si verificherebbe.
+func TestFase4ERollbackRestoresEvolvedNodes(t *testing.T) {
+	eng := newFase4Engine(t, "fase4_rollback")
+	idx := "fase4_rollback"
+	reflID := "reflection_rollback"
+
+	eng.VAdd(idx, reflID, []float32{0.5, 0.5, 0.5}, map[string]any{
+		"type": "reflection", "status": "unresolved", "content": "conflict",
+		"action_required": true,
+		"_created_at":     float64(time.Now().Unix() - 400*24*3600),
+	})
+	eng.VAdd(idx, "rb_alive", []float32{0.5, 0.5, 0.5}, map[string]any{
+		"content": "live statement", "type": "memory",
+		"_created_at": float64(time.Now().Unix() - 400*24*3600),
+	})
+
+	// Ordine deliberato: il nodo valido viene evoluto per primo, poi il nodo
+	// inesistente fa fallire VEvolve -> scatta il rollback.
+	nodesData := []epistemicNodeInternal{
+		{id: "rb_alive", vector: []float32{0.5, 0.5, 0.5}, metadata: map[string]any{"content": "live statement"}},
+		{id: "rb_missing", vector: []float32{0.51, 0.5, 0.5}, metadata: map[string]any{"content": "missing"}},
+	}
+	resolution := &epistemicResolution{Resolvable: true, ConsolidatedTruth: "Merged truth"}
+	centroid := []float32{0.5, 0.5, 0.5}
+
+	g := &Gardener{eng: eng, scanCursors: make(map[string]uint32)}
+	g.executeConsolidation(idx, reflID, nodesData, resolution, centroid)
+
+	// Il nodo vivo non deve essere rimasto storico (rollback applicato).
+	d, err := eng.VGet(idx, "rb_alive")
+	if err != nil {
+		t.Fatalf("rb_alive sparito: %v", err)
+	}
+	if hist, _ := d.Metadata["_is_historical"].(bool); hist {
+		t.Error("rb_alive è rimasto _is_historical dopo il rollback: i nodi evoluti non sono stati ripristinati")
+	}
+
+	// Nessun master belief orfano deve restare.
+	bp, _ := eng.VFilter(idx, "type='consolidated_belief'", 10)
+	if len(bp) != 0 {
+		t.Errorf("master belief orfano rimasto dopo il rollback: %v", bp)
+	}
+
+	// La reflection deve essere escalata, non marcata risolta.
+	rd, _ := eng.VGet(idx, reflID)
+	if rd.Metadata["status"] == "resolved" {
+		t.Error("reflection marcata 'resolved' nonostante il fallimento")
+	}
+	if rd.Metadata["status"] != "needs_manual_review" {
+		t.Errorf("status = %v, want needs_manual_review", rd.Metadata["status"])
+	}
+	if reason, _ := rd.Metadata["error_reason"].(string); !strings.Contains(reason, "rolled_back") {
+		t.Errorf("error_reason = %q, want contiene 'rolled_back'", reason)
+	}
+
+	// Il nodo vivo deve essere di nuovo visibile alla retrieval di default.
+	res, _ := eng.VSearch(idx, d.Vector, 10, fase4DefaultFilter, "", 100, 1.0, nil)
+	if !slices.Contains(res, "rb_alive") {
+		t.Errorf("rb_alive non visibile dopo il rollback: %v", res)
+	}
+}
+
+// TestFase4ENoPartialStateOnFailure documenta il comportamento pre-fix che il
+// rollback elimina: senza rollback, un fallimento a metà lasciava la reflection
+// "resolved" e i nodi evoluti a metà.
+func TestFase4ESuccessPathMarksResolvedOnce(t *testing.T) {
+	eng := newFase4Engine(t, "fase4_success_once")
+	idx := "fase4_success_once"
+	reflID := "reflection_success"
+
+	eng.VAdd(idx, reflID, []float32{0.5, 0.5, 0.5}, map[string]any{
+		"type": "reflection", "status": "unresolved", "content": "conflict",
+		"_created_at": float64(time.Now().Unix() - 400*24*3600),
+	})
+	for j := 0; j < 2; j++ {
+		eng.VAdd(idx, fmt.Sprintf("s_m%d", j), []float32{0.5 + float32(j)*0.01, 0.5, 0.5}, map[string]any{
+			"content": fmt.Sprintf("Statement %d", j), "type": "memory",
+			"_created_at": float64(time.Now().Unix() - 400*24*3600),
+		})
+	}
+
+	nodesData := []epistemicNodeInternal{
+		{id: "s_m0", vector: []float32{0.5, 0.5, 0.5}, metadata: map[string]any{"content": "Statement 0"}},
+		{id: "s_m1", vector: []float32{0.51, 0.5, 0.5}, metadata: map[string]any{"content": "Statement 1"}},
+	}
+	resolution := &epistemicResolution{Resolvable: true, ConsolidatedTruth: "Merged truth"}
+	g := &Gardener{eng: eng, scanCursors: make(map[string]uint32)}
+	g.executeConsolidation(idx, reflID, nodesData, resolution, []float32{0.5, 0.5, 0.5})
+
+	rd, _ := eng.VGet(idx, reflID)
+	if rd.Metadata["status"] != "resolved" {
+		t.Errorf("status = %v, want resolved sul percorso di successo", rd.Metadata["status"])
+	}
+	if n, ok := rd.Metadata["nodes_consolidated"].(int); !ok || n != 2 {
+		t.Errorf("nodes_consolidated = %v (%T), want 2", rd.Metadata["nodes_consolidated"], rd.Metadata["nodes_consolidated"])
+	}
+	bp, _ := eng.VFilter(idx, "type='consolidated_belief'", 10)
+	if len(bp) != 1 {
+		t.Errorf("master belief = %d, want 1", len(bp))
 	}
 }
