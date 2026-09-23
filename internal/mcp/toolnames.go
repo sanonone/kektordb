@@ -27,6 +27,7 @@ const (
 	ToolAskMetaQuestion    = "ask_meta_question"
 	ToolEvolveMemory       = "evolve_memory"
 	ToolGetMemoryEvolution = "get_memory_evolution"
+	ToolRestoreMemory      = "restore_memory"
 	ToolUnpinMemory        = "unpin_memory"
 	ToolConfigureAutoLinks = "configure_auto_links"
 	ToolRequestKnowledge   = "request_knowledge"

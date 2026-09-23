@@ -456,6 +456,19 @@ type VectorEvolveRequest struct {
 	Reason      string         `json:"reason"`                 // Reason for evolution
 }
 
+// VectorRestoreRequest reverses a supersede/archive (fix D).
+type VectorRestoreRequest struct {
+	IndexName string `json:"index_name"`
+	ID        string `json:"id"`
+}
+
+// VectorRestoreResponse reports the outcome of a restore.
+type VectorRestoreResponse struct {
+	ID      string `json:"id"`
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+}
+
 // VectorEvolveResponse returns the result of a memory evolution.
 type VectorEvolveResponse struct {
 	NewID   string `json:"new_id"` // ID of the newly created node

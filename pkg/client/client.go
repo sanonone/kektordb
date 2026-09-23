@@ -1318,6 +1318,19 @@ type VectorEvolveResponse struct {
 	Message string `json:"message"`
 }
 
+// vectorRestoreRequest is the body of POST /vector/actions/restore.
+type vectorRestoreRequest struct {
+	IndexName string `json:"index_name"`
+	ID        string `json:"id"`
+}
+
+// VectorRestoreResponse reports the outcome of a memory restore.
+type VectorRestoreResponse struct {
+	ID      string `json:"id"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
 // CompileRequest represents a request to compile a knowledge artifact.
 type CompileRequest struct {
 	Name      string                 `json:"name"`
@@ -1807,6 +1820,33 @@ func (c *Client) VEvolve(indexName, oldID string, newVector []float32, newConten
 	var resp VectorEvolveResponse
 	if err := json.Unmarshal(respBody, &resp); err != nil {
 		return nil, fmt.Errorf("invalid JSON response for VEvolve: %w", err)
+	}
+	return &resp, nil
+}
+
+// VRestore reverses a supersede or an archive, making a memory visible to
+// default retrieval again. Use it when an automatic consolidation or evolution
+// hid a memory that is still valid.
+//
+// Provenance metadata and superseded_by/evolves_from edges are preserved; only
+// the visibility flags (_is_historical, _archived) are cleared.
+//
+// Memories removed with VDelete cannot be restored: the server returns an error
+// rather than a silent success.
+func (c *Client) VRestore(indexName, id string) (*VectorRestoreResponse, error) {
+	req := vectorRestoreRequest{
+		IndexName: indexName,
+		ID:        id,
+	}
+
+	respBody, err := c.jsonRequest(http.MethodPost, "/vector/actions/restore", req)
+	if err != nil {
+		return nil, err
+	}
+
+	var resp VectorRestoreResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for VRestore: %w", err)
 	}
 	return &resp, nil
 }

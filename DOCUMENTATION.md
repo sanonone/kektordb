@@ -1560,6 +1560,40 @@ Creates a new version of a memory while preserving the old one as historical.
 4. Copies all incoming edges from old node to new node
 5. Marks old node with `_is_historical: true`
 
+#### Restore Memory (undo a supersede/archive)
+
+**`POST /vector/actions/restore`**
+
+Reverses a supersede or an archive, making a memory visible to default retrieval
+again. Use it when an automatic consolidation or evolution hid a memory that is
+still valid. Provenance metadata (`_consolidated_into`, `invalidated_by`) and the
+`superseded_by`/`evolves_from` edges are preserved: only the visibility flags are
+cleared, and `_restored_at` records when.
+
+**Body:**
+```json
+{
+  "index_name": "memories",
+  "id": "pref_italian"
+}
+```
+
+**Response:**
+```json
+{
+  "id": "pref_italian",
+  "status": "restored",
+  "message": "Memory pref_italian is visible to default retrieval again"
+}
+```
+
+**Limits:** memories removed with `delete_memory` / `VDelete` **cannot** be
+restored — that operation drops the external→internal mapping and the metadata.
+The endpoint returns `400` with an explicit message instead of a silent success.
+Restoring a memory that was never hidden also returns `400` (nothing to restore).
+
+MCP tool: `restore_memory`.
+
 #### Get Memory Evolution
 
 **`POST /vector/actions/get-evolution`**

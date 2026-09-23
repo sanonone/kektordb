@@ -783,6 +783,28 @@ func (s *Service) UnpinMemory(ctx context.Context, req *mcp.CallToolRequest, arg
 	return nil, UnpinMemoryResult{Status: "unpinned"}, nil
 }
 
+// RestoreMemory reverses a supersede/archive (fix D): it clears _is_historical
+// and/or _archived so the memory becomes visible to default retrieval again.
+// Deleted (VDelete'd) memories cannot be restored and return an explicit error.
+func (s *Service) RestoreMemory(ctx context.Context, req *mcp.CallToolRequest, args RestoreMemoryArgs) (*mcp.CallToolResult, RestoreMemoryResult, error) {
+	idx := args.IndexName
+	if idx == "" {
+		idx = "mcp_memory"
+	}
+	if args.MemoryID == "" {
+		return nil, RestoreMemoryResult{}, fmt.Errorf("memory_id is required")
+	}
+
+	if err := s.engine.VRestore(idx, args.MemoryID); err != nil {
+		return nil, RestoreMemoryResult{Status: "error", Message: err.Error()}, nil
+	}
+
+	return nil, RestoreMemoryResult{
+		Status:  "restored",
+		Message: "memory " + args.MemoryID + " is visible to default retrieval again",
+	}, nil
+}
+
 func (s *Service) ConfigureAutoLinks(ctx context.Context, req *mcp.CallToolRequest, args ConfigureAutoLinksArgs) (*mcp.CallToolResult, ConfigureAutoLinksResult, error) {
 	idx := args.IndexName
 	if idx == "" {
@@ -1070,7 +1092,15 @@ func (s *Service) ResolveConflict(ctx context.Context, req *mcp.CallToolRequest,
 
 	// 2. Se l'AI ha deciso che una delle memorie originali era falsa/vecchia, la archiviamo
 	if args.DiscardID != "" {
-		// Non la cancelliamo fisicamente per mantenere la storia. La nascondiamo (Soft Delete / Archive).
+		// Non la cancelliamo fisicamente per mantenere la storia. La nascondiamo
+		// (soft archive) con _archived=true, esattamente come fanno gli altri
+		// percorsi di consolidamento (consolidateCluster, consolidateEpisodic,
+		// SummarizeSession) e come dice il commento qui sopra.
+		//
+		// NOTA (fix D): prima qui seguiva una chiamata a VDelete. VDelete rimuove
+		// l'ID esterno dalla mappa e i metadati, quindi rendeva il nodo
+		// IRRAGGIUNGIBILE e non ripristinabile — l'opposto di "mantenere la
+		// storia". Gli altri percorsi non lo fanno; questo era l'outlier.
 		discardProps := map[string]any{
 			"_archived":      true,
 			"invalidated_by": args.ReflectionID,
@@ -1078,13 +1108,7 @@ func (s *Service) ResolveConflict(ctx context.Context, req *mcp.CallToolRequest,
 		if err := s.engine.VSetMetadata(idx, args.DiscardID, discardProps); err != nil {
 			slog.Error("MCP: failed to archive discarded memory in ResolveConflict",
 				"id", args.DiscardID, "error", err)
-		}
-
-		// In più, scolleghiamo eventuali archi attivi dal Grafo per pulizia topologica
-		// VDelete farà scattare il Cascade Delete sugli archi (Soft Delete).
-		if err := s.engine.VDelete(idx, args.DiscardID); err != nil {
-			slog.Error("MCP: failed to delete discarded memory in ResolveConflict",
-				"id", args.DiscardID, "error", err)
+			return nil, ResolveConflictResult{}, fmt.Errorf("failed to archive memory %q: %w", args.DiscardID, err)
 		}
 	}
 

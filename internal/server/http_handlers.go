@@ -114,6 +114,7 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 
 	// Semantic Memory Evolution API
 	mux.HandleFunc("POST /vector/actions/evolve", s.handleVEvolve)
+	mux.HandleFunc("POST /vector/actions/restore", s.handleVRestore)
 	mux.HandleFunc("POST /vector/actions/get-evolution", s.handleGetMemoryEvolution)
 
 	// Cognitive Engine API
@@ -1510,15 +1511,16 @@ func (s *Server) handleResolveReflection(w http.ResponseWriter, r *http.Request)
 	// These errors are non-fatal: the primary reflection was already resolved above.
 	// Log and continue rather than rolling back the resolved state.
 	if req.DiscardID != "" {
+		// Archive only (fix D): VDelete used to follow here, but it removes the
+		// external->internal mapping and the metadata, making the node
+		// unreachable AND unrestorable — the opposite of "keep the history".
+		// The consolidation paths archive without deleting; this is now consistent.
 		discardProps := map[string]any{
 			"_archived":      true,
 			"invalidated_by": reflectionID,
 		}
 		if vSetMetadataError := s.Engine.VSetMetadata(indexName, req.DiscardID, discardProps); vSetMetadataError != nil {
 			slog.Warn("Failed to Set", "IndexName", indexName, "Error", vSetMetadataError)
-		}
-		if vDeleteMetadataError := s.Engine.VDelete(indexName, req.DiscardID); vDeleteMetadataError != nil {
-			slog.Warn("Failed to Delete", "IndexName", indexName, "Error", vDeleteMetadataError)
 		}
 	}
 
@@ -2752,6 +2754,36 @@ func (s *Server) handleVEvolve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeHTTPResponse(w, http.StatusOK, resp)
+}
+
+// handleVRestore reverses a supersede/archive, making a memory visible to
+// default retrieval again (fix D).
+func (s *Server) handleVRestore(w http.ResponseWriter, r *http.Request) {
+	var req VectorRestoreRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON: %v", err))
+		return
+	}
+	if req.IndexName == "" || req.ID == "" {
+		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("index_name and id are required"))
+		return
+	}
+	if !s.Engine.IndexExists(req.IndexName) {
+		s.writeHTTPError(w, http.StatusNotFound, fmt.Errorf("index '%s' not found", req.IndexName))
+		return
+	}
+
+	if err := s.Engine.VRestore(req.IndexName, req.ID); err != nil {
+		// Not-found / not-restorable are client-visible conditions, not crashes.
+		s.writeHTTPError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	s.writeHTTPResponse(w, http.StatusOK, VectorRestoreResponse{
+		ID:      req.ID,
+		Status:  "restored",
+		Message: fmt.Sprintf("Memory %s is visible to default retrieval again", req.ID),
+	})
 }
 
 // handleGetMemoryEvolution retrieves the evolution chain of a memory node.

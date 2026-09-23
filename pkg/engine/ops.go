@@ -881,6 +881,51 @@ func (e *Engine) VEvolve(indexName, oldID string, newVector []float32, newMetada
 	return newID, nil
 }
 
+// VRestore reverses a supersede/archive, making a memory visible to default
+// retrieval again. It clears the hiding flags written by VEvolve
+// (_is_historical) and by the consolidation/session-archival paths (_archived).
+//
+// It deliberately does NOT resurrect a VDelete'd node: Delete removes the
+// external->internal mapping and the node metadata, so that state is not
+// recoverable. Callers get an explicit error rather than a silent no-op.
+//
+// Provenance metadata (_consolidated_into, invalidated_by, ...) is left intact:
+// it is history, and only the visibility flags decide what retrieval returns.
+func (e *Engine) VRestore(indexName, id string) error {
+	data, err := e.VGet(indexName, id)
+	if err != nil {
+		return fmt.Errorf("memory %q not found (deleted memories are not restorable): %w", id, err)
+	}
+
+	his, _ := data.Metadata["_is_historical"].(bool)
+	arch, _ := data.Metadata["_archived"].(bool)
+	if !his && !arch {
+		return fmt.Errorf("memory %q is neither superseded nor archived: nothing to restore", id)
+	}
+
+	props := map[string]any{
+		"_restored_at": float64(time.Now().Unix()),
+	}
+	if his {
+		props["_is_historical"] = false
+	}
+	if arch {
+		props["_archived"] = false
+	}
+
+	if err := e.VSetMetadata(indexName, id, props); err != nil {
+		return fmt.Errorf("failed to restore memory %q: %w", id, err)
+	}
+
+	slog.Info("[Engine] Memory restored",
+		"index", indexName, "id", id,
+		"was_historical", his, "was_archived", arch)
+
+	e.EventBus.Emit(Event{Type: EventVectorUpdate, IndexName: indexName, ID: id, Timestamp: time.Now().UnixNano()})
+
+	return nil
+}
+
 // Contains all Parsing, Filtering, Hybrid Fusion logic
 func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filter string, explicitTextQuery string, efSearch int, alpha float64, graphQuery *GraphQuery) ([]fusedResult, error) {
 	// TODO Future: If performance becomes critical, move CreatedAt and LastAccessed directly into the hnsw.Node struct (as native int64 fields), avoiding the generic metadata map.

@@ -110,6 +110,18 @@ type UnpinMemoryArgs struct {
 	MemoryID  string `json:"memory_id" jsonschema:"The memory node ID to unpin"`
 }
 
+// RestoreMemoryArgs reverses a supersede/archive, making a memory visible to
+// default retrieval again (fix D: supersede used to be irreversible).
+type RestoreMemoryArgs struct {
+	IndexName string `json:"index_name" jsonschema:"Index name (defaults to 'mcp_memory')"`
+	MemoryID  string `json:"memory_id" jsonschema:"The memory node ID to restore"`
+}
+
+type RestoreMemoryResult struct {
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+}
+
 type UnpinMemoryResult struct {
 	Status string `json:"status"`
 }

@@ -207,6 +207,13 @@ func registerTools(s *mcp.Server, service *Service, allowlist map[string]bool) {
 		}, service.GetMemoryEvolution)
 	}
 
+	if shouldRegister(ToolRestoreMemory, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        ToolRestoreMemory,
+			Description: "Reverses a supersede or archive, making a memory visible to default retrieval again. Use when an auto-consolidation or evolution wrongly hid a still-valid memory. Note: memories removed with delete_memory cannot be restored.",
+		}, service.RestoreMemory)
+	}
+
 	if shouldRegister(ToolRequestKnowledge, allowlist) {
 		mcp.AddTool(s, &mcp.Tool{
 			Name:        ToolRequestKnowledge,
