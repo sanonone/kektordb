@@ -56,6 +56,20 @@ type GardenerConfigYAML struct {
 	EpistemicResolutionEnabled   bool    `yaml:"epistemic_resolution_enabled"`
 	EpistemicMaxPerCycle         int     `yaml:"epistemic_max_per_cycle"`
 	EpistemicConfidenceThreshold float64 `yaml:"epistemic_confidence_threshold"`
+
+	// EpistemicRequireActionRequired (B3): gate auto-resolution on the
+	// contradiction detector's explicit action_required flag. Default true.
+	EpistemicRequireActionRequired *bool `yaml:"epistemic_require_action_required"`
+
+	// EpistemicWeights (B1): pillar weights for the resolution gate only.
+	EpistemicWeights EpistemicWeightsYAML `yaml:"epistemic_weights"`
+}
+
+// EpistemicWeightsYAML holds the pillar weights for the Gardener's gate (B1).
+type EpistemicWeightsYAML struct {
+	Consensus float64 `yaml:"consensus"`
+	Stability float64 `yaml:"stability"`
+	Friction  float64 `yaml:"friction"`
 }
 
 // AutoResolveConfigYAML holds the auto-resolve settings.
@@ -206,6 +220,19 @@ func LoadConfig(path string) (Config, llm.Config, error) {
 		EpistemicResolutionEnabled:   cfg.Gardener.EpistemicResolutionEnabled,
 		EpistemicMaxPerCycle:         cfg.Gardener.EpistemicMaxPerCycle,
 		EpistemicConfidenceThreshold: cfg.Gardener.EpistemicConfidenceThreshold,
+		EpistemicWeights: EpistemicWeights{
+			Consensus: cfg.Gardener.EpistemicWeights.Consensus,
+			Stability: cfg.Gardener.EpistemicWeights.Stability,
+			Friction:  cfg.Gardener.EpistemicWeights.Friction,
+		},
+	}
+
+	// B3: gate on the explicit action_required flag unless explicitly disabled.
+	// A nil pointer means "not set in YAML" -> default true (safer: only resolve
+	// contradictions the detector flagged as needing human action).
+	gardener.EpistemicRequireActionRequired = true
+	if cfg.Gardener.EpistemicRequireActionRequired != nil {
+		gardener.EpistemicRequireActionRequired = *cfg.Gardener.EpistemicRequireActionRequired
 	}
 
 	// Apply defaults for empty/zero values
@@ -226,6 +253,11 @@ func LoadConfig(path string) (Config, llm.Config, error) {
 	}
 	if gardener.EpistemicConfidenceThreshold == 0 {
 		gardener.EpistemicConfidenceThreshold = 0.40
+	}
+	// B1: fill weights left at zero with the Gardener defaults (0.20/0.30/0.50).
+	if w := DefaultGardenerEpistemicWeights(); gardener.EpistemicWeights.Consensus == 0 &&
+		gardener.EpistemicWeights.Stability == 0 && gardener.EpistemicWeights.Friction == 0 {
+		gardener.EpistemicWeights = w
 	}
 
 	// Build LLM config

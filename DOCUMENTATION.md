@@ -1622,20 +1622,39 @@ The Gardener's automatic belief consolidation resolves volatile and contested be
 
 **Epistemic Config in Cognitive Engine:**
 
+The three-pillar weights above (0.40/0.30/0.30) are the **public belief-assessment**
+contract (`POST /vector/actions/belief-assessment`, SDKs) and are not configurable.
+
+The Gardener's *auto-resolution gate* is configured separately, under `gardener:`:
+
 ```yaml
 cognitive:
-  # Epistemic Engine Configuration (NEW)
-  epistemic:
-    enabled: true
-    weights:
-      consensus: 0.40    # Vector density weight
-      stability: 0.30    # Temporal robustness weight
-      friction: 0.30     # Contradiction penalty weight
-    thresholds:
-      crystallized: 0.85  # Above = crystallized state
-      volatile: 0.40      # Below = volatile state
-    decay_model: "ebbinghaus"  # ebbinghaus | exponential | linear
+  gardener:
+    epistemic_resolution_enabled: true   # opt-in: disabled by default
+    epistemic_max_per_cycle: 3           # max reflections resolved per cycle
+    epistemic_confidence_threshold: 0.40 # below = volatile (score gate)
+
+    # Gate auto-resolution on the detector's explicit action_required flag.
+    # Default: true. When true, a reflection is resolved only if the
+    # contradiction detector reported action_required=true — an explainable
+    # signal, instead of relying on the score alone.
+    epistemic_require_action_required: true
+
+    # Pillar weights for the resolution gate ONLY (the public API keeps
+    # 0.40/0.30/0.30). Consensus is structurally ~0.93-0.98 for any pair, so the
+    # gate shifts weight towards friction (explicit contradictions).
+    epistemic_weights:
+      consensus: 0.20
+      stability: 0.30
+      friction: 0.50
 ```
+
+**Why the gate weights differ from the public weights:** the three-pillar score
+answers *"how reliable is this belief?"*. The auto-resolution gate needs to answer
+*"should I act on this contradiction?"*. For the latter, consensus is misleading
+(two contradictory statements about the same topic are vectorially close by
+construction) and friction is near-constant (every reflection carries two
+`contradicts` edges). See `tempDocs/kektorDB v0.6.2/fase4-analisi-gate-pesi.md`.
 
 **Decay Models:**
 - `ebbinghaus`: S = halfLife × (1 + ln(1 + accessCount)) - More weight to reinforced memories

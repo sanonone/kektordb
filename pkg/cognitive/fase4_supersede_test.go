@@ -12,6 +12,7 @@ package cognitive
 import (
 	"fmt"
 	"math/rand"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -446,4 +447,218 @@ func (f *failLLM) Chat(systemPrompt, userQuery string) (string, error) {
 func (f *failLLM) ChatWithImages(systemPrompt, userQuery string, images [][]byte) (string, error) {
 	f.CallCount++
 	return "", fmt.Errorf("simulated network failure")
+}
+
+// --- B3: gate su action_required ---
+
+// fase4ReflectionSetup crea una reflection "vecchia" (così il punteggio
+// epistemico è basso) con due memorie contraddittorie, e restituisce l'ID.
+// ageDays controlla l'anzianità: memorie vecchie abbassano stability.
+func fase4ReflectionSetup(t *testing.T, eng *engine.Engine, idx, reflID string, ageDays int, actionRequired any) {
+	t.Helper()
+	created := float64(time.Now().Unix() - int64(ageDays)*24*3600)
+	reflMeta := map[string]any{
+		"type":        "reflection",
+		"status":      "unresolved",
+		"content":     "Conflict detected: server location",
+		"_created_at": created,
+	}
+	if actionRequired != nil {
+		reflMeta["action_required"] = actionRequired
+	}
+	eng.VAdd(idx, reflID, []float32{0.5, 0.5, 0.5}, reflMeta)
+
+	for j := 0; j < 2; j++ {
+		memID := fmt.Sprintf("%s_m%d", reflID, j)
+		eng.VAdd(idx, memID, []float32{0.5 + float32(j)*0.01, 0.5, 0.5}, map[string]any{
+			"content":     fmt.Sprintf("Statement %d", j),
+			"type":        "memory",
+			"_created_at": created,
+		})
+		eng.VLink(idx, reflID, memID, "contradicts", "contradicted_by", 1.0, nil)
+	}
+	// Contraddizioni extra: saturano friction e abbassano il punteggio sotto
+	// la soglia volatile, così il gate sul punteggio da solo si aprirebbe.
+	for k := 0; k < 5; k++ {
+		other := fmt.Sprintf("%s_extra_%d", reflID, k)
+		eng.VAdd(idx, other, []float32{0.4 + float32(k)*0.01, 0.5, 0.5}, map[string]any{
+			"content": "extra", "type": "memory", "_created_at": created,
+		})
+		eng.VLink(idx, other, reflID+"_m0", "contradicts", "contradicted_by", 1.0, nil)
+	}
+}
+
+// TestFase4B3GateRequiresActionRequired: con action_required=false (o assente),
+// una reflection che il punteggio epistemico considererebbe "volatile" NON deve
+// essere auto-risolta: nessuna chiamata LLM, status invariato, nessun archivia.
+func TestFase4B3GateRequiresActionRequired(t *testing.T) {
+	cases := []struct {
+		name           string
+		actionRequired any // nil = campo assente
+	}{
+		{"action_required=false", false},
+		{"action_required assente", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := newFase4Engine(t, "fase4_b3")
+			idx := "fase4_b3"
+			reflID := "reflection_b3"
+			fase4ReflectionSetup(t, eng, idx, reflID, 400, tc.actionRequired)
+
+			mock := &MockLLM{Responses: []string{`{"resolvable": true, "consolidated_truth": "Merged", "clarification_question": ""}`}}
+			g := NewGardener(eng, mock, Config{
+				Enabled:                        true,
+				Interval:                       time.Hour,
+				EpistemicResolutionEnabled:     true,
+				EpistemicMaxPerCycle:           3,
+				EpistemicRequireActionRequired: true,
+			})
+			g.resolveVolatileBeliefs(idx)
+
+			if mock.CallCount != 0 {
+				t.Errorf("LLM calls = %d, want 0: senza action_required non si deve risolvere", mock.CallCount)
+			}
+			data, err := eng.VGet(idx, reflID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if data.Metadata["status"] != "unresolved" {
+				t.Errorf("status = %v, want unresolved (nessun flip a stable)", data.Metadata["status"])
+			}
+			// Nessuna memoria deve essere diventata storica.
+			for j := 0; j < 2; j++ {
+				md, _ := eng.VGet(idx, fmt.Sprintf("%s_m%d", reflID, j))
+				if hist, _ := md.Metadata["_is_historical"].(bool); hist {
+					t.Errorf("memoria %d archiviata senza action_required", j)
+				}
+			}
+		})
+	}
+}
+
+// TestFase4B3GateOpensOnActionRequired: con action_required=true il percorso
+// legittimo deve ancora funzionare (il gate non blocca tutto).
+func TestFase4B3GateOpensOnActionRequired(t *testing.T) {
+	eng := newFase4Engine(t, "fase4_b3_open")
+	idx := "fase4_b3_open"
+	reflID := "reflection_b3_open"
+	fase4ReflectionSetup(t, eng, idx, reflID, 400, true)
+
+	mock := &MockLLM{Responses: []string{`{"resolvable": true, "consolidated_truth": "Merged truth", "clarification_question": ""}`}}
+	g := NewGardener(eng, mock, Config{
+		Enabled:                        true,
+		Interval:                       time.Hour,
+		EpistemicResolutionEnabled:     true,
+		EpistemicMaxPerCycle:           3,
+		EpistemicRequireActionRequired: true,
+	})
+	g.resolveVolatileBeliefs(idx)
+
+	if mock.CallCount == 0 {
+		t.Fatal("LLM calls = 0: con action_required=true la risoluzione deve procedere")
+	}
+	data, err := eng.VGet(idx, reflID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data.Metadata["status"] == "unresolved" {
+		t.Errorf("status = unresolved, want risolto (action_required=true)")
+	}
+}
+
+// TestFase4B3DisabledRestoresScoreGate: con EpistemicRequireActionRequired=false
+// il gate torna a basarsi solo sul punteggio (comportamento precedente).
+func TestFase4B3DisabledRestoresScoreGate(t *testing.T) {
+	eng := newFase4Engine(t, "fase4_b3_off")
+	idx := "fase4_b3_off"
+	reflID := "reflection_b3_off"
+	fase4ReflectionSetup(t, eng, idx, reflID, 400, false) // action_required=false
+
+	mock := &MockLLM{Responses: []string{`{"resolvable": true, "consolidated_truth": "Merged", "clarification_question": ""}`}}
+	g := NewGardener(eng, mock, Config{
+		Enabled:                        true,
+		Interval:                       time.Hour,
+		EpistemicResolutionEnabled:     true,
+		EpistemicMaxPerCycle:           3,
+		EpistemicRequireActionRequired: false, // gate disattivato
+	})
+	g.resolveVolatileBeliefs(idx)
+
+	if mock.CallCount == 0 {
+		t.Error("LLM calls = 0: con il gate B3 disattivato deve valere il punteggio (che qui è volatile)")
+	}
+}
+
+// --- B1: pesi del Gardener separati da quelli pubblici ---
+
+// TestFase4B1GardenerWeightsDoNotAffectPublicAPI: i pesi del Gardener non
+// devono cambiare le formule pubbliche di belief-assessment.
+func TestFase4B1GardenerWeightsDoNotAffectPublicAPI(t *testing.T) {
+	def := engine.DefaultEpistemicConfig()
+	if def.Weights.Consensus != 0.40 || def.Weights.Stability != 0.30 || def.Weights.Friction != 0.30 {
+		t.Errorf("DefaultEpistemicConfig weights changed: %+v (contratto pubblico documentato 0.40/0.30/0.30)",
+			def.Weights)
+	}
+	gw := DefaultGardenerEpistemicWeights()
+	if gw.Consensus == def.Weights.Consensus {
+		t.Logf("pesi Gardener %+v vs pubblici %+v (devono differire per la ricalibrazione B1)", gw, def.Weights)
+	}
+	if gw.Friction <= gw.Consensus {
+		t.Errorf("pesi Gardener: friction (%.2f) deve pesare più di consensus (%.2f)", gw.Friction, gw.Consensus)
+	}
+}
+
+// TestFase4B1WeightsAreConfigurable: i pesi del Gardener sono configurabili e
+// il default scatta solo quando tutti e tre sono zero.
+func TestFase4B1WeightsAreConfigurable(t *testing.T) {
+	// Default applicato quando i pesi sono tutti zero.
+	dw := DefaultGardenerEpistemicWeights()
+	if dw.Consensus != 0.20 || dw.Stability != 0.30 || dw.Friction != 0.50 {
+		t.Errorf("default Gardener weights = %+v, want 0.20/0.30/0.50", dw)
+	}
+
+	// I pesi espliciti non vengono sovrascritti (verifica via LoadConfig).
+	tmp := t.TempDir()
+	cfgPath := tmp + "/cognitive.yaml"
+	content := `
+gardener:
+  enabled: true
+  epistemic_resolution_enabled: true
+  epistemic_weights:
+    consensus: 0.05
+    stability: 0.15
+    friction: 0.80
+`
+	if err := os.WriteFile(cfgPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.EpistemicWeights.Consensus != 0.05 || cfg.EpistemicWeights.Stability != 0.15 || cfg.EpistemicWeights.Friction != 0.80 {
+		t.Errorf("pesi da YAML non applicati: %+v", cfg.EpistemicWeights)
+	}
+	if !cfg.EpistemicRequireActionRequired {
+		t.Error("EpistemicRequireActionRequired deve essere true di default")
+	}
+
+	// Disattivazione esplicita del gate B3 via YAML.
+	cfgPath2 := tmp + "/cognitive2.yaml"
+	content2 := `
+gardener:
+  enabled: true
+  epistemic_require_action_required: false
+`
+	if err := os.WriteFile(cfgPath2, []byte(content2), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg2, _, err := LoadConfig(cfgPath2)
+	if err != nil {
+		t.Fatalf("LoadConfig 2: %v", err)
+	}
+	if cfg2.EpistemicRequireActionRequired {
+		t.Error("epistemic_require_action_required=false non rispettato")
+	}
 }

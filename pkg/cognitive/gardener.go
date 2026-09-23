@@ -177,6 +177,20 @@ type Config struct {
 	EpistemicMaxPerCycle         int     // Max reflections to process per cycle (default: 3)
 	EpistemicConfidenceThreshold float64 // Min confidence to trigger resolution (default: 0.40)
 
+	// EpistemicRequireActionRequired (B3): when true (default), a reflection is
+	// auto-resolved only if the contradiction detector flagged it as needing
+	// human action (action_required=true). This gates on an explicit, explainable
+	// signal instead of on the three-pillar score, which measures "how reliable
+	// is this belief" rather than "should I act?". Set false to restore the
+	// score-only gate.
+	EpistemicRequireActionRequired bool
+
+	// EpistemicWeights (B1): pillar weights used by the Gardener's resolution
+	// gate. They are deliberately separate from engine.DefaultEpistemicConfig()
+	// (which backs the public belief-assessment API and its documented
+	// 0.40/0.30/0.30 contract). Zero values fall back to the defaults below.
+	EpistemicWeights EpistemicWeights
+
 	// Safety limits
 	MaxNodesPerScan int // Max nodes to load in a single scan (default: 10000, 0=unlimited)
 	MaxItemsForLLM  int // Max items sent to LLM per consolidation batch (default: 15)
@@ -184,6 +198,22 @@ type Config struct {
 	// Artifact Watcher callbacks (set by compiler.Watcher)
 	ArtifactScan  func()             // Called in think() to scan stale artifacts
 	ArtifactEvent func(engine.Event) // Called in onEvent() to track source changes
+}
+
+type EpistemicWeights struct {
+	Consensus float64
+	Stability float64
+	Friction  float64
+}
+
+// DefaultGardenerEpistemicWeights are the weights the Gardener's resolution gate
+// uses when none are configured (B1). They shift weight from consensus (which is
+// structurally ~0.93-0.98 for any pair, since it normalises variance by the
+// max pairwise distance of the same members) towards friction (explicit
+// contradictions), so the gate reacts to disagreement rather than to topical
+// proximity. The public belief-assessment API keeps 0.40/0.30/0.30.
+func DefaultGardenerEpistemicWeights() EpistemicWeights {
+	return EpistemicWeights{Consensus: 0.20, Stability: 0.30, Friction: 0.50}
 }
 
 // Gardener is the autonomous background worker that analyzes the database graph
@@ -3594,10 +3624,24 @@ func (g *Gardener) processEpistemicReflection(indexName, reflectionID string) {
 		centroid[i] /= float32(len(nodesData))
 	}
 
-	// Get epistemic config
+	// Get epistemic config. B1: the Gardener uses its own pillar weights
+	// (default 0.20/0.30/0.50) instead of the public belief-assessment ones
+	// (0.40/0.30/0.30). Consensus is structurally ~0.93-0.98 for any pair — it
+	// normalises variance by the max pairwise distance of the same members — so
+	// weighting it heavily makes the gate insensitive to actual disagreement.
+	// The public API keeps its documented weights; this is gate-only.
 	cfg := engine.DefaultEpistemicConfig()
 	if g.cfg.EpistemicConfidenceThreshold > 0 {
 		cfg.Thresholds.Volatile = g.cfg.EpistemicConfidenceThreshold
+	}
+	w := g.cfg.EpistemicWeights
+	if w.Consensus == 0 && w.Stability == 0 && w.Friction == 0 {
+		w = DefaultGardenerEpistemicWeights()
+	}
+	cfg.Weights = engine.EpistemicWeights{
+		Consensus: w.Consensus,
+		Stability: w.Stability,
+		Friction:  w.Friction,
 	}
 
 	// Call VBeliefState
@@ -3611,6 +3655,26 @@ func (g *Gardener) processEpistemicReflection(indexName, reflectionID string) {
 	threshold := g.cfg.EpistemicConfidenceThreshold
 	if threshold == 0 {
 		threshold = 0.40
+	}
+
+	// B3: gate on the explicit action_required flag produced by the
+	// contradiction detector. A reflection exists only because an LLM already
+	// answered "contradiction: true", so the three-pillar score adds little:
+	// friction is 0.60 by construction (two contradicts edges) and consensus is
+	// structurally high. action_required is the one signal that says "a human
+	// should look at this", which is exactly the question the gate asks.
+	if g.cfg.EpistemicRequireActionRequired {
+		refData, refErr := g.eng.VGet(indexName, reflectionID)
+		if refErr == nil {
+			actionRequired, _ := refData.Metadata["action_required"].(bool)
+			if !actionRequired {
+				slog.Info("[Gardener] Reflection auto-resolution skipped: detector did not flag action_required",
+					"reflection", reflectionID,
+					"confidence", state.Confidence)
+				// Leave it unresolved: no metadata flip, no LLM call, no archiving.
+				return
+			}
+		}
 	}
 
 	if state.Confidence >= threshold {
