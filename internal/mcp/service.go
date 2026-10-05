@@ -374,14 +374,19 @@ func (s *Service) Recall(ctx context.Context, req *mcp.CallToolRequest, args Rec
 		return nil, RecallResult{}, err
 	}
 
-	// Build layer filter if specific layers requested
+	// Build layer filter if specific layers requested.
+	//
+	// The user filter is wrapped in parentheses before appending the
+	// historical/archived guard: AND binds tighter than OR, so without the
+	// group `layer='a' OR layer='b' AND _is_historical!='true'` would apply the
+	// guard only to the 'b' branch and leak superseded memories from 'a'.
 	var filter string
 	if len(args.Layers) > 0 {
 		var parts []string
 		for _, layer := range args.Layers {
 			parts = append(parts, fmt.Sprintf("memory_layer='%s'", layer))
 		}
-		filter = strings.Join(parts, " OR ")
+		filter = "(" + strings.Join(parts, " OR ") + ")"
 	}
 
 	// Append default historical filter to hide archived/historical memories

@@ -720,7 +720,9 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 
 	} else {
 		// --- STANDARD SEARCH ---
-		ids, err := s.Engine.VSearch(
+		// IncludeObsolete lets callers opt out of the memory-visibility guard
+		// (audit/debug). On a non-memory index it has no effect.
+		ids, err := s.Engine.VSearchWithOptions(
 			req.IndexName,
 			queryVec,
 			req.K,
@@ -729,6 +731,7 @@ func (s *Server) handleVectorSearch(w http.ResponseWriter, r *http.Request) {
 			req.EfSearch,
 			req.Alpha,
 			req.GraphFilter,
+			engine.SearchOptions{IncludeObsolete: req.IncludeObsolete},
 		)
 
 		if err != nil {
@@ -782,7 +785,8 @@ func (s *Server) handleVectorSearchWithScores(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	results, err := s.Engine.VSearchWithScores(req.IndexName, queryVec, req.K, req.Filter, req.EfSearch)
+	results, err := s.Engine.VSearchWithScoresOptions(req.IndexName, queryVec, req.K, req.Filter, req.EfSearch,
+		engine.SearchOptions{IncludeObsolete: req.IncludeObsolete})
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			s.writeHTTPError(w, http.StatusNotFound, err)
@@ -1447,7 +1451,9 @@ func (s *Server) handleGetReflections(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Sfruttiamo le Roaring Bitmaps e il VFilter!
-	filter := "type='reflection' OR type='user_profile_insight' OR type='failure_pattern' OR type='knowledge_evolution'"
+	// Il gruppo di tipi è racchiuso tra parentesi: AND lega più stretto di OR,
+	// quindi senza il gruppo `status='x'` si applicherebbe solo all'ultimo ramo.
+	filter := "(type='reflection' OR type='user_profile_insight' OR type='failure_pattern' OR type='knowledge_evolution')"
 	if status != "" {
 		filter += fmt.Sprintf(" AND status='%s'", status)
 	}

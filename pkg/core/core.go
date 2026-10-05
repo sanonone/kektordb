@@ -1780,6 +1780,16 @@ func (s *DB) AddMetadataUnlocked(indexName string, nodeID uint32, metadata map[s
 // FindIDsByFilter acts as a query planner for metadata filters.
 // It supports AND and OR logic. OR has lower precedence (the filter is first split
 // by OR, and each resulting block is evaluated as an AND of its sub-filters).
+// FindIDsByFilter acts as a query planner for metadata filters.
+//
+// Grammar: `expr := term (OR term)*`, `term := atom (AND atom)*`,
+// `atom := '(' expr ')' | comparison`. AND binds tighter than OR (standard).
+//
+// Parentheses are supported. They matter because callers routinely append a
+// global condition to a user-supplied expression, e.g. building
+// `layer='a' OR layer='b'` and then appending ` AND _is_historical!='true'`.
+// Without parentheses the AND binds only to the last OR branch (standard
+// precedence), silently returning hidden records from the other branches.
 func (s *DB) FindIDsByFilter(indexName string, filter string) (*roaring.Bitmap, error) {
 	s.mu.RLock()
 	idxMu, exists := s.indexLocks[indexName]
@@ -1799,7 +1809,11 @@ func (s *DB) FindIDsByFilter(indexName string, filter string) (*roaring.Bitmap, 
 	// Use pre-compiled regex patterns for better performance.
 	// These patterns are compiled once at package initialization,
 	// avoiding the overhead of regex compilation on every filter operation.
-	orBlocks := filterOrRegex.Split(filter, -1)
+	//
+	// Splitting is parenthesis-aware: a top-level OR/AND is one at nesting
+	// depth 0. Splitting first and parsing groups afterwards would break on
+	// expressions like `(a=1 OR b=2) AND c=3`.
+	orBlocks := splitTopLevel(filter, filterOrRegex)
 
 	finalIDSet := roaring.New()
 
@@ -1809,9 +1823,15 @@ func (s *DB) FindIDsByFilter(indexName string, filter string) (*roaring.Bitmap, 
 			continue
 		}
 
+		// Strip one redundant pair of surrounding parentheses so that
+		// `(a=1 AND b=2)` is handled like `a=1 AND b=2`.
+		orBlock = trimOuterParens(orBlock)
+		if orBlock == "" {
+			continue
+		}
+
 		// Each orBlock can contain multiple sub-filters separated by AND.
-		// Use the pre-compiled regex for better performance.
-		andFilters := filterAndRegex.Split(orBlock, -1)
+		andFilters := splitTopLevel(orBlock, filterAndRegex)
 
 		var blockIDSet *roaring.Bitmap
 		isFirst := true
@@ -1822,7 +1842,15 @@ func (s *DB) FindIDsByFilter(indexName string, filter string) (*roaring.Bitmap, 
 				continue
 			}
 
-			currentIDSet, err := s.evaluateBooleanFilter(indexName, subFilter)
+			var currentIDSet *roaring.Bitmap
+			var err error
+
+			if inner, ok := unwrapParens(subFilter); ok {
+				// Nested group: evaluate recursively (handles arbitrary nesting).
+				currentIDSet, err = s.findIDsByFilterExpr(indexName, inner)
+			} else {
+				currentIDSet, err = s.evaluateBooleanFilter(indexName, subFilter)
+			}
 			if err != nil {
 				return nil, fmt.Errorf("error in filter '%s': %w", subFilter, err)
 			}
@@ -1855,6 +1883,162 @@ func (s *DB) FindIDsByFilter(indexName string, filter string) (*roaring.Bitmap, 
 	return finalIDSet, nil
 }
 
+// findIDsByFilterExpr evaluates a filter expression without the per-call
+// locking done by FindIDsByFilter. Used for nested parenthesised groups,
+// which are already inside a FindIDsByFilter call holding the locks
+// (re-acquiring them would deadlock on the non-reentrant RWMutex).
+func (s *DB) findIDsByFilterExpr(indexName, filter string) (*roaring.Bitmap, error) {
+	filter = strings.TrimSpace(filter)
+	if filter == "" {
+		return nil, fmt.Errorf("empty filter")
+	}
+
+	finalIDSet := roaring.New()
+	for _, orBlock := range splitTopLevel(filter, filterOrRegex) {
+		orBlock = trimOuterParens(strings.TrimSpace(orBlock))
+		if orBlock == "" {
+			continue
+		}
+
+		var blockIDSet *roaring.Bitmap
+		isFirst := true
+		for _, subFilter := range splitTopLevel(orBlock, filterAndRegex) {
+			subFilter = strings.TrimSpace(subFilter)
+			if subFilter == "" {
+				continue
+			}
+
+			var currentIDSet *roaring.Bitmap
+			var err error
+			if inner, ok := unwrapParens(subFilter); ok {
+				currentIDSet, err = s.findIDsByFilterExpr(indexName, inner)
+			} else {
+				currentIDSet, err = s.evaluateBooleanFilter(indexName, subFilter)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("error in filter '%s': %w", subFilter, err)
+			}
+
+			if isFirst {
+				blockIDSet = currentIDSet.Clone()
+				isFirst = false
+			} else {
+				blockIDSet.And(currentIDSet)
+			}
+			if blockIDSet.IsEmpty() {
+				break
+			}
+		}
+		if blockIDSet != nil {
+			finalIDSet.Or(blockIDSet)
+		}
+	}
+	return finalIDSet, nil
+}
+
+// splitTopLevel splits filter on occurrences of sep ("AND"/"OR") that sit at
+// parenthesis nesting depth 0. Separators inside quoted values are ignored.
+func splitTopLevel(filter string, sep *regexp.Regexp) []string {
+	var out []string
+	depth := 0
+	inSingle, inDouble := false, false
+	last := 0
+
+	for i := 0; i < len(filter); i++ {
+		switch filter[i] {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+			}
+			continue
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+			continue
+		}
+		if inSingle || inDouble {
+			continue
+		}
+		switch filter[i] {
+		case '(':
+			depth++
+			continue
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+			continue
+		}
+		if depth != 0 {
+			continue
+		}
+
+		// Try to match the separator at this position.
+		if loc := sep.FindStringIndex(filter[i:]); loc != nil && loc[0] == 0 {
+			out = append(out, filter[last:i])
+			i += loc[1] - 1
+			last = i + 1
+		}
+	}
+	out = append(out, filter[last:])
+	return out
+}
+
+// trimOuterParens removes one redundant pair of parentheses surrounding the
+// whole expression, e.g. `(a=1 OR b=2)` -> `a=1 OR b=2`. It leaves the string
+// untouched when the leading '(' closes before the end (e.g. `(a=1) AND b=2`).
+func trimOuterParens(expr string) string {
+	if inner, ok := unwrapParens(expr); ok {
+		return inner
+	}
+	return expr
+}
+
+// unwrapParens reports whether expr is exactly one parenthesised group and
+// returns its contents without the surrounding parentheses.
+func unwrapParens(expr string) (string, bool) {
+	expr = strings.TrimSpace(expr)
+	if len(expr) < 2 || expr[0] != '(' || expr[len(expr)-1] != ')' {
+		return "", false
+	}
+
+	// The opening parenthesis must close exactly at the end of the string.
+	depth := 0
+	inSingle, inDouble := false, false
+	for i := 0; i < len(expr); i++ {
+		switch expr[i] {
+		case '\'':
+			if !inDouble {
+				inSingle = !inSingle
+			}
+			continue
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+			continue
+		}
+		if inSingle || inDouble {
+			continue
+		}
+		switch expr[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				// Closes here: it is a single group only if this is the last char.
+				if i != len(expr)-1 {
+					return "", false
+				}
+				return strings.TrimSpace(expr[1:i]), true
+			}
+		}
+	}
+	return "", false
+}
+
 // getAllValidNodeIDsLocked returns a bitmap of all non-deleted node internal IDs
 // for an index. The caller MUST hold s.mu.RLock() to protect s.vectorIndexes.
 // This function does NOT acquire any locks itself — it relies on the caller's lock
@@ -1870,6 +2054,32 @@ func (s *DB) getAllValidNodeIDsLocked(indexName string) (*roaring.Bitmap, error)
 		return roaring.New(), nil
 	}
 
+	return hnswIdx.GetAllValidNodeIDs()
+}
+
+// GetAllValidNodeIDs returns a bitmap of every live (non-deleted) node in an
+// index. Caller-visible counterpart of getAllValidNodeIDsLocked; used by the
+// memory-visibility guard to build a starting set when no caller filter is
+// present.
+func (s *DB) GetAllValidNodeIDs(indexName string) (*roaring.Bitmap, error) {
+	s.mu.RLock()
+	idxMu, exists := s.indexLocks[indexName]
+	if !exists {
+		s.mu.RUnlock()
+		return nil, fmt.Errorf("index not found")
+	}
+	idxMu.RLock()
+	defer idxMu.RUnlock()
+	defer s.mu.RUnlock()
+
+	idx, ok := s.vectorIndexes[indexName]
+	if !ok {
+		return nil, fmt.Errorf("index not found")
+	}
+	hnswIdx, ok := idx.(*hnsw.Index)
+	if !ok {
+		return roaring.New(), nil
+	}
 	return hnswIdx.GetAllValidNodeIDs()
 }
 

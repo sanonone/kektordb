@@ -57,6 +57,12 @@ type VectorSearchRequest struct {
 	Hydrate          bool               `json:"hydrate,omitempty"` // Optional - if true, returns full node metadata even without graph traversal
 	GraphFilter      *engine.GraphQuery `json:"graph_filter,omitempty"`
 	CompressContext  bool               `json:"compress_context,omitempty"` // NEW: Enable safe lexical compression for LLM optimization
+
+	// IncludeObsolete returns also records hidden on a memory index
+	// (_is_historical / _archived). Default false: superseded and archived
+	// memories are hidden, matching the MCP layer. Set true for audit,
+	// debugging or re-consolidation work.
+	IncludeObsolete bool `json:"include_obsolete,omitempty"`
 }
 
 // VectorSearchWithScoresRequest defines the body for search with scores operations.
@@ -67,6 +73,10 @@ type VectorSearchWithScoresRequest struct {
 	QueryText   string    `json:"query_text,omitempty"`   // Optional - if set and QueryVector empty, server auto-embeds
 	Filter      string    `json:"filter,omitempty"`       // Optional - boolean metadata filter (same syntax as /search)
 	EfSearch    int       `json:"ef_search,omitempty"`    // Optional - search breadth (same as /search)
+
+	// IncludeObsolete returns also records hidden on a memory index
+	// (_is_historical / _archived). See VectorSearchRequest.
+	IncludeObsolete bool `json:"include_obsolete,omitempty"`
 }
 
 // VectorDeleteRequest defines the body for vector deletion.

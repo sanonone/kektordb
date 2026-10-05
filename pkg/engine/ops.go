@@ -501,6 +501,67 @@ type GraphSearchResult struct {
 	Node  GraphNode `json:"node"`
 }
 
+// SearchOptions tunes a search. The zero value is the safe default: on a
+// memory index, superseded (_is_historical) and archived (_archived) records
+// are hidden, which is what every ordinary caller wants. Set IncludeObsolete
+// to see them as well (audit, debugging, re-consolidation).
+type SearchOptions struct {
+	// IncludeObsolete disables the memory-visibility guard, returning also
+	// records hidden by VEvolve / consolidation / archival.
+	IncludeObsolete bool
+}
+
+// applyMemoryVisibility narrows an allowlist to records that are visible on a
+// memory index. The guard is applied here, as a bitmap operation, rather than
+// by appending text to the caller's filter expression: string concatenation
+// is precedence-sensitive (AND binds tighter than OR), and appending
+// `AND _is_historical!='true'` to a filter like `layer='a' OR layer='b'`
+// silently hides the guard from all but the last branch.
+//
+// Only indexes with memory semantics (MemoryConfig.Enabled) hide anything: a
+// generic vector index keeps returning every record, so behaviour is unchanged
+// for non-memory usage. Graph traversal is deliberately out of scope — the
+// graph stays raw so evolution chains remain walkable.
+func (e *Engine) applyMemoryVisibility(indexName string, allowList *roaring.Bitmap, opts SearchOptions) (*roaring.Bitmap, error) {
+	if opts.IncludeObsolete {
+		return allowList, nil
+	}
+	idx, ok := e.DB.GetVectorIndex(indexName)
+	if !ok {
+		return nil, fmt.Errorf("index '%s' not found", indexName)
+	}
+	hnswIdx, err := getHNSWIndex(idx)
+	if err != nil {
+		return nil, err
+	}
+	if !hnswIdx.GetMemoryConfig().Enabled {
+		return allowList, nil
+	}
+
+	hidden, err := e.DB.FindIDsByFilter(indexName, "_is_historical='true' OR _archived='true'")
+	if err != nil {
+		return nil, fmt.Errorf("memory visibility filter: %w", err)
+	}
+	if hidden.IsEmpty() {
+		return allowList, nil
+	}
+
+	if allowList == nil {
+		// No caller filter: start from every live node and subtract the hidden set.
+		all, err := e.DB.GetAllValidNodeIDs(indexName)
+		if err != nil {
+			return nil, err
+		}
+		all.AndNot(hidden)
+		return all, nil
+	}
+
+	// The caller supplied an allowlist: narrow it in place (it is already a
+	// private clone produced by FindIDsByFilter / the graph filter).
+	allowList.AndNot(hidden)
+	return allowList, nil
+}
+
 // VSearch performs a vector, text, or hybrid search.
 //
 // 'k': number of results to return.
@@ -509,9 +570,17 @@ type GraphSearchResult struct {
 // 'alpha': weight for hybrid fusion (1.0 = vector only, 0.0 = text only, 0.5 = balanced).
 //
 // Returns a list of external IDs sorted by relevance.
+//
+// On a memory index, superseded and archived records are hidden (safe default).
+// Use VSearchWithOptions to include them.
 func (e *Engine) VSearch(indexName string, query []float32, k int, filter string, explicitTextQuery string, efSearch int, alpha float64, graphQuery *GraphQuery) ([]string, error) {
+	return e.VSearchWithOptions(indexName, query, k, filter, explicitTextQuery, efSearch, alpha, graphQuery, SearchOptions{})
+}
+
+// VSearchWithOptions is VSearch with explicit SearchOptions.
+func (e *Engine) VSearchWithOptions(indexName string, query []float32, k int, filter string, explicitTextQuery string, efSearch int, alpha float64, graphQuery *GraphQuery, opts SearchOptions) ([]string, error) {
 	// Calls internal helper
-	results, err := e.searchWithFusion(indexName, query, k, filter, explicitTextQuery, efSearch, alpha, graphQuery)
+	results, err := e.searchWithFusion(indexName, query, k, filter, explicitTextQuery, efSearch, alpha, graphQuery, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -526,9 +595,14 @@ func (e *Engine) VSearch(indexName string, query []float32, k int, filter string
 
 // VSearchGraph performs a search and traverses the graph based on relation paths.
 // relations example: ["prev", "next", "parent.child"]
+//
+// The memory-visibility guard applies to the SEED results (this is a search),
+// but the traversal itself stays raw: expansion follows whatever edges exist,
+// including edges to superseded nodes, so evolution chains and graph topology
+// remain inspectable.
 func (e *Engine) VSearchGraph(indexName string, query []float32, k int, filter string, explicitTextQuery string, efSearch int, alpha float64, relations []string, hydrate bool, graphQuery *GraphQuery) ([]GraphSearchResult, error) {
 	// 1. Core Search
-	rawResults, err := e.searchWithFusion(indexName, query, k, filter, explicitTextQuery, efSearch, alpha, graphQuery)
+	rawResults, err := e.searchWithFusion(indexName, query, k, filter, explicitTextQuery, efSearch, alpha, graphQuery, SearchOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -927,7 +1001,7 @@ func (e *Engine) VRestore(indexName, id string) error {
 }
 
 // Contains all Parsing, Filtering, Hybrid Fusion logic
-func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filter string, explicitTextQuery string, efSearch int, alpha float64, graphQuery *GraphQuery) ([]fusedResult, error) {
+func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filter string, explicitTextQuery string, efSearch int, alpha float64, graphQuery *GraphQuery, opts SearchOptions) ([]fusedResult, error) {
 	// TODO Future: If performance becomes critical, move CreatedAt and LastAccessed directly into the hnsw.Node struct (as native int64 fields), avoiding the generic metadata map.
 	idx, ok := e.DB.GetVectorIndex(indexName)
 	if !ok {
@@ -993,6 +1067,18 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 		if allowList != nil && allowList.IsEmpty() {
 			return []fusedResult{}, nil
 		}
+	}
+
+	// Memory visibility guard: hide superseded/archived records on memory
+	// indexes. Applied as a bitmap operation AFTER the caller's filter and the
+	// graph filter have been combined, so it cannot be defeated by the
+	// precedence of the caller's expression.
+	allowList, err = e.applyMemoryVisibility(indexName, allowList, opts)
+	if err != nil {
+		return nil, err
+	}
+	if allowList != nil && allowList.IsEmpty() {
+		return []fusedResult{}, nil
 	}
 
 	// Check Vector Query
@@ -1316,6 +1402,13 @@ type SearchResult struct {
 // VSearchWithScores performs a search and returns results with their scores.
 // If the index has MemoryConfig enabled, it applies time decay ranking.
 func (e *Engine) VSearchWithScores(indexName string, query []float32, k int, filter string, efSearch int) ([]SearchResult, error) {
+	return e.VSearchWithScoresOptions(indexName, query, k, filter, efSearch, SearchOptions{})
+}
+
+// VSearchWithScoresOptions is VSearchWithScores with explicit SearchOptions.
+// On a memory index, superseded and archived records are hidden unless
+// opts.IncludeObsolete is set.
+func (e *Engine) VSearchWithScoresOptions(indexName string, query []float32, k int, filter string, efSearch int, opts SearchOptions) ([]SearchResult, error) {
 	idx, ok := e.DB.GetVectorIndex(indexName)
 	if !ok {
 		return nil, fmt.Errorf("index not found")
@@ -1334,6 +1427,16 @@ func (e *Engine) VSearchWithScores(indexName string, query []float32, k int, fil
 		if err != nil {
 			return nil, fmt.Errorf("invalid filter: %w", err)
 		}
+	}
+
+	// Memory visibility guard (bitmap-level, so it cannot be defeated by the
+	// precedence of the caller's filter expression).
+	allowList, err = e.applyMemoryVisibility(indexName, allowList, opts)
+	if err != nil {
+		return nil, err
+	}
+	if allowList != nil && allowList.IsEmpty() {
+		return []SearchResult{}, nil
 	}
 
 	internalResults := hnswIdx.SearchWithScores(query, k, allowList, efSearch)
