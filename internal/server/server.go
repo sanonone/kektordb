@@ -165,7 +165,8 @@ func (s *Server) Run() error {
 	return nil
 }
 
-// Shutdown stops the HTTP server and the Vectorizer service.
+// Shutdown stops the HTTP server, the Vectorizer service, the Gardener and the
+// Knowledge Engine compiler.
 // It does NOT close the Engine (main.go handles that for proper lifecycle management).
 func (s *Server) Shutdown() {
 	log.Println("Starting graceful shutdown of HTTP Server...")
@@ -179,6 +180,15 @@ func (s *Server) Shutdown() {
 
 	if s.vectorizerService != nil {
 		s.vectorizerService.Stop()
+	}
+
+	// Stop the compiler BEFORE the engine is closed by the caller: its async
+	// compilations read through arena pointers, and an unmapped arena means a
+	// SIGSEGV (C1). Bounded wait so shutdown cannot hang on a slow LLM call.
+	if s.compiler != nil {
+		if err := s.compiler.Close(5 * time.Second); err != nil {
+			log.Printf("Compiler shutdown warning: %v", err)
+		}
 	}
 
 	// stop gardener

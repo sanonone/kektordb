@@ -95,6 +95,10 @@ func (tm *compileTaskManager) Close() {
 
 // StartAsyncCompile begins an asynchronous compilation and returns a task ID
 // for polling. The caller should use GetTaskStatus to check progress.
+//
+// The goroutine is tracked by the compiler's WaitGroup so Close can wait for it
+// (C1). After Close the call is refused instead of starting work that could
+// outlive the engine.
 func (c *Compiler) StartAsyncCompile(req CompileRequest) (string, error) {
 	task := &compileTask{
 		ID:        generateTaskID(),
@@ -103,10 +107,22 @@ func (c *Compiler) StartAsyncCompile(req CompileRequest) (string, error) {
 		StartedAt: time.Now(),
 	}
 
+	// Register under closeMu so the Add cannot race with Close's Wait: either
+	// Close already set closing (we refuse), or our Add happens-before Wait.
+	c.closeMu.Lock()
+	if c.closing.Load() {
+		c.closeMu.Unlock()
+		return "", fmt.Errorf("compiler is shutting down")
+	}
+	c.wg.Add(1)
+	c.closeMu.Unlock()
+
 	c.taskManager.mu.Lock()
 	c.taskManager.tasks[task.ID] = task
 	c.taskManager.mu.Unlock()
 
+	// runAsyncCompile re-checks closing after taking its turn, so a Close that
+	// slipped in between returns without touching engine memory.
 	go c.runAsyncCompile(task)
 
 	return task.ID, nil
@@ -114,6 +130,18 @@ func (c *Compiler) StartAsyncCompile(req CompileRequest) (string, error) {
 
 // runAsyncCompile executes the compilation in a background goroutine.
 func (c *Compiler) runAsyncCompile(task *compileTask) {
+	defer c.wg.Done()
+
+	if c.isClosing() {
+		task.mu.Lock()
+		now := time.Now()
+		task.DoneAt = &now
+		task.Status = CompileStatusFailed
+		task.Error = "compiler is shutting down"
+		task.mu.Unlock()
+		return
+	}
+
 	task.mu.Lock()
 	task.Status = CompileStatusCompiling
 	task.mu.Unlock()

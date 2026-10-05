@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sanonone/kektordb/pkg/embeddings"
@@ -31,19 +32,84 @@ type Compiler struct {
 
 	muPerArtifact sync.Map
 	taskManager   *compileTaskManager
+
+	// wg tracks in-flight async compilations. Without it, a goroutine started
+	// by StartAsyncCompile can outlive its caller and read vectors through
+	// arena pointers that Engine.Close has since unmapped (SIGSEGV, C1).
+	wg sync.WaitGroup
+
+	// closing is set by Close so new async work is refused instead of starting
+	// a goroutine that would race with shutdown.
+	closing  atomic.Bool
+	closeMu  sync.Mutex
+	closedCh chan struct{}
 }
 
 // NewCompiler creates a new Compiler backed by the given engine.
 // If llmClient is nil, only deterministic compilation is available.
 // If embedder is nil, semantic search and artifact vector averaging are unavailable.
 func NewCompiler(eng *engine.Engine, llmClient llm.Client, emb embeddings.Embedder) *Compiler {
-	return &Compiler{
+	c := &Compiler{
 		eng:         eng,
 		llm:         llmClient,
 		embedder:    emb,
 		templates:   BuiltinTemplates,
 		taskManager: newCompileTaskManager(),
+		closedCh:    make(chan struct{}),
 	}
+
+	// Drain async compilations during Engine.Close, before arenas are unmapped.
+	// Registered here so every caller is protected automatically, including
+	// tests and embedded usage that never call Close explicitly (C1).
+	if eng != nil {
+		eng.RegisterCloseHook("compiler", c.Close)
+	}
+
+	return c
+}
+
+// Close stops the task manager and waits for in-flight async compilations to
+// finish, so no goroutine keeps reading arena memory after the engine unmaps it
+// (C1). Safe to call multiple times and from multiple goroutines.
+//
+// A timeout <= 0 waits indefinitely. Callers that cannot block should pass a
+// bounded timeout and accept that a straggler may still be running.
+func (c *Compiler) Close(timeout time.Duration) error {
+	c.closeMu.Lock()
+	if !c.closing.Swap(true) {
+		close(c.closedCh)
+	}
+	c.closeMu.Unlock()
+
+	if c.taskManager != nil {
+		c.taskManager.Close()
+	}
+
+	// wg.Wait must not race with a concurrent wg.Add: StartAsyncCompile performs
+	// its Add while holding closeMu, so once closing is set (above, under the
+	// same lock) no further Add can happen -- every goroutine either is already
+	// counted or was refused. Without this, Add during Wait is a data race.
+	done := make(chan struct{})
+	go func() {
+		c.wg.Wait()
+		close(done)
+	}()
+
+	if timeout <= 0 {
+		<-done
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-time.After(timeout):
+		return fmt.Errorf("compiler close timed out after %s waiting for async compilations", timeout)
+	}
+}
+
+// isClosing reports whether Close has been called.
+func (c *Compiler) isClosing() bool {
+	return c.closing.Load()
 }
 
 // resolveTemplate returns the template for the request, or nil if none matches.

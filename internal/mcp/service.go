@@ -1801,23 +1801,23 @@ func (s *Service) RequestKnowledge(ctx context.Context, req *mcp.CallToolRequest
 }
 
 func (s *Service) requestKnowledgeFallback(indexName, intent, entity, entityType string, budgetMs int) (*mcp.CallToolResult, RequestKnowledgeResult, error) {
-	// Trigger async recompile in background for next request
+	// Trigger async recompile so the next request finds a fresh artifact.
+	// StartAsyncCompile is already asynchronous (it owns and tracks its worker),
+	// so no wrapper goroutine is used: an untracked wrapper would outlive Close
+	// and race with engine teardown (C1).
 	if s.compiler != nil {
-		go func() {
-			_, err := s.compiler.StartAsyncCompile(compiler.CompileRequest{
-				Name:     intent,
-				Template: intent,
-				Sources: compiler.SourceSpec{
-					Type:   "graph_query",
-					Entity: compiler.EntityRef{Type: entityType, ID: entity},
-					Depth:  2,
-				},
-				IndexName: indexName,
-			})
-			if err != nil {
-				slog.Warn("MCP: async knowledge compile failed", "template", intent, "entity", entity, "error", err)
-			}
-		}()
+		if _, err := s.compiler.StartAsyncCompile(compiler.CompileRequest{
+			Name:     intent,
+			Template: intent,
+			Sources: compiler.SourceSpec{
+				Type:   "graph_query",
+				Entity: compiler.EntityRef{Type: entityType, ID: entity},
+				Depth:  2,
+			},
+			IndexName: indexName,
+		}); err != nil {
+			slog.Warn("MCP: async knowledge compile failed", "template", intent, "entity", entity, "error", err)
+		}
 	}
 
 	// If budget is too small, skip search

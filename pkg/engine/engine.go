@@ -138,6 +138,11 @@ type Engine struct {
 	closed    chan struct{}
 	closeOnce sync.Once
 
+	// closeHooks run during Close, before storage teardown. Components holding
+	// references into engine memory (compiler async workers) drain here.
+	closeHooksMu sync.Mutex
+	closeHooks   map[string]func(time.Duration) error
+
 	// EventBus provides pub/sub for engine write operations.
 	// Consumers (Gardener, SSE handler) subscribe to receive events.
 	EventBus *EventBus
@@ -231,9 +236,27 @@ func (e *Engine) DataDir() string {
 	return e.opts.DataDir
 }
 
+// RegisterCloseHook registers fn to run during Engine.Close, before the storage
+// layers are torn down (arenas unmapped). Hooks are called in registration order
+// and must not block indefinitely: Close waits for them.
+//
+// This exists so components that hold references into engine memory (e.g. the
+// compiler's async workers reading vector slices) can drain their goroutines
+// while the memory is still mapped. Without it they would read an unmapped
+// arena and crash with SIGSEGV (C1).
+func (e *Engine) RegisterCloseHook(name string, fn func(timeout time.Duration) error) {
+	e.closeHooksMu.Lock()
+	defer e.closeHooksMu.Unlock()
+	if e.closeHooks == nil {
+		e.closeHooks = make(map[string]func(time.Duration) error)
+	}
+	e.closeHooks[name] = fn
+}
+
 // Close performs a clean shutdown of the Engine.
 //
-// It stops background maintenance tasks and closes the AOF file.
+// It stops background maintenance tasks, runs registered close hooks (so
+// components holding engine memory can drain first), and closes the AOF file.
 // Note: It does not force a final snapshot, but all data is already persisted
 // in the AOF file, ensuring durability on restart.
 func (e *Engine) Close() error {
@@ -249,6 +272,20 @@ func (e *Engine) Close() error {
 		}
 
 		e.wg.Wait() // Wait for background tasks
+
+		// Run close hooks BEFORE the DB unmaps its arenas: components with
+		// workers reading engine memory must drain while it is still mapped.
+		e.closeHooksMu.Lock()
+		hooks := make([]func(time.Duration) error, 0, len(e.closeHooks))
+		for _, fn := range e.closeHooks {
+			hooks = append(hooks, fn)
+		}
+		e.closeHooksMu.Unlock()
+		for _, fn := range hooks {
+			if hookErr := fn(5 * time.Second); hookErr != nil {
+				slog.Warn("Engine close hook reported an error", "error", hookErr)
+			}
+		}
 
 		// Close the event bus (stops all subscribers)
 		if e.EventBus != nil {
