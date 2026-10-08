@@ -215,14 +215,34 @@ func (va *VectorArena) findFreeSlotsLocked(count int) []uint32 {
 // StartCompactor initializes and starts the background compaction process.
 // If config.Enabled is false, no compactor is started.
 func (va *VectorArena) StartCompactor(config ArenaCompactionConfig) {
+	va.StartCompactorFull(config, nil, nil)
+}
+
+// StartCompactorWith starts the compactor and wires the optional node updater
+// and maintenance coordinator. Unlike constructing an AsyncCompactor by hand,
+// this stores the reference on the arena, so StopCompactor/WaitForStopped
+// actually reach it. Returns true when a compactor was started.
+func (va *VectorArena) StartCompactorWith(coord MaintenanceCoordinator, updater NodePointerUpdater) bool {
+	return va.StartCompactorFull(DefaultArenaCompactionConfig(), coord, updater)
+}
+
+// StartCompactorFull is StartCompactorWith with an explicit config.
+func (va *VectorArena) StartCompactorFull(config ArenaCompactionConfig, coord MaintenanceCoordinator, updater NodePointerUpdater) bool {
 	if !config.Enabled {
 		slog.Info("[Arena] Compaction disabled by config")
-		return
+		return false
 	}
 
 	va.compactConfig = config
 	va.compactor = NewAsyncCompactor(va, config)
+	if updater != nil {
+		va.compactor.SetNodeUpdater(updater)
+	}
+	if coord != nil {
+		va.compactor.SetMaintenanceCoordinator(coord)
+	}
 	va.compactor.Start()
+	return true
 }
 
 // StopCompactor halts the background compaction process.
@@ -231,6 +251,16 @@ func (va *VectorArena) StopCompactor() {
 		va.compactor.Stop()
 		va.compactor = nil
 	}
+}
+
+// HasCompactor reports whether a compactor is currently registered on this
+// arena. Registrations happen through StartCompactor*/StartCompactorWith, so a
+// false result after a start means StopCompactor would be a no-op — the
+// condition behind the goroutine leak found in audit A1.
+func (va *VectorArena) HasCompactor() bool {
+	va.mu.RLock()
+	defer va.mu.RUnlock()
+	return va.compactor != nil
 }
 
 // WaitForStopped waits for the compactor to be fully stopped.

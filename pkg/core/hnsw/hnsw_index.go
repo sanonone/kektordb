@@ -278,14 +278,17 @@ func (h *Index) initArenaIfNeeded(dim int) error {
 			}
 			h.arena = arena
 
-			// Start arena compactor with default config
-			// The compactor can be reconfigured later via UpdateMaintenanceConfig
+			// Start the arena compactor via the arena itself, so the arena holds a
+			// reference to it: StopCompactor() only stops va.compactor, and
+			// building the compactor here and keeping it in a local variable left
+			// arena.compactor nil, making StopCompactor a no-op. The goroutine
+			// then survived Close() (and its 0-30s startup jitter kept it alive
+			// well past the arena being unmapped).
 			if h.arena != nil {
-				compactor := mmap.NewAsyncCompactor(h.arena, mmap.DefaultArenaCompactionConfig())
-				compactor.SetNodeUpdater(h)
 				h.maintenanceCoord = &hnswMaintenanceCoord{h: h}
-				compactor.SetMaintenanceCoordinator(h.maintenanceCoord)
-				compactor.Start()
+				if h.arena.StartCompactorWith(h.maintenanceCoord, h) {
+					slog.Debug("[HNSW] Arena compactor started", "arena_dir", h.arenaDir)
+				}
 			}
 		}
 	}
@@ -301,6 +304,16 @@ func (h *Index) GetArenaState() mmap.ArenaState {
 
 func (h *Index) GetArenaDir() string {
 	return h.arenaDir
+}
+
+// ArenaForTest exposes the underlying arena for tests that need to assert on
+// its internal wiring (e.g. whether the compactor is registered, so
+// StopCompactor is not a silent no-op). Not for production use: callers must
+// not hold the reference across Close.
+func (h *Index) ArenaForTest() *mmap.VectorArena {
+	h.metaMu.RLock()
+	defer h.metaMu.RUnlock()
+	return h.arena
 }
 
 // distanceBetweenNodes calculates the distance between two nodes avoiding boxing
