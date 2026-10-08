@@ -69,7 +69,7 @@ func main() {
 	idxName := "test_crud"
 
 	// VCreate
-	err = db.VCreate(idxName, distance.Cosine, 16, 200, distance.Float32, "english", nil)
+	err = db.VCreate(idxName, distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil)
 	if err != nil {
 		log.Fatalf("VCreate failed: %v", err)
 	}
@@ -96,7 +96,7 @@ func main() {
 	}
 
 	// Verify Delete (Soft delete: VSearch must not find it)
-	res, _ := db.VSearch(idxName, vec1, 1, "", 100, 0.5)
+	res, _ := db.VSearch(idxName, vec1, 1, "", "", 100, 0.5, nil)
 	if len(res) > 0 {
 		log.Fatalf("Deleted vector found in search results!")
 	}
@@ -124,7 +124,7 @@ func main() {
 
 	// VImport (Creates new index, bypasses AOF, forces snapshot)
 	importIdx := "test_import"
-	db.VCreate(importIdx, distance.Euclidean, 16, 200, distance.Float32, "", nil)
+	db.VCreate(importIdx, distance.Euclidean, 16, 200, distance.Float32, "", nil, nil, nil)
 
 	importItems := []types.BatchObject{
 		{Id: "i1", Vector: []float32{0.5, 0.5, 0.5}},
@@ -136,7 +136,7 @@ func main() {
 	}
 
 	// Immediate verification
-	resImp, _ := db.VSearch(importIdx, []float32{0.5, 0.5, 0.5}, 1, "", 100, 0.5)
+	resImp, _ := db.VSearch(importIdx, []float32{0.5, 0.5, 0.5}, 1, "", "", 100, 0.5, nil)
 	if len(resImp) == 0 || resImp[0] != "i1" {
 		log.Fatalf("VImport data not found after snapshot.")
 	}
@@ -153,14 +153,14 @@ func main() {
 	db.VAdd(idxName, "s2", []float32{0.9, 0.9, 0.9}, map[string]any{"price": 100.0, "desc": "expensive luxury item"})
 
 	// Test 1: Numeric Filter
-	resFilter, _ := db.VSearch(idxName, []float32{0.9, 0.9, 0.9}, 5, "price < 50", 100, 0.5)
+	resFilter, _ := db.VSearch(idxName, []float32{0.9, 0.9, 0.9}, 5, "price < 50", "", 100, 0.5, nil)
 	if len(resFilter) != 1 || resFilter[0] != "s1" {
 		log.Fatalf("Numeric filter failed. Found: %v", resFilter)
 	}
 
 	// Test 2: Hybrid Text Search
 	// Searching for "luxury". s2 should win even if the vector is identical to s1.
-	resHybrid, _ := db.VSearch(idxName, []float32{0.9, 0.9, 0.9}, 5, "CONTAINS(desc, 'luxury')", 100, 0.5)
+	resHybrid, _ := db.VSearch(idxName, []float32{0.9, 0.9, 0.9}, 5, "CONTAINS(desc, 'luxury')", "", 100, 0.5, nil)
 	if len(resHybrid) == 0 || resHybrid[0] != "s2" {
 		log.Fatalf("Hybrid search failed. Top result: %v", resHybrid)
 	}
@@ -174,7 +174,7 @@ func main() {
 
 	int8Idx := "test_int8_dedicated"
 	// Create a new index to isolate the test
-	db.VCreate(int8Idx, distance.Cosine, 16, 200, distance.Float32, "", nil)
+	db.VCreate(int8Idx, distance.Cosine, 16, 200, distance.Float32, "", nil, nil, nil)
 
 	// 1. Insert a specific "Target" (all high positive values)
 	targetVec := make([]float32, 128)
@@ -198,7 +198,7 @@ func main() {
 	}
 
 	// 4. Verify Search (Must find "target")
-	resComp, err := db.VSearch(int8Idx, targetVec, 1, "", 100, 0.5)
+	resComp, err := db.VSearch(int8Idx, targetVec, 1, "", "", 100, 0.5, nil)
 
 	if err != nil {
 		log.Fatalf("Post-compression search error: %v", err)
@@ -233,7 +233,7 @@ func main() {
 
 	f16Idx := "test_f16_dedicated"
 	// Create Euclidean index (standard for Float16)
-	if err := db.VCreate(f16Idx, distance.Euclidean, 16, 200, distance.Float32, "", nil); err != nil {
+	if err := db.VCreate(f16Idx, distance.Euclidean, 16, 200, distance.Float32, "", nil, nil, nil); err != nil {
 		log.Fatalf("VCreate F16 failed: %v", err)
 	}
 
@@ -254,7 +254,7 @@ func main() {
 	}
 
 	// 4. Verify Search
-	resCompF16, err := db.VSearch(f16Idx, targetVecF16, 1, "", 100, 0.0)
+	resCompF16, err := db.VSearch(f16Idx, targetVecF16, 1, "", "", 100, 0.0, nil)
 	if err != nil {
 		log.Fatalf("Search error F16: %v", err)
 	}
@@ -290,7 +290,7 @@ func main() {
 		log.Fatalf("VDeleteIndex failed: %v", err)
 	}
 
-	_, err = db.VSearch(idxName, []float32{0, 0, 0}, 1, "", 100, 0)
+	_, err = db.VSearch(idxName, []float32{0, 0, 0}, 1, "", "", 100, 0, nil)
 	if err == nil {
 		log.Fatalf("Index should have been deleted!")
 	}
@@ -313,7 +313,7 @@ func main() {
 	defer db2.Close()
 
 	// Verify "test_import" index still exists
-	resPersist, _ := db2.VSearch(importIdx, []float32{0.5, 0.5, 0.5}, 1, "", 100, 0.5)
+	resPersist, _ := db2.VSearch(importIdx, []float32{0.5, 0.5, 0.5}, 1, "", "", 100, 0.5, nil)
 	if len(resPersist) == 0 || resPersist[0] != "i1" {
 		log.Fatalf("Data lost after restart! Persistence failed.")
 	}
@@ -329,7 +329,7 @@ func main() {
 	fmt.Println("\n🔹 10. Testing Maintenance (Vacuum & Config)...")
 
 	maintIdx := "test_maintenance"
-	db.VCreate(maintIdx, distance.Cosine, 16, 200, distance.Float32, "", nil)
+	db.VCreate(maintIdx, distance.Cosine, 16, 200, distance.Float32, "", nil, nil, nil)
 
 	// Add 3 nodes: A, B, C
 	// A and B are close, C is far away.
@@ -370,7 +370,7 @@ func main() {
 	}
 
 	// Verify that nodeA still exists and finds nodeC (or nothing) but not nodeB
-	resMaint, _ := db.VSearch(maintIdx, []float32{1.0, 0.0, 0.0}, 5, "", 100, 0.5)
+	resMaint, _ := db.VSearch(maintIdx, []float32{1.0, 0.0, 0.0}, 5, "", "", 100, 0.5, nil)
 	for _, id := range resMaint {
 		if id == "nodeB" {
 			log.Fatalf("❌ CRITICAL ERROR: nodeB found after Vacuum!")
@@ -385,7 +385,7 @@ func main() {
 	fmt.Println("\n🔹 11. Testing GraphRAG Engine...")
 
 	graphIdx := "test_graph_rag"
-	_ = db.VCreate(graphIdx, distance.Cosine, 16, 200, distance.Float32, "", nil)
+	_ = db.VCreate(graphIdx, distance.Cosine, 16, 200, distance.Float32, "", nil, nil, nil)
 
 	// 2. Inseriamo i nodi
 	// Parent con Metadati interessanti
@@ -395,18 +395,18 @@ func main() {
 
 	// 3. Link
 	fmt.Println("   -> Linking 'child_node' to 'parent_node'...")
-	db.VLink("child_node", "parent_node", "parent", "child")
+	db.VLink(graphIdx, "child_node", "parent_node", "parent", "child", 1.0, nil)
 
 	// Aggiungiamo un "Fratello" (un altro chunk figlio del padre)
 	db.VAdd(graphIdx, "sibling_node", []float32{0.51, 0.51, 0.51}, nil)
-	db.VLink("parent_node", "sibling_node", "child", "parent")
+	db.VLink(graphIdx, "parent_node", "sibling_node", "child", "parent", 1.0, nil)
 	// Ora parent->sibling (child) e sibling->parent (parent)
 
 	// QUERY MAGICA:
 	// "Trova child_node, vai al parent, e dammi tutti i suoi child (fratelli inclusi)"
 	queryVecGraph := []float32{0.5, 0.5, 0.5} // Simile a child_node
 
-	graphRes, err := db.VSearchGraph(graphIdx, queryVecGraph, 1, "", 100, 0.0, []string{"parent.child"}, true)
+	graphRes, err := db.VSearchGraph(graphIdx, queryVecGraph, 1, "", "", 100, 0.0, []string{"parent.child"}, true, nil)
 
 	// Verifica
 	// graphRes[0].Node.Connections["parent.child"] deve contenere una lista
