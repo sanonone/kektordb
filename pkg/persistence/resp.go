@@ -69,8 +69,19 @@ func ParseCommand(reader *bufio.Reader) (*Command, error) {
 		}
 
 		lenArg, err := strconv.Atoi(line[1:])
-		if err != nil || lenArg < 0 {
+		if err != nil || lenArg < -1 {
 			return nil, fmt.Errorf("invalid argument length")
+		}
+
+		// "$-1\r\n" is RESP's null bulk string. FormatCommand emits it for nil
+		// arguments (e.g. VADD with no metadata), so the parser must accept it:
+		// rejecting it made ParseCommand fail on a perfectly valid frame, and the
+		// recovery resync then discarded every frame up to the next parser-
+		// compatible one — losing data on restart (C3). It carries no data and no
+		// trailing CRLF, so it is surfaced as an empty argument.
+		if lenArg == -1 {
+			args[i] = nil
+			continue
 		}
 		if lenArg > MaxPayloadSize {
 			return nil, fmt.Errorf("argument length %d exceeds maximum %d", lenArg, MaxPayloadSize)

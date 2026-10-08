@@ -122,7 +122,10 @@ func main() {
 		log.Fatalf("VGetMany failed or incorrect count: %d found", len(items))
 	}
 
-	// VImport (Creates new index, bypasses AOF, forces snapshot)
+	// VImport: fast path that deliberately skips the AOF ("NIENTE AOF" in the
+	// implementation), so the data lives in RAM only. Durability comes from
+	// VImportCommit, which forces a snapshot to disk; without it a restart
+	// loses the imported vectors by design.
 	importIdx := "test_import"
 	db.VCreate(importIdx, distance.Euclidean, 16, 200, distance.Float32, "", nil, nil, nil)
 
@@ -133,6 +136,10 @@ func main() {
 
 	if err := db.VImport(importIdx, importItems); err != nil {
 		log.Fatalf("VImport failed: %v", err)
+	}
+	// Finalize: forces the snapshot that makes the import durable.
+	if err := db.VImportCommit(importIdx); err != nil {
+		log.Fatalf("VImportCommit failed: %v", err)
 	}
 
 	// Immediate verification
