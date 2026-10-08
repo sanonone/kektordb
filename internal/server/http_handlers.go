@@ -133,6 +133,7 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /rag/retrieve-adaptive", s.handleAdaptiveRagRetrieve)
 
 	// Dynamic index routes
+	mux.HandleFunc("GET /vector/indexes/{name}/arena-stats", s.handleArenaStats)
 	mux.HandleFunc("GET /vector/indexes/{name}", s.handleSingleIndexGet)
 	mux.HandleFunc("DELETE /vector/indexes/{name}", s.handleSingleIndexDelete)
 
@@ -344,6 +345,25 @@ func (s *Server) handleIndexesGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeHTTPResponse(w, http.StatusOK, info)
+}
+
+// handleArenaStats reports the physical state of an index's arena. Used for
+// monitoring (disk footprint, fragmentation) and by stress tests to observe
+// arena growth over time.
+func (s *Server) handleArenaStats(w http.ResponseWriter, r *http.Request) {
+	indexName := r.PathValue("name")
+	stats, err := s.Engine.GetArenaStats(indexName)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			s.writeHTTPError(w, http.StatusNotFound, err)
+		} else if strings.Contains(err.Error(), "no arena") {
+			s.writeHTTPError(w, http.StatusConflict, err)
+		} else {
+			s.writeHTTPError(w, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	s.writeHTTPResponse(w, http.StatusOK, stats)
 }
 
 func (s *Server) handleSingleIndexGet(w http.ResponseWriter, r *http.Request) {

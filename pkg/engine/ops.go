@@ -25,6 +25,7 @@ import (
 	"github.com/sanonone/kektordb/pkg/core/types"
 	"github.com/sanonone/kektordb/pkg/metrics"
 	"github.com/sanonone/kektordb/pkg/persistence"
+	"github.com/sanonone/kektordb/pkg/storage/mmap"
 )
 
 // ErrDimensionUnknown is returned when attempting to add an entity without
@@ -474,6 +475,25 @@ func (e *Engine) VDelete(indexName, id string) error {
 	}(id)
 
 	return nil
+}
+
+// GetArenaStats exposes the physical state of an index's arena (chunks, slots,
+// fragmentation, disk footprint). Read-only and cheap enough for monitoring.
+// Returns an error for indexes without an arena (in-memory / no arenaDir).
+func (e *Engine) GetArenaStats(indexName string) (mmap.ArenaStats, error) {
+	idx, ok := e.DB.GetVectorIndex(indexName)
+	if !ok {
+		return mmap.ArenaStats{}, fmt.Errorf("index '%s' not found", indexName)
+	}
+	hnswIdx, err := getHNSWIndex(idx)
+	if err != nil {
+		return mmap.ArenaStats{}, err
+	}
+	arena := hnswIdx.ArenaForTest()
+	if arena == nil {
+		return mmap.ArenaStats{}, fmt.Errorf("index '%s' has no arena (in-memory)", indexName)
+	}
+	return arena.GetArenaStats(), nil
 }
 
 // VGet retrieves the full data (vector + metadata) for a single ID.

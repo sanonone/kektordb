@@ -270,7 +270,128 @@ func (va *VectorArena) WaitForStopped() {
 	}
 }
 
+// ArenaStats is a read-only snapshot of an arena's physical state. It is meant
+// for observability (HTTP endpoint, stress-test monitoring): how much of the
+// arena is in use, how fragmented it is, and how much space it occupies on
+// disk. Computed without holding locks across I/O.
+type ArenaStats struct {
+	// ChunkCount is the number of active (not dropped) chunks.
+	ChunkCount int `json:"chunk_count"`
+	// ChunkSizeBytes is the size of a single chunk file.
+	ChunkSizeBytes int64 `json:"chunk_size_bytes"`
+	// DiskBytes is ChunkCount * ChunkSizeBytes: the arena's footprint on disk.
+	DiskBytes int64 `json:"disk_bytes"`
+
+	// TotalPhysicalSlots is ChunkCount * vecsPerChk.
+	TotalPhysicalSlots int `json:"total_physical_slots"`
+	// UsedPhysicalSlots counts allocated slots (live AND soft-deleted-but-not-vacuumed).
+	UsedPhysicalSlots int `json:"used_physical_slots"`
+	// FreePhysicalSlots is Total - Used.
+	FreePhysicalSlots int `json:"free_physical_slots"`
+	// FragmentationRatio is Free/Total (0 = packed, 1 = empty).
+	FragmentationRatio float64 `json:"fragmentation_ratio"`
+
+	// NextPhysSlot is the high-water mark of physical allocation.
+	NextPhysSlot uint32 `json:"next_phys_slot"`
+	// FreeListLen is the size of the reusable-slot stack.
+	FreeListLen int `json:"free_list_len"`
+	// DroppedChunks counts chunks logically removed but kept mapped until Close.
+	DroppedChunks int `json:"dropped_chunks"`
+
+	// CompactorActive reports whether a compactor is registered (after audit A1,
+	// a nil compactor means StopCompactor would be a no-op).
+	CompactorActive bool `json:"compactor_active"`
+
+	ChunkStats []ChunkFragmentation `json:"chunk_stats,omitempty"`
+}
+
+// GetArenaStats computes the arena's current physical state. It never returns a
+// zeroed struct when there is data to report: unlike the previous
+// GetFragmentationStats, it does not depend on a running compactor.
+func (va *VectorArena) GetArenaStats() ArenaStats {
+	va.mu.RLock()
+	chunkCount := 0
+	for _, c := range va.chunks {
+		if c != nil {
+			chunkCount++
+		}
+	}
+	dropped := len(va.droppedChunks)
+	chunkSize := va.chunkSize
+	va.mu.RUnlock()
+
+	va.slotMu.RLock()
+	used := 0
+	for _, slot := range va.slotTable {
+		if slot != UnallocatedSlot {
+			used++
+		}
+	}
+	nextPhys := va.nextPhysSlot
+	freeListLen := len(va.freeSlots)
+	va.slotMu.RUnlock()
+
+	total := chunkCount * va.vecsPerChk
+	free := total - used
+	if free < 0 {
+		free = 0
+	}
+	var ratio float64
+	if total > 0 {
+		ratio = float64(free) / float64(total)
+	}
+
+	return ArenaStats{
+		ChunkCount:         chunkCount,
+		ChunkSizeBytes:     int64(chunkSize),
+		DiskBytes:          int64(chunkCount) * int64(chunkSize),
+		TotalPhysicalSlots: total,
+		UsedPhysicalSlots:  used,
+		FreePhysicalSlots:  free,
+		FragmentationRatio: ratio,
+		NextPhysSlot:       nextPhys,
+		FreeListLen:        freeListLen,
+		DroppedChunks:      dropped,
+		CompactorActive:    va.HasCompactor(),
+		ChunkStats:         va.chunkFragmentation(),
+	}
+}
+
+// chunkFragmentation returns per-chunk usage. Locks slotMu then mu, matching
+// the order used by the compactor (P1-8).
+func (va *VectorArena) chunkFragmentation() []ChunkFragmentation {
+	va.slotMu.RLock()
+	defer va.slotMu.RUnlock()
+	va.mu.RLock()
+	defer va.mu.RUnlock()
+
+	stats := make([]ChunkFragmentation, 0, len(va.chunks))
+	for chunkIdx := range va.chunks {
+		if va.chunks[chunkIdx] == nil {
+			continue
+		}
+		startSlot := uint32(chunkIdx * va.vecsPerChk)
+		endSlot := uint32((chunkIdx + 1) * va.vecsPerChk)
+
+		usedCount := 0
+		for _, physSlot := range va.slotTable {
+			if physSlot != UnallocatedSlot && physSlot >= startSlot && physSlot < endSlot {
+				usedCount++
+			}
+		}
+		stats = append(stats, ChunkFragmentation{
+			ChunkID:      chunkIdx,
+			UsedSlots:    usedCount,
+			FreeSlots:    va.vecsPerChk - usedCount,
+			UsagePercent: float64(usedCount) / float64(va.vecsPerChk),
+		})
+	}
+	return stats
+}
+
 // GetFragmentationStats returns current fragmentation statistics.
+// Kept for compatibility; prefer GetArenaStats, which also reports disk usage,
+// the free list and whether the compactor is registered.
 func (va *VectorArena) GetFragmentationStats() FragmentationStats {
 	if va.compactor != nil {
 		return va.compactor.analyzeFragmentation()
