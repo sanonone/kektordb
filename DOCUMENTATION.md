@@ -1440,11 +1440,39 @@ Returns a sample of the graph structure (Nodes + Edges) for visualization.
 
 ### 5.9 Epistemic Engine (Belief Assessment)
 
-The Epistemic Engine provides confidence scoring for memories using a three-pillar mathematical framework:
+The Epistemic Engine assigns memories a confidence score using a three-pillar
+framework:
 
-1. **Consensus (40%)**: Vector density measuring semantic convergence across similar memories
-2. **Stability (30%)**: Temporal robustness based on age and access patterns using configurable decay models
-3. **Friction (30%)**: Topological contradictions tracking invalidations and contradictions in the graph
+1. **Consensus (40%)**: semantic density of the retrieved candidates.
+2. **Stability (30%)**: temporal robustness based on age and access patterns, using configurable decay models.
+3. **Friction (30%)**: graph contradictions and invalidations.
+
+> **Read this before using the number.** The composite is a **heuristic status
+> indicator, not a calibrated probability**. Two of the three pillars have known
+> limits, and the weights are fixed rather than learned:
+>
+> - **Consensus measures topical proximity, not agreement.** It is computed from
+>   the variance of the candidate vectors. Two statements that *contradict* each
+>   other about the same subject (`"the server is in Europe"` vs `"the server is
+>   in the US"`) are vectorially close by construction and score almost as high as
+>   two identical statements (measured: 0.937 vs 1.000). Treat it as "these
+>   memories are about the same thing", never as "these memories agree".
+> - **Stability rewards age and repetition.** Access counts measure how often a
+>   memory was retrieved, not whether it is correct (the illusory-truth effect:
+>   repetition makes statements feel truer). Evergreen facts stay true, so age is
+>   not a reliability signal; decay is a *salience* mechanism.
+> - **Fixed 40/30/30 weights are not calibrated.** Knowledge bases that ship
+>   numeric fact confidence (Knowledge Vault, NELL) *learn* and calibrate their
+>   weights against labels. These do not.
+>
+> The state machine (`crystallized` / `stable` / `volatile` / `contested`) and the
+> `evidence` block are the useful outputs: they tell you *why* a score is what it
+> is. Prefer them over the raw composite. For deciding whether a new fact
+> supersedes an old one, the system uses explicit LLM contradiction judgment
+> (`action_required` gate), not this score.
+
+Both the HTTP endpoint and the MCP `assess_belief` tool run the **same** code
+path (`Engine.VBeliefState`), so their numbers are always identical.
 
 #### Belief Assessment
 

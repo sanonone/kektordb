@@ -547,21 +547,33 @@ type AssessBeliefArgs struct {
 }
 
 type AssessBeliefResult struct {
-	Query      string           `json:"query"`
-	Confidence float64          `json:"confidence"` // 0.0-1.0
-	Consensus  float64          `json:"consensus"`  // 0.0-1.0: how widely the belief is supported
-	Stability  float64          `json:"stability"`  // 0.0-1.0: how long the belief has been consistent
-	Friction   float64          `json:"friction"`   // 0.0-1.0: how much contradiction exists
-	Verdict    string           `json:"verdict"`    // "well_supported" | "contested" | "fading" | "fresh"
-	Evidence   []BeliefEvidence `json:"evidence"`
-	Message    string           `json:"message,omitempty"`
+	Query      string  `json:"query"`
+	Confidence float64 `json:"confidence"` // 0.0-1.0 HEURISTIC, not a calibrated probability
+	Consensus  float64 `json:"consensus"`  // 0.0-1.0: semantic density of the candidates (NOT agreement — contradictory statements about one topic score high too)
+	Stability  float64 `json:"stability"`  // 0.0-1.0: temporal robustness (age + access)
+	Friction   float64 `json:"friction"`   // 0.0-1.0: 1.0 = no graph contradictions, 0.0 = saturated
+
+	// State is the epistemic state from the engine: crystallized | stable |
+	// volatile | contested. Verdict mirrors it for backwards compatibility of
+	// the tool output.
+	State   string `json:"state"`
+	Verdict string `json:"verdict"`
+	Caveat  string `json:"caveat,omitempty"`
+
+	Evidence []BeliefEvidence `json:"evidence"`
+	Message  string           `json:"message,omitempty"`
 }
 
+// BeliefEvidence is one candidate memory in the assessment, mirroring the
+// engine's per-node results.
 type BeliefEvidence struct {
-	MemoryID  string  `json:"memory_id"`
-	Stance    string  `json:"stance"` // "supports" | "contradicts" | "neutral"
-	Weight    float64 `json:"weight"` // 0.0-1.0
-	Timestamp int64   `json:"timestamp,omitempty"`
+	MemoryID       string  `json:"memory_id"`
+	Score          float64 `json:"score"` // cosine similarity to the query
+	CreatedAt      int64   `json:"created_at,omitempty"`
+	AccessCount    int     `json:"access_count,omitempty"`
+	IsHistorical   bool    `json:"is_historical,omitempty"`
+	Contradictions int     `json:"contradictions_count,omitempty"`
+	Invalidations  int     `json:"invalidations_count,omitempty"`
 }
 
 // --- Tool 10: search_with_scores ---

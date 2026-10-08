@@ -2233,14 +2233,17 @@ func (s *Service) TriggerReflection(ctx context.Context, req *mcp.CallToolReques
 }
 
 // AssessBelief returns epistemic confidence for a memory or query, with
-// 3-pillar evidence: consensus (how widely supported), stability (how long
-// consistent), friction (how much contradiction exists).
+// 3-pillar evidence: consensus (semantic density of the candidates), stability
+// (temporal robustness) and friction (graph contradictions).
 //
-// Implementation: lightweight 3-pillar scorer that runs a semantic search
-// around the query, then evaluates the consensus/stability/friction of the
-// returned memories. This is intentionally simple — the full belief engine
-// (pkg/core/epistemic.go) is exposed via HTTP at /vector/actions/belief-assessment
-// for cases requiring more rigor.
+// It delegates to the engine's VBeliefState, the same code behind
+// POST /vector/actions/belief-assessment, so MCP and HTTP cannot diverge. There
+// used to be a second, independent scorer here with different formulas (a
+// "stability" that was not an average and a "consensus" computed as a fraction
+// of stances) which returned materially different numbers for identical data.
+//
+// The composite is a HEURISTIC, not a calibrated probability: see
+// DOCUMENTATION.md §5.9.
 func (s *Service) AssessBelief(ctx context.Context, req *mcp.CallToolRequest, args AssessBeliefArgs) (*mcp.CallToolResult, AssessBeliefResult, error) {
 	idx := args.IndexName
 	if idx == "" {
@@ -2251,6 +2254,7 @@ func (s *Service) AssessBelief(ctx context.Context, req *mcp.CallToolRequest, ar
 		result.Message = "index not found"
 		return nil, result, nil
 	}
+
 	limit := args.Limit
 	if limit <= 0 {
 		limit = 10
@@ -2258,94 +2262,60 @@ func (s *Service) AssessBelief(ctx context.Context, req *mcp.CallToolRequest, ar
 	if limit > 50 {
 		limit = 50
 	}
+
 	vec, err := s.embedder.Embed(args.Query)
 	if err != nil {
 		return nil, result, err
 	}
-	ids, err := s.engine.VSearch(idx, vec, limit, defaultMemoryFilter, "", 0, 0.5, nil)
+
+	cfg := s.engine.GetEpistemicConfig(idx)
+	state, err := s.engine.VBeliefState(idx, vec, limit, cfg)
 	if err != nil {
-		return nil, result, err
-	}
-	if len(ids) == 0 {
-		result.Verdict = "fresh"
-		result.Confidence = 0.1
+		// No candidates is a normal outcome, not a failure.
+		result.Verdict = "no_evidence"
+		result.Confidence = 0
 		result.Message = "no supporting memories found"
 		return nil, result, nil
 	}
-	// Fetch metadata for each result to score.
-	datas, _ := s.engine.VGetMany(idx, ids)
-	if len(datas) == 0 {
-		result.Verdict = "fresh"
-		result.Confidence = 0.1
-		return nil, result, nil
+
+	result.Confidence = state.Confidence
+	result.State = state.State
+	result.Consensus = state.Evidence.Consensus.Score
+	result.Stability = state.Evidence.Stability.Score
+	result.Friction = state.Evidence.Friction.Score
+	result.Caveat = state.Caveat
+
+	// Evidence mirrors the per-node results, keeping the pillar naming used by
+	// the public API (score + contradiction counts) rather than the old
+	// "stance" heuristic, which required metadata that did not exist.
+	for _, n := range state.Nodes {
+		result.Evidence = append(result.Evidence, BeliefEvidence{
+			MemoryID:       n.ID,
+			Score:          n.Score,
+			CreatedAt:      n.CreatedAt,
+			AccessCount:    n.AccessCount,
+			IsHistorical:   n.IsHistorical,
+			Contradictions: n.Contradictions,
+			Invalidations:  n.Invalidations,
+		})
 	}
-	now := time.Now().Unix()
-	supports, contradicts, neutral, oldestTs := 0, 0, 0, int64(0)
-	weightSum := 0.0
-	for _, d := range datas {
-		meta := d.Metadata
-		// Heuristic: content field or "is_contradicted" flag.
-		stance := "supports"
-		if v, ok := meta["is_contradicted"].(bool); ok && v {
-			stance = "contradicts"
-			contradicts++
-		} else if v, ok := meta["stance"].(string); ok && v == "contradicts" {
-			stance = "contradicts"
-			contradicts++
-		} else if v, ok := meta["stance"].(string); ok && v == "neutral" {
-			stance = "neutral"
-			neutral++
-		} else {
-			supports++
-		}
-		// Weight by recency (older = lower weight).
-		ts, _ := meta["_created_at"].(float64)
-		age := now - int64(ts)
-		weight := 1.0 / (1.0 + float64(age)/86400.0) // linear decay over 1 day
-		weightSum += weight
-		if int64(ts) < oldestTs || oldestTs == 0 {
-			oldestTs = int64(ts)
-		}
-		evidence := BeliefEvidence{
-			MemoryID:  d.ID,
-			Stance:    stance,
-			Weight:    weight,
-			Timestamp: int64(ts),
-		}
-		result.Evidence = append(result.Evidence, evidence)
-	}
-	// Pillar 1: consensus — fraction of non-contradicting evidence.
-	total := float64(supports + contradicts + neutral)
-	result.Consensus = float64(supports+neutral) / total
-	// Pillar 2: stability — average age of evidence. Older evidence = more stable.
-	avgAge := float64(now-oldestTs) / float64(len(datas))
-	result.Stability = 1.0 - (avgAge / (90.0 * 86400.0)) // 90 days = 0 stability
-	if result.Stability < 0 {
-		result.Stability = 0
-	}
-	// Pillar 3: friction — fraction of contradicting evidence.
-	result.Friction = float64(contradicts) / total
-	// Composite confidence.
-	result.Confidence = (result.Consensus*0.4 + result.Stability*0.3 + (1.0-result.Friction)*0.3)
-	if result.Confidence < 0 {
-		result.Confidence = 0
-	}
-	if result.Confidence > 1 {
-		result.Confidence = 1
-	}
-	// Verdict.
-	switch {
-	case result.Friction > 0.4:
-		result.Verdict = "contested"
-	case result.Stability > 0.7 && result.Consensus > 0.6:
-		result.Verdict = "well_supported"
-	case result.Stability < 0.3:
-		result.Verdict = "fresh"
-	default:
-		result.Verdict = "fading"
-	}
-	_ = weightSum
+
+	result.Verdict = epistemicVerdict(result.State)
 	return nil, result, nil
+}
+
+// epistemicVerdict maps the engine's epistemic state to the MCP verdict labels.
+func epistemicVerdict(state string) string {
+	switch state {
+	case "crystallized":
+		return "crystallized"
+	case "contested":
+		return "contested"
+	case "volatile":
+		return "volatile"
+	default:
+		return "stable"
+	}
 }
 
 // SearchWithScores performs semantic search and returns similarity scores
