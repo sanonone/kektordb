@@ -21,6 +21,126 @@ components:
       scheme: bearer
 
   schemas:
+    # --- Added after the initial spec (see TestOpenAPICoversRoutes) ---
+    ArenaStats:
+      type: object
+      description: >-
+        Physical state of an index's mmap arena. disk_bytes is whole chunks, not
+        live data size.
+      properties:
+        chunk_count: { type: integer }
+        chunk_size_bytes: { type: integer, format: int64 }
+        disk_bytes: { type: integer, format: int64 }
+        total_physical_slots: { type: integer }
+        used_physical_slots: { type: integer }
+        free_physical_slots: { type: integer }
+        fragmentation_ratio: { type: number, format: double, description: free/total; 1.0 = empty }
+        next_phys_slot: { type: integer }
+        free_list_len: { type: integer }
+        dropped_chunks: { type: integer }
+        compactor_active: { type: boolean, description: false means StopCompactor would be a no-op }
+        chunk_stats:
+          type: array
+          items:
+            type: object
+            properties:
+              chunk_id: { type: integer }
+              used_slots: { type: integer }
+              free_slots: { type: integer }
+              usage_percent: { type: number, format: double }
+
+    BeliefAssessmentRequest:
+      type: object
+      required: [index_name]
+      properties:
+        index_name: { type: string }
+        query: { type: string, description: Text to embed (alternative to query_vec) }
+        query_vec:
+          type: array
+          items: { type: number, format: float }
+        limit: { type: integer, default: 10, maximum: 50 }
+
+    BeliefAssessmentResponse:
+      type: object
+      properties:
+        confidence:
+          type: number
+          format: double
+          description: 0..1 HEURISTIC, not a calibrated probability (see DOCUMENTATION 5.9)
+        state: { type: string, enum: [crystallized, stable, volatile, contested] }
+        caveat: { type: string }
+        evidence:
+          type: object
+          properties:
+            consensus:
+              type: object
+              properties:
+                score: { type: number, format: double, description: semantic density of candidates, NOT agreement }
+                sources: { type: integer }
+                vector_variance: { type: number, format: double }
+            stability:
+              type: object
+              properties:
+                score: { type: number, format: double }
+                avg_age_days: { type: number, format: double }
+                total_access_count: { type: integer }
+            friction:
+              type: object
+              properties:
+                score: { type: number, format: double, description: 1.0 = no graph contradictions }
+                contradictions: { type: integer }
+                invalidations: { type: integer }
+        nodes:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              content: { type: string }
+              score: { type: number, format: double }
+              created_at: { type: integer, format: int64 }
+              access_count: { type: integer }
+              is_historical: { type: boolean }
+              contradictions_count: { type: integer }
+              invalidations_count: { type: integer }
+
+    VectorEvolveRequest:
+      type: object
+      required: [index_name, old_id, reason]
+      properties:
+        index_name: { type: string }
+        old_id: { type: string }
+        new_vector:
+          type: array
+          items: { type: number, format: float }
+        new_content: { type: string, description: Used when new_vector is empty (server embeds it) }
+        new_metadata: { type: object, additionalProperties: true }
+        reason: { type: string }
+
+    VectorRestoreRequest:
+      type: object
+      required: [index_name, id]
+      properties:
+        index_name: { type: string }
+        id: { type: string }
+
+    MemoryEvolutionResponse:
+      type: object
+      properties:
+        evolution_chain:
+          type: array
+          items:
+            type: object
+            properties:
+              memory_id: { type: string }
+              content: { type: string }
+              created_at: { type: integer, format: int64 }
+              evolves_from: { type: string, nullable: true }
+              superseded_by: { type: string, nullable: true }
+              evolution_reason: { type: string, nullable: true }
+              is_current: { type: boolean }
+        total_steps: { type: integer }
+
     # --- Shared ---
     Task:
       type: object
@@ -931,3 +1051,395 @@ paths:
                 type: object
                 properties:
                   status: { type: string, example: ok }
+
+  # ==========================================================================
+  # Endpoints added after the initial spec. See TestOpenAPICoversRoutes, which
+  # fails when a registered route is missing here.
+  # ==========================================================================
+
+  /embeddings:
+    post:
+      summary: Embed texts using the server embedder
+      description: >-
+        Returns one vector per input text. Useful for clients that want to store
+        their own vectors, or to verify that client-side embedding matches the
+        server's.
+      tags: [Vector Operations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [texts]
+              properties:
+                texts:
+                  type: array
+                  items: { type: string }
+      responses:
+        '200':
+          description: One embedding per input text
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dim: { type: integer, example: 384 }
+                  embeddings:
+                    type: array
+                    items:
+                      type: array
+                      items: { type: number, format: float }
+        '400': { description: texts is required }
+        '503': { description: no embedder configured on the server }
+
+  /vector/actions/belief-assessment:
+    post:
+      summary: Epistemic belief assessment
+      description: >-
+        Scores a belief against the memories stored in the index using three
+        pillars (consensus, stability, friction) and returns a confidence value,
+        a state (crystallized/stable/volatile/contested), a caveat and the
+        per-node evidence. The composite is a heuristic status indicator, NOT a
+        calibrated probability: see DOCUMENTATION.md section 5.9 for its known
+        limits. Identical to the MCP `assess_belief` tool.
+      tags: [Epistemic Engine]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BeliefAssessmentRequest'
+      responses:
+        '200':
+          description: Epistemic state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BeliefAssessmentResponse'
+        '400': { description: index_name required }
+        '404': { description: index not found }
+
+  /vector/actions/evolve:
+    post:
+      summary: Evolve a memory (semantic versioning)
+      description: >-
+        Creates a new version of a memory, links old to new via superseded_by and
+        marks the old node `_is_historical` so default retrieval hides it. Use
+        /vector/actions/restore to reverse it.
+      tags: [Memory Evolution]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VectorEvolveRequest'
+      responses:
+        '200': { description: Memory evolved }
+        '400': { description: missing index_name, old_id or reason }
+
+  /vector/actions/restore:
+    post:
+      summary: Restore a superseded or archived memory
+      description: >-
+        Clears `_is_historical` and/or `_archived` so the memory is visible to
+        default retrieval again. Provenance metadata and superseded_by /
+        evolves_from edges are preserved. Memories removed with delete_vector
+        cannot be restored (400).
+      tags: [Memory Evolution]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VectorRestoreRequest'
+      responses:
+        '200': { description: Memory restored }
+        '400': { description: nothing to restore, or the memory was deleted }
+
+  /vector/actions/get-evolution:
+    post:
+      summary: Trace a memory's evolution chain
+      description: >-
+        Follows superseded_by / evolves_from edges to return the history of a
+        memory. Direction is "backward" (follows evolves_from, default,
+        ancestors) or "forward" (follows superseded_by, descendants).
+      tags: [Memory Evolution]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [index_name, memory_id]
+              properties:
+                index_name: { type: string }
+                memory_id: { type: string }
+                direction: { type: string, enum: [backward, forward], default: backward }
+      responses:
+        '200':
+          description: Evolution chain
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryEvolutionResponse'
+        '400': { description: invalid request }
+
+  /vector/indexes/{name}/arena-stats:
+    get:
+      summary: Physical arena statistics
+      description: >-
+        Chunk count, disk footprint, physical slot usage, fragmentation and
+        whether the background compactor is registered. `disk_bytes` is the
+        arena's footprint on disk (whole chunks), not the live data size.
+      tags: [Index Management]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Arena statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArenaStats'
+        '404': { description: index not found }
+        '409': { description: index has no arena (in-memory) }
+
+  /vector/indexes/{name}/vectors/{id}:
+    get:
+      summary: Fetch a single vector with metadata
+      tags: [Vector Operations]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Vector data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VectorData'
+        '404': { description: index or vector not found }
+
+  /graph/actions/invalidate:
+    post:
+      summary: Invalidate a memory
+      description: >-
+        Marks a target memory as invalidated by a source, creating epistemic
+        friction (an `invalidates` edge) that affects belief assessment.
+      tags: [Graph Operations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [index_name, target_id, source_id]
+              properties:
+                index_name: { type: string }
+                target_id: { type: string }
+                source_id: { type: string }
+                reason: { type: string }
+      responses:
+        '200': { description: Memory invalidated }
+        '400': { description: invalid request }
+
+  /rag/retrieve-adaptive:
+    post:
+      summary: Adaptive RAG retrieval
+      description: >-
+        Graph-aware retrieval: seeds via semantic search, then expands following
+        graph relations while respecting a token budget (strategies: greedy,
+        density, graph).
+      tags: [RAG]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [index_name, query]
+              properties:
+                index_name: { type: string }
+                query: { type: string }
+                token_budget: { type: integer }
+                strategy: { type: string, enum: [greedy, density, graph] }
+      responses:
+        '200': { description: Retrieved context with provenance }
+
+  /sessions:
+    post:
+      summary: Start a session
+      description: >-
+        Starts a conversational session. Memories saved afterwards can be linked
+        to it, and end_session produces a summary of the session's memories.
+      tags: [Sessions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                index_name: { type: string }
+                user_id: { type: string }
+                session_name: { type: string }
+      responses:
+        '200': { description: Session started, returns the session id }
+
+  /sessions/{id}/end:
+    post:
+      summary: End a session
+      description: >-
+        Ends the session and generates a deterministic bullet-point summary of
+        its memories. If the cognitive engine is active, it augments this with a
+        deeper LLM summarization (asynchronous).
+      tags: [Sessions]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                index_name: { type: string }
+      responses:
+        '200': { description: Session ended and summarized }
+        '404': { description: session not found }
+
+  /transfer/memory:
+    post:
+      summary: Transfer memories between indexes
+      description: >-
+        Copies memories from one index to another, preserving metadata and
+        optionally the graph topology. Useful for multi-agent systems that share
+        knowledge.
+      tags: [Memory Transfer]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_index, target_index]
+              properties:
+                source_index: { type: string }
+                target_index: { type: string }
+                copy_graph: { type: boolean }
+      responses:
+        '200': { description: Transfer result with counts }
+        '400': { description: invalid request }
+
+  /users:
+    get:
+      summary: List user profiles
+      tags: [Cognitive Engine]
+      parameters:
+        - name: index_name
+          in: query
+          schema: { type: string }
+      responses:
+        '200': { description: User profiles }
+        '404': { description: index not found }
+
+  /users/{id}/profile:
+    get:
+      summary: Get a user profile
+      description: >-
+        Returns the personality profile of a user: communication style, expertise
+        areas, preferences and dislikes.
+      tags: [Cognitive Engine]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: index_name
+          in: query
+          schema: { type: string }
+      responses:
+        '200': { description: User profile }
+        '404': { description: profile not found }
+
+  /system/stats:
+    get:
+      summary: System statistics
+      description: Uptime, total vectors and indexes, graph and gardener counters.
+      tags: [System]
+      responses:
+        '200': { description: System statistics }
+
+  /system/gardener:
+    get:
+      summary: Gardener status
+      description: Whether the cognitive engine is enabled, its mode, interval and cycle counters.
+      tags: [System]
+      responses:
+        '200': { description: Gardener status }
+
+  /system/embedder/status:
+    get:
+      summary: Embedder status
+      description: Which embedder the server is using and whether it is available.
+      tags: [System]
+      responses:
+        '200': { description: Embedder status }
+
+  /events/stream:
+    get:
+      summary: Server-sent events stream
+      description: >-
+        Streams engine events (vector add/delete/update, evolution, …) as
+        text/event-stream. Used by the dashboard.
+      tags: [System]
+      responses:
+        '200':
+          description: Event stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      description: Metrics in Prometheus exposition format.
+      tags: [System]
+      responses:
+        '200':
+          description: Metrics
+          content:
+            text/plain:
+              schema: { type: string }
+
+  /ui/:
+    get:
+      summary: Embedded web dashboard
+      description: Static single-page dashboard served by the server.
+      tags: [UI]
+      responses:
+        '200': { description: Dashboard HTML }
+
+  /ui/explore:
+    post:
+      summary: Dashboard explore query
+      description: Backing endpoint for the dashboard's exploration view.
+      tags: [UI]
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200': { description: Query results }

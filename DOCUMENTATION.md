@@ -859,6 +859,20 @@ Performs a search and returns results with their similarity scores and a score b
 ```
 `query_text`/`query_vector` embedding resolution: per-index vectorizer embedder first, then the server-global embedder (`--embedder`). Text search therefore works on standalone servers without `vectorizers.yaml`.
 
+**Visibility guard (memory indexes).** On an index created with `memory_config.enabled: true`, search hides records marked `_is_historical` (superseded by `evolve`) or `_archived` (hidden by consolidation/archival). This applies to every client — HTTP, SDK and MCP — and is enforced as a bitmap operation inside the engine, so it cannot be bypassed by the shape of your `filter` expression.
+
+To include hidden records anyway (auditing, debugging, re-consolidation), set:
+```json
+{
+  "index_name": "memories",
+  "query_text": "where is the server",
+  "k": 10,
+  "include_obsolete": true
+}
+```
+
+On a non-memory index the flag has no effect and nothing is hidden: the guard only applies to indexes whose `memory_config.enabled` is true.
+
 #### Reinforce
 **`POST /vector/actions/reinforce`**
 
@@ -894,6 +908,34 @@ Converts an existing index to lower precision (e.g., Float32 -> Int8) to save RA
 **`GET /vector/indexes`**
 
 Returns a list of all active indexes and their stats (size, type, memory usage).
+
+#### Arena Statistics
+**`GET /vector/indexes/{name}/arena-stats`**
+
+Reports the physical state of the index's mmap arena: chunk count, disk footprint,
+physical slot usage, fragmentation and whether the background compactor is
+registered. Read-only and cheap enough to poll; useful for monitoring growth and
+for diagnosing "why is the data directory so large".
+
+**Response:**
+```json
+{
+  "chunk_count": 1,
+  "chunk_size_bytes": 67108864,
+  "disk_bytes": 67108864,
+  "total_physical_slots": 4194304,
+  "used_physical_slots": 300,
+  "free_physical_slots": 4194004,
+  "fragmentation_ratio": 0.99993,
+  "next_phys_slot": 300,
+  "free_list_len": 0,
+  "dropped_chunks": 0,
+  "compactor_active": true,
+  "chunk_stats": [ { "chunk_id": 0, "used_slots": 300, "free_slots": 4194004, "usage_percent": 0.00007 } ]
+}
+```
+
+**Reading it:** `disk_bytes` is the arena's footprint on disk (`chunk_count × chunk_size_bytes`), not the live data size — a nearly empty arena still occupies whole 64 MB chunks. `used_physical_slots` counts allocated slots (live **and** soft-deleted-but-not-yet-vacuumed records); after a `vacuum` the count drops and the freed slots are reused by later writes, so `next_phys_slot` stops growing. `fragmentation_ratio` is `free/total`: near 1.0 means empty, near 0 means packed. Returns `404` for an unknown index and `409` for an index with no arena (in-memory).
 
 #### Get Index Details
 **`GET /vector/indexes/{name}`**
