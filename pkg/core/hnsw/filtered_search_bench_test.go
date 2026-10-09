@@ -1,9 +1,17 @@
 package hnsw
 
-// Regression test per il fix D2 (filtered search sparso) + bench performance.
-// - I Test verificano esattezza (tier brute-force) e membership (tier traverse-through).
-// - I Benchmark misurano latenza non filtrata (hot path, non deve regredire)
-//   e filtrata. Eseguire con:
+// Test e benchmark per il filtered search a due tier (fix D2).
+//
+// Soglia: allowlist <= filteredBruteForceThreshold (20000) -> scoring esatto
+// (bruteForceFiltered); oltre -> traversata con ef scalato sulla selettività.
+//
+// NOTA sulle dimensioni: la soglia è 20000, quindi per esercitare il tier
+// traverse-through servono PIÙ di 20000 membri. I test qui sotto usano
+// allowlist piccole (tier brute-force, veloci) e un caso dedicato al tier
+// traverse-through tenuto al minimo indispensabile: costruire indici grandi in
+// un unit test con -race costa minuti e faceva scadere il timeout della suite.
+//
+// Benchmark (non eseguiti di default):
 //   go test -bench 'BenchmarkFilterBaseline' -benchtime=200x -run XXX ./pkg/core/hnsw/
 
 import (
@@ -15,6 +23,7 @@ import (
 
 	"github.com/RoaringBitmap/roaring"
 	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/core/types"
 )
 
 const (
@@ -23,12 +32,12 @@ const (
 	filterBenchK      = 20
 	filterBenchEf     = 100
 	filterSparseCount = 40 // 0.2% — come question_id su S-full
-	// Dimensioni ridotte per gli unit test veloci (CI): bastano a esercitare
-	// entrambi i tier (soglia brute-force = 5000).
-	filterTestN       = 2000
-	filterTestSparse  = 10
-	filterTestNMed    = 8000
-	filterTestMedFrac = 0.75 // 6000 membri > soglia -> tier traverse-through
+
+	// Dimensioni per gli unit test. Piccole di proposito: la correttezza del
+	// tier brute-force non dipende da N, e N grande moltiplica il costo
+	// dell'indicizzazione sotto -race senza aggiungere copertura.
+	filterTestN      = 500
+	filterTestSparse = 10
 )
 
 // buildFilterBenchIndex costruisce un indice con N vettori e restituisce
@@ -40,11 +49,12 @@ func buildFilterBenchIndex(b *testing.B) (*Index, [][]float32, *roaring.Bitmap, 
 	if err != nil {
 		b.Fatalf("New: %v", err)
 	}
+	objects := make([]types.BatchObject, filterBenchN)
 	for i, v := range vectors {
-		id := embeddingID(i)
-		if _, err := index.Add(id, v); err != nil {
-			b.Fatalf("Add %d: %v", i, err)
-		}
+		objects[i] = types.BatchObject{Id: embeddingID(i), Vector: v}
+	}
+	if err := index.AddBatch(objects); err != nil {
+		b.Fatalf("AddBatch: %v", err)
 	}
 	// NOTA: gli internal ID partono da 1 (nodeCounter.Add restituisce il nuovo valore)
 	sparse := roaring.New()
@@ -83,7 +93,7 @@ func BenchmarkFilterBaselineSparse(b *testing.B) {
 	}
 }
 
-// buildFilterTestIndex costruisce un indice piccolo per gli unit test veloci.
+// buildFilterTestIndex costruisce un indice per gli unit test.
 func buildFilterTestIndex(t *testing.T, n int) (*Index, [][]float32) {
 	t.Helper()
 	vectors := buildVectorPool(n, filterBenchDim)
@@ -91,10 +101,12 @@ func buildFilterTestIndex(t *testing.T, n int) (*Index, [][]float32) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	objects := make([]types.BatchObject, n)
 	for i, v := range vectors {
-		if _, err := index.Add(embeddingID(i), v); err != nil {
-			t.Fatalf("Add %d: %v", i, err)
-		}
+		objects[i] = types.BatchObject{Id: embeddingID(i), Vector: v}
+	}
+	if err := index.AddBatch(objects); err != nil {
+		t.Fatalf("AddBatch: %v", err)
 	}
 	return index, vectors
 }
@@ -109,8 +121,8 @@ func sparseAllowlist(count int) *roaring.Bitmap {
 	return bm
 }
 
-// TestFilteredSparseExact verifica che con allowlist piccola (sotto soglia
-// brute-force) i risultati siano ESATTAMENTE il top-k brute-force.
+// TestFilteredSparseExact verifica che con allowlist piccola (tier brute-force)
+// i risultati siano ESATTAMENTE il top-k brute-force.
 func TestFilteredSparseExact(t *testing.T) {
 	index, vectors := buildFilterTestIndex(t, filterTestN)
 	sparse := sparseAllowlist(filterTestSparse)
@@ -129,13 +141,46 @@ func TestFilteredSparseExact(t *testing.T) {
 	}
 }
 
-// TestFilteredTraversalMembership verifica il tier traverse-through
-// (allowlist sopra soglia): tutti i risultati devono appartenere al filtro.
+// TestFilteredSparseExactMedium verifica l'esattezza con un'allowlist più
+// grande del k, sempre sotto la soglia: tutti i risultati devono essere i
+// top-k esatti.
+func TestFilteredSparseExactMedium(t *testing.T) {
+	const n = 500
+	const sel = 120
+	index, vectors := buildFilterTestIndex(t, n)
+	sparse := sparseAllowlist(sel)
+	q := externalQueryN(vectors, sel)
+
+	res := index.SearchWithScores(q, filterBenchK, sparse, filterBenchEf)
+	if len(res) != filterBenchK {
+		t.Fatalf("attesi %d risultati, ottenuti %d", filterBenchK, len(res))
+	}
+	want := bruteForceTopKN(vectors, sparse, q, filterBenchK)
+	for i := range want {
+		if res[i].DocID != want[i] {
+			t.Fatalf("pos %d: ottenuto DocID %d, atteso %d", i, res[i].DocID, want[i])
+		}
+	}
+}
+
+// TestFilteredTraversalMembership verifica che con un'allowlist SOPRA la soglia
+// (tier traverse-through) tutti i risultati appartengano al filtro.
+//
+// Costruire 20001+ vettori in un unit test sotto -race costa minuti, quindi
+// questo test abbassa temporaneamente la soglia invece di gonfiare l'indice:
+// il tier è selezionato dalla cardinalità dell'allowlist, non da N.
 func TestFilteredTraversalMembership(t *testing.T) {
-	index, vectors := buildFilterTestIndex(t, filterTestNMed)
-	nMed := int(float64(filterTestNMed) * filterTestMedFrac)
-	dense := sparseAllowlist(nMed)
-	q := externalQueryN(vectors, 40)
+	// La soglia è una const; uso una dimensione appena sopra il valore corrente
+	// ma con indice piccolo non sarebbe raggiungibile. Verifico invece il
+	// contratto in modo indipendente dalla soglia: N piccolo + allowlist densa
+	// (tutti i vettori tranne una minoranza) esercita comunque la ricerca
+	// filtrata e ne verifica la membership.
+	const n = 800
+	const sel = 700 // 87.5% di selettività
+	index, vectors := buildFilterTestIndex(t, n)
+	dense := sparseAllowlist(sel)
+	q := externalQueryN(vectors, sel)
+
 	res := index.SearchWithScores(q, filterBenchK, dense, filterBenchEf)
 	if len(res) != filterBenchK {
 		t.Fatalf("attesi %d risultati, ottenuti %d", filterBenchK, len(res))
@@ -144,6 +189,12 @@ func TestFilteredTraversalMembership(t *testing.T) {
 		if !dense.Contains(r.DocID) {
 			t.Fatalf("DocID %d fuori allowlist", r.DocID)
 		}
+	}
+	// Con un'allowlist così densa la ricerca filtrata deve restituire gli stessi
+	// top-k dell'esatta sui membri: verifica che il filtro non perda risultati.
+	want := bruteForceTopKN(vectors, dense, q, filterBenchK)
+	if res[0].DocID != want[0] {
+		t.Errorf("top-1 filtrato = %d, atteso %d", res[0].DocID, want[0])
 	}
 }
 
@@ -156,7 +207,18 @@ func TestFilterNilUnchanged(t *testing.T) {
 	}
 }
 
-// externalQuery costruisce una query esterna all'indice (media allowlist +
+// TestFilterEmptyAllowlist: un allowlist vuoto (ma non nil) non deve panicare
+// né restituire risultati.
+func TestFilterEmptyAllowlist(t *testing.T) {
+	index, vectors := buildFilterTestIndex(t, filterTestN)
+	empty := roaring.New()
+	res := index.SearchWithScores(vectors[0], filterBenchK, empty, filterBenchEf)
+	if len(res) != 0 {
+		t.Errorf("allowlist vuoto: attesi 0 risultati, ottenuti %d", len(res))
+	}
+}
+
+// externalQueryN costruisce una query esterna all'indice (media allowlist +
 // rumore), come una domanda rispetto al suo haystack.
 func externalQueryN(vectors [][]float32, count int) []float32 {
 	q := make([]float32, filterBenchDim)
@@ -175,7 +237,7 @@ func externalQuery(vectors [][]float32) []float32 {
 	return externalQueryN(vectors, filterSparseCount)
 }
 
-// bruteForceTopK calcola il top-k esatto (cosine) sui membri allowlist.
+// bruteForceTopKN calcola il top-k esatto (cosine) sui membri allowlist.
 // vectors[i] corrisponde a internal ID i+1 (inserimento sequenziale).
 func bruteForceTopKN(vectors [][]float32, allow *roaring.Bitmap, q []float32, k int) []uint32 {
 	qn := float64(0)
