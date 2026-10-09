@@ -75,6 +75,23 @@ func resyncAOF(file *os.File, lastValid int64) (int64, bool) {
 // and attempt to resync to the next valid frame. If resync fails, it truncates
 // the file to the last valid offset. This ensures the database can always start,
 // potentially losing only the corrupted section.
+// nodeExists reports whether an external ID is present in an index that the DB
+// already holds (typically loaded from a snapshot). The replay uses it to decide
+// whether a VMETA/VDEL can be applied directly to the live index or must be
+// accumulated in the delta buffer instead.
+func (e *Engine) nodeExists(indexName, id string) bool {
+	idx, ok := e.DB.GetVectorIndex(indexName)
+	if !ok {
+		return false
+	}
+	hnswIdx, isHnsw := idx.(*hnsw.Index)
+	if !isHnsw {
+		return false
+	}
+	_, found := hnswIdx.GetInternalID(id)
+	return found
+}
+
 func (e *Engine) replayAOF() error {
 	// We need Read/Write access to perform Truncate if necessary.
 	file, err := os.OpenFile(e.aofPath, os.O_RDWR, 0666)
@@ -105,6 +122,34 @@ func (e *Engine) replayAOF() error {
 
 	kvData := make(map[string][]byte)
 	indexes := make(map[string]*indexState)
+
+	// Seed dal DB: dopo uno snapshot l'AOF è stato TRONCATO e non contiene più i
+	// VCREATE degli indici già persistiti. Il replay però scarta ogni comando il
+	// cui indice non è in `indexes`, quindi senza questo seed ogni VADD/VDEL/VMETA
+	// successivo allo snapshot andrebbe perso, e ogni VDROP ignorato (C4).
+	//
+	// `preExisting` distingue questi indici da quelli creati nell'AOF: per i
+	// primi il loop finale NON deve ricreare l'indice (esiste già, con i suoi
+	// vettori dallo snapshot) né riapplicare la config iniziale.
+	type seeded struct{}
+	preExisting := make(map[string]bool)
+	if infos, err := e.DB.GetVectorIndexInfo(); err == nil {
+		for _, info := range infos {
+			indexes[info.Name] = &indexState{
+				metric:         info.Metric,
+				m:              info.M,
+				efConstruction: info.EfConstruction,
+				precision:      info.Precision,
+				textLanguage:   info.TextLanguage,
+				entries:        make(map[string]vectorEntry),
+			}
+			preExisting[info.Name] = true
+		}
+		if len(preExisting) > 0 {
+			slog.Info("AOF replay: seeded index state from snapshot",
+				"indexes", len(preExisting))
+		}
+	}
 
 	// validOffset tracks the end position of the last successfully verified frame.
 	var validOffset int64 = 0
@@ -178,6 +223,18 @@ func (e *Engine) replayAOF() error {
 			if len(cmd.Args) == 1 {
 				idxName := string(cmd.Args[0])
 				delete(indexes, idxName)
+
+				// L'indice può esistere NEL DB perché arrivava dallo snapshot: senza
+				// cancellarlo da lì, un VDROP successivo allo snapshot veniva solo
+				// dimenticato dal replay e l'indice risorgeva al restart (C4b).
+				// È lo stesso punto in cui il run-time cancella (Engine.VDeleteIndex),
+				// quindi mappe, metadata e directory restano coerenti.
+				if e.IndexExists(idxName) {
+					if delErr := e.DB.DeleteVectorIndex(idxName); delErr != nil {
+						slog.Warn("AOF replay: failed to drop index from snapshot state",
+							"index", idxName, "error", delErr)
+					}
+				}
 
 				// --- CLEANUP DEI GHOST FILES ---
 				arenaPath := filepath.Join(e.opts.DataDir, "arenas", idxName)
@@ -262,6 +319,24 @@ func (e *Engine) replayAOF() error {
 				idxName := string(cmd.Args[0])
 				id := string(cmd.Args[1])
 
+				// Se l'indice arriva dallo snapshot, il nodo può essere in due stati:
+				//  - già nel DB (dallo snapshot)  -> VSetMetadata, perché accumulare
+				//    nelle entry non lo aggiornerebbe (C4d);
+				//  - presente solo nel delta (aggiunto DOPO lo snapshot) -> va
+				//    accumulato, perché al momento del replay non esiste ancora e
+				//    VSetMetadata fallirebbe con "node not found".
+				// Il nodo esiste nel DB solo se ha un ID interno valido.
+				if preExisting[idxName] && e.nodeExists(idxName, id) {
+					var meta map[string]any
+					if json.Unmarshal(cmd.Args[2], &meta) == nil {
+						if setErr := e.VSetMetadata(idxName, id, meta); setErr != nil {
+							slog.Warn("AOF replay: failed to apply metadata to snapshot node",
+								"index", idxName, "id", id, "error", setErr)
+						}
+					}
+					break
+				}
+
 				if idx, ok := indexes[idxName]; ok {
 					var meta map[string]any
 					if json.Unmarshal(cmd.Args[2], &meta) == nil {
@@ -287,8 +362,25 @@ func (e *Engine) replayAOF() error {
 			if len(cmd.Args) == 2 {
 				idxName := string(cmd.Args[0])
 				id := string(cmd.Args[1])
+
+				// Come per VMETA: un nodo dello snapshot non è nelle entry del delta,
+				// quindi cancellarlo dalla mappa locale non lo rimuove dall'indice
+				// caricato dallo snapshot — e al restart il vettore risorge (C4c).
+				//
+				// Servono ENTRAMBE le azioni quando l'indice è pre-esistente:
+				//  - rimuovere l'entry dal delta, se il vettore era stato aggiunto
+				//    DOPO lo snapshot (altrimenti il loop finale lo ri-aggiungerebbe);
+				//  - cancellarlo dall'indice, se il vettore arriva dallo snapshot.
 				if idx, ok := indexes[idxName]; ok {
 					delete(idx.entries, id)
+				}
+				if preExisting[idxName] {
+					if delErr := e.VDelete(idxName, id); delErr != nil {
+						// Non-fatale: il nodo può non esistere nel DB (es. aggiunto
+						// e cancellato entrambi dopo lo snapshot, quindi mai persistito).
+						slog.Debug("AOF replay: VDEL on snapshot node",
+							"index", idxName, "id", id, "note", delErr)
+					}
 				}
 				// Cascade delete: clean up graph edges pointing to the deleted node.
 				// Runtime VDelete does this in a background goroutine and writes GUNLINK
@@ -413,8 +505,19 @@ func (e *Engine) replayAOF() error {
 
 	// Indexes
 	for name, state := range indexes {
-		// Create Index if it doesn't exist
-		if _, ok := e.DB.GetVectorIndex(name); !ok {
+		// Un indice seminato dallo snapshot esiste GIÀ nel DB con i suoi vettori:
+		// non va ricreato. Le sue entry qui contengono solo i comandi visti
+		// nell'AOF (le scritture successive allo snapshot), che vanno applicate
+		// all'indice esistente.
+		if preExisting[name] {
+			if _, ok := e.DB.GetVectorIndex(name); !ok {
+				// Lo snapshot lo dava per presente ma il DB non lo ha
+				// (incoerenza, es. arena mancante): meglio ricrearlo che perdere le entry.
+				slog.Warn("AOF replay: seeded index missing from snapshot state, recreating", "index", name)
+				arenaPath := filepath.Join(e.opts.DataDir, "arenas", name)
+				e.DB.CreateVectorIndex(name, state.metric, state.m, state.efConstruction, state.precision, state.textLanguage, arenaPath)
+			}
+		} else if _, ok := e.DB.GetVectorIndex(name); !ok {
 			arenaPath := filepath.Join(e.opts.DataDir, "arenas", name)
 			e.DB.CreateVectorIndex(name, state.metric, state.m, state.efConstruction, state.precision, state.textLanguage, arenaPath)
 		}
@@ -427,19 +530,23 @@ func (e *Engine) replayAOF() error {
 		/// Cast to HNSW
 		hnswIdx, isHnsw := idx.(*hnsw.Index)
 
-		// Apply maintenance config
-		if state.maintenanceCfg != nil && isHnsw {
-			hnswIdx.UpdateMaintenanceConfig(*state.maintenanceCfg)
-		}
+		// La config iniziale si applica solo agli indici creati NELL'AOF: per
+		// quelli dello snapshot è già stata ripristinata dallo snapshot.
+		if !preExisting[name] {
+			// Apply maintenance config
+			if state.maintenanceCfg != nil && isHnsw {
+				hnswIdx.UpdateMaintenanceConfig(*state.maintenanceCfg)
+			}
 
-		// Apply AutoLinks
-		if len(state.autoLinks) > 0 && isHnsw {
-			hnswIdx.SetAutoLinks(state.autoLinks)
-		}
+			// Apply AutoLinks
+			if len(state.autoLinks) > 0 && isHnsw {
+				hnswIdx.SetAutoLinks(state.autoLinks)
+			}
 
-		// Apply memory config
-		if state.memoryConfig != nil && isHnsw {
-			hnswIdx.SetMemoryConfig(*state.memoryConfig)
+			// Apply memory config
+			if state.memoryConfig != nil && isHnsw {
+				hnswIdx.SetMemoryConfig(*state.memoryConfig)
+			}
 		}
 
 		// Bulk Load vectors
