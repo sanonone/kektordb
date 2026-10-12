@@ -189,7 +189,11 @@ func Open(opts Options) (*Engine, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to open snapshot: %w", err)
 		}
-		defer f.Close()
+		defer func() {
+			if closeErr := f.Close(); closeErr != nil {
+				slog.Warn("Failed to close snapshot file", "error", closeErr)
+			}
+		}()
 		if err := e.DB.LoadFromSnapshot(f, opts.DataDir); err != nil {
 			return nil, fmt.Errorf("failed to load snapshot: %w", err)
 		}
@@ -209,7 +213,11 @@ func Open(opts Options) (*Engine, error) {
 	// 3. Replay AOF (Recover missing data)
 	// This reads the AOF and applies changes to the DB in-memory
 	if err := e.replayAOF(); err != nil {
-		e.AOF.Close()
+		// L'errore primario e' quello del replay; un fallimento del Close qui non
+		// deve mascherarlo, ma non va nemmeno perso in silenzio.
+		if closeErr := e.AOF.Close(); closeErr != nil {
+			slog.Warn("Failed to close AOF after replay error", "error", closeErr)
+		}
 		return nil, fmt.Errorf("failed to replay AOF: %w", err)
 	}
 

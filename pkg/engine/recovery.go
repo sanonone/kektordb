@@ -554,7 +554,12 @@ func (e *Engine) replayAOF() error {
 			internalID, err := idx.Add(id, entry.vector)
 			if err == nil && len(entry.metadata) > 0 {
 				delete(entry.metadata, "__deleted")
-				e.DB.AddMetadata(name, internalID, entry.metadata)
+				if metaErr := e.DB.AddMetadata(name, internalID, entry.metadata); metaErr != nil {
+					// Non fatale: il vettore e' comunque recuperato. Senza questo
+					// log il nodo resterebbe silenziosamente non filtrabile.
+					slog.Warn("AOF replay: metadata indexing failed for recovered node",
+						"index", name, "id", id, "error", metaErr)
+				}
 			}
 		}
 	}
@@ -609,11 +614,24 @@ func (e *Engine) saveSnapshotLocked() error {
 	// STEP 3: Write database snapshot (this may take a while for large datasets)
 	// During this time, new writes are being accumulated in the shadow buffer
 	if err := e.DB.Snapshot(f); err != nil {
-		f.Close()
-		os.Remove(tempSnap) // Clean up temp file on error
+		_ = f.Close()
+		_ = os.Remove(tempSnap) // Clean up temp file on error
 		return fmt.Errorf("failed to create snapshot: %w", err)
 	}
-	f.Close()
+
+	// Sync (kernel -> disco) prima del rename, poi Close verificato. Il rename e'
+	// atomico, ma senza fsync renderebbe visibile come snapshot valido un file i
+	// cui dati possono essere ancora solo in page cache: un crash subito dopo
+	// lascerebbe uno snapshot incompleto al posto di quello precedente.
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tempSnap)
+		return fmt.Errorf("failed to sync snapshot file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tempSnap)
+		return fmt.Errorf("failed to close snapshot file: %w", err)
+	}
 
 	// STEP 4: Atomically rename snapshot file (atomic operation on POSIX)
 	if err := os.Rename(tempSnap, e.snapPath); err != nil {
@@ -696,8 +714,8 @@ func (e *Engine) RewriteAOF() error {
 	// instead of the AOF file that will be replaced. This prevents silent data loss
 	// during the snapshot-and-replace window (same pattern as SaveSnapshot).
 	if err := e.AOF.BeginSnapshotMode(); err != nil {
-		writer.Close()
-		os.Remove(tempAof)
+		_ = writer.Close()
+		_ = os.Remove(tempAof)
 		return fmt.Errorf("rewrite: begin snapshot mode: %w", err)
 	}
 	snapshotDone := false
@@ -707,8 +725,8 @@ func (e *Engine) RewriteAOF() error {
 				slog.Debug("rewrite: cleanup EndSnapshotMode failed", "error", err)
 			}
 		}
-		writer.Close()
-		os.Remove(tempAof)
+		_ = writer.Close()
+		_ = os.Remove(tempAof)
 	}()
 
 	// =========================================================================
@@ -803,10 +821,24 @@ func (e *Engine) RewriteAOF() error {
 	// STEP 4: Scrittura su disco — nessun lock globale tenuto.
 	// =========================================================================
 
+	// writeCmd scrive un comando tracciando il primo errore. bufio.Writer ha
+	// uno sticky error, quindi l'errore arriverebbe comunque al Flush finale,
+	// ma dipendere da quel dettaglio e' fragile: se AOFWriter smettesse di usare
+	// bufio, le scritture fallite passerebbero inosservate e l'AOF riscritto
+	// resterebbe incompleto. Con il tracking esplicito le scritture successive
+	// diventano no-op e l'errore viene propagato dal chiamante.
+	var writeErr error
+	writeCmd := func(cmd string) {
+		if writeErr != nil {
+			return
+		}
+		writeErr = writer.Write(cmd)
+	}
+
 	// 4a. Scrittura KV
 	for _, pair := range kvPairs {
 		cmd := persistence.FormatCommand("SET", []byte(pair.Key), pair.Value)
-		writer.Write(cmd)
+		writeCmd(cmd)
 	}
 
 	// 4b. Scrittura Grafo in Memoria
@@ -823,13 +855,13 @@ func (e *Engine) RewriteAOF() error {
 
 		// 1. Scrive il comando di creazione
 		cmdAdd := persistence.FormatCommand("GLINK", []byte(indexName), []byte(source), []byte(target), []byte(rel), []byte(""), []byte(weightStr), props, []byte(cTimeStr))
-		writer.Write(cmdAdd)
+		writeCmd(cmdAdd)
 
 		// 2. Se l'arco era "Soft Deleted" (Time Travel), scriviamo anche la sua cancellazione
 		if dTime > 0 {
 			dTimeStr := strconv.FormatInt(dTime, 10)
 			cmdDel := persistence.FormatCommand("GUNLINK", []byte(indexName), []byte(source), []byte(target), []byte(rel), []byte(""), []byte("false"), []byte(dTimeStr))
-			writer.Write(cmdDel)
+			writeCmd(cmdDel)
 		}
 	})
 
@@ -862,14 +894,14 @@ func (e *Engine) RewriteAOF() error {
 				args = append(args, []byte("MEMORY_CONFIG"), memBytes)
 			}
 		}
-		writer.Write(persistence.FormatCommand("VCREATE", args...))
+		writeCmd(persistence.FormatCommand("VCREATE", args...))
 
 		// Persist the maintenance config (vacuum/refine) via VCONFIG, mirroring
 		// VCreate. Only written when set, so an all-zero config never overrides
 		// the defaults on replay.
 		if maintCfg := snap.ref.hnswIdx.GetMaintenanceConfig(); maintCfg != (hnsw.AutoMaintenanceConfig{}) {
 			if cfgBytes, err := json.Marshal(maintCfg); err == nil {
-				writer.Write(persistence.FormatCommand("VCONFIG", []byte(info.Name), cfgBytes))
+				writeCmd(persistence.FormatCommand("VCONFIG", []byte(info.Name), cfgBytes))
 			}
 		}
 
@@ -887,14 +919,39 @@ func (e *Engine) RewriteAOF() error {
 				metaBytes = []byte("{}")
 			}
 			cmd := persistence.FormatCommand("VADD", []byte(ve.idxName), []byte(ve.id), []byte(vecStr), metaBytes)
-			writer.Write(cmd)
+			writeCmd(cmd)
 		}
 	}
 
-	if err := writer.Flush(); err != nil {
-		return err
+	// Le scritture tracciate possono aver fallito prima del flush: l'errore va
+	// propagato qui, non solo quello del flush.
+	if writeErr != nil {
+		_ = writer.Close()
+		_ = os.Remove(tempAof)
+		return fmt.Errorf("rewrite: write failed: %w", writeErr)
 	}
-	writer.Close()
+
+	// Flush (buffer -> kernel) e Sync (kernel -> disco) prima del rename: il
+	// rename e' atomico ma renderebbe visibile un AOF i cui dati possono ancora
+	// essere solo in page cache. Un crash subito dopo lascerebbe su disco un file
+	// rinominato ma incompleto. LazyAOFWriter.closeWriter fa gia' flush+sync+close
+	// per lo stesso motivo.
+	if err := writer.Flush(); err != nil {
+		_ = writer.Close()
+		_ = os.Remove(tempAof)
+		return fmt.Errorf("rewrite: flush failed: %w", err)
+	}
+	if err := writer.Sync(); err != nil {
+		_ = writer.Close()
+		_ = os.Remove(tempAof)
+		return fmt.Errorf("rewrite: sync failed: %w", err)
+	}
+	// Close puo' fallire sul flush interno o sulla chiusura del fd: va riportato,
+	// altrimenti si rinomina un file che potrebbe essere incompleto.
+	if err := writer.Close(); err != nil {
+		os.Remove(tempAof)
+		return fmt.Errorf("rewrite: close failed: %w", err)
+	}
 
 	// Replace the AOF file while snapshot mode is STILL active — concurrent
 	// writes continue to accumulate in the shadow buffer, so none are lost.

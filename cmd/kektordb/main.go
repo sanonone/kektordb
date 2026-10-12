@@ -396,7 +396,9 @@ func main() {
 	srv, err := server.NewServer(eng, *httpAddr, *vectorizersConfig, *authToken, dataDir, *cognitiveConfig, embedder)
 	if err != nil {
 		slog.Error("Failed to create server", "error", err)
-		eng.Close()
+		if closeErr := eng.Close(); closeErr != nil {
+			slog.Error("Error closing engine after server failure", "err", closeErr)
+		}
 		os.Exit(1)
 	}
 
@@ -419,7 +421,9 @@ func main() {
 			proxyCfg, err = proxy.LoadConfig(*proxyConfigPath)
 			if err != nil {
 				slog.Error("Failed to load proxy config", "error", err)
-				eng.Close()
+				if closeErr := eng.Close(); closeErr != nil {
+					slog.Error("Error closing engine after proxy config failure", "err", closeErr)
+				}
 				os.Exit(1)
 			}
 			slog.Info("Loaded proxy config", "path", *proxyConfigPath)
@@ -701,7 +705,11 @@ func cmdTry() {
 	if err != nil {
 		log.Fatalf("try: failed to open engine: %v", err)
 	}
-	defer eng.Close()
+	defer func() {
+		if err := eng.Close(); err != nil {
+			log.Printf("try: error closing engine: %v", err)
+		}
+	}()
 
 	// Demo embedder for text search (auto-detect; falls back to hash vectors).
 	embedderCfg := embeddings.EmbedderConfig{Mode: "auto"}
@@ -837,7 +845,11 @@ func runTUI(httpAddr string, eng *engine.Engine, vectorizersConfig, authToken, d
 		shutdownOnce.Do(func() {
 			slog.Info("TUI: shutting down...")
 			srv.Shutdown()
-			eng.Close()
+			// Close esegue il flush finale dell'AOF: se fallisce, gli ultimi dati
+			// scritti potrebbero non essere su disco. Prima era scartato.
+			if err := eng.Close(); err != nil {
+				slog.Error("Error closing engine during shutdown — last writes may not be persisted", "err", err)
+			}
 		})
 	}
 

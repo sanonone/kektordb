@@ -359,8 +359,14 @@ func (e *Engine) VAdd(indexName, id string, vector []float32, metadata map[strin
 	}
 
 	// 4. Metadata
+	// L'AOF e' gia' stato scritto con i metadata e il vettore e' in memoria: se
+	// l'indicizzazione dei metadata fallisce, il nodo resta ricercabile per
+	// similarita' ma non compare piu' nelle ricerche filtrate. Stato incoerente,
+	// quindi l'errore va riportato invece di essere scartato.
 	if len(metadata) > 0 {
-		e.DB.AddMetadata(indexName, internalID, metadata)
+		if err := e.DB.AddMetadata(indexName, internalID, metadata); err != nil {
+			return fmt.Errorf("vector %q added but metadata indexing failed (searchable by similarity, not by filter): %w", id, err)
+		}
 	}
 
 	metrics.TotalVectors.WithLabelValues(indexName).Inc()
@@ -1655,10 +1661,14 @@ func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 	}
 
 	// 3. Metadata in-memory update
+	// Come in VAdd: se l'indicizzazione dei metadata fallisce il vettore resta
+	// ricercabile per similarita' ma sparisce dalle ricerche filtrate.
 	for _, item := range items {
 		if len(item.Metadata) > 0 {
 			id, _ := hnswIdx.GetInternalID(item.Id)
-			e.DB.AddMetadata(indexName, id, item.Metadata)
+			if err := e.DB.AddMetadata(indexName, id, item.Metadata); err != nil {
+				return fmt.Errorf("batch: vector %q added but metadata indexing failed: %w", item.Id, err)
+			}
 		}
 	}
 
@@ -1750,7 +1760,9 @@ func (e *Engine) VImport(indexName string, items []types.BatchObject) error {
 	for _, item := range items {
 		if len(item.Metadata) > 0 {
 			id, _ := hnswIdx.GetInternalID(item.Id)
-			e.DB.AddMetadata(indexName, id, item.Metadata)
+			if err := e.DB.AddMetadata(indexName, id, item.Metadata); err != nil {
+				return fmt.Errorf("import: vector %q added but metadata indexing failed: %w", item.Id, err)
+			}
 			if len(rules) > 0 {
 				e.processAutoLinks(indexName, item.Id, item.Metadata, rules)
 			}
