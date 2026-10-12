@@ -306,6 +306,58 @@ func (h *Index) GetArenaDir() string {
 	return h.arenaDir
 }
 
+// ensureLiveEntrypointLocked verifica che l'entrypoint punti a un nodo vivo e,
+// se non lo fa, ne elegge uno e ricalcola maxLevel dalla sua profondità (C5).
+//
+// Perché serve: Index.Delete fa soft-delete (il nodo resta in nodes[] con
+// Deleted=true), quindi un entrypoint cancellato non è nil e supera i controlli
+// esistenti. Se si trova a livello >= 1, la discesa dal livello alto non trova
+// nodi vivi e searchInternal fallisce — o peggio ritorna una lista vuota senza
+// errore, rendendo l'indice non ricercabile in modo silenzioso.
+//
+// Il caller deve tenere metaMu (Lock o RLock) oppure essere in fase di
+// costruzione (LoadSnapshotData), dove l'indice non è ancora pubblicato.
+func (h *Index) ensureLiveEntrypointLocked() {
+	nodes := h.getNodes()
+	if len(nodes) == 0 {
+		return
+	}
+
+	cur := h.entrypointID.Load()
+	if cur < uint32(len(nodes)) {
+		if n := nodes[cur]; n != nil && !n.Deleted.Load() {
+			return // invariante rispettato
+		}
+	}
+
+	// Entrypoint assente o cancellato: eleggi il primo nodo vivo. Come in
+	// optimizer.Vacuum Phase 4, la scelta è "il primo vivo" e non "il più alto"
+	// perché dopo una cancellazione non c'è modo di sapere quale nodo avesse il
+	// livello massimo senza una scansione completa; il livello viene poi
+	// ricalcolato dal nodo scelto, quindi la discesa parte da un'altezza
+	// coerente con il grafo reale.
+	for i, n := range nodes {
+		if n == nil || n.Deleted.Load() {
+			continue
+		}
+		h.entrypointID.Store(uint32(i))
+		h.maxLevel.Store(int32(len(n.Connections) - 1))
+		slog.Warn("Entry point was not a live node: elected a new one",
+			"previous", cur, "new", i, "max_level", len(n.Connections)-1)
+		return
+	}
+
+	// Nessun nodo vivo: grafo vuoto.
+	h.entrypointID.Store(0)
+	h.maxLevel.Store(-1)
+}
+
+// EntrypointForTest exposes the current entry point and max level for tests
+// that need to assert on graph state after recovery or deletion.
+func (h *Index) EntrypointForTest() (uint32, int32) {
+	return h.entrypointID.Load(), h.maxLevel.Load()
+}
+
 // ArenaForTest exposes the underlying arena for tests that need to assert on
 // its internal wiring (e.g. whether the compactor is registered, so
 // StopCompactor is not a silent no-op). Not for production use: callers must
@@ -495,6 +547,26 @@ func (h *Index) searchInternal(query []float32, k int, allowList *roaring.Bitmap
 	currentEntryPoint := h.entrypointID.Load()
 	currentMaxLevel := int(h.maxLevel.Load())
 	currentCounter := uint32(h.nodeCounter.Load()) // Leggiamo anche questo sotto lock per coerenza
+
+	// C5: l'entrypoint può puntare a un nodo cancellato (soft-delete: resta in
+	// nodes[] con Deleted=true, quindi non è nil e supera i controlli esistenti).
+	// Con un entrypoint morto a livello >= 1 la discesa dal livello alto non
+	// trova nodi vivi e la ricerca ritorna vuoto — senza errore, quindi in modo
+	// silenzioso. Qui si rielegge un nodo vivo e si ricalcola maxLevel dalla sua
+	// profondità, così la discesa riparte da un'altezza coerente. Nel caso
+	// normale il costo è una lettura atomica; la scansione avviene solo se
+	// l'invariante è violato.
+	if currentMaxLevel != -1 {
+		nodesSnap := h.getNodes()
+		stale := currentEntryPoint >= uint32(len(nodesSnap)) ||
+			nodesSnap[currentEntryPoint] == nil ||
+			nodesSnap[currentEntryPoint].Deleted.Load()
+		if stale {
+			h.ensureLiveEntrypointLocked()
+			currentEntryPoint = h.entrypointID.Load()
+			currentMaxLevel = int(h.maxLevel.Load())
+		}
+	}
 	h.metaMu.RUnlock()
 	if currentMaxLevel == -1 {
 		return []types.Candidate{}, nil
@@ -590,7 +662,12 @@ func (h *Index) searchInternal(query []float32, k int, allowList *roaring.Bitmap
 			return nil, err
 		}
 		if len(nearest) == 0 {
-			return []types.Candidate{}, fmt.Errorf("search failed at level %d", l)
+			// C5: scendi invece di fallire. maxLevel può essere più alto del grafo
+			// reale (entrypoint rieletto, nodi morti ai livelli alti): fallire qui
+			// rendeva l'indice non ricercabile. Il layer 0 contiene tutti i nodi,
+			// quindi proseguire verso il basso è sempre la scelta corretta.
+			slog.Debug("search: empty level, descending", "level", l, "entrypoint", currentEntryPoint)
+			continue
 		}
 		currentEntryPoint = nearest[0].Id
 	}
@@ -2470,6 +2547,13 @@ func (h *Index) Delete(id string) {
 	// Remove ID from the external lookup map to prevent
 	// the same ID from being added again in the future
 	delete(h.externalToInternalID, id)
+
+	// C5: se il nodo cancellato era l'entrypoint, rieleggine uno vivo subito.
+	// Il soft-delete lascia il nodo in nodes[] con Deleted=true, quindi senza
+	// questo la ricerca continuerebbe a partire da un nodo morto fino al
+	// prossimo Vacuum (che è schedulato e su indici piccoli può non scattare).
+	// Siamo già sotto metaMu.Lock (acquisito in cima a Delete).
+	h.ensureLiveEntrypointLocked()
 }
 
 func (h *Index) searchLayer(query []float32, entrypointID uint32, k int, level int, allowList *roaring.Bitmap, efSearch int) ([]types.Candidate, error) {
@@ -3386,6 +3470,14 @@ func (h *Index) LoadSnapshotData(
 	if h.precision == distance.Int8 {
 		h.setNorms(norms)
 	}
+
+	// C5: valida l'entrypoint. Lo snapshot può contenere un entrypoint che nel
+	// frattempo è stato cancellato (soft-delete: il nodo resta in nodes[] con
+	// Deleted=true, quindi non è nil). Un entrypoint morto a livello >= 1 fa
+	// fallire la discesa dal livello alto e l'indice diventa non ricercabile,
+	// spesso restituendo una lista vuota senza errore. La logica di rielezione
+	// è la stessa di optimizer.Vacuum Phase 4.
+	h.ensureLiveEntrypointLocked()
 
 	return nil
 }
