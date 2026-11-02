@@ -108,3 +108,50 @@ gardener:
 		t.Error("la feature deve essere spenta di default")
 	}
 }
+
+// TestRetireAfterCoreFactExtractionIsConfigurable: l'archiviazione delle sorgenti
+// dopo l'estrazione deve essere attivabile da YAML e spenta di default (cambia
+// cosa l'utente vede nelle ricerche: non puo' accadere per caso).
+func TestRetireAfterCoreFactExtractionIsConfigurable(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/cognitive.yaml"
+	body := `
+gardener:
+  enabled: true
+  mode: advanced
+  target_indexes: ["mem"]
+  enable_core_fact_extraction: true
+  retire_after_core_fact_extraction: true
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !cfg.RetireAfterCoreFactExtraction {
+		t.Error("retire_after_core_fact_extraction non letto dal YAML")
+	}
+}
+
+func TestRetireAfterCoreFactExtractionDefaultsOff(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/cognitive.yaml"
+	body := `
+gardener:
+  enabled: true
+  mode: advanced
+  target_indexes: ["mem"]
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.RetireAfterCoreFactExtraction {
+		t.Error("l'archiviazione deve essere spenta di default")
+	}
+}

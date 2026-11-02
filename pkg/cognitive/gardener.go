@@ -172,6 +172,14 @@ type Config struct {
 	EnableCoreFactExtraction bool    // Enable automatic extraction of immutable facts
 	CoreFactMinConfidence    float64 // Minimum confidence threshold for extracted facts (default: 0.85)
 
+	// RetireAfterCoreFactExtraction archives the source memories once their
+	// facts exist, moving semantic edges to the fact. Without this, extraction
+	// only adds nodes: the memory grows and the noise stays (measured: 88 nodes
+	// instead of 80, same recall). With it, extraction compacts the memory.
+	// Reversible: archived memories are restorable and visible with
+	// include_obsolete.
+	RetireAfterCoreFactExtraction bool
+
 	// Epistemic Resolution (Fase 3)
 	EpistemicResolutionEnabled   bool    // Enable epistemic auto-resolution using VBeliefState
 	EpistemicMaxPerCycle         int     // Max reflections to process per cycle (default: 3)
@@ -256,6 +264,7 @@ type Gardener struct {
 	clustersAnalyzed        atomic.Int64 // cluster valutati per consolidamento
 	memoriesMerged          atomic.Int64 // memorie unite in un master
 	coreFactsExtracted      atomic.Int64 // core facts creati
+	sourcesRetired          atomic.Int64 // sorgenti archiviate dopo l'estrazione
 	contradictionCandidates atomic.Int64 // coppie candidate esaminate
 	contradictionBatches    atomic.Int64 // chiamate LLM di batch
 	reflectionsResolved     atomic.Int64 // riflessioni risolte automaticamente
@@ -367,6 +376,7 @@ type GardenerStats struct {
 	ClustersAnalyzed        int64 `json:"clusters_analyzed"`
 	MemoriesMerged          int64 `json:"memories_merged"`
 	CoreFactsExtracted      int64 `json:"core_facts_extracted"`
+	SourcesRetired          int64 `json:"sources_retired"`
 	ReflectionsCreated      int64 `json:"reflections_created"`
 	ContradictionsFound     int64 `json:"contradictions_found"`
 	ContradictionCandidates int64 `json:"contradiction_candidates"`
@@ -391,6 +401,7 @@ func (g *Gardener) Stats() GardenerStats {
 		ClustersAnalyzed:        g.clustersAnalyzed.Load(),
 		MemoriesMerged:          g.memoriesMerged.Load(),
 		CoreFactsExtracted:      g.coreFactsExtracted.Load(),
+		SourcesRetired:          g.sourcesRetired.Load(),
 		ReflectionsCreated:      g.totalReflections.Load(),
 		ContradictionsFound:     g.totalContradictions.Load(),
 		ContradictionCandidates: g.contradictionCandidates.Load(),
@@ -4273,7 +4284,9 @@ func (g *Gardener) processCoreFactExtraction(indexName, userID string, items []c
 		return
 	}
 
-	// Create core_fact nodes for each extracted fact
+	// Create core_fact nodes for each extracted fact. Si tiene traccia di quelli
+	// creati per poter archiviare le sorgenti solo DOPO (vedi sotto).
+	var createdFacts []string
 	for _, fact := range extraction.Facts {
 		fact = strings.TrimSpace(fact)
 		if fact == "" {
@@ -4315,11 +4328,109 @@ func (g *Gardener) processCoreFactExtraction(indexName, userID string, items []c
 		g.newReflections = append(g.newReflections, factID)
 		g.reflectionsMu.Unlock()
 		g.totalReflections.Add(1)
+		createdFacts = append(createdFacts, factID)
 
 		slog.Info("[Cognitive Engine] Core fact extracted",
 			"id", factID,
 			"user", userID,
 			"fact", fact[:min(len(fact), 50)]+"...")
+	}
+
+	// Retirement: once the facts exist, the source memories no longer carry
+	// unique information, so they leave the searchable set.
+	//
+	// Why after the loop and not inside it: an episode can yield several facts
+	// (one about the name, one about the job). Archiving on the first one would
+	// retire the source while the remaining facts are still being derived from
+	// it. Only when every fact has been created is the source fully superseded.
+	//
+	// Edges: semantic relations move to the first extracted fact so the graph
+	// keeps its shape (the fact is the new anchor for that knowledge). Temporal
+	// links (next/prev) are NOT moved: an extracted fact is atemporal by
+	// construction and has no position in a sequence. `extracted_from` stays on
+	// the source as the trace back for restore.
+	if g.cfg.RetireAfterCoreFactExtraction && len(createdFacts) > 0 {
+		successor := createdFacts[0]
+		for _, item := range items {
+			g.transferEdgesForRetirement(indexName, item.ID, successor)
+			metaUpdate := map[string]any{
+				"_archived":       true,
+				"_extracted_into": successor,
+				"_archived_by":    "core_fact_extraction",
+				"_archived_at":    float64(time.Now().Unix()),
+			}
+			if err := g.eng.VSetMetadata(indexName, item.ID, metaUpdate); err != nil {
+				slog.Warn("[Cognitive Engine] Failed to archive extracted source",
+					"id", item.ID, "error", err)
+				continue
+			}
+			g.sourcesRetired.Add(1)
+			slog.Info("[Cognitive Engine] Source memory retired after extraction",
+				"source", item.ID, "successor", successor)
+		}
+	}
+}
+
+// transferEdgesForRetirement moves an archived node's edges onto its successor.
+//
+// Without this, archiving a memory would silently disconnect it from the graph:
+// anything that pointed at it (an entity, a related fact) would keep pointing at
+// a node nobody can find any more. consolidateCluster already does this; core
+// fact extraction did not, so extraction could break the graph.
+//
+// Relations that are deliberately NOT transferred:
+//   - "extracted_from": it is the provenance link and belongs to the source.
+//   - "next"/"prev":      temporal sequence; a fact has no place in it.
+//   - "consolidated_into": points at a consolidation master, not at a fact.
+func (g *Gardener) transferEdgesForRetirement(indexName, fromID, toID string) {
+	skip := map[string]bool{
+		"extracted_from":    true,
+		"next":              true,
+		"prev":              true,
+		"consolidated_into": true,
+	}
+
+	// Outgoing: fromID -> X becomes toID -> X
+	outRels := g.eng.VGetRelations(indexName, fromID)
+	for relType := range outRels {
+		if skip[relType] {
+			continue
+		}
+		edges, found := g.eng.VGetEdges(indexName, fromID, relType, 0)
+		if !found {
+			continue
+		}
+		for _, edge := range edges {
+			if edge.TargetID == toID {
+				continue
+			}
+			if err := g.eng.VLink(indexName, toID, edge.TargetID, relType, "", edge.Weight, edge.GetProps()); err != nil {
+				slog.Warn("[Cognitive Engine] Failed to transfer outgoing edge on retirement",
+					"from", fromID, "to", toID, "rel", relType, "error", err)
+			}
+		}
+	}
+
+	// Incoming: X -> fromID becomes X -> toID
+	inRels := g.eng.VGetIncomingRelations(indexName, fromID)
+	for relType := range inRels {
+		if skip[relType] {
+			continue
+		}
+		edges, found := g.eng.VGetIncomingEdges(indexName, fromID, relType, 0)
+		if !found {
+			continue
+		}
+		for _, edge := range edges {
+			sourceID := edge.TargetID
+			if sourceID == toID {
+				continue
+			}
+			if err := g.eng.VLink(indexName, sourceID, toID, relType, "", edge.Weight, edge.GetProps()); err != nil {
+				slog.Warn("[Cognitive Engine] Failed to transfer incoming edge on retirement",
+					"source", sourceID, "to", toID, "rel", relType, "error", err)
+			}
+		}
 	}
 }
 

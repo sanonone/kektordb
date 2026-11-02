@@ -76,6 +76,11 @@ type GardenerConfigYAML struct {
 	// CoreFactMinConfidence is the threshold below which an extracted fact is
 	// discarded. Default 0.85 when unset.
 	CoreFactMinConfidence float64 `yaml:"core_fact_min_confidence"`
+
+	// RetireAfterCoreFactExtraction archives a source memory once its facts
+	// have been extracted, transferring semantic edges to the fact. Without
+	// it, extraction only adds nodes (measured: memory grows, recall unchanged).
+	RetireAfterCoreFactExtraction bool `yaml:"retire_after_core_fact_extraction"`
 }
 
 // EpistemicWeightsYAML holds the pillar weights for the Gardener's gate (B1).
@@ -237,8 +242,9 @@ func LoadConfig(path string) (Config, llm.Config, error) {
 		// RFC 001: core fact extraction. Questi due campi esistevano nella
 		// struct Config ma non erano mai letti dal YAML, quindi la feature era
 		// impossibile da attivare da file di configurazione (sempre false).
-		EnableCoreFactExtraction: cfg.Gardener.EnableCoreFactExtraction,
-		CoreFactMinConfidence:    cfg.Gardener.CoreFactMinConfidence,
+		EnableCoreFactExtraction:      cfg.Gardener.EnableCoreFactExtraction,
+		CoreFactMinConfidence:         cfg.Gardener.CoreFactMinConfidence,
+		RetireAfterCoreFactExtraction: cfg.Gardener.RetireAfterCoreFactExtraction,
 		EpistemicWeights: EpistemicWeights{
 			Consensus: cfg.Gardener.EpistemicWeights.Consensus,
 			Stability: cfg.Gardener.EpistemicWeights.Stability,
