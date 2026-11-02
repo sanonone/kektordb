@@ -3865,6 +3865,18 @@ type epistemicResolution struct {
 	Resolvable            bool   `json:"resolvable"`
 	ConsolidatedTruth     string `json:"consolidated_truth"`
 	ClarificationQuestion string `json:"clarification_question"`
+
+	// CurrentValue is the answer to "what is the state NOW?", stripped of the
+	// narrative. The consolidated_truth is written for a human ("previously
+	// lived in Berlin but moved to Munich"), which is unreadable for retrieval:
+	// a query for "where does the user live" expects "Munich" near the top, not
+	// a sentence that mentions two cities. Measured: recall@1 was 0.00 with the
+	// narrative alone.
+	CurrentValue string `json:"current_value"`
+
+	// Topic is a single word naming what the fact is about ("city", "job",
+	// "diet"). Lets a caller filter or group beliefs without parsing prose.
+	Topic string `json:"topic"`
 }
 
 // callEpistemicLLM calls the LLM for epistemic resolution.
@@ -3887,13 +3899,18 @@ Respond ONLY with valid JSON:
 {
   "resolvable": true/false,
   "consolidated_truth": "The unified factual statement (1-2 sentences)",
+  "current_value": "The answer to \"what is true NOW?\" in a few words, or empty if none",
+  "topic": "one word naming the subject (e.g. city, job, diet, car, pet)",
   "clarification_question": "If not resolvable, what should be asked?"
 }
 
 Guidelines:
 - resolvable=false only if truly contradictory with no temporal pattern
 - consolidated_truth must synthesize all valid information
-- clarification_question must be specific and actionable`
+- current_value must be the SHORT answer, not a sentence: "Munich", not
+  "The user previously lived in Berlin but moved to Munich". Leave it empty
+  when the conflict is not temporal (no clear "now" state).
+- topic is a single lowercase word.`
 
 	userPrompt := fmt.Sprintf("Resolve these conflicting facts (epistemic confidence: %.2f/1.0):\n\n", confidence)
 	for i, node := range nodes {
@@ -3965,6 +3982,16 @@ func (g *Gardener) executeConsolidation(
 		"_access_count":      0,
 		"_consolidated_from": len(nodes),
 		"source_reflection":  reflectionID,
+	}
+	// Campi strutturati per il retrieval. `content` resta la frase leggibile
+	// (serve a un umano e all'LLM nei passaggi successivi), ma una query come
+	// "dove vive l'utente" deve poter trovare "Munich" senza passare dalla
+	// prosa. Misurato: con la sola narrazione recall@1 era 0.00.
+	if resolution.CurrentValue != "" {
+		masterMeta["current_value"] = resolution.CurrentValue
+	}
+	if resolution.Topic != "" {
+		masterMeta["topic"] = resolution.Topic
 	}
 
 	if err := g.eng.VAdd(indexName, masterID, centroid, masterMeta); err != nil {

@@ -317,3 +317,50 @@ func TestExecuteConsolidationEvolvedContent(t *testing.T) {
 
 	t.Log("executeConsolidation correctly uses consolidated truth for evolved nodes")
 }
+
+// TestParseEpistemicResolutionStructuredFields verifica che current_value e
+// topic vengano letti dalla risposta del LLM.
+//
+// Perche' contano: il consolidated_truth e' una frase per un umano ("prima
+// viveva a Berlino, poi si e' trasferito a Monaco"). Una query di retrieval
+// cerca "Monaco" e trovava solo la prosa: recall@1 era 0.00. I campi
+// strutturati danno al retrieval la risposta secca.
+func TestParseEpistemicResolutionStructuredFields(t *testing.T) {
+	g := &Gardener{}
+
+	resp := `{
+	  "resolvable": true,
+	  "consolidated_truth": "The user previously lived in Berlin but moved to Munich around November 2024.",
+	  "current_value": "Munich",
+	  "topic": "city",
+	  "clarification_question": ""
+	}`
+
+	r, err := g.parseEpistemicResponse(resp)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !r.Resolvable {
+		t.Error("resolvable deve essere true")
+	}
+	if r.CurrentValue != "Munich" {
+		t.Errorf("current_value: atteso 'Munich', got %q", r.CurrentValue)
+	}
+	if r.Topic != "city" {
+		t.Errorf("topic: atteso 'city', got %q", r.Topic)
+	}
+}
+
+// TestParseEpistemicResolutionWithoutNewFields: una risposta vecchia (senza i
+// campi) non deve rompere il parsing: la feature deve degradare, non fallire.
+func TestParseEpistemicResolutionWithoutNewFields(t *testing.T) {
+	g := &Gardener{}
+	resp := `{"resolvable": true, "consolidated_truth": "Some truth.", "clarification_question": ""}`
+	r, err := g.parseEpistemicResponse(resp)
+	if err != nil {
+		t.Fatalf("parse di una risposta senza campi nuovi non deve fallire: %v", err)
+	}
+	if r.CurrentValue != "" || r.Topic != "" {
+		t.Error("i campi assenti devono restare vuoti")
+	}
+}
