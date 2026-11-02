@@ -652,7 +652,20 @@ type GetGardenerStatusResult struct {
 	TotalReflections    int64    `json:"total_reflections"`
 	TotalContradictions int64    `json:"total_contradictions"`
 	TotalDecayed        int64    `json:"total_decayed"`
-	Message             string   `json:"message,omitempty"`
+	// Fase 0: contatori di strumentazione (lavoro fatto e costo).
+	Cycles                  int64  `json:"cycles,omitempty"`
+	ClustersAnalyzed        int64  `json:"clusters_analyzed,omitempty"`
+	MemoriesMerged          int64  `json:"memories_merged,omitempty"`
+	CoreFactsExtracted      int64  `json:"core_facts_extracted,omitempty"`
+	ContradictionCandidates int64  `json:"contradiction_candidates,omitempty"`
+	ContradictionBatches    int64  `json:"contradiction_batches,omitempty"`
+	ReflectionsResolved     int64  `json:"reflections_resolved,omitempty"`
+	ReflectionsEscalated    int64  `json:"reflections_escalated,omitempty"`
+	LLMCalls                int64  `json:"llm_calls,omitempty"`
+	LLMErrors               int64  `json:"llm_errors,omitempty"`
+	TotalThinkMS            int64  `json:"total_think_ms,omitempty"`
+	LastCycleMS             int64  `json:"last_cycle_ms,omitempty"`
+	Message                 string `json:"message,omitempty"`
 }
 
 // ListArtifacts: lista tutti i knowledge artifacts compilati con status/versione.

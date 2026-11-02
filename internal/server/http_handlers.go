@@ -23,6 +23,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sanonone/kektordb/internal/server/ui"
+	"github.com/sanonone/kektordb/pkg/cognitive"
 	"github.com/sanonone/kektordb/pkg/core"
 	"github.com/sanonone/kektordb/pkg/core/distance"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
@@ -3033,6 +3034,9 @@ func (s *Server) handleSystemGardener(w http.ResponseWriter, r *http.Request) {
 		MergedToday           int      `json:"merged_today"`
 		DecayedTotal          int      `json:"decayed_total"`
 		TargetIndexes         []string `json:"target_indexes"`
+		// Fase 0: contatori di strumentazione. Servono a validare le feature
+		// con numeri invece che contando righe di log a mano.
+		Stats *cognitive.GardenerStats `json:"stats,omitempty"`
 	}
 
 	resp := gardenerResp{
@@ -3051,6 +3055,8 @@ func (s *Server) handleSystemGardener(w http.ResponseWriter, r *http.Request) {
 		resp.TotalReflections = s.gardener.TotalReflections()
 		resp.ContradictionsPending = s.gardener.TotalContradictions()
 		resp.DecayedTotal = s.gardener.TotalDecayed()
+		st := s.gardener.Stats()
+		resp.Stats = &st
 	}
 
 	s.writeHTTPResponse(w, http.StatusOK, resp)

@@ -247,6 +247,24 @@ type Gardener struct {
 	totalContradictions atomic.Int64
 	totalDecayed        atomic.Int64
 
+	// Contatori di strumentazione (Fase 0 della validazione).
+	// Servono a rispondere a "quanto lavoro ha fatto," "quanto e' costato",
+	// "quanto ha scartato" senza leggere i log e contare a mano.
+	cyclesRun               atomic.Int64 // cicli think() completati
+	indexesScanned          atomic.Int64 // indici visitati
+	indexesSkipped          atomic.Int64 // indici saltati per soglia vettori
+	clustersAnalyzed        atomic.Int64 // cluster valutati per consolidamento
+	memoriesMerged          atomic.Int64 // memorie unite in un master
+	coreFactsExtracted      atomic.Int64 // core facts creati
+	contradictionCandidates atomic.Int64 // coppie candidate esaminate
+	contradictionBatches    atomic.Int64 // chiamate LLM di batch
+	reflectionsResolved     atomic.Int64 // riflessioni risolte automaticamente
+	reflectionsEscalated    atomic.Int64 // riflessioni escalate a revisione manuale
+	llmCalls                atomic.Int64 // chiamate LLM totali
+	llmErrors               atomic.Int64 // chiamate LLM fallite
+	totalThinkNanos         atomic.Int64 // tempo cumulato in think()
+	lastCycleNanos          atomic.Int64 // durata dell'ultimo ciclo
+
 	// User profiling
 	unassimilatedInteractions map[string]int // user_id -> count of new interactions
 	profileMutex              sync.RWMutex
@@ -331,6 +349,72 @@ func (g *Gardener) TotalContradictions() int {
 // TotalDecayed returns the cumulative number of decay events detected.
 func (g *Gardener) TotalDecayed() int {
 	return int(g.totalDecayed.Load())
+}
+
+// GardenerStats is a point-in-time snapshot of what the Gardener has done and
+// what it has cost. It exists so a validation run can report facts instead of
+// grepping logs: "it consolidated 40 memories in 3 cycles" is a measurement;
+// "[Cognitive Engine] ..." counted by hand is not reproducible.
+//
+// Cumulative counters (Cycles, MemoriesMerged, ...) never reset; LastCycle*
+// describe the most recent think() and are what you want when watching a single
+// run.
+type GardenerStats struct {
+	// Cumulative
+	Cycles                  int64 `json:"cycles"`
+	IndexesScanned          int64 `json:"indexes_scanned"`
+	IndexesSkipped          int64 `json:"indexes_skipped"`
+	ClustersAnalyzed        int64 `json:"clusters_analyzed"`
+	MemoriesMerged          int64 `json:"memories_merged"`
+	CoreFactsExtracted      int64 `json:"core_facts_extracted"`
+	ReflectionsCreated      int64 `json:"reflections_created"`
+	ContradictionsFound     int64 `json:"contradictions_found"`
+	ContradictionCandidates int64 `json:"contradiction_candidates"`
+	ContradictionBatches    int64 `json:"contradiction_batches"`
+	ReflectionsResolved     int64 `json:"reflections_resolved"`
+	ReflectionsEscalated    int64 `json:"reflections_escalated"`
+	Decayed                 int64 `json:"decayed"`
+
+	// Cost
+	LLMCalls     int64 `json:"llm_calls"`
+	LLMErrors    int64 `json:"llm_errors"`
+	TotalThinkMS int64 `json:"total_think_ms"`
+	LastCycleMS  int64 `json:"last_cycle_ms"`
+}
+
+// Stats returns a snapshot of the Gardener's counters.
+func (g *Gardener) Stats() GardenerStats {
+	return GardenerStats{
+		Cycles:                  g.cyclesRun.Load(),
+		IndexesScanned:          g.indexesScanned.Load(),
+		IndexesSkipped:          g.indexesSkipped.Load(),
+		ClustersAnalyzed:        g.clustersAnalyzed.Load(),
+		MemoriesMerged:          g.memoriesMerged.Load(),
+		CoreFactsExtracted:      g.coreFactsExtracted.Load(),
+		ReflectionsCreated:      g.totalReflections.Load(),
+		ContradictionsFound:     g.totalContradictions.Load(),
+		ContradictionCandidates: g.contradictionCandidates.Load(),
+		ContradictionBatches:    g.contradictionBatches.Load(),
+		ReflectionsResolved:     g.reflectionsResolved.Load(),
+		ReflectionsEscalated:    g.reflectionsEscalated.Load(),
+		Decayed:                 g.totalDecayed.Load(),
+		LLMCalls:                g.llmCalls.Load(),
+		LLMErrors:               g.llmErrors.Load(),
+		TotalThinkMS:            g.totalThinkNanos.Load() / int64(time.Millisecond),
+		LastCycleMS:             g.lastCycleNanos.Load() / int64(time.Millisecond),
+	}
+}
+
+// llmChat e' l'unico punto di chiamata al modello. Conta le chiamate e gli
+// errori, cosi' il costo del Gardener e' misurabile (Fase 0) senza leggere i log.
+// Non intercetta i timeout: quelli si vedono negli errori.
+func (g *Gardener) llmChat(systemPrompt, userQuery string) (string, error) {
+	g.llmCalls.Add(1)
+	resp, err := g.llm.Chat(systemPrompt, userQuery)
+	if err != nil {
+		g.llmErrors.Add(1)
+	}
+	return resp, err
 }
 
 // setLastThinkTime updates the last think time with write lock.
@@ -706,6 +790,16 @@ func (c *Config) isIndexAllowed(indexName string) bool {
 
 // think is the main entry point for the "REM Sleep" phase of the database.
 func (g *Gardener) think() {
+	started := time.Now()
+	// Fase 0: ogni ciclo e' misurabile. Il defer copre anche i return anticipati,
+	// cosi' un ciclo che salta tutti gli indici resta visibile nei contatori.
+	defer func() {
+		d := time.Since(started)
+		g.lastCycleNanos.Store(int64(d))
+		g.totalThinkNanos.Add(int64(d))
+		g.cyclesRun.Add(1)
+		slog.Info("[Cognitive Engine] Cycle finished", "duration_ms", d.Milliseconds(), "cycles", g.cyclesRun.Load())
+	}()
 	slog.Info("[Cognitive Engine] Gardener is waking up... scanning all active namespaces.")
 
 	g.reflectionsMu.Lock()
@@ -737,7 +831,9 @@ func (g *Gardener) think() {
 		}
 
 		// 2. Skip indexes with too few vectors to produce meaningful clusters.
+		g.indexesScanned.Add(1)
 		if info.VectorCount < 3 {
+			g.indexesSkipped.Add(1)
 			slog.Info("[Cognitive Engine] Skipping index (below min vector threshold)",
 				"index", idx,
 				"vectors", info.VectorCount,
@@ -778,6 +874,7 @@ func (g *Gardener) think() {
 		// General consolidation for non-episodic memories (or all if episodic auto-summarize is off)
 		clusters := g.findRedundantClusters(idx, 0.90, 5)
 		for _, cluster := range clusters {
+			g.clustersAnalyzed.Add(1)
 			g.consolidateCluster(idx, cluster) // LLM used if available, deterministic fallback otherwise.
 		}
 
@@ -1043,7 +1140,7 @@ func (g *Gardener) consolidateCluster(indexName string, cluster MemoryCluster) {
 
 		slog.Info("[Cognitive Engine] Asking LLM to synthesize memories...", "cluster_size", len(items))
 
-		summary, err = g.llm.Chat(sysPrompt, userPrompt)
+		summary, err = g.llmChat(sysPrompt, userPrompt)
 		if err != nil || summary == "" {
 			slog.Warn("[Cognitive Engine] LLM synthesis failed", "error", err)
 			return
@@ -1221,7 +1318,7 @@ func (g *Gardener) consolidateEpisodicToSemantic(indexName string, cluster Memor
 		sysPrompt := "You are a cognitive memory consolidator. The following are multiple observations of similar events. Synthesize them into a single, general fact or pattern. This should be a semantic memory (a general truth), not an episodic one (a specific event). Return ONLY the synthesized text."
 		userPrompt := strings.Join(texts, "\n")
 		slog.Info("[Cognitive Engine] Synthesizing episodic cluster into semantic memory...", "cluster_size", len(items))
-		summary, err = g.llm.Chat(sysPrompt, userPrompt)
+		summary, err = g.llmChat(sysPrompt, userPrompt)
 		if err != nil || summary == "" {
 			slog.Warn("[Cognitive Engine] LLM synthesis failed for semantic consolidation", "error", err)
 			return
@@ -1519,7 +1616,7 @@ Guidelines for suggested_resolution:
 			i+1, c.nodeDate, c.nodeContent, c.neighborDate, c.neighborContent)
 	}
 
-	resp, err := g.llm.Chat(sysPrompt, b.String())
+	resp, err := g.llmChat(sysPrompt, b.String())
 	if err != nil {
 		return nil, err
 	}
@@ -2176,7 +2273,7 @@ Respond with JSON:
 
 	userPrompt := "Based on the recent interactions above, produce the updated profile JSON."
 
-	respText, err := g.llm.Chat(sysPrompt, userPrompt)
+	respText, err := g.llmChat(sysPrompt, userPrompt)
 	if err != nil {
 		slog.Warn("[Cognitive Engine] LLM profile update failed, using fallback", "error", err)
 		return g.generateDeterministicProfileUpdate(current, interactions, newCount)
@@ -2193,7 +2290,7 @@ Respond with JSON:
 		retryPrompt := "Your previous response did not contain valid JSON. " +
 			"Output ONLY a JSON object now. No prose, no explanation, no thinking process, no markdown fences. " +
 			"Just the JSON object matching the schema in the system prompt."
-		respText2, err2 := g.llm.Chat(sysPrompt, retryPrompt)
+		respText2, err2 := g.llmChat(sysPrompt, retryPrompt)
 		if err2 == nil {
 			cleaned = cleanLLMJSONResponse(respText2)
 		}
@@ -2500,7 +2597,7 @@ Respond with JSON only:
 
 	systemPrompt := "You are a helpful assistant that summarizes conversations into structured JSON."
 
-	response, err := g.llm.Chat(systemPrompt, userQuery)
+	response, err := g.llmChat(systemPrompt, userQuery)
 	if err != nil {
 		slog.Warn("[Cognitive Engine] LLM summary failed, using fallback", "error", err)
 		return g.generateDeterministicSessionSummary(contents)
@@ -2741,7 +2838,7 @@ Guidelines:
 
 	slog.Info("[Cognitive Engine] Analyzing user preferences...", "memory_count", len(promptLines))
 
-	respText, err := g.llm.Chat(sysPrompt, userPrompt)
+	respText, err := g.llmChat(sysPrompt, userPrompt)
 	if err != nil {
 		return
 	}
@@ -3155,7 +3252,11 @@ Guidelines:
 
 		slog.Info("[Cognitive Engine] Analyzing repeated failures...", "action", group.action, "count", len(group.nodes))
 
-		respText, err := g.llm.Chat(sysPrompt, userPrompt)
+		g.llmCalls.Add(1)
+		respText, err := g.llmChat(sysPrompt, userPrompt)
+		if err != nil {
+			g.llmErrors.Add(1)
+		}
 		if err != nil {
 			continue
 		}
@@ -3330,7 +3431,7 @@ Guidelines:
 
 		slog.Info("[Cognitive Engine] Analyzing knowledge evolution...", "entity", topicName, "in_degree", inDegree)
 
-		respText, err := g.llm.Chat(sysPrompt, snapshotText)
+		respText, err := g.llmChat(sysPrompt, snapshotText)
 		if err != nil {
 			continue
 		}
@@ -3801,7 +3902,7 @@ Guidelines:
 	}
 
 	// Call LLM
-	resp, err := g.llm.Chat(sysPrompt, userPrompt)
+	resp, err := g.llmChat(sysPrompt, userPrompt)
 	if err != nil {
 		return nil, err
 	}
@@ -4142,7 +4243,7 @@ func (g *Gardener) processCoreFactExtraction(indexName, userID string, items []c
 	userPrompt := string(inputJSON)
 	slog.Info("[Cognitive Engine] Extracting core facts", "user", userID, "interactions", len(inputs))
 
-	response, err := g.llm.Chat(coreFactExtractionPrompt, userPrompt)
+	response, err := g.llmChat(coreFactExtractionPrompt, userPrompt)
 	if err != nil || response == "" {
 		slog.Warn("[Cognitive Engine] Core fact extraction failed", "error", err)
 		return
@@ -4178,6 +4279,7 @@ func (g *Gardener) processCoreFactExtraction(indexName, userID string, items []c
 		if fact == "" {
 			continue
 		}
+		g.coreFactsExtracted.Add(1)
 
 		// Generate deterministic ID based on content hash
 		factID := fmt.Sprintf("core_fact_%d", time.Now().UnixNano())

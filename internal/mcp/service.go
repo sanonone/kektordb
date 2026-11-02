@@ -2458,6 +2458,19 @@ func (s *Service) GetGardenerStatus(ctx context.Context, req *mcp.CallToolReques
 		TotalDecayed:        int64(s.gardener.TotalDecayed()),
 		LastThinkUnix:       last.Unix(),
 	}
+	st := s.gardener.Stats()
+	result.Cycles = st.Cycles
+	result.ClustersAnalyzed = st.ClustersAnalyzed
+	result.MemoriesMerged = st.MemoriesMerged
+	result.CoreFactsExtracted = st.CoreFactsExtracted
+	result.ContradictionCandidates = st.ContradictionCandidates
+	result.ContradictionBatches = st.ContradictionBatches
+	result.ReflectionsResolved = st.ReflectionsResolved
+	result.ReflectionsEscalated = st.ReflectionsEscalated
+	result.LLMCalls = st.LLMCalls
+	result.LLMErrors = st.LLMErrors
+	result.TotalThinkMS = st.TotalThinkMS
+	result.LastCycleMS = st.LastCycleMS
 	if !last.IsZero() {
 		ago := time.Since(last)
 		result.LastThinkAgo = ago.Truncate(time.Second).String()

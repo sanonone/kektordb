@@ -1385,7 +1385,13 @@ paths:
   /system/gardener:
     get:
       summary: Gardener status
-      description: Whether the cognitive engine is enabled, its mode, interval and cycle counters.
+      description: >-
+        Whether the cognitive engine is enabled, its mode, interval and cycle
+        counters. The `stats` block reports what the Gardener actually did and
+        what it cost: how many cycles ran, how many memories were consolidated
+        or extracted, how many LLM calls were made, and how long each cycle
+        took. Counters are cumulative; `last_cycle_ms` describes the most recent
+        cycle. Use this instead of reading logs.
       tags: [System]
       responses:
         '200': { description: Gardener status }
