@@ -181,7 +181,7 @@ func TestVectorArena_FindFreeSlots(t *testing.T) {
 	}
 }
 
-func TestVectorArena_FragmentationStats(t *testing.T) {
+func TestVectorArena_ArenaStats(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	arena, err := NewVectorArena(tmpDir, 16*4, 16, PrecFloat32)
@@ -200,9 +200,9 @@ func TestVectorArena_FragmentationStats(t *testing.T) {
 	arena.FreeSlot(20)
 	arena.FreeSlot(30)
 
-	compactor := NewAsyncCompactor(arena, DefaultArenaCompactionConfig())
-	arena.compactor = compactor
-	stats := arena.GetFragmentationStats()
+	// GetArenaStats non dipende da un compactor registrato (prima serviva
+	// assegnare arena.compactor solo per far funzionare il vecchio metodo).
+	stats := arena.GetArenaStats()
 
 	if stats.TotalPhysicalSlots == 0 {
 		t.Error("Expected non-zero total physical slots")
@@ -324,11 +324,9 @@ func TestAsyncCompactor_FragmentationAfterCompaction(t *testing.T) {
 		arena.FreeSlot(uint32(i))
 	}
 
-	// Get initial fragmentation
-	compactor := NewAsyncCompactor(arena, DefaultArenaCompactionConfig())
-	arena.compactor = compactor
-
-	initialStats := arena.GetFragmentationStats()
+	// Get initial fragmentation. GetArenaStats non richiede un compactor
+	// registrato e riporta lo stesso FragmentationRatio.
+	initialStats := arena.GetArenaStats()
 	t.Logf("Initial fragmentation: %f", initialStats.FragmentationRatio)
 
 	// Set up mock updater
@@ -341,14 +339,14 @@ func TestAsyncCompactor_FragmentationAfterCompaction(t *testing.T) {
 	cfg.BatchSize = 10
 	cfg.InitialDelay = 0 // Use deterministic behavior for test - no random jitter
 
-	compactor = NewAsyncCompactor(arena, cfg)
+	compactor := NewAsyncCompactor(arena, cfg)
 	compactor.SetNodeUpdater(mockUpdater)
 	compactor.Start()
 
 	time.Sleep(500 * time.Millisecond)
 	compactor.Stop()
 
-	finalStats := arena.GetFragmentationStats()
+	finalStats := arena.GetArenaStats()
 	t.Logf("Final fragmentation: %f", finalStats.FragmentationRatio)
 
 	// Check some vectors were moved

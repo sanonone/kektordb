@@ -306,8 +306,9 @@ type ArenaStats struct {
 }
 
 // GetArenaStats computes the arena's current physical state. It never returns a
-// zeroed struct when there is data to report: unlike the previous
-// GetFragmentationStats, it does not depend on a running compactor.
+// zeroed struct when there is data to report: unlike the old
+// GetFragmentationStats (removed, used the raw value), it does not depend on a
+// running compactor.
 func (va *VectorArena) GetArenaStats() ArenaStats {
 	va.mu.RLock()
 	chunkCount := 0
@@ -387,16 +388,6 @@ func (va *VectorArena) chunkFragmentation() []ChunkFragmentation {
 		})
 	}
 	return stats
-}
-
-// GetFragmentationStats returns current fragmentation statistics.
-// Kept for compatibility; prefer GetArenaStats, which also reports disk usage,
-// the free list and whether the compactor is registered.
-func (va *VectorArena) GetFragmentationStats() FragmentationStats {
-	if va.compactor != nil {
-		return va.compactor.analyzeFragmentation()
-	}
-	return FragmentationStats{}
 }
 
 // GetState extracts the allocator state for snapshotting.
