@@ -67,6 +67,15 @@ type GardenerConfigYAML struct {
 
 	// EpistemicWeights (B1): pillar weights for the resolution gate only.
 	EpistemicWeights EpistemicWeightsYAML `yaml:"epistemic_weights"`
+
+	// EnableCoreFactExtraction (RFC 001): the Gardener extracts immutable user
+	// facts (name, job, location, ...) from episodic memories and pins them as
+	// core_fact nodes. Off by default because it costs one LLM call per batch.
+	EnableCoreFactExtraction bool `yaml:"enable_core_fact_extraction"`
+
+	// CoreFactMinConfidence is the threshold below which an extracted fact is
+	// discarded. Default 0.85 when unset.
+	CoreFactMinConfidence float64 `yaml:"core_fact_min_confidence"`
 }
 
 // EpistemicWeightsYAML holds the pillar weights for the Gardener's gate (B1).
@@ -225,6 +234,11 @@ func LoadConfig(path string) (Config, llm.Config, error) {
 		EpistemicMaxPerCycle:              cfg.Gardener.EpistemicMaxPerCycle,
 		EpistemicConfidenceThreshold:      cfg.Gardener.EpistemicConfidenceThreshold,
 		EpistemicMaxNodesPerConsolidation: cfg.Gardener.EpistemicMaxNodesPerConsolidation,
+		// RFC 001: core fact extraction. Questi due campi esistevano nella
+		// struct Config ma non erano mai letti dal YAML, quindi la feature era
+		// impossibile da attivare da file di configurazione (sempre false).
+		EnableCoreFactExtraction: cfg.Gardener.EnableCoreFactExtraction,
+		CoreFactMinConfidence:    cfg.Gardener.CoreFactMinConfidence,
 		EpistemicWeights: EpistemicWeights{
 			Consensus: cfg.Gardener.EpistemicWeights.Consensus,
 			Stability: cfg.Gardener.EpistemicWeights.Stability,

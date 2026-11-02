@@ -51,3 +51,60 @@ llm:
 		t.Errorf("APIKey = %q, want plain-literal-value", llmCfg.APIKey)
 	}
 }
+
+// TestCoreFactExtractionIsConfigurable verifica che le opzioni di estrazione dei
+// core facts siano raggiungibili dal file di configurazione.
+//
+// Il difetto originale: i campi esistevano nella struct `Config` (usata dal
+// Gardener) ma mancavano in `GardenerConfigYAML`, quindi nessun YAML poteva
+// attivare la feature: restava sempre disabilitata e il Gardener non estraeva
+// nulla, senza errori e senza log.
+func TestCoreFactExtractionIsConfigurable(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/cognitive.yaml"
+	yaml := `
+gardener:
+  enabled: true
+  mode: advanced
+  target_indexes: ["mem"]
+  enable_core_fact_extraction: true
+  core_fact_min_confidence: 0.7
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !cfg.EnableCoreFactExtraction {
+		t.Error("enable_core_fact_extraction non e' stato letto dal YAML")
+	}
+	if cfg.CoreFactMinConfidence != 0.7 {
+		t.Errorf("core_fact_min_confidence: atteso 0.7, got %v", cfg.CoreFactMinConfidence)
+	}
+}
+
+// TestCoreFactExtractionDefaultsOff: la feature costa una chiamata LLM per
+// batch, quindi deve restare spenta se non richiesta esplicitamente.
+func TestCoreFactExtractionDefaultsOff(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/cognitive.yaml"
+	yaml := `
+gardener:
+  enabled: true
+  mode: advanced
+  target_indexes: ["mem"]
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.EnableCoreFactExtraction {
+		t.Error("la feature deve essere spenta di default")
+	}
+}
