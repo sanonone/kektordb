@@ -650,7 +650,15 @@ func (p *Pipeline) extractAndLinkEntities(chunkID, text string) error {
 	}
 
 	// 2. Call LLM
+	startLLM := time.Now()
 	jsonResponse, err := p.llmClient.Chat(sysPrompt, text)
+	elapsedLLM := time.Since(startLLM).Milliseconds()
+	if err != nil {
+		llm.Default.RecordError(llm.FeatureRAG, elapsedLLM)
+	} else {
+		pt, ot := llm.LastUsage()
+		llm.Default.RecordCall(llm.FeatureRAG, pt, ot, elapsedLLM)
+	}
 	if err != nil {
 		return err
 	}

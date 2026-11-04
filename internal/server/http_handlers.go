@@ -29,6 +29,7 @@ import (
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/engine"
+	"github.com/sanonone/kektordb/pkg/llm"
 	"github.com/sanonone/kektordb/pkg/rag"
 	"github.com/sanonone/kektordb/pkg/textanalyzer"
 	"github.com/sanonone/kektordb/pkg/transfer"
@@ -56,6 +57,8 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("GET /system/tasks/{id}", s.handleTaskStatus)
 	mux.HandleFunc("GET /system/stats", s.handleSystemStats)
 	mux.HandleFunc("GET /system/gardener", s.handleSystemGardener)
+	mux.HandleFunc("GET /system/llm-usage", s.handleLLMUsage)
+	mux.HandleFunc("POST /system/llm-usage/reset", s.handleLLMUsageReset)
 	mux.HandleFunc("GET /system/embedder/status", s.handleEmbedderStatus)
 	// Batch embedding endpoint: exposes the configured embedder (local ONNX,
 	// Ollama, OpenAI, Gemini) over HTTP so clients can embed text without
@@ -3023,6 +3026,25 @@ func (s *Server) handleSystemStats(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSystemGardener returns the Gardener cognitive engine status.
+
+// handleLLMUsage reports what each LLM-backed feature has cost.
+//
+// Perche' esiste: KektorDB delega sempre piu' logica al modello configurato
+// (Gardener, contraddizioni, core facts, profili, epistemic, compiler, RAG).
+// Senza questa vista l'operatore non sa quanto costa far girare il prodotto:
+// il client scartava il blocco `usage` e nessuno contava i token.
+func (s *Server) handleLLMUsage(w http.ResponseWriter, r *http.Request) {
+	snap := llm.Default.Snapshot()
+	s.writeHTTPResponse(w, http.StatusOK, snap)
+}
+
+// handleLLMUsageReset azzera i contatori, per misurare una finestra specifica
+// invece dell'intera vita del processo.
+func (s *Server) handleLLMUsageReset(w http.ResponseWriter, r *http.Request) {
+	llm.Default.Reset()
+	s.writeHTTPResponse(w, http.StatusOK, map[string]string{"status": "reset"})
+}
+
 func (s *Server) handleSystemGardener(w http.ResponseWriter, r *http.Request) {
 	type gardenerResp struct {
 		Enabled               bool     `json:"enabled"`

@@ -251,6 +251,10 @@ type Gardener struct {
 	thinkReqs      chan struct{} // Buffered channel (size 1) serializing think() calls
 	thinkDone      chan struct{} // Closed when thinkWorker goroutine exits
 
+	// currentFeature etichetta le chiamate LLM per il report dei costi.
+	// Non e' atomico: i detector girano nel goroutine del ciclo think().
+	currentFeature string
+
 	totalReflections    atomic.Int64
 	totalContradictions atomic.Int64
 	totalDecayed        atomic.Int64
@@ -419,13 +423,34 @@ func (g *Gardener) Stats() GardenerStats {
 // llmChat e' l'unico punto di chiamata al modello. Conta le chiamate e gli
 // errori, cosi' il costo del Gardener e' misurabile (Fase 0) senza leggere i log.
 // Non intercetta i timeout: quelli si vedono negli errori.
+// llmChat e' l'unico punto di chiamata al modello. Oltre ai contatori interni,
+// attribuisce il costo alla feature corrente (g.currentFeature), cosi' il
+// report /system/llm-usage sa dire quanto costa ciascun detector.
 func (g *Gardener) llmChat(systemPrompt, userQuery string) (string, error) {
 	g.llmCalls.Add(1)
+	feature := g.currentFeature
+	if feature == "" {
+		feature = llm.FeatureGardenerOther
+	}
+	start := time.Now()
 	resp, err := g.llm.Chat(systemPrompt, userQuery)
+	elapsed := time.Since(start).Milliseconds()
 	if err != nil {
 		g.llmErrors.Add(1)
+		llm.Default.RecordError(feature, elapsed)
+		return resp, err
 	}
+	prompt, output := llm.LastUsage()
+	llm.Default.RecordCall(feature, prompt, output, elapsed)
 	return resp, err
+}
+
+// withFeature imposta la feature corrente per le chiamate LLM successive.
+// Va usato come `defer g.withFeature(llm.FeatureX)()` all'inizio di un detector.
+func (g *Gardener) withFeature(feature string) func() {
+	prev := g.currentFeature
+	g.currentFeature = feature
+	return func() { g.currentFeature = prev }
 }
 
 // setLastThinkTime updates the last think time with write lock.
@@ -782,7 +807,10 @@ func (g *Gardener) flushPendingProfileUpdates(gen, count int) {
 	}
 
 	for userID, indexName := range pending {
-		go g.UpdateUserProfile(indexName, userID)
+		go func() {
+			defer g.withFeature(llm.FeatureGardenerProfiles)()
+			g.UpdateUserProfile(indexName, userID)
+		}()
 	}
 }
 
@@ -873,33 +901,38 @@ func (g *Gardener) think() {
 		g.detectCentralityShifts(idx)
 		g.detectForgettingPatterns(idx)
 
-		// Consolidation: Handle episodic -> semantic separately from general consolidation
-		if g.cfg.MemoryConfig.Layers["episodic"].AutoSummarize {
-			// Find clusters specifically in episodic layer
-			episodicClusters := g.findRedundantClustersInLayer(idx, "episodic", g.cfg.MemoryConfig.Consolidation.SimilarityThreshold, 5)
-			for _, cluster := range episodicClusters {
-				g.consolidateEpisodicToSemantic(idx, cluster)
+		// Consolidation: Handle episodic -> semantic separately from general consolidation.
+		// Etichettato in una funzione anonima (non con defer nel loop): il ciclo
+		// gira su piu' indici e i defer si accumulerebbero fino alla fine di think().
+		func() {
+			defer g.withFeature(llm.FeatureGardenerConsolidation)()
+			if g.cfg.MemoryConfig.Layers["episodic"].AutoSummarize {
+				// Find clusters specifically in episodic layer
+				episodicClusters := g.findRedundantClustersInLayer(idx, "episodic", g.cfg.MemoryConfig.Consolidation.SimilarityThreshold, 5)
+				for _, cluster := range episodicClusters {
+					g.consolidateEpisodicToSemantic(idx, cluster)
+				}
 			}
-		}
 
-		// General consolidation for non-episodic memories (or all if episodic auto-summarize is off)
-		clusters := g.findRedundantClusters(idx, 0.90, 5)
-		for _, cluster := range clusters {
-			g.clustersAnalyzed.Add(1)
-			g.consolidateCluster(idx, cluster) // LLM used if available, deterministic fallback otherwise.
-		}
+			// General consolidation for non-episodic memories (or all if episodic auto-summarize is off)
+			clusters := g.findRedundantClusters(idx, 0.90, 5)
+			for _, cluster := range clusters {
+				g.clustersAnalyzed.Add(1)
+				g.consolidateCluster(idx, cluster) // LLM used if available, deterministic fallback otherwise.
+			}
+		}() // fine blocco consolidamento etichettato
 
 		// Advanced-only: contradiction detection (requires LLM).
 		// Operates on semantic + episodic layers, excludes procedural.
 		if g.llm != nil && (g.cfg.Mode == "advanced" || g.cfg.Mode == "meta") {
-			g.detectContradictions(idx)
-			g.detectUserPreferences(idx)
-			g.detectRepeatedFailures(idx)
-			g.detectKnowledgeEvolution(idx)
+			func() { defer g.withFeature(llm.FeatureGardenerContradiction)(); g.detectContradictions(idx) }()
+			func() { defer g.withFeature(llm.FeatureGardenerPreferences)(); g.detectUserPreferences(idx) }()
+			func() { defer g.withFeature(llm.FeatureGardenerFailures)(); g.detectRepeatedFailures(idx) }()
+			func() { defer g.withFeature(llm.FeatureGardenerEvolution)(); g.detectKnowledgeEvolution(idx) }()
 
 			// RFC 001: Core Fact Extraction
 			if g.cfg.EnableCoreFactExtraction {
-				g.detectCoreFacts(idx)
+				func() { defer g.withFeature(llm.FeatureGardenerCoreFacts)(); g.detectCoreFacts(idx) }()
 			}
 		}
 
@@ -3856,7 +3889,9 @@ func (g *Gardener) processEpistemicReflection(indexName, reflectionID string) {
 	}
 
 	// It's volatile! Call LLM for resolution
+	releaseEp := g.withFeature(llm.FeatureGardenerEpistemic)
 	resolution, err := g.callEpistemicLLM(nodesData, state.Confidence)
+	releaseEp()
 	if err != nil {
 		g.escalateToManual(indexName, reflectionID, "llm_error: "+err.Error())
 		return

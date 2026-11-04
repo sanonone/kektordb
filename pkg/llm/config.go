@@ -68,6 +68,19 @@ type ChatResponse struct {
 		FinishReason string  `json:"finish_reason,omitempty"`
 	} `json:"choices"`
 	Error *APIError `json:"error,omitempty"`
+
+	// Usage reports the token consumption of the request. Not every provider
+	// returns it (local models often omit it), so it is optional. Without it
+	// the caller cannot know what a feature costs: DeepSeek bills $0.15/1M
+	// input tokens, and the same feature can cost 10x another one.
+	Usage *Usage `json:"usage,omitempty"`
+}
+
+// Usage is the token accounting returned by OpenAI-compatible providers.
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 // APIError captures error details returned by the provider.

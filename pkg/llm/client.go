@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -215,6 +216,13 @@ func (c *OpenAIClient) sendRequest(payload interface{}) (string, error) {
 		return "", fmt.Errorf("empty response from llm")
 	}
 
+	// Registra il consumo dichiarato dal provider (0 se assente).
+	if chatResp.Usage != nil {
+		setLastUsage(chatResp.Usage.PromptTokens, chatResp.Usage.CompletionTokens)
+	} else {
+		setLastUsage(0, 0)
+	}
+
 	msg := chatResp.Choices[0].Message
 
 	// Reasoning models (deepseek-v4, deepseek-r1) may put their output in
@@ -258,4 +266,37 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// ------------------------------------------------------------------ usage
+
+// lastUsage holds the token counts of the most recent call. It is global
+// because the usage block arrives inside the HTTP response, which the Client
+// interface returns as a plain string: without an out-of-band channel the
+// caller could not see it.
+//
+// This is safe enough for the intended use (attribution of a cost to a
+// feature): if two calls run concurrently, one may attribute the other's token
+// count. The counter that matters — calls per feature — is exact. Making token
+// attribution exact would require changing the Client interface, which every
+// mock in the tree implements.
+var (
+	lastUsageMu     sync.Mutex
+	lastUsagePrompt int
+	lastUsageOutput int
+)
+
+// LastUsage returns the token counts of the most recent Chat call, or (0, 0)
+// when the provider did not report them.
+func LastUsage() (prompt, output int) {
+	lastUsageMu.Lock()
+	defer lastUsageMu.Unlock()
+	return lastUsagePrompt, lastUsageOutput
+}
+
+func setLastUsage(prompt, output int) {
+	lastUsageMu.Lock()
+	defer lastUsageMu.Unlock()
+	lastUsagePrompt = prompt
+	lastUsageOutput = output
 }

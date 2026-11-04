@@ -189,7 +189,17 @@ func main() {
 
 	modeTUI := flag.Bool("tui", false, "Launch terminal dashboard")
 
+	// --llm-usage stampa il costo per feature e esce. I contatori vivono nel
+	// processo server: senza questo flag bisognerebbe fare curl a mano.
+	llmUsageFlag := flag.Bool("llm-usage", false, "Print per-feature LLM usage from a running server and exit")
+	llmUsageURL := flag.String("llm-usage-url", "http://127.0.0.1:9091", "Base URL of the running server")
+
 	flag.Parse()
+
+	if *llmUsageFlag {
+		printLLMUsage(*llmUsageURL, *authToken)
+		return
+	}
 
 	// Security warnings at boot (HTTP and TUI modes; MCP is stdio-only).
 	// Auth disabled + non-loopback bind exposes the API and /debug/pprof/*.

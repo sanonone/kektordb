@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
+
+	"github.com/sanonone/kektordb/pkg/llm"
 )
 
 // compileFieldLLM compiles a single field using the configured LLM.
@@ -18,7 +21,15 @@ func (c *Compiler) compileFieldLLM(
 ) (value any, provenance []Provenance, confidence float64, err error) {
 	prompt := c.buildFieldPrompt(fieldName, fieldDef, nodes, req, template)
 
+	startLLM := time.Now()
 	response, err := c.llm.Chat(systemPromptCompile, prompt)
+	elapsedLLM := time.Since(startLLM).Milliseconds()
+	if err != nil {
+		llm.Default.RecordError(llm.FeatureCompiler, elapsedLLM)
+	} else {
+		pt, ot := llm.LastUsage()
+		llm.Default.RecordCall(llm.FeatureCompiler, pt, ot, elapsedLLM)
+	}
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("LLM call failed for field '%s': %w", fieldName, err)
 	}

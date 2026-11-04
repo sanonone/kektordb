@@ -1396,6 +1396,33 @@ paths:
       responses:
         '200': { description: Gardener status }
 
+  /system/llm-usage:
+    get:
+      summary: Per-feature LLM usage
+      description: >-
+        What each LLM-backed feature has cost: calls, errors, prompt and output
+        tokens, and wall time. KektorDB delegates more and more logic to the
+        configured model (Gardener consolidation, contradictions, core facts,
+        profiles, epistemic, compiler, RAG), so the operator needs to see where
+        the cost comes from before deciding whether a feature is worth running.
+
+        Counters are cumulative for the process lifetime. `provider_tokens_reported`
+        is false when the provider never returned a usage block: calls are counted
+        but tokens are unknown, not zero.
+      tags: [System]
+      responses:
+        '200': { description: Usage snapshot, sorted by tokens descending }
+
+  /system/llm-usage/reset:
+    post:
+      summary: Reset LLM usage counters
+      description: >-
+        Clears every counter so the next report covers a specific window instead
+        of the whole process lifetime.
+      tags: [System]
+      responses:
+        '200': { description: Counters reset }
+
   /system/embedder/status:
     get:
       summary: Embedder status
