@@ -112,6 +112,13 @@ type Engine struct {
 	snapPath    string
 	aofBaseSize atomic.Int64
 
+	// indexGeneration increments every time an index is created or deleted.
+	// Background workers that keep per-index cursors (the Gardener) use it to
+	// detect that their state refers to an index that no longer exists: there is
+	// no delete-index event to subscribe to, and a stale cursor silently makes a
+	// detector skip most of the data.
+	indexGeneration atomic.Uint64
+
 	// DirtyCounter tracks the number of write operations since the last save.
 	dirtyCounter int64
 	lastSaveTime atomic.Int64 // Unix timestamp in nanoseconds, atomic for thread-safe access
@@ -417,3 +424,10 @@ func (e *Engine) getGraphLock(key string) *sync.Mutex {
 	shardIdx := h.Sum32() & 127 // Fast modulo 128
 	return &e.graphLocks[shardIdx]
 }
+
+// IndexGeneration returns a counter that changes whenever any index is created
+// or deleted. A background worker holding per-index state (cursors, caches) must
+// discard that state when the generation moves: there is no delete-index event
+// to subscribe to, and stale state silently makes the worker skip most of the
+// data it should process.
+func (e *Engine) IndexGeneration() uint64 { return e.indexGeneration.Load() }

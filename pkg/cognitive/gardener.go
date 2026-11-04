@@ -243,29 +243,36 @@ func DefaultGardenerEpistemicWeights() EpistemicWeights {
 // Gardener is the autonomous background worker that analyzes the database graph
 // to consolidate memories and generate reflections.
 type Gardener struct {
-	eng            *engine.Engine
-	llm            llm.Client // LLM client for synthesis and reasoning
-	cfg            Config
-	stopCh         chan struct{}
-	stopOnce       sync.Once         // ensures Stop() is idempotent
-	eventCh        chan engine.Event // Subscribed to engine event bus
-	scanCursors    map[string]uint32
-	cursorsMu      sync.RWMutex  // Protects scanCursors from concurrent access
-	writeCounter   atomic.Int64  // Write events since last think (atomic for thread-safe access)
-	lastThinkTime  time.Time     // When the last think() completed
-	lastThinkMu    sync.RWMutex  // Protects lastThinkTime from concurrent access
-	newReflections []string      // Reflection IDs created in current think() cycle
-	reflectionsMu  sync.Mutex    // Protects newReflections from concurrent access
-	thinkReqs      chan struct{} // Buffered channel (size 1) serializing think() calls
-	thinkDone      chan struct{} // Closed when thinkWorker goroutine exits
+	eng         *engine.Engine
+	llm         llm.Client // LLM client for synthesis and reasoning
+	cfg         Config
+	stopCh      chan struct{}
+	stopOnce    sync.Once         // ensures Stop() is idempotent
+	eventCh     chan engine.Event // Subscribed to engine event bus
+	scanCursors map[string]uint32
+	// cursorGeneration records the engine generation a cursor belongs to, so a
+	// cursor can be discarded when an index is created or deleted underneath it.
+	cursorGeneration map[string]uint64
+	cursorsMu        sync.RWMutex  // Protects scanCursors from concurrent access
+	writeCounter     atomic.Int64  // Write events since last think (atomic for thread-safe access)
+	lastThinkTime    time.Time     // When the last think() completed
+	lastThinkMu      sync.RWMutex  // Protects lastThinkTime from concurrent access
+	newReflections   []string      // Reflection IDs created in current think() cycle
+	reflectionsMu    sync.Mutex    // Protects newReflections from concurrent access
+	thinkReqs        chan struct{} // Buffered channel (size 1) serializing think() calls
+	thinkDone        chan struct{} // Closed when thinkWorker goroutine exits
 
 	// entityExtractor collega le memorie alle entita' nominate. Nil quando
 	// l'estrazione e' disattivata (default): costa una chiamata LLM per memoria.
 	entityExtractor entities.Extractor
 
 	// currentFeature etichetta le chiamate LLM per il report dei costi.
-	// Non e' atomico: i detector girano nel goroutine del ciclo think().
-	currentFeature string
+	//
+	// Mutex e non atomic.Value: withFeature e' usato anche dal debounce dei
+	// profili, che gira in una goroutine separata. Una variabile semplice
+	// produceva una data race (rilevata da -race).
+	currentFeatureMu sync.Mutex
+	currentFeature   string
 
 	totalReflections    atomic.Int64
 	totalContradictions atomic.Int64
@@ -316,11 +323,35 @@ type Gardener struct {
 	profileUpdateLocks sync.Map // userID -> *sync.Mutex
 }
 
-// getCursor returns the current cursor for the given index with read lock.
+// getCursor returns the current cursor for the given index.
+//
+// Il cursore e' valido solo se nessun indice e' stato creato o cancellato da
+// quando e' stato salvato. Non esiste un evento di cancellazione indice: ci si
+// ancora al contatore di generazione dell'engine.
+//
+// Senza questo, un `VDeleteIndex` seguito da `VCreate` con lo stesso nome
+// lasciava il cursore oltre la fine dell'indice nuovo: i detector partivano da
+// meta' array, trovavano pochi o zero candidati, e nulla lo segnalava.
 func (g *Gardener) getCursor(indexName string) uint32 {
+	gen := g.eng.IndexGeneration()
+
 	g.cursorsMu.RLock()
-	defer g.cursorsMu.RUnlock()
-	return g.scanCursors[indexName]
+	cur := g.scanCursors[indexName]
+	savedGen := g.cursorGeneration[indexName]
+	g.cursorsMu.RUnlock()
+
+	if cur == 0 {
+		return 0
+	}
+	if savedGen != gen {
+		// Qualche indice e' cambiato: lo stato salvato non e' piu' affidabile.
+		g.cursorsMu.Lock()
+		delete(g.scanCursors, indexName)
+		delete(g.cursorGeneration, indexName)
+		g.cursorsMu.Unlock()
+		return 0
+	}
+	return cur
 }
 
 // setCursor updates the cursor for the given index with write lock.
@@ -328,6 +359,7 @@ func (g *Gardener) setCursor(indexName string, cursor uint32) {
 	g.cursorsMu.Lock()
 	defer g.cursorsMu.Unlock()
 	g.scanCursors[indexName] = cursor
+	g.cursorGeneration[indexName] = g.eng.IndexGeneration()
 }
 
 // getLastThinkTime returns the last think time with read lock.
@@ -443,7 +475,9 @@ func (g *Gardener) Stats() GardenerStats {
 // report /system/llm-usage sa dire quanto costa ciascun detector.
 func (g *Gardener) llmChat(systemPrompt, userQuery string) (string, error) {
 	g.llmCalls.Add(1)
+	g.currentFeatureMu.Lock()
 	feature := g.currentFeature
+	g.currentFeatureMu.Unlock()
 	if feature == "" {
 		feature = llm.FeatureGardenerOther
 	}
@@ -463,9 +497,15 @@ func (g *Gardener) llmChat(systemPrompt, userQuery string) (string, error) {
 // withFeature imposta la feature corrente per le chiamate LLM successive.
 // Va usato come `defer g.withFeature(llm.FeatureX)()` all'inizio di un detector.
 func (g *Gardener) withFeature(feature string) func() {
+	g.currentFeatureMu.Lock()
 	prev := g.currentFeature
 	g.currentFeature = feature
-	return func() { g.currentFeature = prev }
+	g.currentFeatureMu.Unlock()
+	return func() {
+		g.currentFeatureMu.Lock()
+		g.currentFeature = prev
+		g.currentFeatureMu.Unlock()
+	}
 }
 
 // setLastThinkTime updates the last think time with write lock.
@@ -620,11 +660,12 @@ func NewGardener(eng *engine.Engine, llmClient llm.Client, cfg Config) *Gardener
 		cfg: cfg,
 		// L'estrattore si costruisce dal solo client: nil quando la modalita' e'
 		// "none" (default) o quando l'LLM non e' configurato.
-		entityExtractor: entities.Build(cfg.EntityExtraction, llmClient),
-		stopCh:          make(chan struct{}),
-		eventCh:         eventCh,
-		thinkDone:       make(chan struct{}),
-		scanCursors:     make(map[string]uint32),
+		entityExtractor:  entities.Build(cfg.EntityExtraction, llmClient),
+		stopCh:           make(chan struct{}),
+		eventCh:          eventCh,
+		thinkDone:        make(chan struct{}),
+		scanCursors:      make(map[string]uint32),
+		cursorGeneration: make(map[string]uint64),
 
 		// User profiling
 		unassimilatedInteractions: make(map[string]int),
@@ -4270,7 +4311,14 @@ type coreFactExtractionResponse struct {
 // It creates core_fact nodes that are pinned (no time-decay) and linked to source memories.
 func (g *Gardener) detectCoreFacts(indexName string) {
 	// 1. Fetch recent user_interaction or episodic nodes
-	filter := "(type='user_interaction' OR memory_layer='episodic') AND _archived != 'true'"
+	// Filtro sui tipi che esistono davvero.
+	//
+	// 'user_interaction' era un tipo fantasma: nessuno lo scrive (MCP salva
+	// `type='memory'`, il resto e' `episodic`). Funzionava solo grazie al
+	// fallback sul layer, quindi una memoria con type='memory' e
+	// memory_layer='semantic' — il caso naturale per un fatto stabile — non
+	// veniva mai processata.
+	filter := "(type='memory' OR type='user_interaction' OR memory_layer='episodic') AND _archived != 'true'"
 	candidateIDs, err := g.eng.VFilter(indexName, filter, 50)
 	if err != nil || len(candidateIDs) == 0 {
 		return
@@ -4409,13 +4457,29 @@ func (g *Gardener) processCoreFactExtraction(indexName, userID string, items []c
 		// Generate deterministic ID based on content hash
 		factID := fmt.Sprintf("core_fact_%d", time.Now().UnixNano())
 
+		// Il fatto eredita la data della memoria piu' vecchia da cui proviene,
+		// non "adesso".
+		//
+		// Prima usava time.Now(): il fatto perdeva ogni informazione su QUANDO
+		// e' stato appreso. Con le sorgenti archiviate (retire_after_core_fact_
+		// extraction) quella data non e' piu' recuperabile da nessuna parte: gli
+		// edge temporali non si trasferiscono per design, quindi l'unica traccia
+		// rimasta e' questa. `_extracted_at` conserva comunque il momento
+		// dell'estrazione.
+		factCreatedAt := float64(time.Now().Unix())
+		for _, item := range items {
+			if ts, ok := item.Metadata["_created_at"].(float64); ok && ts > 0 && ts < factCreatedAt {
+				factCreatedAt = ts
+			}
+		}
+
 		meta := map[string]any{
 			"type":         "core_fact",
 			"content":      fact,
 			"_pinned":      true, // No time-decay
 			"confidence":   minConfidence,
 			"extracted_at": float64(time.Now().Unix()),
-			"_created_at":  float64(time.Now().Unix()),
+			"_created_at":  factCreatedAt,
 		}
 
 		if userID != "" {

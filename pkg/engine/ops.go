@@ -130,6 +130,8 @@ func (e *Engine) GetIndexLanguage(name string) string {
 //
 // Returns an error if an index with the same name already exists.
 func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int, prec distance.PrecisionType, lang string, config *hnsw.AutoMaintenanceConfig, autoLinks []hnsw.AutoLinkRule, memoryConfig *hnsw.MemoryConfig) error {
+	// Un indice ricreato invalida ogni cursore che puntava al precedente.
+	defer e.indexGeneration.Add(1)
 	// 1. Prepare AOF Command Arguments
 	args := [][]byte{
 		[]byte(name),
@@ -223,6 +225,8 @@ func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int
 // VDeleteIndex completely removes an index and all its data.
 // The operation is persisted to the AOF log as a VDROP command.
 func (e *Engine) VDeleteIndex(name string) error {
+	// Invalida i cursori dei worker che tenevano stato su questo indice.
+	defer e.indexGeneration.Add(1)
 	slog.Info("[Engine] VDeleteIndex requested", "index", name)
 
 	cmd := persistence.FormatCommand("VDROP", []byte(name))
