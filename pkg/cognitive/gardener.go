@@ -2112,8 +2112,17 @@ func (g *Gardener) UpdateUserProfile(indexName, userID string) error {
 	// so we filter by type='memory' (not by tag) to get all memories attributed
 	// to this user. The old `tags = 'user_interaction'` filter silently dropped
 	// MCP memories that had no such tag.
+	// Si leggono TUTTE le memorie dell'utente, non solo le prime N.
+	//
+	// Prima era `VFilter(..., ProfileUpdateThreshold*2)`: VFilter tronca ai
+	// primi ID (ordine di inserimento), quindi con 20 memorie e soglia 5 se ne
+	// analizzavano 10 — le PRIME. Le preferenze dichiarate per ultime restavano
+	// fuori, e il profilo le perdeva. Il passo 3 ordina comunque per timestamp
+	// decrescente, quindi il taglio va fatto DOPO l'ordinamento, non prima.
 	filter := fmt.Sprintf("user_id='%s' AND type='memory'", userID)
-	ids, err := g.eng.VFilter(indexName, filter, g.cfg.ProfileUpdateThreshold*2)
+	// VFilter tratta limit<=0 come 10: si passa un tetto esplicito alto e si
+	// taglia dopo l'ordinamento. 500 copre ampiamente una storia utente.
+	ids, err := g.eng.VFilter(indexName, filter, 500)
 	if err != nil {
 		return fmt.Errorf("failed to get user interactions: %w", err)
 	}
@@ -2134,6 +2143,14 @@ func (g *Gardener) UpdateUserProfile(indexName, userID string) error {
 		tj := getMemTimestamp(memories[j].Metadata)
 		return ti > tj
 	})
+
+	// Ora che sono ordinate, si tiene un tetto per non mandare un prompt enorme.
+	// Il limite e' generoso (non 2x la soglia): il profilo deve vedere la storia
+	// recente, non solo le ultime due interazioni.
+	const maxProfileInteractions = 50
+	if len(memories) > maxProfileInteractions {
+		memories = memories[:maxProfileInteractions]
+	}
 
 	var interactions []string
 	var timestamps []string
@@ -2253,6 +2270,16 @@ IMPORTANT INSTRUCTIONS:
 1. If recent interactions contradict old preferences, the NEW preferences MUST override
 2. Pay attention to timestamps - recent preferences have more weight
 3. Extract both positives (likes, preferences) AND negatives (dislikes, anti-patterns)
+
+EXPERTISE_AREAS — read this carefully, it is the field most often left empty by mistake:
+- Fill it whenever the user says ANYTHING about what they know or do: their job, role,
+  seniority, technologies, tools, languages, domains, or years of experience.
+- Signals: "I work as X", "I'm a senior/lead/junior X", "I use Y", "I've been doing Y for N
+  years", "my stack is...", "I'm familiar with...", "I know...", "in my experience with...".
+- Use short noun phrases, not sentences: ["backend engineering", "Go", "PostgreSQL"].
+- A statement of profession ALWAYS implies expertise in it. "I'm a senior backend engineer
+  working with Go and PostgreSQL" -> ["backend engineering", "Go", "PostgreSQL"].
+- Do NOT leave it empty when the interactions mention a profession, a technology or a skill.
 4. Respond with ONLY a JSON object. No prose, no explanation, no thinking process. Do not wrap in markdown fences.
 5. If you cannot extract a field, OMIT it from the JSON rather than setting it to null or empty string.
    - Omitted field = preserve current value
