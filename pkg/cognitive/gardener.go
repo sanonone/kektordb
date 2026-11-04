@@ -291,12 +291,17 @@ type Gardener struct {
 	entitiesLinked          atomic.Int64 // edge memoria->entita' creati
 	contradictionCandidates atomic.Int64 // coppie candidate esaminate
 	contradictionBatches    atomic.Int64 // chiamate LLM di batch
-	reflectionsResolved     atomic.Int64 // riflessioni risolte automaticamente
-	reflectionsEscalated    atomic.Int64 // riflessioni escalate a revisione manuale
-	llmCalls                atomic.Int64 // chiamate LLM totali
-	llmErrors               atomic.Int64 // chiamate LLM fallite
-	totalThinkNanos         atomic.Int64 // tempo cumulato in think()
-	lastCycleNanos          atomic.Int64 // durata dell'ultimo ciclo
+	// contradictionNodesScanned conta i nodi visti dal detector; insieme alla
+	// cardinalita' dell'indice dice se un ciclo ha coperto tutto o solo una
+	// parte (il detector legge 50 nodi per volta).
+	contradictionNodesScanned atomic.Int64
+	contradictionLastCursor   atomic.Uint64
+	reflectionsResolved       atomic.Int64 // riflessioni risolte automaticamente
+	reflectionsEscalated      atomic.Int64 // riflessioni escalate a revisione manuale
+	llmCalls                  atomic.Int64 // chiamate LLM totali
+	llmErrors                 atomic.Int64 // chiamate LLM fallite
+	totalThinkNanos           atomic.Int64 // tempo cumulato in think()
+	lastCycleNanos            atomic.Int64 // durata dell'ultimo ciclo
 
 	// User profiling
 	unassimilatedInteractions map[string]int // user_id -> count of new interactions
@@ -431,9 +436,14 @@ type GardenerStats struct {
 	ContradictionsFound     int64 `json:"contradictions_found"`
 	ContradictionCandidates int64 `json:"contradiction_candidates"`
 	ContradictionBatches    int64 `json:"contradiction_batches"`
-	ReflectionsResolved     int64 `json:"reflections_resolved"`
-	ReflectionsEscalated    int64 `json:"reflections_escalated"`
-	Decayed                 int64 `json:"decayed"`
+	// ContradictionNodesScanned e ContradictionCursor dicono a che punto e' la
+	// scansione: senza, un ciclo che ha coperto meta' dell'indice e' identico a
+	// uno che l'ha coperto tutto.
+	ContradictionNodesScanned int64 `json:"contradiction_nodes_scanned"`
+	ContradictionCursor       int64 `json:"contradiction_cursor"`
+	ReflectionsResolved       int64 `json:"reflections_resolved"`
+	ReflectionsEscalated      int64 `json:"reflections_escalated"`
+	Decayed                   int64 `json:"decayed"`
 
 	// Cost
 	LLMCalls     int64 `json:"llm_calls"`
@@ -445,25 +455,27 @@ type GardenerStats struct {
 // Stats returns a snapshot of the Gardener's counters.
 func (g *Gardener) Stats() GardenerStats {
 	return GardenerStats{
-		Cycles:                  g.cyclesRun.Load(),
-		IndexesScanned:          g.indexesScanned.Load(),
-		IndexesSkipped:          g.indexesSkipped.Load(),
-		ClustersAnalyzed:        g.clustersAnalyzed.Load(),
-		MemoriesMerged:          g.memoriesMerged.Load(),
-		CoreFactsExtracted:      g.coreFactsExtracted.Load(),
-		SourcesRetired:          g.sourcesRetired.Load(),
-		EntitiesLinked:          g.entitiesLinked.Load(),
-		ReflectionsCreated:      g.totalReflections.Load(),
-		ContradictionsFound:     g.totalContradictions.Load(),
-		ContradictionCandidates: g.contradictionCandidates.Load(),
-		ContradictionBatches:    g.contradictionBatches.Load(),
-		ReflectionsResolved:     g.reflectionsResolved.Load(),
-		ReflectionsEscalated:    g.reflectionsEscalated.Load(),
-		Decayed:                 g.totalDecayed.Load(),
-		LLMCalls:                g.llmCalls.Load(),
-		LLMErrors:               g.llmErrors.Load(),
-		TotalThinkMS:            g.totalThinkNanos.Load() / int64(time.Millisecond),
-		LastCycleMS:             g.lastCycleNanos.Load() / int64(time.Millisecond),
+		Cycles:                    g.cyclesRun.Load(),
+		IndexesScanned:            g.indexesScanned.Load(),
+		IndexesSkipped:            g.indexesSkipped.Load(),
+		ClustersAnalyzed:          g.clustersAnalyzed.Load(),
+		MemoriesMerged:            g.memoriesMerged.Load(),
+		CoreFactsExtracted:        g.coreFactsExtracted.Load(),
+		SourcesRetired:            g.sourcesRetired.Load(),
+		EntitiesLinked:            g.entitiesLinked.Load(),
+		ReflectionsCreated:        g.totalReflections.Load(),
+		ContradictionsFound:       g.totalContradictions.Load(),
+		ContradictionCandidates:   g.contradictionCandidates.Load(),
+		ContradictionBatches:      g.contradictionBatches.Load(),
+		ContradictionNodesScanned: g.contradictionNodesScanned.Load(),
+		ContradictionCursor:       int64(g.contradictionLastCursor.Load()),
+		ReflectionsResolved:       g.reflectionsResolved.Load(),
+		ReflectionsEscalated:      g.reflectionsEscalated.Load(),
+		Decayed:                   g.totalDecayed.Load(),
+		LLMCalls:                  g.llmCalls.Load(),
+		LLMErrors:                 g.llmErrors.Load(),
+		TotalThinkMS:              g.totalThinkNanos.Load() / int64(time.Millisecond),
+		LastCycleMS:               g.lastCycleNanos.Load() / int64(time.Millisecond),
 	}
 }
 
@@ -1745,6 +1757,8 @@ func (g *Gardener) detectContradictions(indexName string) {
 		return
 	}
 	g.setCursor(indexName+"_contradictions", nextCursor)
+	g.contradictionNodesScanned.Add(int64(len(ids)))
+	g.contradictionLastCursor.Store(uint64(nextCursor))
 
 	nodes, _ := g.eng.VGetMany(indexName, ids)
 	slog.Debug("[Cognitive Engine] Contradictions: scanning batch",
@@ -1841,6 +1855,7 @@ func (g *Gardener) detectContradictions(indexName string) {
 		}
 		batch := candidates[start:end]
 
+		g.contradictionBatches.Add(1)
 		verdicts, err := g.analyzeContradictionBatch(batch)
 		llmCalls++
 		if err != nil {
@@ -1907,6 +1922,7 @@ func (g *Gardener) detectContradictions(indexName string) {
 		}
 	}
 
+	g.contradictionCandidates.Add(int64(len(candidates)))
 	slog.Debug("[Cognitive Engine] Contradiction scan complete",
 		"index", indexName,
 		"pairs", len(candidates),
@@ -4131,11 +4147,19 @@ func (g *Gardener) executeConsolidation(
 	var failure error
 
 	for _, node := range nodes {
-		// Create evolution metadata with consolidated truth as the corrected content
+		// Il nodo evolve conserva il PROPRIO testo, non la verita' consolidata.
+		//
+		// Prima ogni nodo riceveva `content = ConsolidatedTruth`: con 4 nodi in
+		// conflitto si avevano 5 copie della stessa frase (1 master + 4 evoluti),
+		// il doppio dello spazio per nessuna informazione in piu'. Il testo
+		// originale resta utile come traccia storica: dice cosa affermava la
+		// memoria prima della riconciliazione.
+		originalContent, _ := node.metadata["content"].(string)
 		evolveMeta := map[string]any{
-			"content":            resolution.ConsolidatedTruth,
+			"content":            originalContent,
 			"type":               "evolved_memory",
 			"_consolidated_into": masterID,
+			"_superseded_by":     resolution.ConsolidatedTruth,
 		}
 
 		_, err := g.eng.VEvolve(

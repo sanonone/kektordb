@@ -296,9 +296,21 @@ func TestExecuteConsolidationEvolvedContent(t *testing.T) {
 			t.Errorf("Failed to get evolved node %s: %v", evolvedID, err)
 			continue
 		}
-		if evolvedData.Metadata["content"] != consolidatedTruth {
-			t.Errorf("Evolved node %s content = %q, want %q (consolidated truth)",
-				evolvedID, evolvedData.Metadata["content"], consolidatedTruth)
+		// Il nodo evolve conserva il PROPRIO testo, non la verita' consolidata.
+		//
+		// Prima ogni nodo riceveva il testo del master: con N nodi in conflitto
+		// si avevano N+1 copie della stessa frase e nessuna traccia di cosa
+		// affermasse ciascuna memoria prima della riconciliazione. La verita'
+		// consolidata vive nel master, raggiungibile via _consolidated_into.
+		if evolvedData.Metadata["content"] == consolidatedTruth {
+			t.Errorf("Evolved node %s should keep its own text, not duplicate the master's",
+				evolvedID)
+		}
+		if evolvedData.Metadata["content"] == "" {
+			t.Errorf("Evolved node %s lost its original content", evolvedID)
+		}
+		if evolvedData.Metadata["_superseded_by"] != consolidatedTruth {
+			t.Errorf("Evolved node %s missing _superseded_by pointing at the reconciled truth", evolvedID)
 		}
 		if evolvedData.Metadata["type"] != "evolved_memory" {
 			t.Errorf("Evolved node %s type = %v, want 'evolved_memory'",
@@ -315,7 +327,7 @@ func TestExecuteConsolidationEvolvedContent(t *testing.T) {
 		t.Fatal("Master consolidated_belief not found after consolidation")
 	}
 
-	t.Log("executeConsolidation correctly uses consolidated truth for evolved nodes")
+	t.Log("executeConsolidation keeps source text on evolved nodes and points them at the master")
 }
 
 // TestParseEpistemicResolutionStructuredFields verifica che current_value e

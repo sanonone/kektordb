@@ -1593,6 +1593,47 @@ Marks a memory as invalidated, creating epistemic friction that affects belief a
 
 ---
 
+### 5.9b Memory types and layers (the contract)
+
+The Gardener filters memories by metadata fields. Getting these values wrong makes a
+feature silently skip data: no error, no log, just fewer results. Two of the defects found
+during feature validation were exactly this (`type='user_interaction'` never written by
+anyone; the profile update reading only the first 10 memories).
+
+**`type`** — what the node *is*:
+
+| Value | Written by | Meaning |
+|---|---|---|
+| `memory` | `save_memory` (MCP), HTTP `/vector/actions/add` with this metadata | A user memory. **This is the normal case.** |
+| `entity` | `create_entity`, entity extraction | An entity node (`entity::marco`), no content of its own |
+| `reflection` | Gardener detectors | A finding: conflict, gap, decay, preference |
+| `consolidated_belief` | Epistemic resolution | The reconciled truth after a contradiction |
+| `evolved_memory` | `VEvolve` | A superseded memory, kept for the audit trail |
+| `core_fact` | Core fact extraction | An immutable user fact, pinned |
+
+`user_interaction` is **not** a valid type: it appeared in an older filter and nothing
+writes it. Code that filters on it silently matches nothing unless the layer fallback saves it.
+
+**`memory_layer`** — how the memory *decays*: `episodic`, `semantic`, `procedural`.
+Set by the layer configuration; absent on nodes created before layers existed.
+
+**Retirement fields** — why a memory is out of the searchable set:
+
+| Field | Set by | Meaning |
+|---|---|---|
+| `_archived` | Consolidation, core fact extraction | Merged into a master; the content lives elsewhere |
+| `_is_historical` | `VEvolve`, supersede | Superseded by a newer version |
+| `_pinned` | Layer config or explicit | Never decays |
+
+Both retirement fields are respected by the visibility guard. A filter that checks only one
+of them will return memories the system considers retired — a mistake that broke one of my
+own validation metrics before it was caught.
+
+**Rule for new detectors:** filter on `type='memory'` (plus any legacy value you want to
+tolerate), and check retirement through `isHistoricalOrArchived`, never by hand.
+
+---
+
 ### 5.10 Memory Evolution (Semantic Git)
 
 Semantic Git provides version control for memories. When information changes, you can evolve a memory rather than simply updating it, preserving the full history and maintaining an audit trail.

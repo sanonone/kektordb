@@ -54,10 +54,16 @@ components:
       required: [index_name]
       properties:
         index_name: { type: string }
-        query: { type: string, description: Text to embed (alternative to query_vec) }
-        query_vec:
+        query_text:
+          type: string
+          description: >-
+            Text to embed server-side. Ignored when query_vector is set.
+        query_vector:
           type: array
           items: { type: number, format: float }
+          description: >-
+            Pre-computed embedding, takes precedence over query_text. Exposed so a
+            caller that already holds the vector does not pay a second embedding.
         limit: { type: integer, default: 10, maximum: 50 }
 
     BeliefAssessmentResponse:
