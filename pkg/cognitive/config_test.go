@@ -86,9 +86,10 @@ gardener:
 	}
 }
 
-// TestCoreFactExtractionDefaultsOff: la feature costa una chiamata LLM per
-// batch, quindi deve restare spenta se non richiesta esplicitamente.
-func TestCoreFactExtractionDefaultsOff(t *testing.T) {
+// TestCoreFactExtractionDefaultsOn: dalla Fase 4 la feature e' classificata
+// STANDARD e attiva di default. Costa 0.01 chiamate per memoria — trascurabile —
+// e dimezza la memoria visibile (-64% misurato). Si disattiva con `false`.
+func TestCoreFactExtractionDefaultsOn(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/cognitive.yaml"
 	yaml := `
@@ -104,8 +105,22 @@ gardener:
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if cfg.EnableCoreFactExtraction {
-		t.Error("la feature deve essere spenta di default")
+	if !cfg.EnableCoreFactExtraction {
+		t.Error("la feature deve essere ATTIVA di default (classificazione Fase 4)")
+	}
+
+	// E deve essere disattivabile esplicitamente.
+	path2 := dir + "/off.yaml"
+	body2 := "gardener:\n  enabled: true\n  mode: advanced\n  enable_core_fact_extraction: false\n"
+	if err := os.WriteFile(path2, []byte(body2), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg2, _, err := LoadConfig(path2)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg2.EnableCoreFactExtraction {
+		t.Error("enable_core_fact_extraction: false deve disattivarla")
 	}
 }
 
@@ -135,7 +150,7 @@ gardener:
 	}
 }
 
-func TestRetireAfterCoreFactExtractionDefaultsOff(t *testing.T) {
+func TestRetireAfterCoreFactExtractionDefaultsOn(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/cognitive.yaml"
 	body := `
@@ -151,8 +166,8 @@ gardener:
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if cfg.RetireAfterCoreFactExtraction {
-		t.Error("l'archiviazione deve essere spenta di default")
+	if !cfg.RetireAfterCoreFactExtraction {
+		t.Error("l'archiviazione delle sorgenti deve essere ATTIVA di default: e' cio' che compatta la memoria")
 	}
 }
 

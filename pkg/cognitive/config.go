@@ -51,10 +51,10 @@ type GardenerConfigYAML struct {
 	AdaptiveMinInterval string                 `yaml:"adaptive_min_interval"`
 	MemoryLayers        MemoryLayersConfigYAML `yaml:"memory_layers"`
 
-	EnableUserProfiling    bool `yaml:"enable_user_profiling"`
-	ProfileUpdateThreshold int  `yaml:"profile_update_threshold"`
+	EnableUserProfiling    *bool `yaml:"enable_user_profiling"`
+	ProfileUpdateThreshold int   `yaml:"profile_update_threshold"`
 
-	EpistemicResolutionEnabled   bool    `yaml:"epistemic_resolution_enabled"`
+	EpistemicResolutionEnabled   *bool   `yaml:"epistemic_resolution_enabled"`
 	EpistemicMaxPerCycle         int     `yaml:"epistemic_max_per_cycle"`
 	EpistemicConfidenceThreshold float64 `yaml:"epistemic_confidence_threshold"`
 
@@ -72,7 +72,7 @@ type GardenerConfigYAML struct {
 	// EnableCoreFactExtraction (RFC 001): the Gardener extracts immutable user
 	// facts (name, job, location, ...) from episodic memories and pins them as
 	// core_fact nodes. Off by default because it costs one LLM call per batch.
-	EnableCoreFactExtraction bool `yaml:"enable_core_fact_extraction"`
+	EnableCoreFactExtraction *bool `yaml:"enable_core_fact_extraction"`
 
 	// CoreFactMinConfidence is the threshold below which an extracted fact is
 	// discarded. Default 0.85 when unset.
@@ -93,7 +93,7 @@ type GardenerConfigYAML struct {
 	// RetireAfterCoreFactExtraction archives a source memory once its facts
 	// have been extracted, transferring semantic edges to the fact. Without
 	// it, extraction only adds nodes (measured: memory grows, recall unchanged).
-	RetireAfterCoreFactExtraction bool `yaml:"retire_after_core_fact_extraction"`
+	RetireAfterCoreFactExtraction *bool `yaml:"retire_after_core_fact_extraction"`
 }
 
 // EpistemicWeightsYAML holds the pillar weights for the Gardener's gate (B1).
@@ -211,6 +211,16 @@ func DefaultConfig() Config {
 	}
 }
 
+// boolOr applica un default quando il campo non e' presente nel YAML.
+// Un *bool nil significa "non configurato": il default e' quello documentato
+// nella classificazione delle feature (Fase 4), non il valore zero di Go.
+func boolOr(v *bool, def bool) bool {
+	if v == nil {
+		return def
+	}
+	return *v
+}
+
 // LoadConfig reads and parses a cognitive.yaml file.
 // Returns a cognitive.Config and an llm.Config ready for use.
 // If path is empty, returns defaults (disabled).
@@ -246,18 +256,18 @@ func LoadConfig(path string) (Config, llm.Config, error) {
 		AutoResolveLinksMin:               cfg.AutoResolve.Actions.CreateSuggestedLinks.MinConfidence,
 		AutoResolveContra:                 cfg.AutoResolve.Actions.MarkMinorContradictions.Enabled,
 		MemoryConfig:                      buildMemoryConfig(cfg.Gardener.MemoryLayers),
-		EnableUserProfiling:               cfg.Gardener.EnableUserProfiling,
+		EnableUserProfiling:               boolOr(cfg.Gardener.EnableUserProfiling, true),
 		ProfileUpdateThreshold:            cfg.Gardener.ProfileUpdateThreshold,
-		EpistemicResolutionEnabled:        cfg.Gardener.EpistemicResolutionEnabled,
+		EpistemicResolutionEnabled:        boolOr(cfg.Gardener.EpistemicResolutionEnabled, true),
 		EpistemicMaxPerCycle:              cfg.Gardener.EpistemicMaxPerCycle,
 		EpistemicConfidenceThreshold:      cfg.Gardener.EpistemicConfidenceThreshold,
 		EpistemicMaxNodesPerConsolidation: cfg.Gardener.EpistemicMaxNodesPerConsolidation,
 		// RFC 001: core fact extraction. Questi due campi esistevano nella
 		// struct Config ma non erano mai letti dal YAML, quindi la feature era
 		// impossibile da attivare da file di configurazione (sempre false).
-		EnableCoreFactExtraction:      cfg.Gardener.EnableCoreFactExtraction,
+		EnableCoreFactExtraction:      boolOr(cfg.Gardener.EnableCoreFactExtraction, true),
 		CoreFactMinConfidence:         cfg.Gardener.CoreFactMinConfidence,
-		RetireAfterCoreFactExtraction: cfg.Gardener.RetireAfterCoreFactExtraction,
+		RetireAfterCoreFactExtraction: boolOr(cfg.Gardener.RetireAfterCoreFactExtraction, true),
 		EntityExtraction:              entities.Mode(cfg.Gardener.EntityExtraction),
 		DisableConsolidation:          cfg.Gardener.DisableConsolidation,
 		DisableKnowledgeEvolution:     cfg.Gardener.DisableKnowledgeEvolution,
