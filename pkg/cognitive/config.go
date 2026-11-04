@@ -2,6 +2,7 @@ package cognitive
 
 import (
 	"fmt"
+	"github.com/sanonone/kektordb/pkg/entities"
 	"os"
 	"time"
 
@@ -76,6 +77,12 @@ type GardenerConfigYAML struct {
 	// CoreFactMinConfidence is the threshold below which an extracted fact is
 	// discarded. Default 0.85 when unset.
 	CoreFactMinConfidence float64 `yaml:"core_fact_min_confidence"`
+
+	// EntityExtraction: "none" (default), "llm". When enabled, each memory is
+	// scanned for named entities which become graph nodes the memory points to.
+	// Costs one LLM call per memory: measure with /system/llm-usage before
+	// enabling it on a large index.
+	EntityExtraction string `yaml:"entity_extraction"`
 
 	// RetireAfterCoreFactExtraction archives a source memory once its facts
 	// have been extracted, transferring semantic edges to the fact. Without
@@ -245,6 +252,7 @@ func LoadConfig(path string) (Config, llm.Config, error) {
 		EnableCoreFactExtraction:      cfg.Gardener.EnableCoreFactExtraction,
 		CoreFactMinConfidence:         cfg.Gardener.CoreFactMinConfidence,
 		RetireAfterCoreFactExtraction: cfg.Gardener.RetireAfterCoreFactExtraction,
+		EntityExtraction:              entities.Mode(cfg.Gardener.EntityExtraction),
 		EpistemicWeights: EpistemicWeights{
 			Consensus: cfg.Gardener.EpistemicWeights.Consensus,
 			Stability: cfg.Gardener.EpistemicWeights.Stability,

@@ -32,6 +32,7 @@ const (
 	FeatureGardenerFailures      = "gardener.failures"
 	FeatureGardenerEvolution     = "gardener.evolution"
 	FeatureGardenerSentiment     = "gardener.sentiment"
+	FeatureGardenerEntities      = "gardener.entities"
 	FeatureGardenerOther         = "gardener.other"
 	FeatureCompiler              = "compiler"
 	FeatureRAG                   = "rag"

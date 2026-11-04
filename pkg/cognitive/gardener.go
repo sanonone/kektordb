@@ -3,6 +3,7 @@
 package cognitive
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 	"github.com/sanonone/kektordb/pkg/core"
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/engine"
+	"github.com/sanonone/kektordb/pkg/entities"
 	"github.com/sanonone/kektordb/pkg/llm"
 )
 
@@ -169,6 +171,12 @@ type Config struct {
 	ProfileUpdateThreshold int  // Number of user_interaction memories before profile update
 
 	// Core Fact Extraction (RFC 001)
+	// EntityExtraction enables automatic entity linking: each memory is scanned
+	// for named entities, which become graph nodes the memory points to. This is
+	// the "compensation" for the agent forgetting to link: the agent knows best,
+	// but it does not always do it. Costs one LLM call per processed memory.
+	EntityExtraction entities.Mode
+
 	EnableCoreFactExtraction bool    // Enable automatic extraction of immutable facts
 	CoreFactMinConfidence    float64 // Minimum confidence threshold for extracted facts (default: 0.85)
 
@@ -251,6 +259,10 @@ type Gardener struct {
 	thinkReqs      chan struct{} // Buffered channel (size 1) serializing think() calls
 	thinkDone      chan struct{} // Closed when thinkWorker goroutine exits
 
+	// entityExtractor collega le memorie alle entita' nominate. Nil quando
+	// l'estrazione e' disattivata (default): costa una chiamata LLM per memoria.
+	entityExtractor entities.Extractor
+
 	// currentFeature etichetta le chiamate LLM per il report dei costi.
 	// Non e' atomico: i detector girano nel goroutine del ciclo think().
 	currentFeature string
@@ -269,6 +281,7 @@ type Gardener struct {
 	memoriesMerged          atomic.Int64 // memorie unite in un master
 	coreFactsExtracted      atomic.Int64 // core facts creati
 	sourcesRetired          atomic.Int64 // sorgenti archiviate dopo l'estrazione
+	entitiesLinked          atomic.Int64 // edge memoria->entita' creati
 	contradictionCandidates atomic.Int64 // coppie candidate esaminate
 	contradictionBatches    atomic.Int64 // chiamate LLM di batch
 	reflectionsResolved     atomic.Int64 // riflessioni risolte automaticamente
@@ -381,6 +394,7 @@ type GardenerStats struct {
 	MemoriesMerged          int64 `json:"memories_merged"`
 	CoreFactsExtracted      int64 `json:"core_facts_extracted"`
 	SourcesRetired          int64 `json:"sources_retired"`
+	EntitiesLinked          int64 `json:"entities_linked"`
 	ReflectionsCreated      int64 `json:"reflections_created"`
 	ContradictionsFound     int64 `json:"contradictions_found"`
 	ContradictionCandidates int64 `json:"contradiction_candidates"`
@@ -406,6 +420,7 @@ func (g *Gardener) Stats() GardenerStats {
 		MemoriesMerged:          g.memoriesMerged.Load(),
 		CoreFactsExtracted:      g.coreFactsExtracted.Load(),
 		SourcesRetired:          g.sourcesRetired.Load(),
+		EntitiesLinked:          g.entitiesLinked.Load(),
 		ReflectionsCreated:      g.totalReflections.Load(),
 		ContradictionsFound:     g.totalContradictions.Load(),
 		ContradictionCandidates: g.contradictionCandidates.Load(),
@@ -600,13 +615,16 @@ func NewGardener(eng *engine.Engine, llmClient llm.Client, cfg Config) *Gardener
 	eventCh := eng.EventBus.Subscribe(64)
 
 	return &Gardener{
-		eng:         eng,
-		llm:         llmClient,
-		cfg:         cfg,
-		stopCh:      make(chan struct{}),
-		eventCh:     eventCh,
-		thinkDone:   make(chan struct{}),
-		scanCursors: make(map[string]uint32),
+		eng: eng,
+		llm: llmClient,
+		cfg: cfg,
+		// L'estrattore si costruisce dal solo client: nil quando la modalita' e'
+		// "none" (default) o quando l'LLM non e' configurato.
+		entityExtractor: entities.Build(cfg.EntityExtraction, llmClient),
+		stopCh:          make(chan struct{}),
+		eventCh:         eventCh,
+		thinkDone:       make(chan struct{}),
+		scanCursors:     make(map[string]uint32),
 
 		// User profiling
 		unassimilatedInteractions: make(map[string]int),
@@ -929,6 +947,11 @@ func (g *Gardener) think() {
 			func() { defer g.withFeature(llm.FeatureGardenerPreferences)(); g.detectUserPreferences(idx) }()
 			func() { defer g.withFeature(llm.FeatureGardenerFailures)(); g.detectRepeatedFailures(idx) }()
 			func() { defer g.withFeature(llm.FeatureGardenerEvolution)(); g.detectKnowledgeEvolution(idx) }()
+
+			// Entity linking: compensa l'agente quando dimentica di collegare.
+			if g.entityExtractor != nil {
+				g.detectEntityLinks(idx)
+			}
 
 			// RFC 001: Core Fact Extraction
 			if g.cfg.EnableCoreFactExtraction {
@@ -4529,4 +4552,103 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// ------------------------------------------------------------------ entities
+
+// detectEntityLinks extracts named entities from memories and links them into
+// the graph. This is the "compensation" layer: when the agent forgets to create
+// a link, KektorDB can infer it from the content.
+//
+// It is opt-in (cfg.EntityExtraction != "none") because every call costs one LLM
+// round trip per memory. The report at /system/llm-usage shows exactly how much,
+// which is the point of making it configurable rather than automatic.
+func (g *Gardener) detectEntityLinks(indexName string) {
+	if g.entityExtractor == nil {
+		return
+	}
+
+	// Same cursor discipline as the other detectors: a bounded batch per cycle,
+	// advancing so the next cycle continues where this one stopped.
+	currentCursor := g.getCursor(indexName + "_entities")
+	ids, nextCursor, err := g.eng.VGetIDsByCursor(indexName, currentCursor, 20)
+	if err != nil || len(ids) == 0 {
+		return
+	}
+	g.setCursor(indexName+"_entities", nextCursor)
+
+	nodes, err := g.eng.VGetMany(indexName, ids)
+	if err != nil || len(nodes) == 0 {
+		return
+	}
+
+	release := g.withFeature(llm.FeatureGardenerEntities)
+	defer release()
+
+	for _, node := range nodes {
+		// Solo memorie: le reflection e i belief non rappresentano contenuto utente.
+		if isHistoricalOrArchived(node.Metadata) {
+			continue
+		}
+		if t, ok := node.Metadata["type"].(string); ok {
+			if t == "reflection" || t == "consolidated_belief" || t == "core_fact" || t == "entity" {
+				continue
+			}
+		}
+		// Dedup: una memoria gia' processata non si ripete.
+		if links, found := g.eng.VGetLinks(indexName, node.ID, "entities_analyzed"); found && len(links) > 0 {
+			continue
+		}
+
+		content, _ := node.Metadata["content"].(string)
+		if strings.TrimSpace(content) == "" {
+			continue
+		}
+
+		// Il contesto porta l'etichetta della feature: senza, le chiamate
+		// dell'estrattore finirebbero nel bucket generico "other" e il report
+		// dei costi non direbbe quanto costa questa feature.
+		ctx := llm.WithFeature(context.Background(), llm.FeatureGardenerEntities)
+		found, err := g.entityExtractor.Extract(ctx, content)
+		if err != nil {
+			slog.Warn("[Cognitive Engine] Entity extraction failed", "id", node.ID, "error", err)
+			continue
+		}
+
+		// Marca sempre, anche senza entita': evita di ripagare la chiamata a ogni ciclo.
+		if err := g.eng.VLink(indexName, node.ID, node.ID, "entities_analyzed", "", 1.0, nil); err != nil {
+			slog.Warn("[Cognitive Engine] Failed to mark entity analysis", "id", node.ID, "error", err)
+			continue
+		}
+
+		for _, ent := range found {
+			g.ensureEntityNode(indexName, ent)
+			if err := g.eng.VLink(indexName, node.ID, "entity::"+ent.Name, "mentions", "mentioned_by", 1.0, nil); err != nil {
+				slog.Warn("[Cognitive Engine] Failed to link entity",
+					"from", node.ID, "to", ent.Name, "error", err)
+				continue
+			}
+			g.entitiesLinked.Add(1)
+		}
+	}
+}
+
+// ensureEntityNode creates the entity node if it is missing. Entities are shared
+// between memories by design: the whole point is that "Marco" in April and
+// "Marco" in September resolve to the same node.
+func (g *Gardener) ensureEntityNode(indexName string, ent entities.Entity) {
+	id := "entity::" + ent.Name
+	if _, err := g.eng.VGet(indexName, id); err == nil {
+		return // gia' esiste
+	}
+	meta := map[string]any{
+		"type":        "entity",
+		"name":        ent.Display,
+		"entity_kind": string(ent.Kind),
+		"content":     ent.Display,
+		"_created_at": float64(time.Now().Unix()),
+	}
+	if err := g.eng.VAdd(indexName, id, nil, meta); err != nil {
+		slog.Warn("[Cognitive Engine] Failed to create entity node", "entity", ent.Name, "error", err)
+	}
 }
