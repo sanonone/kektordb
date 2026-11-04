@@ -215,6 +215,16 @@ type Config struct {
 	// 0.40/0.30/0.30 contract). Zero values fall back to the defaults below.
 	EpistemicWeights EpistemicWeights
 
+	// Detector toggles. Nil means "not configured" -> enabled, which keeps the
+	// historical behaviour: these detectors have always run, and silently
+	// switching them off for existing deployments would change what the product
+	// does without anyone asking. Set to false explicitly to disable one.
+	//
+	// Pointers, not bools, because Go cannot distinguish "unset" from "false".
+	DisableConsolidation      *bool
+	DisableSessionSummary     *bool
+	DisableKnowledgeEvolution *bool
+
 	// Safety limits
 	MaxNodesPerScan int // Max nodes to load in a single scan (default: 10000, 0=unlimited)
 	MaxItemsForLLM  int // Max items sent to LLM per consolidation batch (default: 15)
@@ -518,6 +528,18 @@ func (g *Gardener) withFeature(feature string) func() {
 		g.currentFeature = prev
 		g.currentFeatureMu.Unlock()
 	}
+}
+
+// enabled reports whether an optional detector should run.
+//
+// nil = non configurato = attivo. E' il comportamento storico: questi detector
+// hanno sempre girato, e spegnerli in silenzio cambierebbe il prodotto per chi
+// ha gia' un deployment. Per disattivarne uno va scritto `false` in configurazione.
+func enabled(flag *bool) bool {
+	if flag == nil {
+		return true
+	}
+	return *flag
 }
 
 // setLastThinkTime updates the last think time with write lock.
@@ -975,29 +997,34 @@ func (g *Gardener) think() {
 		// Consolidation: Handle episodic -> semantic separately from general consolidation.
 		// Etichettato in una funzione anonima (non con defer nel loop): il ciclo
 		// gira su piu' indici e i defer si accumulerebbero fino alla fine di think().
-		func() {
-			defer g.withFeature(llm.FeatureGardenerConsolidation)()
-			if g.cfg.MemoryConfig.Layers["episodic"].AutoSummarize {
-				// Find clusters specifically in episodic layer
-				episodicClusters := g.findRedundantClustersInLayer(idx, "episodic", g.cfg.MemoryConfig.Consolidation.SimilarityThreshold, 5)
-				for _, cluster := range episodicClusters {
-					g.consolidateEpisodicToSemantic(idx, cluster)
+		// Attivo di default; si spegne con disable_consolidation: true.
+		if enabled(g.cfg.DisableConsolidation) {
+			func() {
+				defer g.withFeature(llm.FeatureGardenerConsolidation)()
+				if g.cfg.MemoryConfig.Layers["episodic"].AutoSummarize {
+					// Find clusters specifically in episodic layer
+					episodicClusters := g.findRedundantClustersInLayer(idx, "episodic", g.cfg.MemoryConfig.Consolidation.SimilarityThreshold, 5)
+					for _, cluster := range episodicClusters {
+						g.consolidateEpisodicToSemantic(idx, cluster)
+					}
 				}
-			}
 
-			// General consolidation for non-episodic memories (or all if episodic auto-summarize is off)
-			clusters := g.findRedundantClusters(idx, 0.90, 5)
-			for _, cluster := range clusters {
-				g.clustersAnalyzed.Add(1)
-				g.consolidateCluster(idx, cluster) // LLM used if available, deterministic fallback otherwise.
-			}
-		}() // fine blocco consolidamento etichettato
+				// General consolidation for non-episodic memories (or all if episodic auto-summarize is off)
+				clusters := g.findRedundantClusters(idx, 0.90, 5)
+				for _, cluster := range clusters {
+					g.clustersAnalyzed.Add(1)
+					g.consolidateCluster(idx, cluster) // LLM used if available, deterministic fallback otherwise.
+				}
+			}() // fine blocco consolidamento etichettato
+		}
 
 		// Advanced-only: contradiction detection (requires LLM).
 		// Operates on semantic + episodic layers, excludes procedural.
 		if g.llm != nil && (g.cfg.Mode == "advanced" || g.cfg.Mode == "meta") {
 			func() { defer g.withFeature(llm.FeatureGardenerContradiction)(); g.detectContradictions(idx) }()
-			func() { defer g.withFeature(llm.FeatureGardenerEvolution)(); g.detectKnowledgeEvolution(idx) }()
+			if enabled(g.cfg.DisableKnowledgeEvolution) {
+				func() { defer g.withFeature(llm.FeatureGardenerEvolution)(); g.detectKnowledgeEvolution(idx) }()
+			}
 
 			// Entity linking: compensa l'agente quando dimentica di collegare.
 			if g.entityExtractor != nil {

@@ -155,3 +155,67 @@ gardener:
 		t.Error("l'archiviazione deve essere spenta di default")
 	}
 }
+
+// TestDetectorToggles verifica che i detector di default girino e che si
+// possano spegnere.
+//
+// Il contratto: nil (non configurato) = attivo. Questi detector hanno sempre
+// girato: spegnerli in silenzio cambierebbe il comportamento per chi ha gia'
+// un deployment.
+func TestDetectorToggles(t *testing.T) {
+	dir := t.TempDir()
+
+	// Non configurati: tutto attivo.
+	path := dir + "/default.yaml"
+	if err := os.WriteFile(path, []byte("gardener:\n  enabled: true\n  mode: advanced\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if !enabled(cfg.DisableConsolidation) {
+		t.Error("consolidamento: non configurato deve essere attivo")
+	}
+	if !enabled(cfg.DisableKnowledgeEvolution) {
+		t.Error("knowledge evolution: non configurato deve essere attivo")
+	}
+
+	// Esplicitamente disattivati.
+	path2 := dir + "/off.yaml"
+	body := `
+gardener:
+  enabled: true
+  mode: advanced
+  disable_consolidation: false
+  disable_knowledge_evolution: false
+`
+	if err := os.WriteFile(path2, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg2, _, err := LoadConfig(path2)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if enabled(cfg2.DisableConsolidation) {
+		t.Error("consolidamento: disable_consolidation=false deve disattivarlo")
+	}
+	if enabled(cfg2.DisableKnowledgeEvolution) {
+		t.Error("knowledge evolution: disable_knowledge_evolution=false deve disattivarlo")
+	}
+}
+
+// TestEnabledHelper: il helper deve trattare nil come attivo.
+func TestEnabledHelper(t *testing.T) {
+	if !enabled(nil) {
+		t.Error("nil deve significare attivo")
+	}
+	tr := true
+	if !enabled(&tr) {
+		t.Error("true deve significare attivo")
+	}
+	f := false
+	if enabled(&f) {
+		t.Error("false deve significare disattivato")
+	}
+}

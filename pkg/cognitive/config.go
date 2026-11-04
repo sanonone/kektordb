@@ -78,6 +78,12 @@ type GardenerConfigYAML struct {
 	// discarded. Default 0.85 when unset.
 	CoreFactMinConfidence float64 `yaml:"core_fact_min_confidence"`
 
+	// Detector toggles. Omitted = enabled (historical behaviour). Set to false
+	// to stop paying for a detector you do not use; the cost of each is visible
+	// in /system/llm-usage.
+	DisableConsolidation      *bool `yaml:"disable_consolidation"`
+	DisableKnowledgeEvolution *bool `yaml:"disable_knowledge_evolution"`
+
 	// EntityExtraction: "none" (default), "llm". When enabled, each memory is
 	// scanned for named entities which become graph nodes the memory points to.
 	// Costs one LLM call per memory: measure with /system/llm-usage before
@@ -253,6 +259,8 @@ func LoadConfig(path string) (Config, llm.Config, error) {
 		CoreFactMinConfidence:         cfg.Gardener.CoreFactMinConfidence,
 		RetireAfterCoreFactExtraction: cfg.Gardener.RetireAfterCoreFactExtraction,
 		EntityExtraction:              entities.Mode(cfg.Gardener.EntityExtraction),
+		DisableConsolidation:          cfg.Gardener.DisableConsolidation,
+		DisableKnowledgeEvolution:     cfg.Gardener.DisableKnowledgeEvolution,
 		EpistemicWeights: EpistemicWeights{
 			Consensus: cfg.Gardener.EpistemicWeights.Consensus,
 			Stability: cfg.Gardener.EpistemicWeights.Stability,
