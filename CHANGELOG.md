@@ -2,6 +2,168 @@
 
 All notable changes to KektorDB are documented here.
 
+## [0.6.3] — 2026-11-05
+
+### Memory features verified
+
+The cognitive layer was validated feature by feature against synthetic gold on
+three seeds, with and without each feature. What the measurements exposed was
+fixed; what could not be verified was removed.
+
+- **Consolidation:** node count 59 → 34 with zero false positives on unrelated
+  memories and recall unchanged.
+- **Core fact extraction:** source memories are archived once their facts exist,
+  cutting visible memories 80 → 29 with recall@1 unchanged at 0.80.
+- **Decay:** old unused memories rank at 13.5 on average, preserved ones at 4.3.
+- **Epistemic:** supported claims ~0.77 vs contested ~0.58-0.68 once the Gardener
+  has run a cycle; previously the two were indistinguishable (0.02 apart).
+- **Graph traversal:** a multi-hop question plain vector search cannot answer
+  (recall 0.00) is answered at 1.00 with `graph_filter`.
+- **Contradiction resolution:** consolidated beliefs carry a structured
+  `current_value`, so retrieval finds the answer rather than a sentence
+  mentioning two cities (recall@1 0.00 → 0.20, recall@5 0.20 → 0.80).
+- **User profile:** reads all of a user's memories instead of the first ten, so
+  preferences stated later are no longer dropped; expertise areas are extracted.
+
+### Added
+
+- **Entity linking (opt-in, `entity_extraction: llm`):** an extractor links named
+  entities into the graph as shared nodes, so the same person mentioned months
+  apart resolves to one point. Costs one LLM call per memory; off by default. The
+  extractor is an interface, so a local NER model can be added without touching
+  the Gardener.
+- **LLM cost accounting:** `GET /system/llm-usage`, `POST /system/llm-usage/reset`
+  and `kektordb --llm-usage` report per feature: calls, errors, prompt/output
+  tokens and wall time. Providers that do not return a usage block are reported
+  as "tokens unknown", not zero.
+- **MCP tool profiles:** `--tools=minimal` (8), `standard` (19), `full` (48),
+  `admin` (12). Profiles combine with individual tool names
+  (`--tools=minimal,kv_get`). `agent` remains as a legacy alias of `standard`.
+- **`get_llm_usage` MCP tool**, so an agent can answer questions about its own
+  cost without leaving the conversation.
+- **`include_obsolete`** on search (HTTP, Go, Python, TypeScript): archived
+  memories were invisible to SDK users even though they exist and can be
+  restored.
+- **`vrestore` in the Python and TypeScript clients**, plus `get_llm_usage`,
+  `get_arena_stats` and server-side `embed` in all three SDKs.
+- **Gardener counters:** `GET /system/gardener` exposes 17 counters (cycles,
+  memories merged, facts extracted, contradictions found, LLM calls/errors,
+  per-cycle duration), so a validation run reports numbers instead of grep
+  results.
+
+### Breaking Changes
+
+- **Cognitive features are on by default.** Core fact extraction, source
+  retirement, user profiling and epistemic resolution previously defaulted to
+  OFF: a deployment with no `cognitive.yaml` got none of them. They now default
+  to ON, because those are the features worth having without configuration. An
+  existing installation without a `cognitive.yaml` will start making LLM calls
+  it did not make before — check `GET /system/llm-usage` after upgrading, and set
+  an explicit `false` on anything you do not want.
+- **`--tools=agent` is unchanged (49 tools), but the protocol changed.** The
+  memory prompt dropped `session_id` and added guidance on the graph and on
+  deleting wrong memories.
+
+### Changed
+
+- **Cognitive defaults:** see Breaking Changes above; the mechanism is a `*bool`
+  in the YAML, so an absent key means "use the documented default" while an
+  explicit `false` disables.
+- **Detectors are switchable:** `disable_consolidation` and
+  `disable_knowledge_evolution` allow turning off background work, which
+  previously always ran.
+- **Memory protocol rewritten:** one file instead of the previous 23 lines,
+  adding a section on when to use the graph and when to delete a wrong memory,
+  and dropping `session_id` (the client manages sessions, not the agent).
+
+### Fixed
+
+- **`EnableCoreFactExtraction` was never read from YAML:** the field existed in
+  the config struct but not in the YAML schema, so the feature could not be
+  turned on at all — no error, no log.
+- **`CreateSession` never worked:** the client omitted `index_name`, so every
+  call failed with 400.
+- **Two detectors could never run:** they filtered on `type='agent_action'` and
+  on `user_interaction`/`observation` tags, none of which any API writes. Removed;
+  the failure-detection one can return if an API to record agent actions appears.
+- **`detectCoreFacts` filtered on a phantom type** (`user_interaction`), so
+  memories with `type='memory'` and no episodic layer were never processed.
+- **Per-index scan cursors survived an index recreation,** making detectors skip
+  part of the data non-deterministically. Cursors are now invalidated when an
+  index is created or deleted.
+- **Evolved memories duplicated the master text:** every node in conflict
+  received the consolidated truth, producing N+1 copies of the same sentence and
+  losing what each memory originally said. They now keep their own text and
+  point at the reconciliation via `_superseded_by`.
+- **Core facts lost their date:** they were stamped with the extraction time
+  instead of the date of the source memory, losing when the fact was learned.
+- **`detectKnowledgeEvolution` never incremented any counter,** so the status
+  report said zero while it was producing nodes.
+- **A dead entry point could leave an index silently unsearchable** after a
+  soft-delete and restart (C5).
+- **AOF replay ignored snapshot state:** writes after a snapshot were lost,
+  drops and metadata updates were ignored (C4).
+- **RESP parser rejected the null bulk string,** causing recovery to discard most
+  of the AOF after a vector written without metadata (C3).
+- **Vacuum and compactor could deadlock (ABBA)** once Vacuum started reusing
+  freed physical slots (Fase 3).
+- **Filtered search on sparse allowlists** falls back to a two-tier strategy
+  below 20000 nodes (Fase 2).
+- **fsync before rename** in AOF rewrite and snapshot; write errors are
+  propagated instead of ignored.
+- **Tool resolution failed open:** an unknown token such as `--tools=save_memroy`
+  produced an empty allowlist that the server read as "register everything",
+  exposing the whole surface including admin tools.
+
+---
+
+## [0.6.2] — 2026-10-12
+
+### Data safety
+
+- **AOF rewrite lost configuration:** `MEMORY_CONFIG` (decay half-lives, layer
+  settings) and `VCONFIG` (vacuum/refine tuning) were not written to the AOF, so
+  a rewrite followed by a restart silently reverted them to defaults.
+- **RESP parser unbounded allocation:** argument count and length were trusted
+  before allocation, so a corrupted or hostile AOF frame could request
+  multi-gigabyte buffers. Both are now bounded.
+- **Arena compaction could lose vectors silently:** `GetBytes` and batch reads
+  did not hold slot locks, and stale target chunks were not materialized. Data
+  races and silent loss during compaction are fixed.
+- **Use-after-unmap SIGSEGV:** closing with a timeout could unmap the arena while
+  operations were still in flight. The mapping is now left intact until no
+  operation can be using it.
+
+### Concurrency
+
+- **Vacuum raced with concurrent searches:** `reconnectNode` and cleanup touched
+  `Connections` and the node slice without per-node shard locks. Phase 2 also
+  read connections under `metaMu.RLock`, which does not exclude `Add`'s
+  `LockNode` writes.
+- **Reentrant RLock deadlock:** `VReinforce`, `VSetMetadata` and
+  `VSearchWithScores` self-locked the metadata map. Reads are now self-locking
+  and ID lookup is locked.
+- **Snapshot race with concurrent adds:** the `externalToInternalID` map and the
+  node slice are copied under lock before gob encoding.
+- **Quantizer auto-train race:** guarded by `quantizerMu` (single flight), with
+  `AbsMax` read under lock.
+- **`RunGraphVacuum` raced with index churn:** it now holds `s.mu.RLock` and uses
+  unlocked index lookups; the lock is released before the graph prune.
+- **`ForceThink` deadlocked with the Gardener disabled:** a blocking send on a
+  nil `thinkReqs` channel. Guarded.
+- **Profile debounce stale timer:** a superseded timer could drain the new
+  debounce window; a generation counter now discards it.
+
+### Build
+
+- **Docker release caching:** persistent buildx/GHA cache for cargo and Go
+  modules cuts the docker job from ~50 minutes to ~5-15 after the first run.
+- **Rust staticlib in the image:** the library is copied out of the cache mount
+  before the stage ends (cache mounts are ephemeral and do not persist into the
+  image layer, breaking the later `COPY --from`).
+
+---
+
 ## [0.6.1] — 2026-08-15
 
 ### MCP Quality + Polish
