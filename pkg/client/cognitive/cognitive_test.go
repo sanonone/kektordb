@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,8 +37,38 @@ func getTestClient(t *testing.T) *client.Client {
 	return c
 }
 
+// ensureTestIndex crea l'indice usato dai test di sessione.
+//
+// Il server rifiuta di aprire una sessione su un indice inesistente (404).
+// Questi test sono E2E e richiedono un server vivo: quando c'e', l'indice va
+// creato, altrimenti falliscono per una ragione che non ha niente a che vedere
+// con cio' che stanno verificando.
+func ensureTestIndex(t *testing.T, c *client.Client, name string) {
+	t.Helper()
+	// Crea se manca; se esiste gia' va comunque popolato (potrebbe essere vuoto).
+	if _, err := c.GetIndexInfo(name); err != nil {
+		if err := c.VCreate(name, "cosine", "float32", 16, 200, nil); err != nil {
+			t.Fatalf("VCreate %s: %v", name, err)
+		}
+	}
+	// Il server rifiuta una sessione su un indice vuoto: senza un vettore la
+	// dimensione non e' nota. Un vettore basta a stabilirla.
+	seed := make([]float32, 384)
+	for i := range seed {
+		seed[i] = 0.01 * float32(i)
+	}
+	// Idempotente: il test puo' girare su un indice gia' popolato da un run
+	// precedente, e un 409 "already exists" non e' un fallimento.
+	if err := c.VAdd(name, "seed_dims", seed, map[string]any{"content": "dimension seed"}); err != nil {
+		if !strings.Contains(err.Error(), "already exists") {
+			t.Fatalf("VAdd seed su %s: %v", name, err)
+		}
+	}
+}
+
 func TestSessionManager_CreateSession(t *testing.T) {
 	c := getTestClient(t)
+	ensureTestIndex(t, c, "default")
 	sm := NewSessionManager(c, "default")
 
 	opts := SessionOptions{
@@ -64,6 +95,7 @@ func TestSessionManager_CreateSession(t *testing.T) {
 
 func TestSessionManager_GetSession(t *testing.T) {
 	c := getTestClient(t)
+	ensureTestIndex(t, c, "default")
 	sm := NewSessionManager(c, "default")
 
 	session, err := sm.CreateSession(SessionOptions{})
@@ -86,6 +118,7 @@ func TestSessionManager_GetSession(t *testing.T) {
 
 func TestSessionManager_ListSessions(t *testing.T) {
 	c := getTestClient(t)
+	ensureTestIndex(t, c, "default")
 	sm := NewSessionManager(c, "default")
 
 	initialCount := len(sm.ListSessions())

@@ -54,7 +54,12 @@ type SessionOptions struct {
 
 // CreateSession starts a new session and returns a managed Session object.
 func (sm *SessionManager) CreateSession(opts SessionOptions) (*Session, error) {
+	// L'indice viene dal manager, non dalle opzioni: e' stato deciso quando il
+	// manager e' stato costruito ed e' lo stesso per tutte le sue sessioni.
+	// Prima non veniva passato affatto, e il server rispondeva 400
+	// "index_name is required": CreateSession non ha mai funzionato.
 	req := client.StartSessionRequest{
+		IndexName:    sm.indexName,
 		UserID:       opts.UserID,
 		Metadata:     opts.Metadata,
 		Conversation: opts.InitialContext,
