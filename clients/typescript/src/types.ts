@@ -147,6 +147,49 @@ export interface SearchParams {
   includeRelations?: string[];
   hydrateRelations?: boolean;
   compressContext?: boolean;  // Enable safe lexical compression for LLM optimization (20-35% token reduction)
+  /**
+   * Also return memories hidden by consolidation, archival or supersede.
+   * Without it, those records are invisible on a memory index even though they
+   * still exist and can be restored with `vrestore`.
+   */
+  includeObsolete?: boolean;
+}
+
+/** Physical state of an index arena. */
+export interface ArenaStats {
+  chunk_count: number;
+  chunk_size_bytes: number;
+  disk_bytes: number;
+  total_physical_slots: number;
+  used_physical_slots: number;
+  free_physical_slots: number;
+  fragmentation_ratio: number;
+  next_phys_slot: number;
+  free_list_len: number;
+  dropped_chunks: number;
+  compactor_active: boolean;
+}
+
+/** Cost of one LLM-backed feature. */
+export interface LLMFeatureUsage {
+  feature: string;
+  calls: number;
+  errors: number;
+  prompt_tokens: number;
+  output_tokens: number;
+  total_millis: number;
+}
+
+/**
+ * Process-wide LLM cost report.
+ *
+ * `provider_tokens_reported` is false when the provider does not return a usage
+ * block: calls are counted, tokens are unknown — not zero.
+ */
+export interface LLMUsage {
+  features: LLMFeatureUsage[];
+  total: LLMFeatureUsage;
+  provider_tokens_reported: boolean;
 }
 
 export interface GraphFilter {
@@ -277,6 +320,49 @@ export interface AdaptiveRetrieveParams {
   expansionDepth?: number;
   includeProvenance?: boolean;
   compressContext?: boolean;  // Enable safe lexical compression for LLM optimization (20-35% token reduction)
+  /**
+   * Also return memories hidden by consolidation, archival or supersede.
+   * Without it, those records are invisible on a memory index even though they
+   * still exist and can be restored with `vrestore`.
+   */
+  includeObsolete?: boolean;
+}
+
+/** Physical state of an index arena. */
+export interface ArenaStats {
+  chunk_count: number;
+  chunk_size_bytes: number;
+  disk_bytes: number;
+  total_physical_slots: number;
+  used_physical_slots: number;
+  free_physical_slots: number;
+  fragmentation_ratio: number;
+  next_phys_slot: number;
+  free_list_len: number;
+  dropped_chunks: number;
+  compactor_active: boolean;
+}
+
+/** Cost of one LLM-backed feature. */
+export interface LLMFeatureUsage {
+  feature: string;
+  calls: number;
+  errors: number;
+  prompt_tokens: number;
+  output_tokens: number;
+  total_millis: number;
+}
+
+/**
+ * Process-wide LLM cost report.
+ *
+ * `provider_tokens_reported` is false when the provider does not return a usage
+ * block: calls are counted, tokens are unknown — not zero.
+ */
+export interface LLMUsage {
+  features: LLMFeatureUsage[];
+  total: LLMFeatureUsage;
+  provider_tokens_reported: boolean;
 }
 
 export interface AdaptiveRetrieveResult {
@@ -301,6 +387,49 @@ export interface RagRetrieveParams {
   k?: number;
   includeProvenance?: boolean;
   compressContext?: boolean;  // Enable safe lexical compression for LLM optimization (20-35% token reduction)
+  /**
+   * Also return memories hidden by consolidation, archival or supersede.
+   * Without it, those records are invisible on a memory index even though they
+   * still exist and can be restored with `vrestore`.
+   */
+  includeObsolete?: boolean;
+}
+
+/** Physical state of an index arena. */
+export interface ArenaStats {
+  chunk_count: number;
+  chunk_size_bytes: number;
+  disk_bytes: number;
+  total_physical_slots: number;
+  used_physical_slots: number;
+  free_physical_slots: number;
+  fragmentation_ratio: number;
+  next_phys_slot: number;
+  free_list_len: number;
+  dropped_chunks: number;
+  compactor_active: boolean;
+}
+
+/** Cost of one LLM-backed feature. */
+export interface LLMFeatureUsage {
+  feature: string;
+  calls: number;
+  errors: number;
+  prompt_tokens: number;
+  output_tokens: number;
+  total_millis: number;
+}
+
+/**
+ * Process-wide LLM cost report.
+ *
+ * `provider_tokens_reported` is false when the provider does not return a usage
+ * block: calls are counted, tokens are unknown — not zero.
+ */
+export interface LLMUsage {
+  features: LLMFeatureUsage[];
+  total: LLMFeatureUsage;
+  provider_tokens_reported: boolean;
 }
 
 export interface RagRetrieveResult {

@@ -151,7 +151,10 @@ func (r *Recorder) Snapshot() UsageSnapshot {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	snap := UsageSnapshot{}
+	// Features initialized non-nil: JSON `null` for an empty list forces every
+	// client to guard against it (`for f in usage.features` crashes on null).
+	// An empty report is `[]`, which is unambiguous.
+	snap := UsageSnapshot{Features: []FeatureUsageEntry{}}
 	var anyTokens bool
 	for name, b := range r.features {
 		entry := FeatureUsageEntry{

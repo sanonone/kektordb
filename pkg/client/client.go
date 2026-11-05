@@ -2002,3 +2002,143 @@ func (c *Client) DiffArtifactVersions(name, entityType, entityID string, v1, v2 
 	}
 	return resp, nil
 }
+
+// ------------------------------------------------------------------ options types
+
+// VSearchOptions tunes a search. The zero value is the safe default: on a memory
+// index, superseded and archived records are hidden.
+type VSearchOptions struct {
+	// IncludeObsolete returns also records hidden by consolidation, archival or
+	// supersede. Useful for audit, debugging and re-consolidation.
+	IncludeObsolete bool
+}
+
+// LLMUsageFeature is the cost of one LLM-backed feature.
+type LLMUsageFeature struct {
+	Feature      string `json:"feature"`
+	Calls        int64  `json:"calls"`
+	Errors       int64  `json:"errors"`
+	PromptTokens int64  `json:"prompt_tokens"`
+	OutputTokens int64  `json:"output_tokens"`
+	TotalMillis  int64  `json:"total_millis"`
+}
+
+// LLMUsage is the process-wide cost report.
+type LLMUsage struct {
+	Features []LLMUsageFeature `json:"features"`
+	Total    LLMUsageFeature   `json:"total"`
+	// TokensReported is false when the provider never returned a usage block:
+	// calls are counted, tokens are unknown, not zero.
+	TokensReported bool `json:"provider_tokens_reported"`
+}
+
+// ArenaStats is the physical state of an arena.
+type ArenaStats struct {
+	ChunkCount         int     `json:"chunk_count"`
+	ChunkSizeBytes     int64   `json:"chunk_size_bytes"`
+	DiskBytes          int64   `json:"disk_bytes"`
+	TotalPhysicalSlots int     `json:"total_physical_slots"`
+	UsedPhysicalSlots  int     `json:"used_physical_slots"`
+	FreePhysicalSlots  int     `json:"free_physical_slots"`
+	FragmentationRatio float64 `json:"fragmentation_ratio"`
+	NextPhysSlot       uint32  `json:"next_phys_slot"`
+	FreeListLen        int     `json:"free_list_len"`
+	DroppedChunks      int     `json:"dropped_chunks"`
+	CompactorActive    bool    `json:"compactor_active"`
+}
+
+// VSearchOptions performs the same search as VSearch with explicit options.
+//
+// VSearch without options hides superseded and archived memories on a memory
+// index. Those records are still there and recoverable — the HTTP API exposes
+// include_obsolete — but the Go client had no way to ask for them, so an SDK
+// user could not audit or restore what consolidation had hidden.
+func (c *Client) VSearchOptions(indexName string, k int, queryVector []float32, filter string, efSearch int, alpha float64, graphFilter *GraphQuery, opts VSearchOptions) ([]string, error) {
+	payload := map[string]interface{}{
+		"index_name":   indexName,
+		"k":            k,
+		"query_vector": queryVector,
+	}
+	if filter != "" {
+		payload["filter"] = filter
+	}
+	if efSearch > 0 {
+		payload["ef_search"] = efSearch
+	}
+	if alpha != 0 {
+		payload["alpha"] = alpha
+	}
+	if graphFilter != nil {
+		payload["graph_filter"] = graphFilter
+	}
+	if opts.IncludeObsolete {
+		payload["include_obsolete"] = true
+	}
+
+	respBody, err := c.jsonRequest(http.MethodPost, "/vector/actions/search", payload)
+	if err != nil {
+		return nil, err
+	}
+	var resp searchResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for VSearchOptions: %w", err)
+	}
+	return resp.Results, nil
+}
+
+// GetLLMUsage returns what each LLM-backed feature has cost in this process.
+//
+// The same data is at GET /system/llm-usage. Exposed on the client so an
+// application can read it without hand-rolling an HTTP request.
+func (c *Client) GetLLMUsage() (*LLMUsage, error) {
+	respBody, err := c.jsonRequest(http.MethodGet, "/system/llm-usage", nil)
+	if err != nil {
+		return nil, err
+	}
+	var usage LLMUsage
+	if err := json.Unmarshal(respBody, &usage); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for GetLLMUsage: %w", err)
+	}
+	return &usage, nil
+}
+
+// ResetLLMUsage clears the per-feature counters, so the next report covers a
+// specific window instead of the whole process lifetime.
+func (c *Client) ResetLLMUsage() error {
+	_, err := c.jsonRequest(http.MethodPost, "/system/llm-usage/reset", nil)
+	return err
+}
+
+// GetArenaStats returns the physical state of an index's arena: how much of it
+// is in use, how fragmented it is, and how much space it occupies on disk.
+func (c *Client) GetArenaStats(indexName string) (*ArenaStats, error) {
+	respBody, err := c.jsonRequest(http.MethodGet, fmt.Sprintf("/vector/indexes/%s/arena-stats", indexName), nil)
+	if err != nil {
+		return nil, err
+	}
+	var stats ArenaStats
+	if err := json.Unmarshal(respBody, &stats); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for GetArenaStats: %w", err)
+	}
+	return &stats, nil
+}
+
+// Embed computes embeddings for the given texts using the server's own embedder.
+//
+// Server-side embedding keeps the vector space identical to the one used at
+// ingest: a client that embeds locally with a different model would write
+// vectors that are not comparable with the stored ones.
+func (c *Client) Embed(texts []string) ([][]float32, error) {
+	payload := map[string]interface{}{"texts": texts}
+	respBody, err := c.jsonRequest(http.MethodPost, "/embeddings", payload)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Embeddings [][]float32 `json:"embeddings"`
+	}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("invalid JSON response for Embed: %w", err)
+	}
+	return resp.Embeddings, nil
+}

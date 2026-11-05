@@ -32,6 +32,8 @@ import type {
   Reflection,
   SearchResult,
   SearchParams,
+  ArenaStats,
+  LLMUsage,
   StartSessionParams,
   StartSessionResult,
   SubgraphResult,
@@ -210,6 +212,57 @@ export class KektorDBClient {
     return this.request("GET", `/vector/indexes/${indexName}`);
   }
 
+
+  /**
+   * Restores a memory hidden by consolidation, archival or supersede.
+   *
+   * Without a restore, an archived memory is invisible to search even though it
+   * still exists: this is the way back.
+   */
+  async vrestore(indexName: string, vectorId: string): Promise<void> {
+    await this.request("POST", "/vector/actions/restore", {
+      index_name: indexName,
+      id: vectorId,
+    });
+  }
+
+  /**
+   * Physical state of an index arena: slots used, fragmentation, disk bytes.
+   *
+   * A high `fragmentation_ratio` means many freed slots are not being reused,
+   * which is when a vacuum is worth running.
+   */
+  async getArenaStats(indexName: string): Promise<ArenaStats> {
+    return this.request("GET", `/vector/indexes/${indexName}/arena-stats`);
+  }
+
+  /**
+   * What each LLM-backed feature has cost in this process.
+   *
+   * `provider_tokens_reported` is false when the provider does not return a
+   * usage block: calls are counted, tokens are unknown (not zero).
+   */
+  async getLLMUsage(): Promise<LLMUsage> {
+    return this.request("GET", "/system/llm-usage");
+  }
+
+  /** Clears the per-feature counters, to measure a specific window. */
+  async resetLLMUsage(): Promise<void> {
+    await this.request("POST", "/system/llm-usage/reset");
+  }
+
+  /**
+   * Computes embeddings with the server's own embedder.
+   *
+   * Server-side embedding keeps the vector space identical to the one used at
+   * ingest: a client that embeds locally with a different model would write
+   * vectors that are not comparable with the stored ones.
+   */
+  async embed(texts: string[]): Promise<number[][]> {
+    const data = await this.request("POST", "/embeddings", { texts });
+    return data.embeddings ?? [];
+  }
+
   async deleteIndex(indexName: string): Promise<void> {
     await this.request("DELETE", `/vector/indexes/${indexName}`);
   }
@@ -317,6 +370,7 @@ export class KektorDBClient {
     if (params.includeRelations) payload.include_relations = params.includeRelations;
     if (params.hydrateRelations) payload.hydrate_relations = true;
     if (params.compressContext) payload.compress_context = true;
+    if (params.includeObsolete) payload.include_obsolete = true;
 
     const data = await this.request("POST", "/vector/actions/search", payload);
     return data.results ?? [];

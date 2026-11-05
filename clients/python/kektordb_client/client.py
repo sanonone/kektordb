@@ -268,6 +268,67 @@ class KektorDBClient:
         """Deletes an entire vector index and all its data."""
         self._request("DELETE", f"/vector/indexes/{index_name}")
 
+
+    # ------------------------------------------------------------ memory lifecycle
+
+    def vrestore(self, index_name: str, vector_id: str) -> None:
+        """Restores a memory hidden by consolidation, archival or supersede.
+
+        Without a restore, an archived memory is invisible to search even though
+        it still exists: this is the way back. Raises APIError when the memory is
+        neither superseded nor archived, or when it was physically deleted.
+        """
+        self._request(
+            "POST",
+            "/vector/actions/restore",
+            json={"index_name": index_name, "id": vector_id},
+        )
+
+    def get_arena_stats(self, index_name: str) -> Dict[str, Any]:
+        """Physical state of an index arena: slots used, fragmentation, disk bytes.
+
+        Useful to see whether a vacuum is worth running: a high
+        `fragmentation_ratio` means many freed slots are not being reused.
+        """
+        return self._request("GET", f"/vector/indexes/{index_name}/arena-stats")
+
+    # ------------------------------------------------------------ introspection
+
+    def get_llm_usage(self) -> Dict[str, Any]:
+        """What each LLM-backed feature has cost in this process.
+
+        Returns calls, errors, prompt/output tokens and wall time per feature,
+        plus a `total`. `provider_tokens_reported` is False when the provider
+        does not return a usage block: calls are counted, tokens are unknown
+        (not zero).
+
+        `features` is always a list, never None: the server sends null when no
+        LLM call has happened yet, and a caller doing `for f in usage["features"]`
+        should not have to guard against it.
+        """
+        data = self._request("GET", "/system/llm-usage")
+        if not isinstance(data, dict):
+            data = {}
+        if data.get("features") is None:
+            data["features"] = []
+        return data
+
+    def reset_llm_usage(self) -> None:
+        """Clears the per-feature counters, to measure a specific window."""
+        self._request("POST", "/system/llm-usage/reset")
+
+    # ------------------------------------------------------------ embeddings
+
+    def embed(self, texts: List[str]) -> List[List[float]]:
+        """Computes embeddings with the server's own embedder.
+
+        Server-side embedding keeps the vector space identical to the one used at
+        ingest. A client that embeds locally with a different model would write
+        vectors that are not comparable with the stored ones.
+        """
+        data = self._request("POST", "/embeddings", json={"texts": texts})
+        return data.get("embeddings", [])
+
     def vcompress(self, index_name: str, precision: str, wait: bool = True) -> Task:
         """
         AVVIA la compressione di un indice.
@@ -449,6 +510,7 @@ class KektorDBClient:
         hydrate_relations: bool = False,
         timeout: Union[int, float, None] = None,
         compress_context: bool = False,
+        include_obsolete: bool = False,
     ) -> Union[List[str], List[Dict[str, Any]]]:
         """
         Performs a nearest neighbor search in an index.
@@ -508,6 +570,9 @@ class KektorDBClient:
 
         if compress_context:
             payload["compress_context"] = True
+
+        if include_obsolete:
+            payload["include_obsolete"] = True
 
         kwargs = {"timeout": timeout} if timeout is not None else {}
         data = self._request("POST", "/vector/actions/search", json=payload, **kwargs)
