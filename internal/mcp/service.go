@@ -24,6 +24,7 @@ import (
 	"github.com/sanonone/kektordb/pkg/core/hnsw"
 	"github.com/sanonone/kektordb/pkg/embeddings"
 	"github.com/sanonone/kektordb/pkg/engine"
+	"github.com/sanonone/kektordb/pkg/llm"
 	"github.com/sanonone/kektordb/pkg/rag"
 	"github.com/sanonone/kektordb/pkg/transfer"
 )
@@ -3557,6 +3558,40 @@ func (s *Service) ExtractSubgraph(ctx context.Context, req *mcp.CallToolRequest,
 	result.EdgeCount = len(result.Edges)
 	if result.NodeCount == 0 {
 		result.Message = "no nodes found in subgraph"
+	}
+	return nil, result, nil
+}
+
+// GetLLMUsage reports per-feature LLM consumption for the current process.
+//
+// Perche' un tool e non solo l'endpoint HTTP: l'agente stesso puo' rispondere a
+// "quanto stai costando?" senza che l'operatore debba lasciare la conversazione.
+func (s *Service) GetLLMUsage(ctx context.Context, req *mcp.CallToolRequest, args GetLLMUsageArgs) (*mcp.CallToolResult, GetLLMUsageResult, error) {
+	snap := llm.Default.Snapshot()
+	result := GetLLMUsageResult{TokensReported: snap.ProviderTokensReported}
+	for _, f := range snap.Features {
+		result.Features = append(result.Features, LLMFeatureUsage{
+			Feature:      f.Feature,
+			Calls:        f.Calls,
+			Errors:       f.Errors,
+			PromptTokens: f.PromptTokens,
+			OutputTokens: f.OutputTokens,
+			TotalMillis:  f.TotalMillis,
+		})
+	}
+	result.Total = LLMFeatureUsage{
+		Feature:      "total",
+		Calls:        snap.Total.Calls,
+		Errors:       snap.Total.Errors,
+		PromptTokens: snap.Total.PromptTokens,
+		OutputTokens: snap.Total.OutputTokens,
+		TotalMillis:  snap.Total.TotalMillis,
+	}
+	if len(result.Features) == 0 {
+		result.Message = "no LLM calls recorded yet (the cognitive engine has not run, or no LLM is configured)"
+	}
+	if !snap.ProviderTokensReported && len(result.Features) > 0 {
+		result.Message = "provider does not report token usage: calls are counted, tokens are unknown (not zero)"
 	}
 	return nil, result, nil
 }

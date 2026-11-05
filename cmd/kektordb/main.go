@@ -182,7 +182,9 @@ func main() {
 
 	mcpLogFileFlag := flag.String("mcp-log-file", "", "Log file path for MCP mode (default: <data-dir>/kektordb_mcp.log)")
 
-	toolsFlag := flag.String("tools", "all", "MCP tool profile: all, agent, admin, or comma-separated tool names")
+	toolsFlag := flag.String("tools", "all",
+		"MCP tool profile: minimal (8), standard (19), full (48), admin (12), agent (legacy, 49), "+
+			"all, or comma-separated tool names. Profiles and names can be combined: --tools=minimal,kv_get")
 
 	embedderModeFlag := flag.String("embedder", "auto", "Embedder mode: auto, ollama, openai, local")
 	embedderModelFlag := flag.String("embedder-model", "", "Path to directory with ONNX model and tokenizer (local mode)")

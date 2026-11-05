@@ -390,6 +390,14 @@ func registerTools(s *mcp.Server, service *Service, allowlist map[string]bool) {
 		}, service.GetStats)
 	}
 
+	if shouldRegister(ToolGetLLMUsage, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name: ToolGetLLMUsage,
+			Description: "What each LLM-backed feature has cost in this process: calls, errors, prompt/output tokens, wall time. " +
+				"Use it to answer 'how expensive am I?' or to find which detector dominates the bill.",
+		}, service.GetLLMUsage)
+	}
+
 	if shouldRegister(ToolGetPersistenceStatus, allowlist) {
 		mcp.AddTool(s, &mcp.Tool{
 			Name:        ToolGetPersistenceStatus,

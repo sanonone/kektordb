@@ -1091,3 +1091,28 @@ type SubgraphEdgeJSON struct {
 	Relation string `json:"relation"`
 	Dir      string `json:"dir"`
 }
+
+// GetLLMUsage: what each LLM-backed feature has cost in this process.
+//
+// Exists so an agent can answer "how much have you cost me?" and so an operator
+// can see which detector dominates the bill without leaving the conversation.
+// The same data is at GET /system/llm-usage.
+type GetLLMUsageArgs struct{}
+
+type LLMFeatureUsage struct {
+	Feature      string `json:"feature"`
+	Calls        int64  `json:"calls"`
+	Errors       int64  `json:"errors"`
+	PromptTokens int64  `json:"prompt_tokens"`
+	OutputTokens int64  `json:"output_tokens"`
+	TotalMillis  int64  `json:"total_millis"`
+}
+
+type GetLLMUsageResult struct {
+	Features []LLMFeatureUsage `json:"features"`
+	Total    LLMFeatureUsage   `json:"total"`
+	// TokensReported is false when the provider never returned a usage block:
+	// calls are counted, tokens are unknown, not zero.
+	TokensReported bool   `json:"tokens_reported"`
+	Message        string `json:"message,omitempty"`
+}

@@ -37,14 +37,19 @@ func TestGetMemoryInstructionsPrompt(t *testing.T) {
 	body := tc.Text
 	// Spot-check the most important sections so future edits to the
 	// memory_instructions.md file are caught by tests.
+	// Sezioni che un agente deve trovare: il ciclo base (salva/ricorda) e il
+	// grafo. `session_id` e' stato tolto: le sessioni le gestisce il client,
+	// non l'agente, e il protocollo non deve suggerire il contrario.
 	wantSubstrings := []string{
 		"KektorDB Persistent Memory",
 		"WHEN TO SAVE",
 		"save_memory",
 		"layer",
 		"tags",
-		"session_id",
 		"WHEN TO RECALL",
+		"create_entity",
+		"explore_connections",
+		"delete_memory",
 	}
 	for _, s := range wantSubstrings {
 		if !strings.Contains(body, s) {

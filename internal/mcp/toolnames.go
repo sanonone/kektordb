@@ -58,6 +58,7 @@ const (
 	ToolKVDelete          = "kv_delete"
 	// Fase 2 P2 expansion Batch 2: engine stats + profile refresh
 	ToolGetStats             = "get_stats"
+	ToolGetLLMUsage          = "get_llm_usage"
 	ToolGetPersistenceStatus = "get_persistence_status"
 	ToolRefreshUserProfile   = "refresh_user_profile"
 	// Fase 2 P2 expansion Batch 3: graph edges + artifact diff + summarize
@@ -137,6 +138,106 @@ var allToolNames = map[string]bool{
 // ProfileAgent contains tools useful for AI coding agents.
 // Filters out admin-only tools (list_vectors, filter_vectors, transfer_memory, etc.)
 // to reduce token usage in the agent's context.
+// ProfileMinimal is the smallest set that still gives a complete experience:
+// write, read (plain and scoped), know the user, use the graph (create, connect,
+// explore) and correct mistakes.
+//
+// Kept small on purpose. An agent that receives 49 tools must choose among them,
+// and choosing badly is the failure mode we see most: the tools are not the
+// bottleneck, the decision is.
+var ProfileMinimal = map[string]bool{
+	ToolSaveMemory:         true,
+	ToolRecallMemory:       true,
+	ToolScopedRecall:       true,
+	ToolGetUserProfile:     true,
+	ToolCreateEntity:       true,
+	ToolConnectEntities:    true,
+	ToolExploreConnections: true,
+	ToolDeleteMemory:       true,
+}
+
+// ProfileStandard adds sessions, the remaining read variants, memory evolution
+// and epistemic conflict resolution.
+var ProfileStandard = map[string]bool{
+	ToolSaveMemory:         true,
+	ToolRecallMemory:       true,
+	ToolScopedRecall:       true,
+	ToolGetUserProfile:     true,
+	ToolCreateEntity:       true,
+	ToolConnectEntities:    true,
+	ToolExploreConnections: true,
+	ToolDeleteMemory:       true,
+	// sessions
+	ToolStartSession: true,
+	ToolEndSession:   true,
+	ToolListSessions: true,
+	// more reads
+	ToolAdaptiveRetrieve: true,
+	ToolSearchWithScores: true,
+	ToolGetMemory:        true,
+	ToolGetMemories:      true,
+	// evolution and epistemic
+	ToolEvolveMemory:       true,
+	ToolGetMemoryEvolution: true,
+	ToolAssessBelief:       true,
+	ToolResolveConflict:    true,
+}
+
+// ProfileFull is everything memory-related, including the introspection and KV
+// tools: an agent that can answer "how much did you cost me?" is more useful
+// than one that cannot. Administrative operations (snapshot, AOF, embedder,
+// persistence) stay in ProfileAdmin.
+var ProfileFull = map[string]bool{
+	ToolSaveMemory:           true,
+	ToolRecallMemory:         true,
+	ToolScopedRecall:         true,
+	ToolGetUserProfile:       true,
+	ToolCreateEntity:         true,
+	ToolConnectEntities:      true,
+	ToolExploreConnections:   true,
+	ToolDeleteMemory:         true,
+	ToolStartSession:         true,
+	ToolEndSession:           true,
+	ToolListSessions:         true,
+	ToolAdaptiveRetrieve:     true,
+	ToolSearchWithScores:     true,
+	ToolGetMemory:            true,
+	ToolGetMemories:          true,
+	ToolEvolveMemory:         true,
+	ToolGetMemoryEvolution:   true,
+	ToolAssessBelief:         true,
+	ToolResolveConflict:      true,
+	ToolFindConnection:       true,
+	ToolFindPath:             true,
+	ToolGetRelations:         true,
+	ToolGetEdgeDetails:       true,
+	ToolExtractSubgraph:      true,
+	ToolUnlinkEntities:       true,
+	ToolReinforceMemory:      true,
+	ToolSummarizeMemories:    true,
+	ToolCheckSubconscious:    true,
+	ToolAskMetaQuestion:      true,
+	ToolRequestKnowledge:     true,
+	ToolTriggerReflection:    true,
+	ToolListReflections:      true,
+	ToolGetGardenerStatus:    true,
+	ToolListIndexes:          true,
+	ToolGetStats:             true,
+	ToolGetLLMUsage:          true,
+	ToolRefreshUserProfile:   true,
+	ToolListUserProfiles:     true,
+	ToolKVGet:                true,
+	ToolKVSet:                true,
+	ToolKVDelete:             true,
+	ToolListArtifacts:        true,
+	ToolListTemplates:        true,
+	ToolGetArtifactHistory:   true,
+	ToolGetArtifactStaleness: true,
+	ToolDiffArtifactVersions: true,
+	ToolForceRecompile:       true,
+	ToolTransferMemory:       true,
+}
+
 var ProfileAgent = map[string]bool{
 	ToolSaveMemory:         true,
 	ToolRecallMemory:       true,
@@ -205,11 +306,21 @@ var ProfileAdmin = map[string]bool{
 	// Fase 3 P2: index lifecycle
 	ToolCreateIndex: true,
 	ToolDeleteIndex: true,
+	// Manutenzione del server: un agente non deve poter fare snapshot o
+	// compattare l'AOF. Se un operatore li vuole in una sessione agente,
+	// scrive --tools=full,admin.
+	ToolSaveSnapshot:         true,
+	ToolCompactAOF:           true,
+	ToolGetEmbedderStatus:    true,
+	ToolGetPersistenceStatus: true,
 }
 
 var profiles = map[string]map[string]bool{
-	"agent": ProfileAgent,
-	"admin": ProfileAdmin,
+	"agent":    ProfileAgent, // legacy: kept as an alias of standard
+	"minimal":  ProfileMinimal,
+	"standard": ProfileStandard,
+	"full":     ProfileFull,
+	"admin":    ProfileAdmin,
 }
 
 // ResolveTools converts a filter string into an allowlist.
@@ -241,7 +352,12 @@ func ResolveTools(input string) map[string]bool {
 		}
 	}
 	if len(result) == 0 {
-		return nil // empty allowlist = all
+		// Nessun token valido: NON significa "tutti i tool". Prima tornava nil,
+		// che il chiamante interpreta come "registra tutto": un typo in
+		// --tools=save_memroy esponeva l'intera superficie, admin compresa.
+		// Si restituisce una mappa vuota e non-nil, cosi' shouldRegister
+		// risponde false a ogni tool.
+		return map[string]bool{}
 	}
 	return result
 }
