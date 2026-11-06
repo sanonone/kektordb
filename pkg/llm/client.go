@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,6 +13,13 @@ import (
 	"sync"
 	"time"
 )
+
+// ErrEmptyResponse is returned when the provider answers successfully but
+// carries no text. A completion with no content is not a result: it usually
+// means an expired API key, an exhausted quota, a wrong model name or a token
+// budget consumed before any output. Callers must be able to tell this apart
+// from a normal answer, so it surfaces as an error rather than as "".
+var ErrEmptyResponse = errors.New("empty llm response")
 
 // Client defines the interface for interacting with an LLM.
 // This abstraction allows for easy mocking in tests.
@@ -255,6 +263,12 @@ func (c *OpenAIClient) sendRequest(payload interface{}) (string, error) {
 				"finish_reason", chatResp.Choices[0].FinishReason,
 			)
 		}
+
+		// A 200 with no output is not a result. Returning ("", nil) would let
+		// every caller treat an expired key or an exhausted quota as a normal
+		// answer, so surface it as an error instead.
+		return "", fmt.Errorf("%w: no content (finish_reason=%q, body_len=%d)",
+			ErrEmptyResponse, chatResp.Choices[0].FinishReason, len(bodyBytes))
 	}
 
 	return msg.Content, nil
