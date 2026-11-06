@@ -108,11 +108,13 @@ class CognitiveSession:
         if tags:
             meta["tags"] = tags
 
+        vec = self._embed_one(content)
+
         mem_id = f"mem_{int(time.time())}_{uuid.uuid4().hex[:6]}"
         self.client.vadd(
             index_name=self.index_name,
             item_id=mem_id,
-            vector=[0.0, 0.0, 0.0, 0.0],  # Zero-vector 4D (standard test dimension)
+            vector=vec,
             metadata={
                 "content": content,
                 "type": "memory",
@@ -121,6 +123,34 @@ class CognitiveSession:
             },
         )
         return {"id": mem_id, "status": "ok"}
+
+    def _embed_one(self, text: str) -> list:
+        """Embed *text* with the server's own embedder.
+
+        Session memories carry semantic meaning, so they must be stored with a
+        real vector. A zero-vector would make ``recall`` meaningless: every
+        memory would sit at the same distance from every query.
+
+        The vector space must match the one used by the index, so embedding
+        happens server-side (``POST /embeddings``) rather than locally.
+        """
+        try:
+            embeddings = self.client.embed([text])
+        except Exception as exc:  # noqa: BLE001 - re-raised with guidance
+            raise RuntimeError(
+                "Cannot embed text for a session memory: the server has no "
+                "embedder configured (POST /embeddings failed). Start KektorDB "
+                "with an embedder (default: built-in ONNX) or store the memory "
+                "directly with client.vadd(..., vector=...)."
+            ) from exc
+
+        if not embeddings or not embeddings[0]:
+            raise RuntimeError(
+                "The server returned an empty embedding for this text. "
+                "Refusing to store a memory with a zero vector: recall would "
+                "be meaningless. Check the server's embedder configuration."
+            )
+        return embeddings[0]
 
     def recall(self, query: str, k: int = 5) -> Dict[str, Any]:
         """
@@ -140,7 +170,7 @@ class CognitiveSession:
         filter_query = f"session_id='{self.session_id}'"
         return self.client.vsearch(
             index_name=self.index_name,
-            query_vector=[0.0, 0.0, 0.0, 0.0],  # Zero-vector 4D
+            query_vector=self._embed_one(query),
             k=k,
             filter_str=filter_query,
         )

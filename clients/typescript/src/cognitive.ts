@@ -115,10 +115,45 @@ export class CognitiveSession {
       metadata.tags = options.tags;
     }
 
+    // Session memories carry meaning, so they must be stored with a real
+    // vector. A zero-vector would make recall meaningless: every memory would
+    // sit at the same distance from every query.
+    const vector = await this._embedOne(content);
+
     // Generate unique ID for the memory
     const id = `mem_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    await this.client.vadd(this.indexName, id, [0, 0, 0, 0], metadata);
+    await this.client.vadd(this.indexName, id, vector, metadata);
     return { id, status: "ok" };
+  }
+
+  /**
+   * Embed text with the server's own embedder.
+   *
+   * The vector space must match the one used by the index, so embedding
+   * happens server-side (POST /embeddings) rather than locally.
+   */
+  private async _embedOne(text: string): Promise<number[]> {
+    let embeddings: number[][];
+    try {
+      embeddings = await this.client.embed([text]);
+    } catch (err) {
+      throw new Error(
+        "Cannot embed text for a session memory: the server has no embedder " +
+          "configured (POST /embeddings failed). Start KektorDB with an " +
+          `embedder (default: built-in ONNX) or store the memory directly ` +
+          "with client.vadd(..., vector). Original error: " +
+          (err instanceof Error ? err.message : String(err))
+      );
+    }
+
+    if (!embeddings || !embeddings[0] || embeddings[0].length === 0) {
+      throw new Error(
+        "The server returned an empty embedding for this text. Refusing to " +
+          "store a memory with a zero vector: recall would be meaningless. " +
+          "Check the server's embedder configuration."
+      );
+    }
+    return embeddings[0];
   }
 
   /**
@@ -131,11 +166,12 @@ export class CognitiveSession {
 
     return this.client.vsearch({
       indexName: this.indexName,
-      queryVector: [], // Will be embedded
+      queryVector: await this._embedOne(query),
       k,
       filter: `session_id='${this._sessionId}'`,
     });
   }
+
 
   get sessionId(): string | undefined {
     return this._sessionId;

@@ -20,19 +20,9 @@ from kektordb_client import KektorDBClient
 from kektordb_client.cognitive import CognitiveSession, CognitiveOrchestrator
 
 
-# Fixtures
-@pytest.fixture
-def client():
-    """Create a fresh client for each test."""
-    host = os.environ.get("KEKTOR_TEST_HOST", "localhost")
-    port = int(os.environ.get("KEKTOR_TEST_PORT", "9091"))
-    return KektorDBClient(port=port)
-
-
-@pytest.fixture
-def test_index_name():
-    """Generate a unique test index name."""
-    return f"test_index_{uuid.uuid4().hex[:8]}"
+# Fixtures are defined in conftest.py; this module adds no overrides.
+# Redefining `client` here would shadow the session fixture and ignore
+# KEKTOR_TEST_PORT, silently pointing every test at port 9091.
 
 
 @pytest.fixture
@@ -937,13 +927,12 @@ class TestMaintenance:
 class TestCognitiveFeatures:
     """Test cognitive.py features."""
 
-    def test_cognitive_session_context_manager(self, client, test_index_name):
+    def test_cognitive_session_context_manager(self, client, seeded_index):
         """Test CognitiveSession as context manager."""
-        client.vcreate(test_index_name)
-        client.vadd(test_index_name, "seed", [0.1, 0.2, 0.3, 0.4])
+        index_name, _dim = seeded_index
 
         with CognitiveSession(
-            client, index_name=test_index_name, user_id="test_user"
+            client, index_name=index_name, user_id="test_user"
         ) as session:
             assert session.session_id is not None
 
@@ -955,13 +944,11 @@ class TestCognitiveFeatures:
             memories = session.recall("test", k=5)
             # May or may not find results
 
-    def test_cognitive_orchestrator(self, client, test_index_name):
+    def test_cognitive_orchestrator(self, client, seeded_index):
         """Test CognitiveOrchestrator."""
-        # Create index first
-        client.vcreate(test_index_name)
-        client.vadd(test_index_name, "seed", [0.1, 0.2, 0.3, 0.4])
+        index_name, _dim = seeded_index
 
-        orchestrator = CognitiveOrchestrator(client, index_name=test_index_name)
+        orchestrator = CognitiveOrchestrator(client, index_name=index_name)
 
         # Use agent_session as context manager (it starts/ends the session)
         with orchestrator.agent_session(

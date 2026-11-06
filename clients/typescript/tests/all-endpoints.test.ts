@@ -42,6 +42,20 @@ async function isServerAvailable(): Promise<boolean> {
   }
 }
 
+/**
+ * Seed an index with a real embedding so its dimension matches the embedder's.
+ *
+ * Session helpers embed text server-side, so an index seeded with a hardcoded
+ * 4-dim vector would reject every write with a dimension mismatch.
+ */
+async function seedWithEmbedder(
+  client: KektorDBClient,
+  indexName: string
+): Promise<void> {
+  const [seed] = await client.embed(["seed memory"]);
+  await client.vadd(indexName, "seed", seed, { content: "seed" });
+}
+
 async function maybeStartServer(): Promise<ChildProcess | null> {
   if (await isServerAvailable()) {
     console.log("Using existing KektorDB server");
@@ -1091,7 +1105,7 @@ describe("KektorDB Complete API Tests", () => {
   describe("Cognitive Features", () => {
     itIfServer("should use CognitiveSession saveMemory", async () => {
       await client.vcreate({ indexName: testIndexName });
-      await client.vadd(testIndexName, "seed", [0.1, 0.2, 0.3, 0.4]);
+      await seedWithEmbedder(client, testIndexName);
 
       const session = new CognitiveSession(client, {
         indexName: testIndexName,

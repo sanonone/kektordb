@@ -34,7 +34,7 @@ def kektor_server() -> Generator[str, None, None]:
     Otherwise, attempts to start one automatically.
     """
     host = "localhost"
-    port = 9091
+    port = int(os.environ.get("KEKTOR_TEST_PORT", "9091"))
     base_url = f"http://{host}:{port}"
 
     # Check if server already running
@@ -101,7 +101,12 @@ def kektor_server() -> Generator[str, None, None]:
 
 @pytest.fixture
 def client(kektor_server: str) -> KektorDBClient:
-    """Create a fresh client for each test."""
+    """Create a fresh client for each test.
+
+    The port comes from the session fixture, never from a module-local
+    ``os.environ`` lookup: a test module that redefines ``client`` would
+    otherwise silently ignore ``KEKTOR_TEST_PORT``.
+    """
     from urllib.parse import urlparse
 
     parsed = urlparse(kektor_server)
@@ -114,3 +119,28 @@ def test_index_name() -> str:
     import uuid
 
     return f"test_idx_{uuid.uuid4().hex[:8]}"
+
+
+@pytest.fixture
+def seeded_index(client: KektorDBClient, test_index_name: str):
+    """Index seeded with a real embedding, so its dimension is the embedder's.
+
+    Session helpers embed text server-side, so an index seeded with a
+    hardcoded 4-dim vector would reject every write with a dimension
+    mismatch. Tests that exercise sessions must use this fixture.
+
+    Skips (rather than fails) when the server has no embedder: the embedder is
+    an optional dependency, not part of the contract being tested here.
+    """
+    try:
+        seed = client.embed(["seed memory"])[0]
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"server has no embedder configured: {exc}")
+
+    client.vcreate(test_index_name, metric="cosine", m=16, ef_construction=200)
+    client.vadd(test_index_name, "seed", seed, {"content": "seed"})
+    yield test_index_name, len(seed)
+    try:
+        client.delete_index(test_index_name)
+    except Exception:
+        pass

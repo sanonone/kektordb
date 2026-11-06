@@ -34,6 +34,20 @@ async function isServerAvailable(): Promise<boolean> {
   }
 }
 
+/**
+ * Seed an index with a real embedding so its dimension matches the embedder's.
+ *
+ * Session helpers embed text server-side, so an index seeded with a hardcoded
+ * 4-dim vector would reject every write with a dimension mismatch.
+ */
+async function seedWithEmbedder(
+  client: KektorDBClient,
+  indexName: string
+): Promise<void> {
+  const [seed] = await client.embed(["seed memory"]);
+  await client.vadd(indexName, "seed", seed, { content: "seed" });
+}
+
 describe("KektorDB Integration Tests", () => {
   let client: KektorDBClient;
   let serverAvailable = false;
@@ -129,7 +143,7 @@ describe("KektorDB Integration Tests", () => {
         metric: "cosine",
         precision: "float32",
       });
-      await client.vadd(idxName, "seed", [0.1, 0.2, 0.3, 0.4]);
+      await seedWithEmbedder(client, idxName);
     });
 
     afterAll(async () => {
@@ -193,7 +207,7 @@ describe("KektorDB Integration Tests", () => {
         metric: "cosine",
         precision: "float32",
       });
-      await client.vadd(idxName, "seed", [0.1, 0.2, 0.3, 0.4]);
+      await seedWithEmbedder(client, idxName);
     });
 
     afterAll(async () => {
@@ -487,7 +501,7 @@ describe("KektorDB Integration Tests", () => {
         metric: "cosine",
         precision: "float32",
       });
-      await client.vadd(idxName, "seed", [0.1, 0.2, 0.3, 0.4]);
+      await seedWithEmbedder(client, idxName);
     });
 
     afterAll(async () => {

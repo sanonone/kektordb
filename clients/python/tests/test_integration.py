@@ -76,17 +76,14 @@ class TestSessionManagement:
         assert end_result["status"] == "ended"
 
     def test_cognitive_session_context_manager(
-        self, client: KektorDBClient, test_index_name: str
+        self, client: KektorDBClient, seeded_index
     ):
         """Test CognitiveSession as context manager."""
-        # Create index
-        client.vcreate(test_index_name, metric="cosine", m=16, ef_construction=200)
-        # Add seed vector
-        client.vadd(test_index_name, "seed", [0.1, 0.2, 0.3, 0.4])
+        index_name, _dim = seeded_index
 
         with CognitiveSession(
             client=client,
-            index_name=test_index_name,
+            index_name=index_name,
             context="Context manager test",
             agent_id="test_agent",
         ) as session:
