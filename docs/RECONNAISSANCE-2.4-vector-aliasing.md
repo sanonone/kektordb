@@ -1,12 +1,16 @@
 # 2.4 — Aliasing dei vettori restituiti
 
-> **Stato: aperto, non corretto, per scelta.**
-> Documentato il 2026-11-06 durante l'Ondata 2 del piano di consolidamento.
-> Codice di riferimento: `main` @ `2d48c60`.
+> **Stato: CHIUSO** in commit `795f82b` (2026-11-06).
 >
-> Il problema è **reale ma latente**: l'aliasing esiste ed è dimostrabile, ma
-> nessun percorso in produzione scrive oggi nel vettore restituito. Toccare il
-> percorso caldo senza misure è stato giudicato un rischio maggiore del problema.
+> Questo documento contiene l'analisi originale, che ha guidato la decisione.
+> Il fix, il costo misurato e le ottimizzazioni future sono in
+> **`docs/vector-ownership.md`**.
+>
+> Riassunto: il problema si è rivelato **attivo**, non latente. Oltre alla
+> corruzione per scrittura, un ciclo di background che leggeva un vettore dopo
+> `Close()` andava in SIGSEGV (riprodotto al 100%). Il fix ha due parti — copia
+> ai bordi pubblici e `activeMu` sulle letture — perché la sola copia spostava
+> il crash dentro la copia stessa.
 
 ---
 
