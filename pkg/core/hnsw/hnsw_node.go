@@ -44,6 +44,11 @@ func (n *Node) SetVector(v *vecData) {
 }
 
 // GetVectorF32 returns the float32 vector slice, or nil if not set.
+//
+// The result aliases live index memory: when the index is arena-backed it points
+// into the mmap region, otherwise into the heap slice given to Add. It is valid
+// only while the node keeps its current vecData pointer, which a compaction
+// cycle or a re-add replaces. Never modify the returned slice.
 func (n *Node) GetVectorF32() []float32 {
 	if vd := n.vec.Load(); vd != nil {
 		return vd.F32

@@ -507,11 +507,27 @@ func (e *Engine) GetArenaStats(indexName string) (mmap.ArenaStats, error) {
 }
 
 // VGet retrieves the full data (vector + metadata) for a single ID.
+//
+// The returned Vector is not a copy. On a float32 index it points into the
+// arena's memory-mapped file, so assigning to an element changes what the index
+// stores: subsequent searches compute distances against the modified values and
+// can return scores outside the metric's range. A caller that needs to edit the
+// vector must clone it first:
+//
+//	data, _ := eng.VGet(idx, id)
+//	vec := append([]float32(nil), data.Vector...)
+//
+// TODO(aliasing): return a copy from this method. Deferred until there are
+// benchmarks for VGetMany on large hydration workloads; see
+// docs/RECONNAISSANCE-2.4-vector-aliasing.md for the analysis and options.
 func (e *Engine) VGet(indexName, id string) (core.VectorData, error) {
 	return e.DB.GetVector(indexName, id)
 }
 
 // VGetMany retrieves data for multiple IDs in parallel.
+//
+// Same contract as VGet: the Vector fields alias index memory and must be
+// cloned before being modified. See TODO(aliasing) above.
 func (e *Engine) VGetMany(indexName string, ids []string) ([]core.VectorData, error) {
 	return e.DB.GetVectors(indexName, ids)
 }

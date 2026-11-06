@@ -517,6 +517,13 @@ func (va *VectorArena) addChunk(chunkID int) error {
 // --- I/O AND MEMORY ---
 
 // GetBytes returns a slice pointing to the mapped region.
+//
+// The slice is not a copy: it is a window onto the arena file. Writing to it
+// mutates the stored vector. It also stops being valid when a compaction cycle
+// moves the slot, and the page itself is dropped once the chunk is released, so
+// callers must not retain the slice beyond the operation that needs it.
+//
+// Callers that need an owned copy must clone: `append([]byte(nil), b...)`.
 func (va *VectorArena) GetBytes(internalID uint32) ([]byte, error) {
 	if va.closed.Load() {
 		return nil, fmt.Errorf("arena is closed")

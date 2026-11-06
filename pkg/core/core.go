@@ -599,6 +599,23 @@ func (s *DB) GetSingleVectorIndexInfoAPI(name string) (IndexInfo, error) {
 }
 
 // GetVector retrieves the complete data for a single vector given its external ID.
+//
+// The returned VectorData.Vector is NOT a copy: for float32 indexes it is a
+// slice pointing straight into the arena's mmap region, so writing to it
+// mutates the index. Distances recomputed afterwards read the modified values,
+// which can push scores far outside the valid range — a single write can make a
+// node unreachable by search.
+//
+// Callers that need to modify the vector must copy it first:
+//
+//	vec := append([]float32(nil), data.Vector...)
+//
+// float16 and int8 indexes are dequantized into a fresh slice, so for those the
+// result is already a copy.
+//
+// The same contract applies to GetVectors and to Engine.VGet/VGetMany, which
+// forward this value unchanged. Known issue, not yet fixed: see the aliasing
+// note in docs/RECONNAISSANCE-2.4-vector-aliasing.md.
 func (s *DB) GetVector(indexName, vectorID string) (VectorData, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -629,6 +646,11 @@ func (s *DB) GetVector(indexName, vectorID string) (VectorData, error) {
 
 // GetVectors retrieves the complete data for a slice of vector IDs in parallel.
 // If an ID is not found, it is simply omitted from the returned slice.
+//
+// Like GetVector, the Vector field of each result aliases the arena mmap for
+// float32 indexes: copying before modifying is the caller's responsibility.
+// The slices of different results must also not be assumed to be contiguous or
+// stable across a compaction cycle.
 func (s *DB) GetVectors(indexName string, vectorIDs []string) ([]VectorData, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

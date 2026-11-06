@@ -3038,6 +3038,10 @@ func (h *Index) Iterate(callback func(id string, vector []float32)) {
 
 // IterateRaw iterates over non-deleted nodes and passes the external ID and the RAW vector
 // (as an interface{}) to the callback.
+//
+// The vector handed to the callback aliases live index memory. The callback must
+// not modify it, and must not retain it past the call: a compaction cycle moves
+// the backing bytes and leaves retained slices pointing at unmapped pages.
 func (h *Index) IterateRaw(callback func(id string, vector interface{})) {
 	h.metaMu.RLock()
 	defer h.metaMu.RUnlock()
@@ -3130,6 +3134,12 @@ func (h *Index) GetParameters() (distance.DistanceMetric, int, int) {
 
 // GetNodeData retrieves the complete data for a node (decompressed/dequantized)
 // given its external ID.
+//
+// For float32 indexes the Vector field aliases the arena mmap; for float16 and
+// int8 it is a freshly allocated slice. Callers inside this package may use the
+// alias directly, but anything crossing into DB.GetVector or Engine.VGet must
+// copy first, or a caller's write corrupts the index. See the aliasing note in
+// docs/RECONNAISSANCE-2.4-vector-aliasing.md.
 func (h *Index) GetNodeData(externalID string) (types.NodeData, bool) {
 	h.metaMu.RLock()
 	defer h.metaMu.RUnlock()
