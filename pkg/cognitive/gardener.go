@@ -3437,7 +3437,23 @@ func (g *Gardener) detectCrossValidator(indexName string) {
 			}
 		}
 
-		// Geometric mean of confidences × diversity boost
+		// Geometric mean of confidences × diversity boost.
+		//
+		// A geometric mean needs at least one factor. With an empty slice the
+		// exponent below becomes 1/0 = +Inf and math.Pow(1.0, +Inf) is 1.0, so a
+		// reflection backed by no measurement would be stored as high_confidence
+		// at the top of the scale. That case is reachable: detector edges can
+		// point at a reflection whose VAdd failed or whose confidence is not a
+		// float64. No evidence means no verdict.
+		if len(confidences) == 0 {
+			slog.Warn("[Gardener] Cross-validation skipped: detectors flagged the entity but no confidence was readable",
+				"entity", entityID,
+				"detectors", strings.Join(detectorNames, ", "),
+				"reflections", strings.Join(allReflectionIDs, ", "),
+			)
+			continue
+		}
+
 		product := 1.0
 		for _, c := range confidences {
 			product *= c
