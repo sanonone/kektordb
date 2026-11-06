@@ -454,10 +454,40 @@ func (s *Server) handleIndexMaintenance(w http.ResponseWriter, r *http.Request) 
 
 // --- KV HANDLERS ---
 
+// reservedKVPrefix marks the namespace holding server-owned state: the ECDSA
+// signing key, the token revocation denylist and the API-key policies.
+//
+// Exposing it over HTTP is a privilege escalation: the signing key is private,
+// and token verification only needs the public half, so anyone who reads it can
+// mint a token with role=admin. Writing it lets an attacker install their own
+// key; deleting it invalidates every issued token.
+const reservedKVPrefix = "_sys_"
+
+// isReservedKVKey reports whether key belongs to the server-owned namespace.
+func isReservedKVKey(key string) bool {
+	return strings.HasPrefix(key, reservedKVPrefix)
+}
+
+// rejectReservedKV writes the error for a request against the reserved
+// namespace and reports whether it handled the request.
+func (s *Server) rejectReservedKV(w http.ResponseWriter, key string) bool {
+	if !isReservedKVKey(key) {
+		return false
+	}
+	slog.Warn("KV access to reserved namespace denied", "key", key)
+	s.writeHTTPError(w, http.StatusForbidden,
+		fmt.Errorf("key %q belongs to the reserved %q namespace and is not accessible over HTTP",
+			key, reservedKVPrefix))
+	return true
+}
+
 func (s *Server) handleKVGet(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	if key == "" {
 		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("key cannot be empty"))
+		return
+	}
+	if s.rejectReservedKV(w, key) {
 		return
 	}
 	value, found := s.Engine.KVGet(key)
@@ -472,6 +502,9 @@ func (s *Server) handleKVSet(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	if key == "" {
 		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("key cannot be empty"))
+		return
+	}
+	if s.rejectReservedKV(w, key) {
 		return
 	}
 	var req struct {
@@ -493,6 +526,9 @@ func (s *Server) handleKVDelete(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	if key == "" {
 		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("key cannot be empty"))
+		return
+	}
+	if s.rejectReservedKV(w, key) {
 		return
 	}
 	if err := s.Engine.KVDelete(key); err != nil {
