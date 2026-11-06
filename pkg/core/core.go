@@ -296,9 +296,10 @@ func (s *DB) Snapshot(writer io.Writer) error {
 		}
 	}
 
-	encoder := gob.NewEncoder(writer)
-	if err := encoder.Encode(snapshot); err != nil {
-		return fmt.Errorf("failed to encode snapshot: %w", err)
+	// Framed format: magic, version, length, CRC, then the gob stream.
+	// See snapshot_format.go for why the header exists and what it buys.
+	if err := snapshotWriteEncode(writer, &snapshot); err != nil {
+		return err
 	}
 
 	return nil
@@ -307,10 +308,9 @@ func (s *DB) Snapshot(writer io.Writer) error {
 // LoadFromSnapshot deserializes a gob snapshot from an io.Reader and restores
 // the store's state. It clears the current store state before loading.
 func (s *DB) LoadFromSnapshot(reader io.Reader, basePath string) error {
-	decoder := gob.NewDecoder(reader)
-	var snapshot Snapshot
-	if err := decoder.Decode(&snapshot); err != nil {
-		return fmt.Errorf("failed to decode snapshot: %w", err)
+	snapshot, err := snapshotReadDecode(reader)
+	if err != nil {
+		return err
 	}
 
 	// Acquire all locks before modifying shared state.

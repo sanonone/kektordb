@@ -653,10 +653,32 @@ func (e *Engine) saveSnapshotLocked() error {
 		return fmt.Errorf("failed to close snapshot file: %w", err)
 	}
 
+	// STEP 3b: Keep the previous snapshot as a fallback.
+	//
+	// The rename below replaces the only copy of the database state. Without a
+	// fallback, a snapshot that is internally wrong — a bug in the encoder, a
+	// bad bit the CRC cannot catch because it was computed over the bad data —
+	// leaves no way back. The copy is best-effort: failing to keep a backup must
+	// not abort a snapshot that is otherwise fine.
+	if _, statErr := os.Stat(e.snapPath); statErr == nil {
+		if copyErr := copyFile(e.snapPath, e.snapPath+".bak"); copyErr != nil {
+			slog.Warn("Could not keep a backup of the previous snapshot",
+				"snapshot", e.snapPath, "error", copyErr)
+		}
+	}
+
 	// STEP 4: Atomically rename snapshot file (atomic operation on POSIX)
 	if err := os.Rename(tempSnap, e.snapPath); err != nil {
 		os.Remove(tempSnap) // Clean up temp file on error
 		return fmt.Errorf("failed to rename snapshot file: %w", err)
+	}
+
+	// The rename is atomic, but the directory entry itself is not durable until
+	// the directory is synced: a power loss right after this point can leave the
+	// filesystem without either name. Best-effort, like the backup above.
+	if syncErr := syncDir(filepath.Dir(e.snapPath)); syncErr != nil {
+		slog.Warn("Could not fsync the snapshot directory",
+			"dir", filepath.Dir(e.snapPath), "error", syncErr)
 	}
 
 	// STEP 5: Truncate AOF
