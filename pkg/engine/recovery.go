@@ -595,11 +595,31 @@ func (e *Engine) saveSnapshotLocked() error {
 	// Track if snapshot completed successfully to avoid calling EndSnapshotMode twice
 	snapshotCompleted := false
 	defer func() {
-		// Cleanup: if snapshot failed before completion, exit snapshot mode
-		// We ignore the error and writes since we're in an error path
+		// Cleanup: if snapshot failed before completion, exit snapshot mode.
+		//
+		// The writes collected while snapshot mode was active must NOT be dropped:
+		// the clients that issued them were told the write succeeded. Put them
+		// back through the normal path so they reach the AOF, which was not
+		// truncated on this branch (the truncate happens after the rename).
 		if !snapshotCompleted {
-			if _, err := e.AOF.EndSnapshotMode(); err != nil {
+			pending, err := e.AOF.EndSnapshotMode()
+			if err != nil {
 				slog.Debug("Failed to end snapshot mode during cleanup", "error", err)
+				return
+			}
+			if len(pending) > 0 {
+				slog.Warn("Replaying writes captured during a failed snapshot",
+					"writes", len(pending))
+				for _, write := range pending {
+					if err := e.AOF.Write(write); err != nil {
+						slog.Error("Lost a write captured during a failed snapshot",
+							"error", err, "write", write)
+					}
+				}
+				if err := e.AOF.Flush(); err != nil {
+					slog.Error("Failed to flush writes captured during a failed snapshot",
+						"error", err)
+				}
 			}
 		}
 	}()
