@@ -865,15 +865,22 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	h.LockNode(internalID)
 	h.getNodes()[internalID] = node
 	h.UnlockNode(internalID)
-	h.externalToInternalID[id] = internalID
-	h.internalToExternalID[internalID] = id
+	// The external ID is registered at the end of this function, once the node is
+	// linked into the graph. Registering it here made the node visible to VGet
+	// during phase 2, while it was still disconnected: a concurrent VGet returned
+	// a node that no search could find. Registration is what makes a node exist
+	// for callers; it belongs after the graph knows about it.
 
 	// Handle Empty Graph Case (First node)
 	currMaxLevel := int(h.maxLevel.Load())
 	if currMaxLevel == -1 {
 		h.entrypointID.Store(internalID)
 		h.maxLevel.Store(int32(level)) // Set max level to this node's level
-		h.metaMu.Unlock()              // Unlock and return
+		// The first node is registered here because there is no linking phase to
+		// wait for: it is the entrypoint, so it is reachable by definition.
+		h.externalToInternalID[id] = internalID
+		h.internalToExternalID[internalID] = id
+		h.metaMu.Unlock() // Unlock and return
 
 		// Record write for maintenance coordination
 		if h.maintenanceCoord != nil {
@@ -1018,6 +1025,14 @@ func (h *Index) Add(id string, vector []float32) (uint32, error) {
 	if h.maintenanceCoord != nil {
 		h.maintenanceCoord.RecordWrite()
 	}
+
+	// Register the external ID now that traversal can reach the node. This is the
+	// moment it becomes visible to VGet; before it, callers see "not found"
+	// instead of a node that exists but cannot be searched.
+	h.metaMu.Lock()
+	h.externalToInternalID[id] = internalID
+	h.internalToExternalID[internalID] = id
+	h.metaMu.Unlock()
 
 	return internalID, nil
 }
