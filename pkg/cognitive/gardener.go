@@ -3602,6 +3602,22 @@ func (g *Gardener) detectCrossValidator(indexName string) {
 // and uses the LLM to consolidate conflicting memories into a single truth.
 // This replaces the old autoResolveReflections with a mathematically rigorous approach.
 func (g *Gardener) resolveVolatileBeliefs(indexName string) {
+	// PHASE 1: deterministic resolutions, no LLM.
+	//
+	// A knowledge gap carries its own answer (link these two entities), and a
+	// contradiction the detector flagged action_required=false already has a
+	// suggested resolution. Both are graph or metadata writes, not judgements.
+	// They ran in their own pass before the epistemic engine replaced it; this
+	// runs them first so the expensive path only sees what genuinely needs one.
+	//
+	// They also include status='insight' reflections, which the epistemic queue
+	// filters out: without this pass a knowledge gap was never resolved at all.
+	if settled := g.autoResolveDeterministic(indexName, g.autoResolveCandidates(indexName, 20)); len(settled) > 0 {
+		slog.Info("[Gardener] Auto-resolved reflections deterministically",
+			"index", indexName, "count", len(settled))
+	}
+
+	// PHASE 2: epistemic resolution for the rest.
 	// Fetch up to MaxPerCycle unresolved reflections (oldest first)
 	maxProcess := g.cfg.EpistemicMaxPerCycle
 	if maxProcess <= 0 {
