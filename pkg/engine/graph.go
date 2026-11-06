@@ -90,7 +90,7 @@ func (e *Engine) VLink(indexName, sourceID, targetID, relationType, inverseRelat
 	timeStr := strconv.FormatInt(now, 10)
 	cmd := persistence.FormatCommand("GLINK", []byte(indexName), []byte(internalSource), []byte(internalTarget), []byte(relationType), []byte(inverseRelationType), []byte(weightStr), rawProps, []byte(timeStr))
 
-	if err := e.AOF.Write(cmd); err != nil {
+	if err := e.aofPersist(cmd); err != nil {
 		return err
 	}
 
@@ -124,7 +124,7 @@ func (e *Engine) VUnlink(indexName, sourceID, targetID, relationType, inverseRel
 	timeStr := strconv.FormatInt(now, 10)
 
 	cmd := persistence.FormatCommand("GUNLINK", []byte(indexName), []byte(internalSource), []byte(internalTarget), []byte(relationType), []byte(inverseRelationType), []byte(hdStr), []byte(timeStr))
-	if err := e.AOF.Write(cmd); err != nil {
+	if err := e.aofPersist(cmd); err != nil {
 		return err
 	}
 

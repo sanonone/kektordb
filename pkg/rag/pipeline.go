@@ -79,28 +79,64 @@ func (p *Pipeline) Start() {
 
 func (p *Pipeline) extractionWorker() {
 	defer p.wg.Done()
-	for job := range p.extractionChan {
-		// Calls the extraction function (idempotent logic).
-		if err := p.extractAndLinkEntities(job.ChunkID, job.Text); err != nil {
-			// Log only warnings to avoid cluttering.
-			slog.Warn("[RAG-Background] Extraction failed", "chunk_id", job.ChunkID, "error", err)
+	for {
+		select {
+		case <-p.stopCh:
+			// Shutdown: drain nothing, the queue is abandoned by design. Stop()
+			// bounds its wait, so returning here is what lets it finish.
+			return
+		case job := <-p.extractionChan:
+			// Calls the extraction function (idempotent logic).
+			if err := p.extractAndLinkEntities(job.ChunkID, job.Text); err != nil {
+				// Log only warnings to avoid cluttering.
+				slog.Warn("[RAG-Background] Extraction failed", "chunk_id", job.ChunkID, "error", err)
+			}
 		}
 	}
 }
 
 // Stop halts the background watcher. Safe to call multiple times.
+// Stop shuts the pipeline down.
+//
+// The wait is bounded. extractionWorker processes jobs by calling the LLM, and
+// an LLM call can hang on a stalled connection: an unconditional wg.Wait()
+// would then keep Stop — and any caller waiting on it, including process
+// shutdown — blocked forever. Past the deadline we return and leave the worker
+// to finish on its own; the process is exiting anyway.
 func (p *Pipeline) Stop() {
 	p.stopOnce.Do(func() {
 		close(p.stopCh)
 
-		// Close extractionChan to unblock extractionWorker.
-		// The stopCh close will cause processFile to abort any pending sends.
-		if p.cfg.GraphEntityExtraction {
-			close(p.extractionChan)
-			// Wait for extractionWorker to finish draining.
+		if !p.cfg.GraphEntityExtraction {
+			return
+		}
+
+		// Do not close extractionChan: a concurrent processFile may be in the
+		// middle of a select that includes a send on it. With both stopCh and the
+		// channel closed, Go picks a ready case at random, and a send on a closed
+		// channel panics. Signalling through stopCh alone is enough — the send
+		// site selects on it — and the worker exits when the queue drains.
+		done := make(chan struct{})
+		go func() {
 			p.wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(p.stopTimeout()):
+			slog.Warn("[RAG] Stop timed out waiting for the extraction worker; "+
+				"a job is probably blocked in an LLM call", "timeout", p.stopTimeout())
 		}
 	})
+}
+
+// stopTimeout is how long Stop waits for the extraction worker.
+func (p *Pipeline) stopTimeout() time.Duration {
+	if p.cfg.StopTimeout > 0 {
+		return p.cfg.StopTimeout
+	}
+	return 10 * time.Second
 }
 
 func (p *Pipeline) loop() {

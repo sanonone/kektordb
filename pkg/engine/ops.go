@@ -49,8 +49,8 @@ func getHNSWIndex(idx core.VectorIndex) (*hnsw.Index, error) {
 func (e *Engine) KVSet(key string, value []byte) error {
 	// 1. AOF
 	cmd := persistence.FormatCommand("SET", []byte(key), value)
-	if err := e.AOF.Write(cmd); err != nil {
-		return fmt.Errorf("persistence error (AOF write failed): %w", err)
+	if err := e.aofPersist(cmd); err != nil {
+		return err
 	}
 
 	// 2. Memory
@@ -70,8 +70,8 @@ func (e *Engine) KVGet(key string) ([]byte, bool) {
 // The operation is persisted to the AOF log.
 func (e *Engine) KVDelete(key string) error {
 	cmd := persistence.FormatCommand("DEL", []byte(key))
-	if err := e.AOF.Write(cmd); err != nil {
-		return fmt.Errorf("persistence error (AOF write failed): %w", err)
+	if err := e.aofPersist(cmd); err != nil {
+		return err
 	}
 	e.DB.GetKVStore().Delete(key)
 
@@ -160,8 +160,8 @@ func (e *Engine) VCreate(name string, metric distance.DistanceMetric, m, efC int
 
 	// 3. Write to AOF
 	cmd := persistence.FormatCommand("VCREATE", args...)
-	if err := e.AOF.Write(cmd); err != nil {
-		return fmt.Errorf("persistence error: %w", err)
+	if err := e.aofPersist(cmd); err != nil {
+		return err
 	}
 
 	// 4. Create Index in Memory
@@ -230,8 +230,8 @@ func (e *Engine) VDeleteIndex(name string) error {
 	slog.Info("[Engine] VDeleteIndex requested", "index", name)
 
 	cmd := persistence.FormatCommand("VDROP", []byte(name))
-	if err := e.AOF.Write(cmd); err != nil {
-		return fmt.Errorf("persistence error: %w", err)
+	if err := e.aofPersist(cmd); err != nil {
+		return err
 	}
 
 	err := e.DB.DeleteVectorIndex(name)
@@ -352,8 +352,8 @@ func (e *Engine) VAdd(indexName, id string, vector []float32, metadata map[strin
 
 	// 2. Persistence first: journal the operation before mutating RAM.
 	cmd := persistence.FormatCommand("VADD", []byte(indexName), []byte(id), []byte(vecStr), metaBytes)
-	if err := e.AOF.Write(cmd); err != nil {
-		return fmt.Errorf("CRITICAL: persistence failed: %w", err)
+	if err := e.aofPersist(cmd); err != nil {
+		return fmt.Errorf("CRITICAL: %w", err)
 	}
 
 	// 3. Memory Add
@@ -415,8 +415,8 @@ func (e *Engine) VDelete(indexName, id string) error {
 
 	// Disk first: journal the operation before mutating RAM.
 	cmd := persistence.FormatCommand("VDEL", []byte(indexName), []byte(id))
-	if err := e.AOF.Write(cmd); err != nil {
-		return fmt.Errorf("persistence error: %w", err)
+	if err := e.aofPersist(cmd); err != nil {
+		return err
 	}
 
 	// Memory
@@ -860,7 +860,7 @@ func (e *Engine) VReinforce(indexName string, ids []string) error {
 			continue
 		}
 		cmd := persistence.FormatCommand("VMETA", []byte(indexName), []byte(extID), metaBytes)
-		if err := e.AOF.Write(cmd); err != nil {
+		if err := e.aofPersist(cmd); err != nil {
 			lock.Unlock()
 			slog.Warn("VReinforce: AOF write failed", "error", err, "id", extID)
 			continue
@@ -931,7 +931,7 @@ func (e *Engine) VSetMetadata(indexName, id string, newProps map[string]any) err
 		return fmt.Errorf("failed to marshal metadata: %w", err)
 	}
 	cmd := persistence.FormatCommand("VMETA", []byte(indexName), []byte(id), metaBytes)
-	if aofErr := e.AOF.Write(cmd); aofErr != nil {
+	if aofErr := e.aofPersist(cmd); aofErr != nil {
 		return fmt.Errorf("metadata append to log failed: %w", aofErr)
 	}
 
@@ -1680,7 +1680,7 @@ func (e *Engine) VAddBatch(indexName string, items []types.BatchObject) error {
 
 		cmd := persistence.FormatCommand("VADD", []byte(indexName), []byte(item.Id), []byte(vecStr), meta)
 
-		if err := e.AOF.Write(cmd); err != nil {
+		if err := e.aofPersist(cmd); err != nil {
 			return fmt.Errorf("batch persistence partial failure: %w", err)
 		}
 	}
@@ -1859,8 +1859,8 @@ func (e *Engine) VUpdateIndexConfig(indexName string, config hnsw.AutoMaintenanc
 
 	// Command: VCONFIG <indexName> <jsonConfig>
 	cmd := persistence.FormatCommand("VCONFIG", []byte(indexName), cfgBytes)
-	if err := e.AOF.Write(cmd); err != nil {
-		return fmt.Errorf("persistence error: %w", err)
+	if err := e.aofPersist(cmd); err != nil {
+		return err
 	}
 
 	// 2. Update Memory

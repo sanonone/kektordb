@@ -55,6 +55,11 @@ type Config struct {
 	GraphEntityExtraction  bool
 	EntityExtractionPrompt string
 
+	// StopTimeout bounds how long Stop waits for the extraction worker.
+	// A worker blocked in an LLM call cannot be interrupted, so an unbounded
+	// wait would hang shutdown. Zero uses a 10s default.
+	StopTimeout time.Duration
+
 	VisionLLMConfig llm.Config
 
 	AssetsOutputDir string
