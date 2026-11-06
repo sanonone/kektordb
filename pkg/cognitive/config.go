@@ -160,6 +160,7 @@ func buildMemoryConfig(yamlCfg MemoryLayersConfigYAML) hnsw.MemoryConfig {
 		d := parseDuration(yamlCfg.Episodic.DecayHalfLife, 72*time.Hour)
 		layerCfg := hnsw.LayerConfig{
 			DecayHalfLife:   hnsw.Duration(d),
+			DecayModel:      hnsw.DecayModel(yamlCfg.Episodic.DecayModel),
 			PinnedByDefault: yamlCfg.Episodic.PinnedByDefault,
 			AutoSummarize:   yamlCfg.Episodic.AutoSummarize,
 			Description:     yamlCfg.Episodic.Description,
@@ -171,6 +172,7 @@ func buildMemoryConfig(yamlCfg MemoryLayersConfigYAML) hnsw.MemoryConfig {
 		d := parseDuration(yamlCfg.Semantic.DecayHalfLife, 720*time.Hour)
 		layerCfg := hnsw.LayerConfig{
 			DecayHalfLife:   hnsw.Duration(d),
+			DecayModel:      hnsw.DecayModel(yamlCfg.Semantic.DecayModel),
 			PinnedByDefault: yamlCfg.Semantic.PinnedByDefault,
 			AutoSummarize:   yamlCfg.Semantic.AutoSummarize,
 			Description:     yamlCfg.Semantic.Description,
@@ -182,6 +184,7 @@ func buildMemoryConfig(yamlCfg MemoryLayersConfigYAML) hnsw.MemoryConfig {
 		d := parseDuration(yamlCfg.Procedural.DecayHalfLife, 0)
 		layerCfg := hnsw.LayerConfig{
 			DecayHalfLife:   hnsw.Duration(d),
+			DecayModel:      hnsw.DecayModel(yamlCfg.Procedural.DecayModel),
 			PinnedByDefault: yamlCfg.Procedural.PinnedByDefault,
 			AutoSummarize:   yamlCfg.Procedural.AutoSummarize,
 			Description:     yamlCfg.Procedural.Description,

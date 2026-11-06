@@ -1322,6 +1322,7 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 
 				// Get half-life for this layer (fallback to global)
 				layerHalfLife := halfLife
+				layerModel := ""
 				if memCfg.Layers != nil {
 					if layerCfg, ok := memCfg.Layers[layer]; ok {
 						if layerCfg.DecayHalfLife == 0 {
@@ -1329,11 +1330,15 @@ func (e *Engine) searchWithFusion(indexName string, query []float32, k int, filt
 							continue
 						}
 						layerHalfLife = float64(time.Duration(layerCfg.DecayHalfLife).Seconds())
+						layerModel = string(layerCfg.DecayModel)
 					}
 				}
 
-				// Get decay model: default from config, override from metadata
-				decayModel := defaultDecayModel
+				// Get decay model: per-layer first, then global, then per-memory override.
+				decayModel := layerModel
+				if decayModel == "" {
+					decayModel = defaultDecayModel
+				}
 				if modelOverride, ok := meta["_decay_model"].(string); ok && modelOverride != "" {
 					decayModel = modelOverride
 				}
@@ -1524,8 +1529,9 @@ func (e *Engine) VSearchWithScoresOptions(indexName string, query []float32, k i
 				}
 			}
 
-			// Get half-life for this layer
+			// Get half-life and model for this layer
 			layerHalfLife := globalHalfLife
+			layerModel := ""
 			if memCfg.Layers != nil {
 				if layerCfg, ok := memCfg.Layers[layer]; ok {
 					if layerCfg.DecayHalfLife == 0 {
@@ -1533,6 +1539,7 @@ func (e *Engine) VSearchWithScoresOptions(indexName string, query []float32, k i
 						continue
 					}
 					layerHalfLife = float64(time.Duration(layerCfg.DecayHalfLife).Seconds())
+					layerModel = string(layerCfg.DecayModel)
 				}
 			}
 
@@ -1548,8 +1555,11 @@ func (e *Engine) VSearchWithScoresOptions(indexName string, query []float32, k i
 				}
 
 				if created > 0 {
-					// Get decay model: default from config, override from metadata
-					decayModel := defaultDecayModel
+					// Get decay model: per-layer first, then global, then per-memory override.
+					decayModel := layerModel
+					if decayModel == "" {
+						decayModel = defaultDecayModel
+					}
 					if modelOverride, ok := meta["_decay_model"].(string); ok && modelOverride != "" {
 						decayModel = modelOverride
 					}

@@ -150,6 +150,15 @@ type LayerConfig struct {
 	// If 0, the layer has no decay (e.g., procedural memories).
 	DecayHalfLife Duration `json:"decay_half_life"`
 
+	// DecayModel selects the decay algorithm for this layer. Empty means "use
+	// the global MemoryConfig.DecayModel", which keeps configurations written
+	// before per-layer models existed working unchanged.
+	//
+	// A layer can justify a different curve from its neighbours: episodic
+	// memories fade steadily (linear), semantic facts last if reinforced
+	// (ebbinghaus), procedural rules either apply or they do not (step).
+	DecayModel DecayModel `json:"decay_model,omitempty"`
+
 	// PinnedByDefault automatically sets _pinned=true for memories in this layer
 	// unless explicitly overridden by the user. Useful for procedural memories.
 	PinnedByDefault bool `json:"pinned_by_default"`
@@ -204,18 +213,21 @@ func DefaultMemoryConfig() MemoryConfig {
 		Layers: map[string]LayerConfig{
 			"episodic": {
 				DecayHalfLife:   Duration(72 * time.Hour), // 3 days
+				DecayModel:      DecayLinear,              // events fade at a steady rate
 				PinnedByDefault: false,
 				AutoSummarize:   true,
 				Description:     "Time-bound events and experiences that fade quickly",
 			},
 			"semantic": {
 				DecayHalfLife:   Duration(720 * time.Hour), // 30 days
+				DecayModel:      DecayEbbinghaus,           // facts last when reinforced
 				PinnedByDefault: false,
 				AutoSummarize:   false,
 				Description:     "Facts and knowledge that persist longer",
 			},
 			"procedural": {
-				DecayHalfLife:   0, // No decay
+				DecayHalfLife:   0,         // No decay
+				DecayModel:      DecayStep, // rules apply or they do not
 				PinnedByDefault: true,
 				AutoSummarize:   false,
 				Description:     "System rules and procedures that never expire",
