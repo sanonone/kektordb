@@ -30,6 +30,11 @@ func (p *AIProxy) initFirewall() error {
 
 // checkStaticFirewall performs fast regex matching on the raw text.
 // Returns (blocked, reason).
+//
+// The reason is what the client sees. When block_message is configured it is
+// returned verbatim, so an operator can localise it or replace wording that no
+// longer matches their policy. The detail about which pattern matched stays in
+// the logs, where it is useful for diagnosis and not for the caller.
 func (p *AIProxy) checkStaticFirewall(text string) (bool, string) {
 	if !p.cfg.FirewallEnabled || len(p.firewallPatterns) == 0 {
 		return false, ""
@@ -38,6 +43,9 @@ func (p *AIProxy) checkStaticFirewall(text string) (bool, string) {
 	for _, re := range p.firewallPatterns {
 		// MatchString checks if the regex exists ANYWHERE in the text
 		if re.MatchString(text) {
+			if p.cfg.BlockMessage != "" {
+				return true, p.cfg.BlockMessage
+			}
 			return true, fmt.Sprintf("Content blocked by policy (pattern match: %s)", re.String())
 		}
 	}
@@ -62,6 +70,13 @@ func (p *AIProxy) checkSemanticFirewall(vec []float32) (bool, string) {
 	// Based on previous code, Engine returns Distance.
 
 	if float32(bestMatch.Score) < p.cfg.FirewallThreshold {
+		// The matched id and distance go to the log, not to the caller: they say
+		// which forbidden topic triggered the block, which is diagnosis, not
+		// something to hand back. The caller gets block_message when configured.
+		slog.Warn("[Firewall] semantic match", "id", bestMatch.ID, "dist", bestMatch.Score)
+		if p.cfg.BlockMessage != "" {
+			return true, p.cfg.BlockMessage
+		}
 		return true, fmt.Sprintf("Content semantically similar to forbidden topic (id: %s, dist: %.4f)", bestMatch.ID, bestMatch.Score)
 	}
 	return false, ""

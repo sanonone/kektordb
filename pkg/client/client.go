@@ -51,6 +51,10 @@ type IndexInfo struct {
 	M              int    `json:"m"`
 	EfConstruction int    `json:"ef_construction"`
 	VectorCount    int    `json:"vector_count"`
+	// TextLanguage is the language the server's tokenizer and BM25 index are
+	// configured for. It was already sent by the server; without the field the
+	// JSON decoder dropped it silently.
+	TextLanguage string `json:"text_language"`
 }
 
 // MaintenanceConfig defines settings for background optimization tasks.

@@ -222,7 +222,6 @@ type Config struct {
 	//
 	// Pointers, not bools, because Go cannot distinguish "unset" from "false".
 	DisableConsolidation      *bool
-	DisableSessionSummary     *bool
 	DisableKnowledgeEvolution *bool
 
 	// Safety limits
