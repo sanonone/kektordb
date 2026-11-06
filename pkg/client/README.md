@@ -10,46 +10,50 @@ go get github.com/sanonone/kektordb/pkg/client
 
 ## Quick Start
 
-```go
+```go example
 package main
 
 import (
     "fmt"
     "log"
-    
+
     "github.com/sanonone/kektordb/pkg/client"
 )
 
 func main() {
     // Initialize client
     c := client.New("localhost", 9091, "")
-    
+
     // Create an index
     err := c.VCreateFull("memories", "cosine", "float32", 16, 200, nil, nil, nil)
     if err != nil {
         log.Fatal(err)
     }
-    
+
     // Add a memory
     err = c.VAdd("memories", "mem_1", []float32{0.1, 0.2, 0.3}, map[string]interface{}{
         "content": "Go is great for systems programming",
-        "tags": []string{"golang"},
+        "tags":    []string{"golang"},
     })
     if err != nil {
         log.Fatal(err)
     }
-    
-    // Search
-    results, err := c.VSearch(client.SearchParams{
-        IndexName:   "memories",
-        QueryVector: []float32{0.1, 0.2, 0.3},
-        K:           5,
-    })
+
+    // Search: VSearch takes positional arguments
+    // (index, k, vector, filter, efSearch, alpha, graphFilter).
+    results, err := c.VSearch("memories", 5, []float32{0.1, 0.2, 0.3}, "", 0, 1.0, nil)
     if err != nil {
         log.Fatal(err)
     }
-    
-    for _, r := range results {
+
+    // Use VSearchWithScores when the score matters.
+    scored, err := c.VSearchWithScores("memories", 5, []float32{0.1, 0.2, 0.3})
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("found %d matches, first id: %s\n", len(results), results[0])
+    for _, r := range scored {
         fmt.Printf("Found: %s (score: %.3f)\n", r.ID, r.Score)
     }
 }
@@ -66,8 +70,8 @@ client := client.New("localhost", 9091, "")
 // With API key
 client := client.New("localhost", 9091, "your-api-key")
 
-// Custom HTTP timeout
-client.SetTimeout(30 * time.Second)
+// The default HTTP timeout is 10s. VImport temporarily raises it to 5
+// minutes; there is no setter for the default.
 ```
 
 ### Key-Value Store
@@ -143,35 +147,38 @@ export, err := client.VExport("idx", 1000, 0)
 
 ```go
 // Pure vector search
-results, err := client.VSearch(client.SearchParams{
-    IndexName:   "idx",
-    QueryVector: []float32{0.1, 0.2},
-    K:           10,
-})
+results, err := client.VSearch(
+    "idx",                        // index name
+    10,                           // k
+    []float32{0.1, 0.2},          // query vector
+    "",                           // filter (empty = none)
+    0,                            // efSearch (0 = index default)
+    1.0,                          // alpha: 1.0 = pure vector, 0.0 = pure text
+    nil,                          // graph pre-filter
+)
 
 // With metadata filter
-results, err := client.VSearch(client.SearchParams{
-    IndexName:   "idx",
-    QueryVector: []float32{0.1, 0.2},
-    K:           10,
-    Filter:      "type='article' AND year>2023",
-})
+results, err = client.VSearch(
+    "idx", 10, []float32{0.1, 0.2},
+    "type='article' AND year>2023",
+    0, 1.0, nil,
+)
 
 // With scores
-results, err := client.VSearchWithScores("idx", []float32{0.1, 0.2}, 5)
+scored, err := client.VSearchWithScores("idx", 5, []float32{0.1, 0.2})
 ```
 
 ### Graph Operations
 
 ```go
 // Link entities
-err := client.VLink(client.LinkParams{
-    IndexName:           "idx",
-    SourceID:            "A",
-    TargetID:            "B",
-    RelationType:        "mentions",
-    InverseRelationType: "mentioned_in",
-})
+err := client.VLink(
+    "idx",        // index name
+    "A",          // source ID
+    "B",          // target ID
+    "mentions",   // relation type
+    "mentioned_in", // inverse relation type
+)
 
 // Unlink
 err := client.VUnlink("idx", "A", "B", "mentions", "")

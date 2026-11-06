@@ -136,19 +136,44 @@ print(f"Style: {profile.get('communication_style')}")
 
 ### Go (Embedded)
 
-```go
-import "github.com/sanonone/kektordb/pkg/engine"
+```go example
+package main
 
-db, _ := engine.Open(engine.DefaultOptions("./data"))
-defer db.Close()
+import (
+	"fmt"
 
-db.VCreate("docs", distance.Cosine, 16, 200, distance.Float32, "", nil, nil, nil)
-db.VAdd("docs", "vec1", []float32{0.1, 0.2, 0.3, 0.4}, map[string]any{"title": "Hello"})
+	"github.com/sanonone/kektordb/pkg/core/distance"
+	"github.com/sanonone/kektordb/pkg/engine"
+)
 
-results, _ := db.VSearch("docs", []float32{0.15, 0.25, 0.35, 0.45}, 10, "", "", 100, 1.0, nil)
-for _, id := range results {
-    data, _ := db.VGet("docs", id)
-    fmt.Println(data.ID, data.Metadata["title"])
+func main() {
+	db, err := engine.Open(engine.DefaultOptions("./data"))
+	if err != nil {
+		panic(err)
+	}
+	defer db.Close()
+
+	// VCreate(name, metric, M, efConstruction, precision, language,
+	//         maintenance, autoLinks, memoryConfig)
+	if err := db.VCreate("docs", distance.Cosine, 16, 200, distance.Float32, "", nil, nil, nil); err != nil {
+		panic(err)
+	}
+	if err := db.VAdd("docs", "vec1", []float32{0.1, 0.2, 0.3, 0.4}, map[string]any{"title": "Hello"}); err != nil {
+		panic(err)
+	}
+
+	// VSearch(index, query, k, filter, textQuery, efSearch, alpha, graphQuery)
+	results, err := db.VSearch("docs", []float32{0.15, 0.25, 0.35, 0.45}, 10, "", "", 100, 1.0, nil)
+	if err != nil {
+		panic(err)
+	}
+	for _, id := range results {
+		data, err := db.VGet("docs", id)
+		if err != nil {
+			continue
+		}
+		fmt.Println(data.ID, data.Metadata["title"])
+	}
 }
 ```
 
