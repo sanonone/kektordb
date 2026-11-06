@@ -9,7 +9,6 @@ import (
 	"log"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/sanonone/kektordb/pkg/core"
 )
 
 // Signer encapsulates the ECDSA private key and exposes only the operations
@@ -33,7 +32,7 @@ func (s *Signer) PublicKey() *ecdsa.PublicKey {
 // loadOrCreateSigner loads the persisted ECDSA P-256 private key from the KV store,
 // or generates and persists a new one if none exists. Returns a Signer, so the
 // private key is never accessible outside this package.
-func loadOrCreateSigner(kv *core.KVStore) (*Signer, error) {
+func loadOrCreateSigner(kv Store) (*Signer, error) {
 	const kvKey = "_sys_auth::ecdsa_private_key"
 
 	if raw, ok := kv.Get(kvKey); ok {
@@ -57,6 +56,8 @@ func loadOrCreateSigner(kv *core.KVStore) (*Signer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("auth: failed to marshal private key: %w", err)
 	}
-	kv.Set(kvKey, der)
+	if err := kv.Set(kvKey, der); err != nil {
+		return nil, fmt.Errorf("auth: failed to persist signing key: %w", err)
+	}
 	return &Signer{priv: priv}, nil
 }

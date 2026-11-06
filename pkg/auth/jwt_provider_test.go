@@ -13,7 +13,7 @@ import (
 func newTestProvider(t *testing.T) *JWTProvider {
 	t.Helper()
 	kv := core.NewKVStore()
-	p, err := NewJWTProvider(kv)
+	p, err := NewJWTProvider(NewMemoryStore(kv))
 	if err != nil {
 		t.Fatalf("NewJWTProvider: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestSignerPersistence_SameKeyAcrossProviders(t *testing.T) {
 	// Two JWTProviders sharing the same KV store should use the same keypair.
 	kv := core.NewKVStore()
 
-	p1, err := NewJWTProvider(kv)
+	p1, err := NewJWTProvider(NewMemoryStore(kv))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestSignerPersistence_SameKeyAcrossProviders(t *testing.T) {
 	}
 
 	// p2 loads the persisted key from the same KV store.
-	p2, err := NewJWTProvider(kv)
+	p2, err := NewJWTProvider(NewMemoryStore(kv))
 	if err != nil {
 		t.Fatal(err)
 	}

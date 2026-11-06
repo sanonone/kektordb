@@ -8,8 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
-
-	"github.com/sanonone/kektordb/pkg/core"
 )
 
 // Role definitions
@@ -31,11 +29,13 @@ type APIKeyPolicy struct {
 
 // AuthService manages the creation, verification, and revocation of API Keys.
 type AuthService struct {
-	kvStore *core.KVStore
+	kvStore Store
 }
 
-// NewAuthService creates a new authentication manager linked to the core KV Store.
-func NewAuthService(kvStore *core.KVStore) *AuthService {
+// NewAuthService creates a new authentication manager.
+//
+// store must persist writes, otherwise every API key disappears on restart.
+func NewAuthService(kvStore Store) *AuthService {
 	return &AuthService{
 		kvStore: kvStore,
 	}
@@ -76,7 +76,9 @@ func (s *AuthService) GenerateKey(description, role string, namespaces []string)
 
 	// Key format: _sys_auth::<hashed_token>
 	storageKey := "_sys_auth::" + hashedKey
-	s.kvStore.Set(storageKey, policyBytes)
+	if err := s.kvStore.Set(storageKey, policyBytes); err != nil {
+		return "", nil, fmt.Errorf("failed to persist API key: %w", err)
+	}
 
 	return clearToken, policy, nil
 }
@@ -104,9 +106,14 @@ func (s *AuthService) VerifyToken(clearToken string) (*APIKeyPolicy, error) {
 }
 
 // RevokeKey removes a key from the database given its clear-text token or hash.
-func (s *AuthService) RevokeKey(hashedKey string) {
+// Returns an error if the revocation could not be persisted, since a revocation
+// that survives only in memory comes back to life on the next restart.
+func (s *AuthService) RevokeKey(hashedKey string) error {
 	storageKey := "_sys_auth::" + hashedKey
-	s.kvStore.Delete(storageKey)
+	if err := s.kvStore.Delete(storageKey); err != nil {
+		return fmt.Errorf("failed to persist key revocation: %w", err)
+	}
+	return nil
 }
 
 // rank orders the roles from least to most privileged.

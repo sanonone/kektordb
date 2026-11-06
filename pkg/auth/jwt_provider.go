@@ -8,7 +8,6 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
-	"github.com/sanonone/kektordb/pkg/core"
 )
 
 // KektorClaims are the JWT claims embedded in every token issued by JWTProvider.
@@ -20,14 +19,18 @@ type KektorClaims struct {
 	Description string   `json:"description"`
 }
 
-// JWTProvider container for Signer & KVStore to revoke & verify key
+// JWTProvider container for Signer & Store to revoke & verify key.
 type JWTProvider struct {
 	signer  *Signer
-	kvStore *core.KVStore
+	kvStore Store
 }
 
-// NewJWTProvider returns an instance of JWTProvider
-func NewJWTProvider(kv *core.KVStore) (*JWTProvider, error) {
+// NewJWTProvider returns an instance of JWTProvider.
+//
+// store must persist writes: the signing key, the revocation denylist and the
+// API-key policies all live there. Pass the engine, not the raw KVStore, or
+// every token becomes invalid on the next restart.
+func NewJWTProvider(kv Store) (*JWTProvider, error) {
 	signer, err := loadOrCreateSigner(kv)
 	if err != nil {
 		return nil, err
@@ -147,6 +150,8 @@ func (j *JWTProvider) RevokeKey(jti string) error {
 	if jti == "" {
 		return fmt.Errorf("auth: jti must not be empty")
 	}
-	j.kvStore.Set("_sys_auth::revoked::"+jti, []byte("1"))
+	if err := j.kvStore.Set("_sys_auth::revoked::"+jti, []byte("1")); err != nil {
+		return fmt.Errorf("auth: failed to persist revocation: %w", err)
+	}
 	return nil
 }

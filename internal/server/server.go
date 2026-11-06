@@ -56,7 +56,7 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 		return nil, fmt.Errorf("failed to create assets dir: %w", err)
 	}
 
-	jwtProvider, err := auth.NewJWTProvider(eng.DB.GetKVStore())
+	jwtProvider, err := auth.NewJWTProvider(auth.NewEngineStore(eng))
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize auth provider: %w", err)
 	}
