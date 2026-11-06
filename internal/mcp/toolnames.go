@@ -131,8 +131,23 @@ var allToolNames = map[string]bool{
 	ToolReinforceMemory:      true,
 	ToolListSessions:         true,
 	ToolCreateIndex:          true,
+	ToolRestoreMemory:        true,
+	ToolGetLLMUsage:          true,
 	ToolDeleteIndex:          true,
 	ToolExtractSubgraph:      true,
+}
+
+// AllToolNames returns a copy of the canonical tool-name set.
+//
+// Callers outside this package (the setup installer's documentation test, for
+// one) need to know which names the server actually registers, so that text
+// describing the tool surface can be checked against reality.
+func AllToolNames() map[string]bool {
+	out := make(map[string]bool, len(allToolNames))
+	for name := range allToolNames {
+		out[name] = true
+	}
+	return out
 }
 
 // ProfileAgent contains tools useful for AI coding agents.
