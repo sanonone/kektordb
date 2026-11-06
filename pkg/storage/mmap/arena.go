@@ -192,15 +192,22 @@ func (va *VectorArena) findFreeSlotsLocked(count int) []uint32 {
 		return newSlots
 	}
 
-	// Take from free list
+	// Take from free list. The result is a copy: returning a slice of
+	// va.freeSlots would share its backing array, so a concurrent FreeSlot
+	// appending to the list would overwrite the slots the caller is about to
+	// write vectors into. The caller drops the lock before using the result, so
+	// that window is real, not theoretical.
 	if len(va.freeSlots) >= count {
-		result := va.freeSlots[len(va.freeSlots)-count:]
-		va.freeSlots = va.freeSlots[:len(va.freeSlots)-count]
+		start := len(va.freeSlots) - count
+		result := make([]uint32, count)
+		copy(result, va.freeSlots[start:])
+		va.freeSlots = va.freeSlots[:start]
 		return result
 	}
 
 	// Take all free and create new ones
-	result := va.freeSlots
+	result := make([]uint32, len(va.freeSlots), count)
+	copy(result, va.freeSlots)
 	va.freeSlots = make([]uint32, 0)
 
 	needed := count - len(result)

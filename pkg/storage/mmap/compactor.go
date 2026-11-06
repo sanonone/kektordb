@@ -636,12 +636,18 @@ func (ac *AsyncCompactor) analyzeFragmentation() FragmentationStats {
 	}
 }
 
+// getChunkStats reports per-chunk fragmentation.
+//
+// Lock order is slotMu then mu, as the package requires (see README). Taking
+// them the other way round deadlocks against chunkFragmentation, which is called
+// from the stats endpoint while the compactor runs: one goroutine holds mu and
+// waits for slotMu, the other holds slotMu and waits for mu.
 func (ac *AsyncCompactor) getChunkStats() []ChunkFragmentation {
-	ac.arena.mu.RLock()
-	defer ac.arena.mu.RUnlock()
-
 	ac.arena.slotMu.RLock()
 	defer ac.arena.slotMu.RUnlock()
+
+	ac.arena.mu.RLock()
+	defer ac.arena.mu.RUnlock()
 
 	stats := make([]ChunkFragmentation, 0, len(ac.arena.chunks))
 
