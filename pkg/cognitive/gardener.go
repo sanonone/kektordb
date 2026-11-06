@@ -3249,11 +3249,10 @@ func (g *Gardener) detectKnowledgeEvolution(indexName string) {
 			continue
 		}
 
-		// Mark as analyzed.
-		if err := g.eng.VLink(indexName, id, id, "evolution_analyzed", "", 1.0, nil); err != nil {
-			slog.Warn("[Cognitive Engine] Failed to mark entity as evolution-analyzed", "error", err)
-			continue
-		}
+		// The marker is written only after the analysis succeeds, further down.
+		// Writing it here cost the entity forever whenever the LLM call failed,
+		// returned unparsable JSON, or produced no timeline: every one of those
+		// paths continues with the edge in place, and nothing ever removes it.
 
 		// Extract 3 subgraph snapshots via time travel.
 		subgraphPast, _ := g.eng.VExtractSubgraph(indexName, id, relations, 2, thirtyDaysAgo, nil, 0)
@@ -3319,10 +3318,21 @@ Guidelines:
 
 		var aiResp llmEvolutionResponse
 		if err := json.Unmarshal([]byte(respText), &aiResp); err != nil {
+			slog.Warn("[Cognitive Engine] Knowledge evolution: unparsable reply, entity left for retry",
+				"entity", topicName, "error", err)
 			continue
 		}
 
 		if aiResp.Timeline == "" {
+			slog.Warn("[Cognitive Engine] Knowledge evolution: reply carried no timeline, entity left for retry",
+				"entity", topicName)
+			continue
+		}
+
+		// The analysis produced something usable: mark the entity so the next
+		// cycles skip it. Every failure path above leaves it unmarked on purpose.
+		if err := g.eng.VLink(indexName, id, id, "evolution_analyzed", "", 1.0, nil); err != nil {
+			slog.Warn("[Cognitive Engine] Failed to mark entity as evolution-analyzed", "error", err)
 			continue
 		}
 
