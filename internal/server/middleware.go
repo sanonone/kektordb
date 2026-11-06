@@ -151,7 +151,12 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		// Regole basilari: se non è una lettura, è una scrittura.
 		// Operazioni di sistema richiedono sempre ruolo Admin.
-		if strings.HasPrefix(path, "/system/") || strings.HasPrefix(path, "/auth/") {
+		//
+		// pprof is admin-only: /debug/pprof/cmdline returns the process command
+		// line, which contains -auth-token when the operator passes it there, and
+		// heap/goroutine profiles expose live memory contents.
+		if strings.HasPrefix(path, "/system/") || strings.HasPrefix(path, "/auth/") ||
+			strings.HasPrefix(path, "/debug/") {
 			requiredRole = auth.RoleAdmin
 		} else if method == http.MethodPost || method == http.MethodPut || method == http.MethodDelete {
 			// Eccezioni: le chiamate POST di ricerca sono in realtà "Read"

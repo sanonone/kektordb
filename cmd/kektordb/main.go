@@ -445,6 +445,13 @@ func main() {
 			slog.Warn("Using default proxy config (no yaml provided)")
 		}
 
+		// Admin routes on the proxy share the main server's token. Without this
+		// the user would have to set the same secret twice to keep
+		// /cache/invalidate closed.
+		if proxyCfg.AuthToken == "" {
+			proxyCfg.AuthToken = *authToken
+		}
+
 		if proxyCfg.Embedder == nil {
 			embCfg := embeddings.EmbedderConfig{
 				Mode:    proxyCfg.EmbedderType,

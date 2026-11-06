@@ -109,17 +109,36 @@ func (s *AuthService) RevokeKey(hashedKey string) {
 	s.kvStore.Delete(storageKey)
 }
 
+// rank orders the roles from least to most privileged.
+//
+// An unknown role ranks below read: a policy carrying a role the server does
+// not recognise must not unlock anything.
+func rank(role string) int {
+	switch role {
+	case RoleAdmin:
+		return 3
+	case RoleWrite:
+		return 2
+	case RoleRead:
+		return 1
+	default:
+		return 0
+	}
+}
+
 // HasAccess verifies if a policy permits a specific action on a namespace.
+//
+// Roles form a hierarchy: admin > write > read. A route demanding a role the
+// policy does not hold is refused regardless of namespace. Only admin may reach
+// admin-only routes.
 func (p *APIKeyPolicy) HasAccess(requiredRole, targetNamespace string) bool {
 	// Admin can do anything anywhere
 	if p.Role == RoleAdmin {
 		return true
 	}
 
-	// Role Check
-	// If the route requires "read", both "read" and "write" roles are allowed.
-	// If the route requires "write", only "write" is allowed.
-	if requiredRole == RoleWrite && p.Role != RoleWrite {
+	// Role Check. rank() orders the roles; a policy must meet the requirement.
+	if rank(p.Role) < rank(requiredRole) {
 		return false
 	}
 

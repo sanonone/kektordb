@@ -31,6 +31,7 @@ type AIProxy struct {
 	fastLLMClient    llm.Client       // Fast Brain
 	firewallPatterns []*regexp.Regexp // Compiled regex cache
 	assetURLPrefix   string           // Pre-computed "]({AssetBaseURL}/assets/"
+	authToken        string           // Bearer token required by admin routes; empty disables the check
 }
 
 // Structures for manipulating Chat request JSON
@@ -65,6 +66,7 @@ func NewAIProxy(cfg Config, dbEngine *engine.Engine) (*AIProxy, error) {
 		engine:         dbEngine,
 		reverseProxy:   httputil.NewSingleHostReverseProxy(target),
 		assetURLPrefix: fmt.Sprintf("](%s/assets/", cfg.AssetBaseURL),
+		authToken:      cfg.AuthToken,
 	}
 
 	// Init Regex
@@ -752,6 +754,17 @@ type InvalidateRequest struct {
 }
 
 func (p *AIProxy) handleCacheInvalidate(w http.ResponseWriter, r *http.Request) {
+	// Administrative endpoint: without a check, anyone reaching the port can
+	// flush cache entries by document ID.
+	if p.authToken != "" {
+		token := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		if token != p.authToken {
+			slog.Warn("[Proxy] Unauthorized cache invalidate attempt", "ip", r.RemoteAddr)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+
 	var req InvalidateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)

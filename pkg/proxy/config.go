@@ -12,6 +12,10 @@ type Config struct {
 	Port      string `yaml:"port"`       // ":9092"
 	TargetURL string `yaml:"target_url"` // "http://localhost:11434"
 
+	// AuthToken guards administrative routes (/cache/invalidate). Empty leaves
+	// them open, matching a deployment with authentication disabled.
+	AuthToken string `yaml:"auth_token"`
+
 	// Asset URL Settings
 	// Base URL for RAG asset rewriting (images from PDFs etc).
 	// If empty, defaults to http://localhost:{Port}.
