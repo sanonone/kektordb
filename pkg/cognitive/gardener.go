@@ -3676,10 +3676,22 @@ func (g *Gardener) processEpistemicReflection(indexName, reflectionID string) {
 		if refErr == nil {
 			actionRequired, _ := refData.Metadata["action_required"].(bool)
 			if !actionRequired {
-				slog.Info("[Gardener] Reflection auto-resolution skipped: detector did not flag action_required",
+				slog.Info("[Gardener] Reflection dismissed: detector did not flag action_required",
 					"reflection", reflectionID,
 					"confidence", state.Confidence)
-				// Leave it unresolved: no metadata flip, no LLM call, no archiving.
+				// Mark it terminal. Leaving it unresolved made the reflection
+				// re-enter the pending query every cycle and hold one of the
+				// epistemic_max_per_cycle slots, so reflections created later were
+				// never looked at. "Does not need action" is an outcome, not a
+				// postponement: no LLM call, no archiving, but it leaves the queue.
+				if err := g.eng.VSetMetadata(indexName, reflectionID, map[string]any{
+					"status":           "dismissed",
+					"dismissed_reason": "action_required=false: minor or auto-resolvable contradiction",
+					"_updated_at":      float64(time.Now().Unix()),
+				}); err != nil {
+					slog.Warn("[Gardener] Failed to mark reflection as dismissed",
+						"reflection", reflectionID, "error", err)
+				}
 				return
 			}
 		}

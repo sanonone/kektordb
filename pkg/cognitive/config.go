@@ -60,6 +60,8 @@ type GardenerConfigYAML struct {
 
 	// EpistemicRequireActionRequired (B3): gate auto-resolution on the
 	// contradiction detector's explicit action_required flag. Default true.
+	// A reflection the gate refuses is marked "dismissed" — it leaves the
+	// pending queue instead of returning every cycle and holding a slot.
 	EpistemicRequireActionRequired *bool `yaml:"epistemic_require_action_required"`
 
 	// EpistemicMaxNodesPerConsolidation (E): max conflicting memories merged in

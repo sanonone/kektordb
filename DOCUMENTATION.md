@@ -1783,6 +1783,12 @@ cognitive:
     # Default: true. When true, a reflection is resolved only if the
     # contradiction detector reported action_required=true — an explainable
     # signal, instead of relying on the score alone.
+    #
+    # A reflection the gate refuses is marked status="dismissed": no LLM call,
+    # no memories archived, and it leaves the pending queue. It used to stay
+    # "unresolved", which made it come back every cycle and hold one of the
+    # epistemic_max_per_cycle slots, starving reflections created later.
+    # Dismissed reflections stay queryable with ?status=dismissed.
     epistemic_require_action_required: true
 
     # Pillar weights for the resolution gate ONLY (the public API keeps

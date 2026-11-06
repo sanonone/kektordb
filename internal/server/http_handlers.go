@@ -1485,13 +1485,21 @@ func (s *Server) handleGraphGetAllIncoming(w http.ResponseWriter, r *http.Reques
 
 // --- COGNITIVE ENGINE HANDLERS ---
 
-// Valid reflection statuses to prevent filter injection attacks
+// Valid reflection statuses to prevent filter injection attacks.
+//
+// The list must cover every status a reflection can actually carry, or the API
+// cannot be used to inspect them: dismissed and the other terminal states were
+// produced by the Gardener but rejected here.
 var validReflectionStatuses = map[string]bool{
-	"unresolved":      true,
-	"insight":         true,
-	"active":          true,
-	"high_confidence": true,
-	"resolved":        true,
+	"unresolved":          true,
+	"dismissed":           true,
+	"stable":              true,
+	"resolved":            true,
+	"needs_clarification": true,
+	"needs_manual_review": true,
+	"insight":             true,
+	"active":              true,
+	"high_confidence":     true,
 }
 
 func (s *Server) handleGetReflections(w http.ResponseWriter, r *http.Request) {

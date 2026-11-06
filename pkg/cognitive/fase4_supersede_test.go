@@ -494,7 +494,13 @@ func fase4ReflectionSetup(t *testing.T, eng *engine.Engine, idx, reflID string, 
 
 // TestFase4B3GateRequiresActionRequired: con action_required=false (o assente),
 // una reflection che il punteggio epistemico considererebbe "volatile" NON deve
-// essere auto-risolta: nessuna chiamata LLM, status invariato, nessun archivia.
+// essere auto-risolta: nessuna chiamata LLM, nessun archivia.
+//
+// Lo stato diventa "dismissed", non resta "unresolved". Lasciarla in sospeso la
+// faceva rientrare nella query delle pending a ogni ciclo, occupando uno degli
+// epistemic_max_per_cycle slot: con le prime N tutte saltate, le reflection
+// create dopo non venivano mai esaminate. "Non richiede azione" e' un esito,
+// non un rinvio.
 func TestFase4B3GateRequiresActionRequired(t *testing.T) {
 	cases := []struct {
 		name           string
@@ -527,8 +533,8 @@ func TestFase4B3GateRequiresActionRequired(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if data.Metadata["status"] != "unresolved" {
-				t.Errorf("status = %v, want unresolved (nessun flip a stable)", data.Metadata["status"])
+			if data.Metadata["status"] != "dismissed" {
+				t.Errorf("status = %v, want dismissed (esito terminale, non sospensione)", data.Metadata["status"])
 			}
 			// Nessuna memoria deve essere diventata storica.
 			for j := 0; j < 2; j++ {
