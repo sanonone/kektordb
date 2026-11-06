@@ -327,6 +327,18 @@ type Gardener struct {
 	profileTimer        *time.Timer       // Active debounce timer (nil when not pending)
 	profilePendingUsers map[string]string // userID -> indexName, accumulated since last fire
 	profileTimerMu      sync.Mutex        // Protects profileTimer, profilePendingUsers and profileGen
+	// profileWindowStart is when the current debounce window opened. A pure
+	// trailing-edge timer starves under continuous load: every event pushes the
+	// deadline back, so an active session never flushes and no profile is ever
+	// updated. The window start bounds that: once it is older than
+	// profileMaxWait the timer is no longer re-armed and the flush happens.
+	profileWindowStart time.Time
+	// profileMaxWait bounds the debounce window. profileMaxWaitDefault unless a
+	// test shortens it.
+	profileMaxWait time.Duration
+	// profileFlushes counts completed flushes. Used by tests and useful in
+	// diagnostics: a profile that never updates looks identical to a quiet one.
+	profileFlushes atomic.Int64
 	// profileGen is incremented on every schedule. A timer callback that
 	// observes a stale generation (a newer schedule superseded it) must not
 	// drain pending users that belong to the newer debounce window (P1-10).
@@ -704,6 +716,7 @@ func NewGardener(eng *engine.Engine, llmClient llm.Client, cfg Config) *Gardener
 		// User profiling
 		unassimilatedInteractions: make(map[string]int),
 		profileDebounce:           5 * time.Second,
+		profileMaxWait:            profileMaxWaitDefault,
 		profilePendingUsers:       make(map[string]string),
 	}
 }
@@ -844,6 +857,40 @@ func (g *Gardener) scheduleProfileUpdate(indexName, userID string, count int) {
 	// Reset the timer if it's already active; otherwise create a new one.
 	// Every schedule bumps the generation: a callback from a superseded
 	// timer must not drain pending users accumulated for the new window.
+	//
+	// A trailing edge alone starves under continuous load, so the window is
+	// bounded: the first event of a window also arms a deadline timer. When the
+	// deadline fires it flushes regardless of the stream, and a flush closes the
+	// window so the next event opens a fresh one.
+	now := time.Now()
+	if g.profileWindowStart.IsZero() {
+		g.profileWindowStart = now
+		startedAt := g.profileWindowStart
+		// The deadline is a separate timer that flushes the window even if the
+		// stream never pauses. It does not go through the generation guard: its
+		// job is to end the window, not to be the winning debounce callback.
+		if g.profileMaxWait > 0 {
+			time.AfterFunc(g.profileMaxWait, func() {
+				g.profileTimerMu.Lock()
+				if g.profileWindowStart != startedAt {
+					g.profileTimerMu.Unlock()
+					return // the window already closed
+				}
+				if g.profileTimer != nil {
+					g.profileTimer.Stop()
+					g.profileTimer = nil
+				}
+				g.profileGen++ // invalidate any in-flight debounce callback
+				gen := g.profileGen
+				g.profileTimerMu.Unlock()
+
+				slog.Info("[Cognitive Engine] Profile debounce deadline reached, flushing",
+					"window_open_for", g.profileMaxWait.String())
+				g.flushPendingProfileUpdates(gen, count)
+			})
+		}
+	}
+
 	if g.profileTimer != nil {
 		g.profileTimer.Stop()
 	}
@@ -882,11 +929,15 @@ func (g *Gardener) flushPendingProfileUpdates(gen, count int) {
 	pending := g.profilePendingUsers
 	g.profilePendingUsers = make(map[string]string)
 	g.profileTimer = nil
+	// Close the window: the next event opens a fresh one, so a long session
+	// flushes once per profileMaxWait instead of only at its end.
+	g.profileWindowStart = time.Time{}
 	g.profileTimerMu.Unlock()
 
 	if len(pending) == 0 {
 		return
 	}
+	g.profileFlushes.Add(1)
 
 	if count > 0 {
 		slog.Info("[Cognitive Engine] Profile update debounce fired",
@@ -1660,6 +1711,21 @@ func contradictionPairKey(a, b string) string {
 // contradictionBatchSize is how many pairs are sent in a single LLM call.
 // Batching keeps the same coverage as one-call-per-pair while cutting the
 // number of calls by roughly this factor.
+const (
+	// profileMaxWait bounds the profile debounce window.
+	//
+	// The debounce coalesces bursts by waiting for a quiet period. With only a
+	// trailing edge, a stream of saves spaced closer than the quiet period
+	// postpones the flush forever: in an active session the profile is never
+	// updated, and because the timer is global, no user's profile is. This is
+	// the ceiling: once a window has been open this long, the flush happens
+	// whether or not the stream has paused.
+	//
+	// Five minutes keeps the token saving on normal workloads (a burst of a few
+	// saves still produces a single update) while making "never" impossible.
+	profileMaxWaitDefault = 5 * time.Minute
+)
+
 const contradictionBatchSize = 5
 
 // contradictionCandidate is one (live memory, live neighbour) pair inside the

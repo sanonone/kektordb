@@ -49,6 +49,10 @@ gardener:
   adaptive_min_interval: "90s"
 
   enable_user_profiling: true
+  # Profile updates are debounced: a burst of saves produces one update instead
+  # of one per save. The debounce waits for a quiet period, but a window is
+  # never held open longer than 5 minutes, so a continuous stream still updates
+  # the profile periodically instead of never.
   profile_update_threshold: 5
 
 # Auto-resolve: let the Gardener autonomously act on whitelisted reflection types.
