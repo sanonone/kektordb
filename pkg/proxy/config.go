@@ -36,11 +36,23 @@ type Config struct {
 	LLM     llm.Config `yaml:"llm"`
 
 	// Firewall (Prompt Guard)
-	FirewallEnabled   bool     `yaml:"firewall_enabled"`
-	FirewallDenyList  []string `yaml:"firewall_deny_list"`
-	FirewallIndex     string   `yaml:"firewall_index"`
-	FirewallThreshold float32  `yaml:"firewall_threshold"` // e.g., 0.25
-	BlockMessage      string   `yaml:"block_message"`      // Custom error msg
+	FirewallEnabled  bool     `yaml:"firewall_enabled"`
+	FirewallDenyList []string `yaml:"firewall_deny_list"`
+	// FirewallFailClosed decides what happens to a request when the embedding
+	// step fails.
+	//
+	// The semantic firewall needs a vector. With fail-open (default) a request
+	// whose embedding failed is forwarded unguarded, which is what the proxy has
+	// always done: availability over enforcement. With fail-closed the request is
+	// refused instead, so a broken embedder cannot be used to walk past the
+	// guard.
+	//
+	// Neither choice is safe for every deployment, which is why it is a setting
+	// and not a silent default.
+	FirewallFailClosed bool    `yaml:"firewall_fail_closed"`
+	FirewallIndex      string  `yaml:"firewall_index"`
+	FirewallThreshold  float32 `yaml:"firewall_threshold"` // e.g., 0.25
+	BlockMessage       string  `yaml:"block_message"`      // Custom error msg
 
 	// Semantic Cache
 	CacheEnabled         bool          `yaml:"cache_enabled"`

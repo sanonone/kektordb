@@ -1,5 +1,7 @@
 package embeddings
 
+import "fmt"
+
 // Embedder defines the interface for converting text into vector representations.
 type Embedder interface {
 	Embed(text string) ([]float32, error)
@@ -22,6 +24,24 @@ func embedBatchSerial(e Embedder, texts []string) ([][]float32, error) {
 			return nil, err
 		}
 		vecs[i] = vec
+	}
+	return vecs, nil
+}
+
+// validateEmbeddingBatch rejects a batch that carries an empty vector.
+//
+// A native batch path can return the right number of vectors and still have one
+// of them empty (a provider that failed on a single input, a truncated payload).
+// Count checks pass, the empty vector reaches the index, and the entry is
+// silently unsearchable.
+func validateEmbeddingBatch(vecs [][]float32, expected int) ([][]float32, error) {
+	if len(vecs) != expected {
+		return nil, fmt.Errorf("embedder returned %d vectors for %d texts", len(vecs), expected)
+	}
+	for i, v := range vecs {
+		if len(v) == 0 {
+			return nil, fmt.Errorf("embedder returned an empty vector at position %d of %d", i, expected)
+		}
 	}
 	return vecs, nil
 }

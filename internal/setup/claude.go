@@ -121,12 +121,16 @@ func addClaudeCodeAllowlist() error {
 	}
 
 	// Parse or create permissions block.
+	//
+	// "permissions": null unmarshals into a nil map without an error, and writing
+	// to a nil map panics. Same for "mcpServers": null in the other configs.
 	var permissions map[string]json.RawMessage
 	if raw, exists := settings["permissions"]; exists {
 		if err := json.Unmarshal(raw, &permissions); err != nil {
 			return fmt.Errorf("parse permissions: %w", err)
 		}
-	} else {
+	}
+	if permissions == nil {
 		permissions = make(map[string]json.RawMessage)
 	}
 

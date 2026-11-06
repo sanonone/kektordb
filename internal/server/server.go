@@ -90,6 +90,9 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 	}
 
 	s.gardener = cognitive.NewGardener(eng, brain, gardenerCfg)
+	// The gardener reads vectors during consolidation; it must be stopped before
+	// the engine unmaps the arenas on Close.
+	eng.RegisterCloseHook("gardener", s.gardener.CloseStopped)
 
 	// Initialize Knowledge Engine Compiler
 	s.compiler = compiler.NewCompiler(eng, brain, emb)

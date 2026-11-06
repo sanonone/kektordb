@@ -238,8 +238,8 @@ func TestThinkChannelSerialization(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}
-	defer eng.Close()
-
+	// Stop the gardener before the engine: its think() cycle reads vectors out
+	// of the arena, and Close unmaps them.
 	indexName := "test_memory"
 	if err := eng.VCreate(indexName, distance.Cosine, 8, 100, distance.Float32, "english", nil, nil, nil); err != nil {
 		t.Fatalf("Failed to create index: %v", err)
@@ -282,6 +282,7 @@ func TestThinkChannelSerialization(t *testing.T) {
 
 	wg.Wait()
 	gardener.Stop()
+	eng.Close()
 	t.Log("Channel serialization test passed without races")
 }
 

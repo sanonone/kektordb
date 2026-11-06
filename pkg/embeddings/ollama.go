@@ -56,6 +56,13 @@ func (e *OllamaEmbedder) Embed(text string) ([]float32, error) {
 		return nil, fmt.Errorf("failed to decode ollama response: %w", err)
 	}
 
+	// A provider answering {"embedding": []} or {} is not an answer. Returning
+	// the empty slice with a nil error lets the caller store a zero vector: the
+	// index accepts it, search scores become meaningless, and nothing warns.
+	if len(ollamaResp.Embedding) == 0 {
+		return nil, fmt.Errorf("ollama returned an empty embedding")
+	}
+
 	return ollamaResp.Embedding, nil
 }
 
@@ -126,8 +133,5 @@ func (e *OllamaEmbedder) embedBatchNative(texts []string) ([][]float32, error) {
 		return nil, fmt.Errorf("ollama batch returned no embeddings")
 	}
 
-	if len(vecs) != len(texts) {
-		return nil, fmt.Errorf("ollama batch returned %d embeddings for %d texts", len(vecs), len(texts))
-	}
-	return vecs, nil
+	return validateEmbeddingBatch(vecs, len(texts))
 }

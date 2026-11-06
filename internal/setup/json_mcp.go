@@ -21,20 +21,31 @@ func injectMCPEntry(configPath, parentKey, serverName string, entry map[string]a
 			return fmt.Errorf("read config: %w", err)
 		}
 	} else if len(data) > 0 {
-		if err := json.Unmarshal(data, &config); err != nil {
-			return fmt.Errorf("parse config: %w", err)
+		// parseJSONC tolerates the comments and trailing commas editors leave in
+		// .jsonc files. Plain JSON goes through unchanged.
+		parsed, err := parseJSONC(data)
+		if err != nil {
+			return err
 		}
-	} else {
+		config = parsed
+	}
+	if config == nil {
 		config = make(map[string]json.RawMessage)
 	}
 
 	// Parse or create the parent block (e.g. "mcp", "mcpServers", "mcp_servers").
+	//
+	// "mcpServers": null unmarshals into a nil map without an error, and writing
+	// to a nil map panics. A config file written with an empty section is a
+	// normal thing to find, so it must be repaired rather than crash the
+	// installer.
 	var parent map[string]json.RawMessage
 	if raw, exists := config[parentKey]; exists {
 		if err := json.Unmarshal(raw, &parent); err != nil {
 			return fmt.Errorf("parse %s block: %w", parentKey, err)
 		}
-	} else {
+	}
+	if parent == nil {
 		parent = make(map[string]json.RawMessage)
 	}
 

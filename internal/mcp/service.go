@@ -204,7 +204,7 @@ func (s *Service) SaveMemory(ctx context.Context, req *mcp.CallToolRequest, args
 	}
 
 	// 2. Embedding
-	vec, err := s.embedder.Embed(args.Content)
+	vec, err := s.embedForStore(args.Content)
 	if err != nil {
 		return nil, SaveMemoryResult{}, fmt.Errorf("embedding error: %w", err)
 	}
@@ -370,7 +370,7 @@ func (s *Service) Recall(ctx context.Context, req *mcp.CallToolRequest, args Rec
 		limit = 5
 	}
 
-	vec, err := s.embedder.Embed(args.Query)
+	vec, err := s.embedForQuery(args.Query)
 	if err != nil {
 		return nil, RecallResult{}, err
 	}
@@ -441,7 +441,7 @@ func (s *Service) ScopedRecall(ctx context.Context, req *mcp.CallToolRequest, ar
 		limit = 5
 	}
 
-	vec, err := s.embedder.Embed(args.Query)
+	vec, err := s.embedForQuery(args.Query)
 	if err != nil {
 		return nil, RecallResult{}, err
 	}
@@ -3436,6 +3436,11 @@ func (s *Service) CreateIndex(ctx context.Context, req *mcp.CallToolRequest, arg
 		}
 	}
 	// Build maintenance config.
+	//
+	// Not every field the schema accepts is applied. Rather than dropping them
+	// silently — the caller sees status:created and believes the whole config
+	// took effect — the unsupported ones are reported back in the result message.
+	var ignored []string
 	var maintCfg *hnsw.AutoMaintenanceConfig
 	if args.Maintenance != nil {
 		maintCfg = &hnsw.AutoMaintenanceConfig{}
@@ -3446,6 +3451,17 @@ func (s *Service) CreateIndex(ctx context.Context, req *mcp.CallToolRequest, arg
 			maintCfg.RefineEnabled = args.Maintenance.Refine.Enabled
 			maintCfg.RefineInterval = hnsw.Duration(args.Maintenance.Refine.IntervalSec) * hnsw.Duration(time.Second)
 		}
+		if args.Maintenance.GraphRetention != nil {
+			ignored = append(ignored, "maintenance.graph_retention")
+		}
+		if args.Maintenance.ArenaCompaction != nil {
+			ignored = append(ignored, "maintenance.arena_compaction")
+		}
+	}
+	// The index dimension is inferred from the first vector; a caller who set it
+	// explicitly was getting no error and no effect.
+	if args.Dimension > 0 {
+		ignored = append(ignored, "dimension (inferred from the first vector)")
 	}
 	if err := s.engine.VCreate(args.Name, metric, m, efC, prec, args.TextLanguage, maintCfg, autoLinks, memCfg); err != nil {
 		result.Message = "create failed: " + err.Error()
@@ -3453,6 +3469,12 @@ func (s *Service) CreateIndex(ctx context.Context, req *mcp.CallToolRequest, arg
 	}
 	result.Status = "created"
 	result.Metric = metricStr
+	if len(ignored) > 0 {
+		result.Message = "created; these settings are not applied by this server: " +
+			strings.Join(ignored, ", ")
+		slog.Warn("[MCP] create_index ignored unsupported settings",
+			"index", args.Name, "ignored", ignored)
+	}
 	result.Precision = precStr
 	result.TextLanguage = args.TextLanguage
 	result.Message = "index '" + args.Name + "' created"

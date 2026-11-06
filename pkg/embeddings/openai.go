@@ -75,6 +75,13 @@ func (e *OpenAIEmbedder) Embed(text string) ([]float32, error) {
 		return nil, fmt.Errorf("openai returned no data")
 	}
 
+	// The envelope being present says nothing about its content: "data":
+	// [{"embedding": []}] decodes cleanly and yields an empty vector. Passing
+	// that on with a nil error stores a zero vector in the index.
+	if len(openAIResp.Data[0].Embedding) == 0 {
+		return nil, fmt.Errorf("openai returned an empty embedding")
+	}
+
 	return openAIResp.Data[0].Embedding, nil
 }
 
@@ -139,5 +146,7 @@ func (e *OpenAIEmbedder) embedBatchNative(texts []string) ([][]float32, error) {
 		}
 		vecs[d.Index] = d.Embedding
 	}
-	return vecs, nil
+	// One entry per input is not enough: an individual embedding can be empty
+	// while the envelope looks complete.
+	return validateEmbeddingBatch(vecs, len(texts))
 }

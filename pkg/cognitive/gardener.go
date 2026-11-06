@@ -738,6 +738,20 @@ func (g *Gardener) Start() {
 }
 
 // Stop gracefully halts the cognitive engine.
+// CloseStopped adapts Stop to the engine's close-hook signature.
+//
+// The Gardener reads vectors while it consolidates, and those vectors live in
+// the arena the engine unmaps on Close. Without this hook, a think() cycle still
+// running at shutdown reads freed memory: the race tests reproduce it as a
+// SIGSEGV inside consolidateCluster, not as a clean error.
+//
+// The timeout is advisory: Stop already bounds its own waits.
+func (g *Gardener) CloseStopped(timeout time.Duration) error {
+	g.Stop()
+	return nil
+}
+
+// Stop halts the background worker and flushes pending profile updates.
 func (g *Gardener) Stop() {
 	if !g.cfg.Enabled {
 		return

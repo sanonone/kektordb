@@ -347,6 +347,8 @@ func main() {
 				}
 			}
 			gardener = cognitive.NewGardener(eng, brain, gardenerCfg)
+			// Stop the gardener before the engine unmaps the arenas.
+			eng.RegisterCloseHook("gardener", gardener.CloseStopped)
 			gardener.Start()
 			defer gardener.Stop()
 			slog.Info("Cognitive Engine: Gardener started", "mode", gardenerCfg.Mode, "interval", gardenerCfg.Interval)

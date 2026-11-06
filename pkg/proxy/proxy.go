@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/sanonone/kektordb/pkg/core/distance"
@@ -32,6 +33,10 @@ type AIProxy struct {
 	firewallPatterns []*regexp.Regexp // Compiled regex cache
 	assetURLPrefix   string           // Pre-computed "]({AssetBaseURL}/assets/"
 	authToken        string           // Bearer token required by admin routes; empty disables the check
+	// embedFailures counts requests where embedding failed, leaving the prompt
+	// guard and the semantic cache off for that request. A dead embedder used to
+	// be invisible; this makes it countable.
+	embedFailures atomic.Int64
 }
 
 // Structures for manipulating Chat request JSON
@@ -219,10 +224,25 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	slog.Info("[4/4] Embedding Strategy...")
 
 	var originalVec []float32
+	var embedErr error
 	var hydeVec []float32
 
 	// 1. Original Vector Calculation (always useful as fallback or firewall)
-	originalVec, _ = p.cfg.Embedder.Embed(refinedQuery)
+	//
+	// A failure here silently disables the prompt guard and the semantic cache:
+	// both are gated on len(originalVec) > 0, so the request is forwarded
+	// unguarded. The error used to be discarded with no trace, which made a dead
+	// embedder indistinguishable from a healthy quiet one.
+	originalVec, embedErr = p.cfg.Embedder.Embed(refinedQuery)
+	if embedErr != nil {
+		p.embedFailures.Add(1)
+		slog.Error("[Proxy] Embedder failed: prompt guard and semantic cache are disabled for this request",
+			"error", embedErr, "total_failures", p.embedFailures.Load())
+	} else if len(originalVec) == 0 {
+		p.embedFailures.Add(1)
+		slog.Error("[Proxy] Embedder returned an empty vector: prompt guard and semantic cache are disabled for this request",
+			"total_failures", p.embedFailures.Load())
+	}
 
 	// 2. HyDe Vector Calculation (only if different text was generated)
 	if textToEmbed != "" && textToEmbed != refinedQuery {
@@ -233,6 +253,19 @@ func (p *AIProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	slog.Info("Embedding phase completed", "duration", time.Since(t4))
+
+	// A request whose embedding failed cannot be checked semantically. Fail-open
+	// forwards it unguarded (availability first); fail-closed refuses it. The
+	// default stays fail-open because that is what every deployment has been
+	// getting, but the choice is now explicit and logged.
+	if p.cfg.FirewallEnabled && p.cfg.FirewallFailClosed && len(originalVec) == 0 {
+		slog.Error("[Firewall] Refusing request: embedding unavailable and firewall_fail_closed is set")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "semantic firewall unavailable: embedding failed",
+		})
+		return
+	}
 
 	// FIREWALL CHECK (Use originalVec for safety)
 	if p.cfg.FirewallEnabled && len(originalVec) > 0 {

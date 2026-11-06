@@ -193,14 +193,24 @@ func (vs *VectorizerService) Trigger(name string) error {
 	return fmt.Errorf("vectorizer pipeline '%s' not found", name)
 }
 
-// GetStatuses returns a summary (simplified for now).
+// GetStatuses reports one entry per configured vectorizer.
+//
+// IsRunning is derived from whether a pipeline actually exists, not asserted.
+// It used to be a literal `true`, so a vectorizer whose pipeline failed to start
+// — an embedder that could not be created, for instance — still reported itself
+// as running. An operator watching this endpoint saw health that never existed.
 func (vs *VectorizerService) GetStatuses() []VectorizerStatus {
 	var statuses []VectorizerStatus
-	for _, cfg := range vs.server.vectorizerConfig.Vectorizers {
+	for i, cfg := range vs.server.vectorizerConfig.Vectorizers {
+		running := i < len(vs.pipelines) && vs.pipelines[i] != nil
+		state := "not started"
+		if running {
+			state = "active"
+		}
 		statuses = append(statuses, VectorizerStatus{
 			Name:         cfg.Name,
-			IsRunning:    true,
-			CurrentState: "active (managed by rag pkg)",
+			IsRunning:    running,
+			CurrentState: state,
 		})
 	}
 	return statuses
