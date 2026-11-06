@@ -1824,9 +1824,20 @@ func (e *Engine) VImportCommit(indexName string) error {
 
 	// 2. Lancia il Turbo Refine in background.
 	// La risposta API tornerà subito al client, mentre la CPU server lavorerà per ottimizzare il grafo.
-	go func() {
-		hnswIdx.RunTurboRefine()
-	}()
+	//
+	// Tracked like the other background work: the refine walks the graph and
+	// touches node vectors, so letting it outlive Close() means touching memory
+	// that DB.Close() has already unmapped. Close waits on e.wg.
+	e.wg.Add(1)
+	go func(idx *hnsw.Index) {
+		defer e.wg.Done()
+		select {
+		case <-e.ctx.Done():
+			return
+		default:
+		}
+		idx.RunTurboRefine()
+	}(hnswIdx)
 
 	return nil
 }

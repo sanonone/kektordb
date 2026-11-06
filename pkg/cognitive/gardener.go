@@ -256,6 +256,7 @@ type Gardener struct {
 	llm         llm.Client // LLM client for synthesis and reasoning
 	cfg         Config
 	stopCh      chan struct{}
+	started     atomic.Bool       // set by Start; Stop must not wait for a worker that never ran
 	stopOnce    sync.Once         // ensures Stop() is idempotent
 	eventCh     chan engine.Event // Subscribed to engine event bus
 	scanCursors map[string]uint32
@@ -270,6 +271,10 @@ type Gardener struct {
 	reflectionsMu    sync.Mutex    // Protects newReflections from concurrent access
 	thinkReqs        chan struct{} // Buffered channel (size 1) serializing think() calls
 	thinkDone        chan struct{} // Closed when thinkWorker goroutine exits
+	// bgWait tracks background profile updates. They call the LLM and write to
+	// the index, so one outliving the engine would write into a closed store.
+	// Gardener.Stop waits for them, bounded.
+	bgWait sync.WaitGroup
 
 	// entityExtractor collega le memorie alle entita' nominate. Nil quando
 	// l'estrazione e' disattivata (default): costa una chiamata LLM per memoria.
@@ -726,6 +731,7 @@ func (g *Gardener) Start() {
 		return
 	}
 	g.thinkReqs = make(chan struct{}, 1)
+	g.started.Store(true)
 	go g.thinkWorker()
 	slog.Info("[Cognitive Engine] Gardener started. Sleep cycle initiated.", "interval", g.cfg.Interval)
 	go g.loop()
@@ -738,7 +744,12 @@ func (g *Gardener) Stop() {
 	}
 	g.stopOnce.Do(func() {
 		close(g.stopCh)
-		<-g.thinkDone // Wait for thinkWorker goroutine to exit
+		// Only wait for the worker if Start ever launched it. A gardener that was
+		// configured but never started would otherwise block here forever: nothing
+		// closes thinkDone.
+		if g.started.Load() {
+			<-g.thinkDone
+		}
 		g.eng.EventBus.Unsubscribe(g.eventCh)
 
 		// Flush any pending profile updates. If a debounced update was
@@ -748,6 +759,21 @@ func (g *Gardener) Stop() {
 		gen := g.profileGen
 		g.profileTimerMu.Unlock()
 		g.flushPendingProfileUpdates(gen, 0)
+
+		// The flush starts one goroutine per user, and those call the LLM and
+		// write to the index. Wait for them, but not forever: a stalled provider
+		// must not keep the process from exiting. Stop is on the shutdown path.
+		done := make(chan struct{})
+		go func() {
+			g.bgWait.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(gardenerStopTimeout):
+			slog.Warn("[Cognitive Engine] Timed out waiting for profile updates on shutdown",
+				"timeout", gardenerStopTimeout)
+		}
 
 		slog.Info("[Cognitive Engine] Gardener stopped.")
 	})
@@ -950,10 +976,12 @@ func (g *Gardener) flushPendingProfileUpdates(gen, count int) {
 	}
 
 	for userID, indexName := range pending {
-		go func() {
+		g.bgWait.Add(1)
+		go func(uid, idx string) {
+			defer g.bgWait.Done()
 			defer g.withFeature(llm.FeatureGardenerProfiles)()
-			g.UpdateUserProfile(indexName, userID)
-		}()
+			g.UpdateUserProfile(idx, uid)
+		}(userID, indexName)
 	}
 }
 
@@ -1723,6 +1751,10 @@ const (
 	// Five minutes keeps the token saving on normal workloads (a burst of a few
 	// saves still produces a single update) while making "never" impossible.
 	profileMaxWaitDefault = 5 * time.Minute
+
+	// gardenerStopTimeout bounds how long Stop waits for in-flight profile
+	// updates. They call the LLM, and a stalled provider must not block shutdown.
+	gardenerStopTimeout = 10 * time.Second
 )
 
 const contradictionBatchSize = 5

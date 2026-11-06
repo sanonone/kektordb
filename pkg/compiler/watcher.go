@@ -7,6 +7,7 @@ import (
 	"math"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sanonone/kektordb/pkg/cognitive"
@@ -54,6 +55,12 @@ type Watcher struct {
 	inFlight map[string]bool
 
 	recompileThisCycle int // reset per ScanArtifacts call
+
+	// bg tracks the background recompiles. They call the LLM and then write to
+	// the index through the engine, so one outliving the engine's Close() would
+	// write into an unmapped arena. Close waits on this.
+	bg     sync.WaitGroup
+	closed atomic.Bool
 }
 
 const (
@@ -443,8 +450,44 @@ func (w *Watcher) getStalenessThreshold(a *watchedArtifact) float64 {
 
 // recompileAsync launches the recompilation in a background goroutine so the
 // watcher lock and the Gardener think() cycle are never blocked by LLM calls.
+//
+// The goroutine is tracked: it writes to the index through the engine, so it
+// must be waited for before the engine unmaps its arenas. Close blocks on it.
 func (w *Watcher) recompileAsync(a *watchedArtifact) {
-	go w.recompile(a)
+	if w.closed.Load() {
+		return
+	}
+	w.bg.Add(1)
+	go func() {
+		defer w.bg.Done()
+		w.recompile(a)
+	}()
+}
+
+// Close stops the watcher and waits for the recompiles it started.
+//
+// It is registered as an engine close hook, so it runs before the database is
+// closed: a recompile that is still running gets to finish or return instead of
+// writing into memory that is about to be unmapped.
+func (w *Watcher) Close(timeout time.Duration) error {
+	w.closed.Store(true)
+
+	done := make(chan struct{})
+	go func() {
+		w.bg.Wait()
+		close(done)
+	}()
+
+	if timeout <= 0 {
+		<-done
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-time.After(timeout):
+		return fmt.Errorf("watcher: timed out after %s waiting for in-flight recompiles", timeout)
+	}
 }
 
 // recompile triggers a full recompilation of the artifact.

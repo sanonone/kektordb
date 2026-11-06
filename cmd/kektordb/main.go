@@ -358,9 +358,12 @@ func main() {
 		// Init Compiler (with LLM, or nil if no LLM configured)
 		comp := compiler.NewCompiler(eng, brain, embedder)
 
-		// Init Artifact Watcher (requires Gardener lifecycle hooks)
+		// Init Artifact Watcher (requires Gardener lifecycle hooks).
+		// Its background recompiles write to the index; Close waits for them
+		// before the engine unmaps the arenas.
 		if gardener != nil {
-			compiler.NewWatcher(comp, eng, &gardenerCfg, gardenerCfg.TargetIndexes)
+			w := compiler.NewWatcher(comp, eng, &gardenerCfg, gardenerCfg.TargetIndexes)
+			eng.RegisterCloseHook("artifact-watcher", w.Close)
 		}
 
 		// Init MCP Server

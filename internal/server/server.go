@@ -34,6 +34,9 @@ type Server struct {
 
 	gardener *cognitive.Gardener
 	compiler *compiler.Compiler
+	// watcher runs background recompiles. Held here so its Close hook can be
+	// registered: an unreferenced watcher kept running after the engine closed.
+	watcher *compiler.Watcher
 
 	embedder embeddings.Embedder // Global embedder used by transfer and compiler
 }
@@ -91,8 +94,11 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 	// Initialize Knowledge Engine Compiler
 	s.compiler = compiler.NewCompiler(eng, brain, emb)
 
-	// Initialize Artifact Watcher (connects to Gardener lifecycle)
-	compiler.NewWatcher(s.compiler, eng, &gardenerCfg, gardenerCfg.TargetIndexes)
+	// Initialize Artifact Watcher (connects to Gardener lifecycle).
+	// The watcher's background recompiles write to the index, so it must be
+	// waited for before the engine unmaps its arenas on shutdown.
+	s.watcher = compiler.NewWatcher(s.compiler, eng, &gardenerCfg, gardenerCfg.TargetIndexes)
+	eng.RegisterCloseHook("artifact-watcher", s.watcher.Close)
 
 	// Initialize Vectorizer Service
 	vecService, err := NewVectorizerService(s, assetsPath)

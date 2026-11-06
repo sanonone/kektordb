@@ -713,6 +713,16 @@ func (o *GraphOptimizer) RunTurboRefine() {
 	processed := 0
 
 	for processed < totalNodes {
+		// An index closed mid-refine must stop here: Close() unmaps the arena, and
+		// the next Refine would read vectors from memory that no longer exists.
+		// The caller tracks this goroutine in the engine's WaitGroup, so Close
+		// waits for it — this check makes that wait bounded instead of relying on
+		// the refine finishing.
+		if o.index.isClosed() {
+			slog.Info("[Optimizer] Turbo Refine interrupted: index is closing")
+			break
+		}
+
 		didWork := o.Refine()
 		if !didWork {
 			// Se il Refine restituisce false, significa che non ci sono più nodi validi da processare
