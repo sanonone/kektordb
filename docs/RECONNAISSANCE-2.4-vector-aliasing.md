@@ -4,7 +4,7 @@
 >
 > Questo documento contiene l'analisi originale, che ha guidato la decisione.
 > Il fix, il costo misurato e le ottimizzazioni future sono in
-> **`docs/vector-ownership.md`**.
+> **`tempDocs/kektorDB v0.6.3/vector-ownership.md`** (documento di lavoro, non versionato).
 >
 > Riassunto: il problema si è rivelato **attivo**, non latente. Oltre alla
 > corruzione per scrittura, un ciclo di background che leggeva un vettore dopo
