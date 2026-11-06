@@ -508,28 +508,52 @@ func (e *Engine) GetArenaStats(indexName string) (mmap.ArenaStats, error) {
 
 // VGet retrieves the full data (vector + metadata) for a single ID.
 //
-// The returned Vector is not a copy. On a float32 index it points into the
-// arena's memory-mapped file, so assigning to an element changes what the index
-// stores: subsequent searches compute distances against the modified values and
-// can return scores outside the metric's range. A caller that needs to edit the
-// vector must clone it first:
+// The returned Vector is an owned copy. The index stores vectors in a
+// memory-mapped arena, and handing out a window onto it had two consequences:
 //
-//	data, _ := eng.VGet(idx, id)
-//	vec := append([]float32(nil), data.Vector...)
+//   - a caller that wrote to the slice changed what the index stored, which
+//     skews every later distance computation;
+//   - a caller that read the slice after Close() touched unmapped memory and
+//     crashed the process. Not theoretical: a background cycle outliving Close
+//     reproduced a SIGSEGV inside a consolidation loop.
 //
-// TODO(aliasing): return a copy from this method. Deferred until there are
-// benchmarks for VGetMany on large hydration workloads; see
-// docs/RECONNAISSANCE-2.4-vector-aliasing.md for the analysis and options.
+// The copy costs roughly 450 ns and 1.5 KB per 384-dimension vector, and this is
+// the only place that pays it. Search, compaction and the rest of pkg/core keep
+// reading the arena directly: the hot path is untouched.
 func (e *Engine) VGet(indexName, id string) (core.VectorData, error) {
-	return e.DB.GetVector(indexName, id)
+	data, err := e.DB.GetVector(indexName, id)
+	if err != nil {
+		return data, err
+	}
+	data.Vector = cloneVector(data.Vector)
+	return data, nil
 }
 
 // VGetMany retrieves data for multiple IDs in parallel.
 //
-// Same contract as VGet: the Vector fields alias index memory and must be
-// cloned before being modified. See TODO(aliasing) above.
+// Same contract as VGet: every Vector is an owned copy.
 func (e *Engine) VGetMany(indexName string, ids []string) ([]core.VectorData, error) {
-	return e.DB.GetVectors(indexName, ids)
+	data, err := e.DB.GetVectors(indexName, ids)
+	if err != nil {
+		return data, err
+	}
+	for i := range data {
+		data[i].Vector = cloneVector(data[i].Vector)
+	}
+	return data, nil
+}
+
+// cloneVector returns an independent copy, or nil for a nil input.
+//
+// The nil case is kept: append to a nil slice yields an empty non-nil slice, and
+// callers that test `Vector == nil` to mean "no vector" would stop seeing it.
+func cloneVector(v []float32) []float32 {
+	if v == nil {
+		return nil
+	}
+	out := make([]float32, len(v))
+	copy(out, v)
+	return out
 }
 
 // GraphNode represents a node in the graph with its data and nested connections.

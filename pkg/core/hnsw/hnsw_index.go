@@ -2994,6 +2994,14 @@ func (h *Index) growNodes(id uint32) {
 // Iterate loops over all non-deleted nodes and passes the external ID and vector
 // (always as []float32) to a callback function.
 func (h *Index) Iterate(callback func(id string, vector []float32)) {
+	// The callback receives the vector by alias, so the arena must stay mapped
+	// for its duration: activeMu blocks Close until this returns.
+	if h.isClosed() {
+		return
+	}
+	h.activeMu.RLock()
+	defer h.activeMu.RUnlock()
+
 	h.metaMu.RLock()
 	defer h.metaMu.RUnlock()
 
@@ -3043,6 +3051,13 @@ func (h *Index) Iterate(callback func(id string, vector []float32)) {
 // not modify it, and must not retain it past the call: a compaction cycle moves
 // the backing bytes and leaves retained slices pointing at unmapped pages.
 func (h *Index) IterateRaw(callback func(id string, vector interface{})) {
+	// Same as Iterate: the callback gets the raw arena-backed slice.
+	if h.isClosed() {
+		return
+	}
+	h.activeMu.RLock()
+	defer h.activeMu.RUnlock()
+
 	h.metaMu.RLock()
 	defer h.metaMu.RUnlock()
 
@@ -3141,6 +3156,16 @@ func (h *Index) GetParameters() (distance.DistanceMetric, int, int) {
 // copy first, or a caller's write corrupts the index. See the aliasing note in
 // docs/RECONNAISSANCE-2.4-vector-aliasing.md.
 func (h *Index) GetNodeData(externalID string) (types.NodeData, bool) {
+	// activeMu pairs with Close: it blocks the unmap while this call holds a
+	// window onto the arena. Without it, a caller that fetched a vector just
+	// before Close dereferences unmapped memory, which is a process fault, not
+	// an error — that is how a background consolidation loop crashed.
+	if h.isClosed() {
+		return types.NodeData{}, false
+	}
+	h.activeMu.RLock()
+	defer h.activeMu.RUnlock()
+
 	h.metaMu.RLock()
 	defer h.metaMu.RUnlock()
 
