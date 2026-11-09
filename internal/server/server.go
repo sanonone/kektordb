@@ -39,6 +39,12 @@ type Server struct {
 	watcher *compiler.Watcher
 
 	embedder embeddings.Embedder // Global embedder used by transfer and compiler
+
+	// LLM identity for the status report. Empty when no model is configured,
+	// which is what lets /system/status say "llm: not configured" instead of
+	// showing a zeroed cost breakdown.
+	llmProviderName string
+	llmModelName    string
 }
 
 // NewServer initializes the HTTP server using an existing Engine.
@@ -87,6 +93,10 @@ func NewServer(eng *engine.Engine, httpAddr string, vectorizersConfigPath string
 	var brain llm.Client
 	if gardenerCfg.Enabled && (gardenerCfg.Mode == "advanced" || gardenerCfg.Mode == "meta") {
 		brain = llm.NewClient(llmCfg)
+		// Remember the identity so /system/status can name the model instead of
+		// showing a cost breakdown with no attribution.
+		s.llmProviderName = llmCfg.Provider
+		s.llmModelName = llmCfg.Model
 	}
 
 	s.gardener = cognitive.NewGardener(eng, brain, gardenerCfg)

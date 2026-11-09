@@ -56,6 +56,7 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("POST /system/save", s.handleSaveHTTP)
 	mux.HandleFunc("GET /system/tasks/{id}", s.handleTaskStatus)
 	mux.HandleFunc("GET /system/stats", s.handleSystemStats)
+	mux.HandleFunc("GET /system/status", s.handleSystemStatus)
 	mux.HandleFunc("GET /system/gardener", s.handleSystemGardener)
 	mux.HandleFunc("GET /system/llm-usage", s.handleLLMUsage)
 	mux.HandleFunc("POST /system/llm-usage/reset", s.handleLLMUsageReset)

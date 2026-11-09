@@ -1388,6 +1388,24 @@ paths:
       responses:
         '200': { description: System statistics }
 
+  /system/status:
+    get:
+      summary: Aggregated system status
+      description: >-
+        One call that answers "is this working?". Assembles in a single response
+        what /system/stats, /system/gardener, /system/llm-usage, the index list
+        and the persistence state report separately: index sizes, per-feature
+        maintenance state, LLM cost per feature, and the health of persistence
+        and embedder.
+
+        `warnings` lists only conditions that deserve attention and is empty when
+        everything is fine; `errors` names any section that could not be built,
+        and the rest of the response is still served. The CLI `kektordb status`
+        and the MCP tool `get_status` both read this endpoint.
+      tags: [System]
+      responses:
+        '200': { description: Aggregated status }
+
   /system/gardener:
     get:
       summary: Gardener status
