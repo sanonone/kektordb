@@ -59,6 +59,7 @@ func TestAllToolNamesCoversEveryTool(t *testing.T) {
 		"ToolKVSet":                ToolKVSet,
 		"ToolKVDelete":             ToolKVDelete,
 		"ToolGetStats":             ToolGetStats,
+		"ToolGetStatus":            ToolGetStatus,
 		"ToolGetLLMUsage":          ToolGetLLMUsage,
 		"ToolGetPersistenceStatus": ToolGetPersistenceStatus,
 		"ToolRefreshUserProfile":   ToolRefreshUserProfile,

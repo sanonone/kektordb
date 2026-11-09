@@ -309,6 +309,16 @@ func registerTools(s *mcp.Server, service *Service, allowlist map[string]bool) {
 		}, service.GetRelations)
 	}
 
+	if shouldRegister(ToolGetStatus, allowlist) {
+		mcp.AddTool(s, &mcp.Tool{
+			Name: ToolGetStatus,
+			Description: "Use when the user asks how memory is doing, why memory costs are high, " +
+				"or whether maintenance is running. Returns index sizes, per-feature maintenance " +
+				"state, LLM cost by feature, persistence health, and any warnings. " +
+				"Call this before claiming memory is healthy or broken.",
+		}, service.GetStatus)
+	}
+
 	if shouldRegister(ToolGetGardenerStatus, allowlist) {
 		mcp.AddTool(s, &mcp.Tool{
 			Name:        ToolGetGardenerStatus,

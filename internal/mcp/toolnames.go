@@ -59,6 +59,7 @@ const (
 	// Fase 2 P2 expansion Batch 2: engine stats + profile refresh
 	ToolGetStats             = "get_stats"
 	ToolGetLLMUsage          = "get_llm_usage"
+	ToolGetStatus            = "get_status"
 	ToolGetPersistenceStatus = "get_persistence_status"
 	ToolRefreshUserProfile   = "refresh_user_profile"
 	// Fase 2 P2 expansion Batch 3: graph edges + artifact diff + summarize
@@ -122,6 +123,7 @@ var allToolNames = map[string]bool{
 	ToolKVSet:                true,
 	ToolKVDelete:             true,
 	ToolGetStats:             true,
+	ToolGetStatus:            true,
 	ToolGetPersistenceStatus: true,
 	ToolRefreshUserProfile:   true,
 	ToolGetEdgeDetails:       true,
@@ -177,6 +179,7 @@ var ProfileStandard = map[string]bool{
 	ToolSaveMemory:         true,
 	ToolRecallMemory:       true,
 	ToolScopedRecall:       true,
+	ToolGetStatus:          true,
 	ToolGetUserProfile:     true,
 	ToolCreateEntity:       true,
 	ToolConnectEntities:    true,
@@ -203,6 +206,7 @@ var ProfileStandard = map[string]bool{
 // than one that cannot. Administrative operations (snapshot, AOF, embedder,
 // persistence) stay in ProfileAdmin.
 var ProfileFull = map[string]bool{
+	ToolGetStatus:            true,
 	ToolSaveMemory:           true,
 	ToolRecallMemory:         true,
 	ToolScopedRecall:         true,
@@ -298,6 +302,7 @@ var ProfileAgent = map[string]bool{
 	ToolKVDelete:          true,
 	// Fase 2 P2 tools (Batch 2)
 	ToolGetStats:             true,
+	ToolGetStatus:            true,
 	ToolGetPersistenceStatus: true,
 	ToolRefreshUserProfile:   true,
 	ToolGetEdgeDetails:       true,
