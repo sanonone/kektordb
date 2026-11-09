@@ -3033,7 +3033,15 @@ func (h *Index) Iterate(callback func(id string, vector []float32)) {
 			// Check the type of the stored vector
 			switch h.precision {
 			case distance.Float32:
-				vectorF32 = node.GetVectorF32()
+				// Copy while activeMu is held. Returning the arena-backed slice and
+				// letting the caller copy it later leaves a window where Close can unmap
+				// the file: the caller then copies from freed memory. That window is
+				// exactly what crashed a background consolidation loop, inside the copy
+				// itself. float16 and int8 already allocate here, so only this branch
+				// needs the extra work.
+				raw := node.GetVectorF32()
+				vectorF32 = make([]float32, len(raw))
+				copy(vectorF32, raw)
 			case distance.Float16:
 				// If it's float16, we need to unpack it into float32
 				f16 := node.GetVectorF16()
@@ -3209,7 +3217,15 @@ func (h *Index) GetNodeData(externalID string) (types.NodeData, bool) {
 	var vectorF32 []float32
 	switch h.precision {
 	case distance.Float32:
-		vectorF32 = node.GetVectorF32()
+		// Copy while activeMu is held. Returning the arena-backed slice and
+		// letting the caller copy it later leaves a window where Close can unmap
+		// the file: the caller then copies from freed memory. That window is
+		// exactly what crashed a background consolidation loop, inside the copy
+		// itself. float16 and int8 already allocate here, so only this branch
+		// needs the extra work.
+		raw := node.GetVectorF32()
+		vectorF32 = make([]float32, len(raw))
+		copy(vectorF32, raw)
 	case distance.Float16:
 		f16 := node.GetVectorF16()
 		vectorF32 = make([]float32, len(f16))

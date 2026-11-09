@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/sanonone/kektordb/pkg/core"
 	"github.com/sanonone/kektordb/pkg/core/distance"
@@ -157,5 +159,50 @@ func TestNilVectorStaysNil(t *testing.T) {
 	empty := []float32{}
 	if got := cloneVector(empty); got == nil {
 		t.Error("cloneVector of an empty slice returned nil; the two cases are distinct")
+	}
+}
+
+// TestVGetManyConcurrentWithClose covers a fault the copy introduced.
+//
+// VGetMany used to fetch the nodes, release the index lock, and copy the vectors
+// afterwards. Between the two, Close can unmap the arena, so the copy reads freed
+// memory — the crash moved from the caller into the copy itself. The copy now
+// happens while the lock is held.
+func TestVGetManyConcurrentWithClose(t *testing.T) {
+	for attempt := 0; attempt < 10; attempt++ {
+		opts := DefaultOptions(t.TempDir())
+		opts.AutoSaveInterval = 0
+		opts.AutoSaveThreshold = 0
+		opts.MaintenanceInterval = 0
+		eng, err := Open(opts)
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		if err := eng.VCreate("c", distance.Cosine, 16, 200, distance.Float32, "english", nil, nil, nil); err != nil {
+			t.Fatalf("vcreate: %v", err)
+		}
+		ids := make([]string, 0, 64)
+		for i := 0; i < 64; i++ {
+			id := fmt.Sprintf("m%d", i)
+			if err := eng.VAdd("c", id, []float32{float32(i), 1, 0, 0}, nil); err != nil {
+				t.Fatalf("vadd: %v", err)
+			}
+			ids = append(ids, id)
+		}
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for i := 0; i < 50; i++ {
+				// Reading while the engine is closing must not fault.
+				_, _ = eng.VGetMany("c", ids)
+			}
+		}()
+
+		time.Sleep(time.Millisecond)
+		if err := eng.Close(); err != nil {
+			t.Logf("close reported: %v", err)
+		}
+		<-done
 	}
 }

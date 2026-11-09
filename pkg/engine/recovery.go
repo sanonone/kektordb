@@ -763,9 +763,27 @@ func (e *Engine) RewriteAOF() error {
 	}
 	snapshotDone := false
 	defer func() {
+		// On the failure path the shadow buffer must not be dropped: those writes
+		// were acknowledged to their callers, and the AOF was not replaced, so
+		// the old file is still there to receive them. Same reasoning as the
+		// snapshot path, which had this fixed while the rewrite did not — the
+		// difference showed up as a lost vector in the concurrent-rewrite test.
 		if !snapshotDone {
-			if _, err := e.AOF.EndSnapshotMode(); err != nil {
+			pending, err := e.AOF.EndSnapshotMode()
+			if err != nil {
 				slog.Debug("rewrite: cleanup EndSnapshotMode failed", "error", err)
+			} else if len(pending) > 0 {
+				slog.Warn("rewrite: replaying writes captured during a failed rewrite",
+					"writes", len(pending))
+				for _, write := range pending {
+					if err := e.AOF.Write(write); err != nil {
+						slog.Error("rewrite: lost a write captured during a failed rewrite",
+							"error", err, "write", write)
+					}
+				}
+				if err := e.AOF.Flush(); err != nil {
+					slog.Error("rewrite: failed to flush recovered writes", "error", err)
+				}
 			}
 		}
 		_ = writer.Close()
