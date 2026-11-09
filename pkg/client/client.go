@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/sanonone/kektordb/internal/version"
@@ -247,6 +248,18 @@ func New(host string, port int, apiKey string) *Client {
 	return &Client{
 		baseURL:    fmt.Sprintf("http://%s:%d", host, port),
 		httpClient: &http.Client{Timeout: 10 * time.Second},
+		apiKey:     apiKey,
+	}
+}
+
+// NewFromURL builds a client from a full base URL.
+//
+// New takes host and port, which cannot express a path prefix or a TLS scheme.
+// A CLI accepting --url needs both.
+func NewFromURL(baseURL, apiKey string) *Client {
+	return &Client{
+		baseURL:    strings.TrimSuffix(baseURL, "/"),
+		httpClient: &http.Client{Timeout: 30 * time.Second},
 		apiKey:     apiKey,
 	}
 }
