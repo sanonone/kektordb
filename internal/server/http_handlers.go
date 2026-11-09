@@ -979,10 +979,12 @@ func (s *Server) handleGraphLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.SourceID == req.TargetID {
-		s.writeHTTPError(w, http.StatusBadRequest, fmt.Errorf("cannot link a node to itself (source_id equals target_id)"))
-		return
-	}
+	// A self-edge is legitimate. The Gardener writes them as dedup markers —
+	// `decay_analyzed`, `sentiment_analyzed`, `centrality_analyzed`,
+	// `entities_analyzed`, `evolution_analyzed` — so that a node records "this
+	// detector has already looked at me". Refusing them here made an exported
+	// store impossible to reimport: the markers were in the archive and the
+	// import failed on every one.
 
 	// Default weight logic
 	weight := req.Weight
