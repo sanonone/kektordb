@@ -56,7 +56,12 @@ func TestReorderFlagsFirst(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := reorderFlagsFirst(tt.in)
+			fs := flag.NewFlagSet("t", flag.ContinueOnError)
+			fs.String("index", "", "")
+			fs.String("depth", "", "")
+			fs.String("pick", "", "")
+			fs.Bool("json", false, "")
+			got := reorderFlagsFirst(fs, tt.in)
 			if strings.Join(got, "|") != strings.Join(tt.want, "|") {
 				t.Errorf("reorderFlagsFirst(%v) = %v, want %v", tt.in, got, tt.want)
 			}
@@ -92,7 +97,7 @@ func TestFlagsParseInNaturalOrder(t *testing.T) {
 	fs.StringVar(&index, "index", "mcp_memory", "")
 	fs.IntVar(&depth, "depth", 2, "")
 
-	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
+	if err := fs.Parse(reorderFlagsFirst(fs, args)); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	if index != "other" {

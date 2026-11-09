@@ -144,6 +144,10 @@ func main() {
 			os.Exit(cmdStatus(os.Args[2:]))
 		case "inspect":
 			os.Exit(cmdInspect(os.Args[2:]))
+		case "export":
+			os.Exit(cmdExport(os.Args[2:]))
+		case "import":
+			os.Exit(cmdImport(os.Args[2:]))
 		case "version", "--version", "-v":
 			fmt.Println(versionString())
 			return
@@ -819,6 +823,8 @@ func printUsage() {
 	fmt.Println("  kektordb version                  Show version and exit")
 	fmt.Println("  kektordb status                  Show what the running server is doing")
 	fmt.Println("  kektordb inspect <query|id>      Explain one memory and where it came from")
+	fmt.Println("  kektordb export --out DIR        Write the memory store to a directory")
+	fmt.Println("  kektordb import DIR --index NAME Rebuild a memory store from an archive")
 	fmt.Println("  kektordb setup [agent]           Configure MCP for an AI agent")
 	fmt.Println("  kektordb setup list               List supported agents")
 	fmt.Println("  kektordb setup status             Show configured agents")

@@ -1420,6 +1420,27 @@ paths:
         '200': { description: The memory, its decay and its provenance }
         '404': { description: Memory not found }
 
+  /vector/indexes/{name}/graph/export:
+    get:
+      summary: Export every graph edge of an index
+      description: >-
+        Returns all live edges of the index in one response, with source, target,
+        relation, weight and properties. Used by `kektordb export`: the graph is
+        half the value of a memory store, and exporting memories without their
+        relations returns a set of disconnected notes.
+
+        Deleted edges (with a non-zero `deleted_at`) are excluded: the archive
+        carries current state.
+      tags: [Graph]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: The edges of the index }
+        '404': { description: Index not found }
+
   /system/status:
     get:
       summary: Aggregated system status

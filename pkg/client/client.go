@@ -256,6 +256,9 @@ func New(host string, port int, apiKey string) *Client {
 //
 // New takes host and port, which cannot express a path prefix or a TLS scheme.
 // A CLI accepting --url needs both.
+// BaseURL returns the server address this client talks to.
+func (c *Client) BaseURL() string { return c.baseURL }
+
 func NewFromURL(baseURL, apiKey string) *Client {
 	return &Client{
 		baseURL:    strings.TrimSuffix(baseURL, "/"),

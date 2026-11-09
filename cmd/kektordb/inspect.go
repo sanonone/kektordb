@@ -60,7 +60,7 @@ func cmdInspect(args []string) int {
 	// `inspect "some query" --pick 2` would leave --pick unparsed and treat it
 	// as part of the query. People write it that way, so the flags are moved in
 	// front of the positional arguments before parsing.
-	if err := fs.Parse(reorderFlagsFirst(args)); err != nil {
+	if err := fs.Parse(reorderFlagsFirst(fs, args)); err != nil {
 		return inspectExitError
 	}
 
@@ -212,13 +212,20 @@ func fetchInspect(c *client.Client, opts inspectOptions, id string) (server.Insp
 
 // reorderFlagsFirst moves flag tokens before positional ones so the standard
 // parser sees them, while keeping each flag next to its value.
-func reorderFlagsFirst(args []string) []string {
-	known := map[string]bool{
-		"url": true, "auth-token": true, "index": true, "depth": true,
-		"pick": true, "json": true, "search": true,
-	}
-	var flags, positional []string
+//
+// The function asks the FlagSet which flags take a value rather than keeping a
+// list: a hardcoded list goes stale the moment a command adds a flag, and the
+// symptom is a flag silently folded into a query.
+func reorderFlagsFirst(fs *flag.FlagSet, args []string) []string {
+	takesValue := map[string]bool{}
+	fs.VisitAll(func(f *flag.Flag) {
+		if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && bf.IsBoolFlag() {
+			return // a boolean does not consume the next token
+		}
+		takesValue[f.Name] = true
+	})
 
+	var flags, positional []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if !strings.HasPrefix(a, "-") {
@@ -232,13 +239,9 @@ func reorderFlagsFirst(args []string) []string {
 			inlineValue = true
 		}
 		flags = append(flags, a)
-		// A flag that takes a value and did not use --name=value consumes the
-		// next argument, which then must not be treated as positional.
-		if !inlineValue && known[name] && name != "json" && name != "search" {
-			if i+1 < len(args) {
-				flags = append(flags, args[i+1])
-				i++
-			}
+		if !inlineValue && takesValue[name] && i+1 < len(args) {
+			flags = append(flags, args[i+1])
+			i++
 		}
 	}
 	return append(flags, positional...)
