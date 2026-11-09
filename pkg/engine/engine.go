@@ -122,6 +122,10 @@ type Engine struct {
 	// DirtyCounter tracks the number of write operations since the last save.
 	dirtyCounter int64
 	lastSaveTime atomic.Int64 // Unix timestamp in nanoseconds, atomic for thread-safe access
+	// snapshotCount distinguishes "never snapshotted" from "snapshotted at boot":
+	// lastSaveTime is seeded on open so the auto-save throttle has a baseline,
+	// which makes a zero timestamp impossible to use as "never".
+	snapshotCount atomic.Int64
 
 	isRewriting atomic.Bool
 

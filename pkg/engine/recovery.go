@@ -716,6 +716,7 @@ func (e *Engine) saveSnapshotLocked() error {
 	// Update metadata
 	atomic.StoreInt64(&e.dirtyCounter, 0)
 	e.lastSaveTime.Store(time.Now().UnixNano())
+	e.snapshotCount.Add(1)
 
 	slog.Info("Snapshot created successfully",
 		"snapshot_path", e.snapPath,
