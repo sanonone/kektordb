@@ -138,6 +138,12 @@ func main() {
 		case "try":
 			cmdTry()
 			return
+		case "status":
+			// Parsed separately: the global flag set belongs to the server, and
+			// status must not inherit flags it does not understand.
+			os.Exit(cmdStatus(os.Args[2:]))
+		case "inspect":
+			os.Exit(cmdInspect(os.Args[2:]))
 		case "version", "--version", "-v":
 			fmt.Println(versionString())
 			return
@@ -811,7 +817,9 @@ func printUsage() {
 	fmt.Println("  kektordb [flags]                 Start the server")
 	fmt.Println("  kektordb try                     Run ephemeral demo mode (seeded, no persistence)")
 	fmt.Println("  kektordb version                  Show version and exit")
-	fmt.Println("  kektordb setup [agent]            Configure MCP for an AI agent")
+	fmt.Println("  kektordb status                  Show what the running server is doing")
+	fmt.Println("  kektordb inspect <query|id>      Explain one memory and where it came from")
+	fmt.Println("  kektordb setup [agent]           Configure MCP for an AI agent")
 	fmt.Println("  kektordb setup list               List supported agents")
 	fmt.Println("  kektordb setup status             Show configured agents")
 	fmt.Println()
