@@ -1388,6 +1388,38 @@ paths:
       responses:
         '200': { description: System statistics }
 
+  /vector/indexes/{name}/inspect/{id}:
+    get:
+      summary: Explain one memory
+      description: >-
+        Returns the memory, the decay currently applied to it (factor, model,
+        half-life, reinforcement, and a sentence explaining the value), and the
+        provenance tree that produced it.
+
+        Provenance is walked over the incoming edges that mean "this node
+        produced that one": `consolidated_into`, `extracted_from`,
+        `derived_from`, `evolution_of`, `compiled_from`. The walk is bounded at
+        50 nodes and 10 levels, and reports `truncated` when it stops early, so a
+        reader is never shown a partial tree as if it were complete.
+      tags: [Vector]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string }
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: depth
+          in: query
+          required: false
+          description: Levels of provenance to follow. Default 2.
+          schema: { type: integer, default: 2 }
+      responses:
+        '200': { description: The memory, its decay and its provenance }
+        '404': { description: Memory not found }
+
   /system/status:
     get:
       summary: Aggregated system status

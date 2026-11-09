@@ -147,6 +147,7 @@ func (s *Server) registerHTTPHandlers(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /vector/indexes/{name}/auto-links", s.handleUpdateAutoLinks)
 	mux.HandleFunc("GET /vector/indexes/{name}/auto-links", s.handleGetAutoLinks)
 	mux.HandleFunc("GET /vector/indexes/{name}/export", s.handleExportVectors)
+	mux.HandleFunc("GET /vector/indexes/{name}/inspect/{id}", s.handleInspect)
 
 	// Specific vector retrieval
 	mux.HandleFunc("GET /vector/indexes/{name}/vectors/{id}", s.handleGetVector)
